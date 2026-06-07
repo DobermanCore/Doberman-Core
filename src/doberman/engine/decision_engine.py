@@ -51,6 +51,24 @@ class Guardrail(Protocol):
         ...
 
 
+class StaticGuardrail:
+    """A guardrail that always returns a fixed result.
+
+    The MVP stub used until Feature 3 (objective) and Feature 9 (subjective)
+    provide real implementations; also handy in tests.
+    """
+
+    def __init__(self, result: GuardrailResult) -> None:
+        self._result = result
+
+    def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
+        return self._result
+
+
+#: Default stubs: observe-everything (PASS/low) until F3/F9 land.
+PASS_STUB = StaticGuardrail(GuardrailResult(verdict=Verdict.PASS, risk=Risk.low))
+
+
 def max_verdict(a: Verdict, b: Verdict) -> Verdict:
     """The more severe of two verdicts (PASS < AUTH < BLOCK)."""
     return a if VERDICT_ORDER[a] >= VERDICT_ORDER[b] else b
