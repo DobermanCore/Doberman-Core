@@ -36,7 +36,16 @@ _SECRET_SHAPES = re.compile(
 )
 
 # Argument keys whose values are secret-ish regardless of shape.
-_SENSITIVE_KEYS = re.compile(r"(?:pass(?:word)?|secret|token|api[_-]?key|credential)", re.I)
+_SENSITIVE_KEYS = re.compile(
+    r"(?:pass(?:word)?|secret|token|api[_-]?key|credential|auth|bearer|private[_-]?key)",
+    re.I,
+)
+
+# Don't bother shape-matching values shorter than the shortest secret shape.
+_MIN_SECRET_LENGTH = 16
+
+# Redaction recursion cap: anything nested deeper is redacted wholesale.
+_MAX_REDACTION_DEPTH = 16
 
 _TOOL_PREFIX_MAP: list[tuple[tuple[str, ...], ActionType]] = [
     (("fs_read", "file_read", "read_file"), ActionType.file_read),
@@ -61,20 +70,22 @@ def _map_action_type(tool_name: str) -> ActionType:
     return ActionType.other
 
 
-def _redact_value(key: str, value: Any) -> Any:
+def _redact_value(key: str, value: Any, depth: int = 0) -> Any:
     """Redact a single argument value (never raises)."""
+    if depth > _MAX_REDACTION_DEPTH:
+        return REDACTED  # too deep to inspect — redact wholesale
     if isinstance(value, str):
         if _SENSITIVE_KEYS.search(key):
             return REDACTED
         if len(value) > MAX_VALUE_LENGTH:
             return REDACTED
-        if _SECRET_SHAPES.search(value):
+        if len(value) >= _MIN_SECRET_LENGTH and _SECRET_SHAPES.search(value):
             return REDACTED
         return value
     if isinstance(value, list | tuple):
-        return [_redact_value(key, item) for item in value]
+        return [_redact_value(key, item, depth + 1) for item in value]
     if isinstance(value, dict):
-        return {str(k): _redact_value(str(k), v) for k, v in value.items()}
+        return {str(k): _redact_value(str(k), v, depth + 1) for k, v in value.items()}
     if isinstance(value, bool | int | float) or value is None:
         return value
     return REDACTED  # unknown types never pass through raw
@@ -107,21 +118,26 @@ def normalize(
 ) -> SecurityObject:
     """Turn one intercepted tool call into a SecurityObject. Never raises."""
     context = context or {}
+    safe_tool_name = tool_name if isinstance(tool_name, str) else "<unknown>"
     try:
         args = dict(arguments or {})
         action_type = _map_action_type(tool_name)
-        target, metadata = _extract_target(action_type, args)
+        # Extract the target from the REDACTED args so target /
+        # external_destination get exactly the same secret protections as
+        # raw_args_redacted (a redacted value yields target="<redacted>").
+        redacted_args = _redact_args(args)
+        target, metadata = _extract_target(action_type, redacted_args)
         external_destination = target if action_type is ActionType.network_request else None
         return SecurityObject(
             id=uuid.uuid4().hex,
             ts=datetime.now(timezone.utc),
             agent_role=str(context.get("agent_role", "unknown")),
             action_type=action_type,
-            tool_name=str(tool_name),
+            tool_name=safe_tool_name,
             target=target,
             external_destination=external_destination,
             source_context=SourceContext.unknown,
-            raw_args_redacted=_redact_args(args),
+            raw_args_redacted=redacted_args,
             metadata=metadata,
         )
     except Exception:  # noqa: BLE001 — normalization must never break the path
@@ -132,7 +148,7 @@ def normalize(
             ts=datetime.now(timezone.utc),
             agent_role="unknown",
             action_type=ActionType.other,
-            tool_name=str(tool_name) if isinstance(tool_name, str) else "<unknown>",
+            tool_name=safe_tool_name,
             risk=Risk.high,
             source_context=SourceContext.unknown,
             metadata={"reason_codes": [ReasonCode.normalization_failed]},

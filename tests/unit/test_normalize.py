@@ -116,6 +116,33 @@ def test_nested_structures_are_redacted():
     assert secret not in str(obj.raw_args_redacted)
 
 
+def test_authorization_header_redacted_even_when_short():
+    obj = normalize("net_get", {"url": "https://x.test", "headers": {"Authorization": "hunter2"}})
+    assert obj.raw_args_redacted["headers"]["Authorization"] == REDACTED
+
+
+def test_target_gets_same_redaction_as_args():
+    # A secret-shaped value used as the target must not survive into
+    # target/external_destination either.
+    secret_url = "https://x.test/cb?token=ghp_FAKEFAKEFAKEFAKEFAKE12345"  # noqa: S105
+    obj = normalize("net_get", {"url": secret_url})
+    assert obj.target == REDACTED
+    assert obj.external_destination == REDACTED
+    assert "ghp_" not in str(obj)
+
+    long_path = "p" * (MAX_VALUE_LENGTH + 1)
+    obj = normalize("fs_delete", {"path": long_path})
+    assert obj.target == REDACTED
+
+
+def test_deeply_nested_structures_redacted_wholesale():
+    value: dict = {"v": "benign"}
+    for _ in range(30):
+        value = {"nested": value}
+    obj = normalize("net_get", {"url": "https://x.test", "payload": value})
+    assert REDACTED in str(obj.raw_args_redacted["payload"])
+
+
 def test_unknown_value_types_never_pass_through_raw():
     class Weird:
         def __repr__(self) -> str:
