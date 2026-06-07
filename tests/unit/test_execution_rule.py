@@ -167,6 +167,33 @@ def test_decision_carries_action_id_and_aware_timestamp():
     assert decision.decided_at.tzinfo is not None
 
 
+def test_base_exception_unwinds_and_forwards_nothing():
+    # Documented behavior: BaseException is NOT converted to a verdict — it
+    # unwinds. Unwinding is fail-closed by construction (no Decision, no
+    # forward). The engine never converts an interrupt into an allow.
+    objective = CountingGuardrail(result(Verdict.PASS))
+
+    class Aborting:
+        def evaluate(self, action, ctx):
+            raise SystemExit(1)
+
+    with pytest.raises(SystemExit):
+        decide(ACTION, Aborting(), CountingGuardrail(result(Verdict.PASS)), CTX)
+    with pytest.raises(SystemExit):
+        decide(ACTION, objective, Aborting(), CTX)
+
+
+def test_decide_never_raises_for_any_valid_guardrail_outputs():
+    # Adversarial sweep: for EVERY pair of valid GuardrailResult outputs,
+    # decide() must return a valid Decision — never raise via the Decision
+    # validators (regression guard for validator/combine drift).
+    all_results = [result(v, r) for v in Verdict for r in Risk]
+    for obj in all_results:
+        for subj in all_results:
+            decision = decide(ACTION, CountingGuardrail(obj), CountingGuardrail(subj), CTX)
+            assert decision.action_id == ACTION.id
+
+
 def test_non_pass_decisions_always_explained():
     for outcome in (Verdict.AUTH, Verdict.BLOCK):
         decision = decide(

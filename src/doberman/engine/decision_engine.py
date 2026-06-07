@@ -24,7 +24,9 @@ from doberman.models import (
 # Deliberately EMPTY in the MVP: the subjective guardrail escalates to AUTH,
 # it does not hard-block ("subjective is for escalation, not paternalism").
 # Growing this list is a policy weakening of the clamp and must go through
-# the Feature 10 human-approved path.
+# the Feature 10 human-approved path. NOTE: this is a module-global frozenset;
+# rebinding the NAME at runtime is possible for code inside the process trust
+# boundary and would bypass F10 — treat any runtime rebinding as an attack.
 SUBJECTIVE_HARD_BLOCK_ALLOWLIST: frozenset[ReasonCode] = frozenset()
 
 
@@ -91,8 +93,15 @@ def _safe_evaluate(
     error_code: ReasonCode,
     error_explanation: str,
 ) -> GuardrailResult:
-    """Run one guardrail; ANY failure (raise or junk return) yields the
-    configured conservative result instead of escaping the engine."""
+    """Run one guardrail; any ``Exception`` (raise or junk return) yields the
+    configured conservative result instead of escaping the engine.
+
+    ``BaseException`` (KeyboardInterrupt/SystemExit/CancelledError) is
+    deliberately NOT caught: those must unwind the stack — and an unwind is
+    fail-closed by construction, because the downstream forward only happens
+    on a *returned* PASS decision. A guardrail aborting the process can deny
+    service, never grant access.
+    """
     try:
         result = guardrail.evaluate(action, ctx)
     except Exception:  # noqa: BLE001 — the engine owns failure semantics
