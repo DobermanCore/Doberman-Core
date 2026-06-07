@@ -11,7 +11,8 @@ error result, never a silent success or a bypass.
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, TextContent
 
-from doberman.models import ReasonCode, SecurityObject
+from doberman.models import ReasonCode, SecurityObject, Verdict
+from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
 
 _DENIED_TEMPLATE = (
@@ -50,6 +51,8 @@ async def decide_and_execute(
     # --- decision hook (Feature 2 wires the engine in here) -----------------
     # verdict = PASS (pass-through stub); `action` is what the engine judges.
     # ------------------------------------------------------------------------
+    # Record every intercepted action (best-effort; never blocks execution).
+    log_action(action, Verdict.PASS)
     try:
         return await downstream.call_tool(tool_name, arguments or {})
     except Exception as exc:  # noqa: BLE001 — fail closed on ANY failure mode
