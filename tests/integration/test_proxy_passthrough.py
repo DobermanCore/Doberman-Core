@@ -115,6 +115,24 @@ async def test_end_to_end_error_never_echoes_arguments():
         assert fake.calls == []
 
 
+async def test_every_call_is_normalized_before_execution(monkeypatch):
+    """Slice 1.3 wiring proof: the chokepoint normalizes each call."""
+    from doberman.proxy import normalize as normalize_mod
+
+    seen: list[str] = []
+    original = normalize_mod.normalize
+
+    def spy(tool_name, arguments, context=None):
+        seen.append(tool_name)
+        return original(tool_name, arguments, context)
+
+    monkeypatch.setattr("doberman.proxy.executor.normalize", spy)
+    async with proxied_session() as (_, agent):
+        await agent.call_tool("fs_write", {"path": "a.txt", "content": "x"})
+        await agent.call_tool("net_get", {"url": "https://example.com"})
+    assert seen == ["fs_write", "net_get"]
+
+
 async def test_every_call_routes_through_decide_and_execute(monkeypatch):
     routed: list[str] = []
     original = executor.decide_and_execute
