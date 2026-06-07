@@ -1,0 +1,47 @@
+name: CI
+on:
+  push:
+    branches: ["feat/**", "fix/**", "chore/**", "main"]
+  pull_request:
+    branches: ["main"]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      - name: Standalone guarantee (no enterprise installed)
+        run: |
+          if pip list | grep -qi doberman-enterprise; then
+            echo "FAIL: enterprise package found in core environment"
+            exit 1
+          fi
+          echo "ok: core has no enterprise dependency"
+      - run: ruff check .
+      - run: ruff format --check .
+      - name: Architecture & repo boundaries
+        run: lint-imports
+      - run: pytest --cov=doberman --cov-report=term-missing --cov-fail-under=80
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_SUMMARY: "true"
