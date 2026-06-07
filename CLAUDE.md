@@ -1,7 +1,10 @@
 # CLAUDE.md — Doberman Workspace Operating Manual
 
 > This is the **workspace-root** init file. It governs any AI agent (Claude Code, Codex, Cursor, etc.) working anywhere in this workspace.
-> It is the **HOW**. `doberman_implementation_plan.md` is the **WHAT** (features → slices).
+> It is the **HOW**. The **WHAT** lives in **three plan files**:
+> 1. `doberman_core_plan.md` — slices for the public `doberman-core` repo (Features F1–F10 + extension points). **The authoritative plan for core slices.**
+> 2. `doberman_enterprise_plan.md` — slices for the private `doberman-enterprise` repo (Features P1–P8, plugging into core's extension points). **The authoritative plan for enterprise slices.**
+> 3. `doberman_implementation_plan.md` — the original master MVP plan. Use it for **overall context**: the thesis rationale, tech-stack assumptions, repository layout, glossary, and extra slice detail. Where it disagrees with a repo plan, **the repo plan wins** (the repo plans are the split-by-repo refinement of the master plan).
 > Content is identical to `AGENTS.md`; keep the two in sync (or symlink one to the other).
 > If this file conflicts with a casual prompt instruction, **this file wins** unless a human overrides it in writing.
 
@@ -9,11 +12,11 @@
 
 ## 0. On startup (every session)
 
-1. Read this entire file, then `doberman_implementation_plan.md`.
+1. Read this entire file, then the **repo plan** for the repo you're working in: `doberman_core_plan.md` (core) or `doberman_enterprise_plan.md` (enterprise). Skim `doberman_implementation_plan.md` for overall context (tech stack, layout, glossary) when needed.
 2. Identify the workspace: there are **two repositories** — `doberman-core` (public) and `doberman-enterprise` (private). See §1.
 3. `git status` + `git log --oneline -5` in the relevant repo.
-4. Pick the **next slice** from the plan (lowest-numbered unmerged slice, in the order of the plan's Final Integration Plan).
-5. **Decide which repo the slice targets** using the mapping in §2. If the slice is *split*, the public part is a core slice and the proprietary/hosted part is a separate enterprise slice — they are **separate PRs in separate repos**.
+4. Pick the **next slice** from the relevant repo plan (lowest-numbered unmerged slice, in the order of that plan's **Final Integration Plan** section). Default repo order: core first — an enterprise feature can only start once the core extension point it plugs into is merged (see the attachment table in `doberman_enterprise_plan.md`).
+5. **Decide which repo the slice targets**: core slices (F*) come from `doberman_core_plan.md`; enterprise slices (P*) come from `doberman_enterprise_plan.md`. The mapping in §2 shows how the master plan's features split across the two. A *split* feature is two separate slices — **separate PRs in separate repos**.
 6. If that repo lacks scaffolding (`pyproject.toml` / `.github/workflows/ci.yml`), do **Slice 0 (Bootstrap)** for that repo first (§6).
 7. Execute exactly **one slice** via **The Slice Loop** (§5), then **STOP** and report. Stop at every review checkpoint.
 
@@ -45,9 +48,9 @@ Only put code here that can be **safely released publicly, forever**.
 
 ---
 
-## 2. Where each part of the implementation plan lives
+## 2. Where each part of the master plan lives
 
-Map every slice to a repo before coding. The headline: **the MVP is almost entirely `doberman-core`.** `doberman-enterprise` is the team/enterprise + advanced-detection layer (the plan's Phase 4–5 and "advanced detection").
+This table maps the **master plan's** features (`doberman_implementation_plan.md`) onto the two repo plans. The headline: **the MVP is almost entirely `doberman-core`.** `doberman-enterprise` is the team/enterprise + advanced-detection layer. The split below is already baked into the repo plans — core's side of each feature is specified in `doberman_core_plan.md` (F1–F10), the enterprise side in `doberman_enterprise_plan.md` (P1–P8) — so use this table as orientation, and the repo plans as the source of truth for slices.
 
 | Plan feature | Repo | Split? | What goes where |
 |---|---|---|---|
@@ -72,7 +75,7 @@ For every split feature, **core defines a stable interface and a runtime registr
 - At runtime Doberman runs core's basic implementations **plus** any registered plugins. With only core installed, it still works (basic protection). With enterprise installed, premium detection/audit/SSO light up.
 - This is exactly the decoupling discipline the plan already mandates inside core (the policy core must not import the proxy adapter) — now extended across the repo boundary.
 
-**Rule of thumb for a split slice:** build the **interface + basic core implementation as a `core` slice first**; build the **advanced/proprietary/hosted implementation as a separate `enterprise` slice** that depends on the now-merged core interface.
+**Rule of thumb for a split slice:** build the **interface + basic core implementation as a `core` slice first** (from `doberman_core_plan.md`); build the **advanced/proprietary/hosted implementation as a separate `enterprise` slice** (from `doberman_enterprise_plan.md`) that depends on the now-merged core extension point. The attachment table at the top of `doberman_enterprise_plan.md` says exactly which core slice each enterprise feature needs (e.g. P3 needs core F8.4's `AuditSink`).
 
 ---
 
@@ -97,7 +100,7 @@ If you feel pressure to violate one of these to "make progress," that pressure i
 - **What:** Doberman sits between a coding agent and its tools and turns every meaningful action into a risk-based **allow / authenticate / block** decision.
 - **Packages:** core distributes as `doberman` (`src/doberman/`); enterprise distributes as `doberman_enterprise` (separate repo) and **depends on `doberman`**.
 - **Stack:** Python 3.11+, MCP proxy (`mcp` SDK), local-first **SQLite** (`aiosqlite`), YAML policy in `.doberman/`, Pydantic v2, `pyotp`, a `doberman` CLI (Typer), `pytest`.
-- **Layouts:** see the plan's "Repository layout." Runtime data (`.doberman/`, the DB, key files) is **never** committed.
+- **Layouts:** see "Repository layout" in `doberman_implementation_plan.md` (core layout also recapped in `doberman_core_plan.md`). Runtime data (`.doberman/`, the DB, key files) is **never** committed.
 
 ---
 
@@ -105,7 +108,7 @@ If you feel pressure to violate one of these to "make progress," that pressure i
 
 **Step 0 — Route to a repo.** Using §2, decide the target repo. If the slice is split, work only the part for the chosen repo; the other part is its own slice/PR in the other repo. Confirm the part you put in `doberman-core` contains nothing from the §1 "not allowed" list.
 
-**Step 1 — Read the slice** in `doberman_implementation_plan.md` (Objective, files, changes, security considerations, edge cases, expected output, suggested tests, suggested commit message). Ambiguity or a Prime-Directive conflict → STOP and ask.
+**Step 1 — Read the slice** in the repo plan — `doberman_core_plan.md` for core slices (F*), `doberman_enterprise_plan.md` for enterprise slices (P*) — covering its Objective, files, changes, security considerations, edge cases, expected output, suggested tests, and suggested commit message. For extra background on a core feature, consult the matching feature in `doberman_implementation_plan.md` (the repo plan wins on any conflict). Ambiguity or a Prime-Directive conflict → STOP and ask.
 
 **Step 2 — Branch** (in the right repo):
 ```
@@ -143,7 +146,7 @@ Everything passes; do **not** weaken a test or invariant to get green.
 
 ## 6. Slice 0 — Bootstrap (per repo, only if scaffolding is missing)
 
-Each repo gets its own scaffolding + working CI + a trivial smoke test, committed on `chore/bootstrap-scaffolding` with `chore(repo): bootstrap project scaffolding and CI`. Commit `CLAUDE.md`/`AGENTS.md` into each repo (and the plan into `doberman-core`).
+Each repo gets its own scaffolding + working CI + a trivial smoke test, committed on `chore/bootstrap-scaffolding` with `chore(repo): bootstrap project scaffolding and CI`. Commit `CLAUDE.md`/`AGENTS.md` into each repo, plus that repo's plan: `doberman_core_plan.md` into `doberman-core`, `doberman_enterprise_plan.md` into `doberman-enterprise`. **Never commit `doberman_enterprise_plan.md` (or the full master plan) into the public core repo** — they describe proprietary features; the master plan stays at the workspace root (or in the private repo).
 
 ### `doberman-core` — `pyproject.toml`
 ```toml
@@ -284,7 +287,7 @@ build/
 ## Slice
 - Repo: doberman-core | doberman-enterprise
 - Feature / Slice: <id> — <title>
-- Plan reference: doberman_implementation_plan.md
+- Plan reference: doberman_core_plan.md | doberman_enterprise_plan.md
 
 ## What this PR does
 
@@ -391,9 +394,11 @@ Risks / shortcuts / tech debt: ...
 
 | You want to… | Do this |
 |---|---|
-| Know **what** to build | `doberman_implementation_plan.md` |
+| Know **what** to build in core | `doberman_core_plan.md` (F1–F10) |
+| Know **what** to build in enterprise | `doberman_enterprise_plan.md` (P1–P8) |
+| Overall context / glossary / layout | `doberman_implementation_plan.md` (master plan; repo plans win on conflict) |
 | Know **how** to build it | this file |
-| Decide the repo for a slice | §2 mapping; split → interface in core, plugin in enterprise; when unsure → enterprise |
+| Decide the repo for a slice | F* → core plan, P* → enterprise plan; §2 mapping for split features; when unsure → enterprise |
 | Start a slice | route to repo (§5 Step 0) → branch `feat/<feature>/<slice>` → follow §5 |
 | Finish a slice | tests added + pushed, CI green, boundary checks pass, Slice Completion Report, STOP |
 | Run checks (core) | `ruff check . && ruff format --check . && lint-imports && pytest --cov=doberman` |
