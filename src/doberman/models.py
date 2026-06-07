@@ -101,6 +101,18 @@ class GuardrailResult(BaseModel):
         return self
 
 
+class EvalContext(BaseModel):
+    """Context handed to every guardrail evaluation (immutable).
+
+    Deliberately near-empty for now; later features add the security mode
+    (F6), role boundaries (F4), and the baseline handle (F9).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class SecurityObject(BaseModel):
     """The normalized, redacted description of one intercepted action.
 
@@ -129,3 +141,35 @@ class SecurityObject(BaseModel):
     # enforced by normalize() and its tests, not by this type.
     raw_args_redacted: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Decision(BaseModel):
+    """The engine's final, immutable answer for one action.
+
+    This is the audit record's source of truth: it always carries the
+    contributing guardrail results, and any non-PASS outcome must be
+    explained (reason codes + human explanation). ``subjective`` is ``None``
+    when the execution rule skipped it (objective short-circuit).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    action_id: str = Field(min_length=1)
+    final_verdict: Verdict
+    final_risk: Risk
+    objective: GuardrailResult
+    subjective: GuardrailResult | None = None
+    reason_codes: list[ReasonCode] = Field(default_factory=list)
+    explanation: str = ""
+    decided_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def _non_pass_must_be_explained(self) -> "Decision":
+        if self.final_verdict is not Verdict.PASS:
+            if not self.reason_codes:
+                raise ValueError(
+                    f"a {self.final_verdict} decision requires at least one reason code"
+                )
+            if not self.explanation.strip():
+                raise ValueError(f"a {self.final_verdict} decision requires a human explanation")
+        return self
