@@ -97,6 +97,11 @@ class GuardrailResult(BaseModel):
 
     Explainability contract: every non-PASS verdict must carry at least one
     stable :class:`ReasonCode` and a human-readable explanation.
+
+    SECURITY: ``explanation`` is shown to the agent on AUTH/BLOCK. Guardrail
+    authors MUST NOT embed raw argument values, file contents, secret
+    material, or match excerpts in it — describe the rule, not the payload
+    (e.g. "path is under a protected directory", never the path's contents).
     """
 
     model_config = ConfigDict(frozen=True)
