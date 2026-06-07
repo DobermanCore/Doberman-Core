@@ -60,21 +60,37 @@ def test_defaults_applied():
     assert obj.metadata == {}
 
 
-def test_bad_enum_rejected():
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"action_type": "format_disk"},
+        {"risk": "extreme"},
+        {"source_context": "carrier_pigeon"},
+        {"id": ""},  # blank ids would create untraceable records
+        {"ts": datetime(2026, 6, 7, 12, 0, 0)},  # naive timestamp rejected
+    ],
+)
+def test_invalid_security_object_rejected(overrides):
     with pytest.raises(ValidationError):
-        SecurityObject(**{**THESIS_EXAMPLE, "action_type": "format_disk"})
-    with pytest.raises(ValidationError):
-        SecurityObject(**{**THESIS_EXAMPLE, "risk": "extreme"})
+        SecurityObject(**{**THESIS_EXAMPLE, **overrides})
+
+
+def test_bad_verdict_rejected():
     with pytest.raises(ValidationError):
         GuardrailResult(verdict="MAYBE", risk=Risk.low)
 
 
 def test_frozen_blocks_assignment():
     obj = SecurityObject(**THESIS_EXAMPLE)
-    with pytest.raises(ValidationError):
-        obj.risk = Risk.low  # no layer may mutate risk downward
-    result = GuardrailResult(verdict=Verdict.BLOCK, risk=Risk.critical)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="frozen"):
+        obj.risk = Risk.low  # frozen=True: no assignment after construction
+    result = GuardrailResult(
+        verdict=Verdict.BLOCK,
+        risk=Risk.critical,
+        reason_codes=[ReasonCode.unknown_tool],
+        explanation="Unknown tool.",
+    )
+    with pytest.raises(ValidationError, match="frozen"):
         result.verdict = Verdict.PASS
 
 
@@ -87,6 +103,34 @@ def test_guardrail_result_defaults_and_fields():
     )
     assert result.reason_codes == ["unknown_tool"]
     assert GuardrailResult(verdict=Verdict.PASS, risk=Risk.low).reason_codes == []
+
+
+def test_reason_codes_must_be_known_constants():
+    with pytest.raises(ValidationError):
+        GuardrailResult(
+            verdict=Verdict.BLOCK,
+            risk=Risk.high,
+            reason_codes=["totally_made_up_code"],
+            explanation="x",
+        )
+
+
+@pytest.mark.parametrize("verdict", [Verdict.BLOCK, Verdict.AUTH])
+def test_non_pass_requires_reason_codes_and_explanation(verdict):
+    # Explainability contract: every BLOCK/AUTH carries codes + explanation.
+    with pytest.raises(ValidationError):
+        GuardrailResult(verdict=verdict, risk=Risk.high)
+    with pytest.raises(ValidationError):
+        GuardrailResult(verdict=verdict, risk=Risk.high, reason_codes=[ReasonCode.unknown_tool])
+    with pytest.raises(ValidationError):
+        GuardrailResult(verdict=verdict, risk=Risk.high, explanation="why")
+    ok = GuardrailResult(
+        verdict=verdict,
+        risk=Risk.high,
+        reason_codes=[ReasonCode.unknown_tool],
+        explanation="why",
+    )
+    assert ok.verdict is verdict
 
 
 def test_enums_have_expected_members():

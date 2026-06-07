@@ -7,10 +7,10 @@ silently mutate risk or a verdict downward — changes happen by producing a
 *new* object, never by editing in place (raise-only principle).
 """
 
-from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 
 class ActionType(StrEnum):
@@ -78,14 +78,27 @@ class ReasonCode(StrEnum):
 
 
 class GuardrailResult(BaseModel):
-    """A single guardrail's answer for one action (immutable)."""
+    """A single guardrail's answer for one action (immutable).
+
+    Explainability contract: every non-PASS verdict must carry at least one
+    stable :class:`ReasonCode` and a human-readable explanation.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     verdict: Verdict
     risk: Risk
-    reason_codes: list[str] = Field(default_factory=list)
+    reason_codes: list[ReasonCode] = Field(default_factory=list)
     explanation: str = ""
+
+    @model_validator(mode="after")
+    def _non_pass_must_be_explained(self) -> "GuardrailResult":
+        if self.verdict is not Verdict.PASS:
+            if not self.reason_codes:
+                raise ValueError(f"a {self.verdict} verdict requires at least one reason code")
+            if not self.explanation.strip():
+                raise ValueError(f"a {self.verdict} verdict requires a human explanation")
+        return self
 
 
 class SecurityObject(BaseModel):
@@ -99,8 +112,8 @@ class SecurityObject(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    id: str
-    ts: datetime
+    id: str = Field(min_length=1)
+    ts: AwareDatetime  # forensic timestamp — naive datetimes are rejected
     agent_role: str
     action_type: ActionType
     tool_name: str
@@ -112,5 +125,7 @@ class SecurityObject(BaseModel):
     sensitive_asset: bool = False
     external_destination: str | None = None
     payload_fingerprints: list[str] = Field(default_factory=list)
-    raw_args_redacted: dict = Field(default_factory=dict)
-    metadata: dict = Field(default_factory=dict)
+    # Values must already be redacted before entering the object; redaction is
+    # enforced by normalize() and its tests, not by this type.
+    raw_args_redacted: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
