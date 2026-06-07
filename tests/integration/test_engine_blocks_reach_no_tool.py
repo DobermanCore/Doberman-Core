@@ -71,6 +71,8 @@ async def test_engine_exception_fails_closed(monkeypatch):
     def exploding_decide(*args, **kwargs):
         raise RuntimeError("engine exploded")
 
+    # Patches the from-import binding in executor.py — if executor ever
+    # switches to module-attribute calls (engine.decide), update this target.
     monkeypatch.setattr(executor, "decide", exploding_decide)
     async with proxied_session() as (fake, agent):
         result = await agent.call_tool("fs_write", {"path": "a.txt", "content": "x"})

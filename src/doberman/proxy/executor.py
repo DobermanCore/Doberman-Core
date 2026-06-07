@@ -8,6 +8,7 @@ arrives with Feature 7), ``BLOCK`` returns a policy error and the call is
 NEVER forwarded. Any engine failure is itself a ``BLOCK`` (fail closed).
 """
 
+import logging
 from datetime import datetime, timezone
 
 from mcp.client.session import ClientSession
@@ -25,6 +26,8 @@ from doberman.models import (
 )
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
+
+_engine_logger = logging.getLogger("doberman.proxy.engine")
 
 # Guardrail implementations used by the proxy. Stubs (PASS/low) until
 # Feature 3 (objective rules) and Feature 9 (subjective baseline) replace
@@ -117,10 +120,16 @@ async def decide_and_execute(
     try:
         decision = decide(action, DEFAULT_OBJECTIVE, DEFAULT_SUBJECTIVE, EvalContext())
     except Exception:  # noqa: BLE001 — engine failure must fail closed, not crash
+        # BaseException (CancelledError, SystemExit) propagates on purpose —
+        # an unwind is fail-closed by construction (the forward below is
+        # never reached). Log the failure server-side for forensics; the
+        # exception text never reaches the agent.
+        _engine_logger.exception("decision engine raised; failing closed (action %s)", action.id)
         decision = _engine_failure_decision(action)
 
-    # Record every intercepted action with its REAL verdict (best-effort;
-    # never blocks execution).
+    # Record every intercepted action with its REAL verdict. Logged BEFORE
+    # the verdict gate — safe because log_action can never bypass the gate
+    # (it swallows its own failures and forwards nothing).
     log_action(action, decision.final_verdict)
 
     if decision.final_verdict is not Verdict.PASS:
