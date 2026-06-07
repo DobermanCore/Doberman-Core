@@ -51,35 +51,52 @@ def test_full_risk_matrix_takes_max(a, b):
     combined = combine(make_result(Verdict.PASS, a), make_result(Verdict.PASS, b))
     assert RISK_ORDER[combined.risk] == max(RISK_ORDER[a], RISK_ORDER[b])
     assert combined.risk == max_risk(a, b)
+    # Risk advances independently of verdict: mixed-verdict pairs too.
+    mixed = combine(make_result(Verdict.AUTH, a), make_result(Verdict.BLOCK, b))
+    assert mixed.risk == max_risk(a, b)
+    assert mixed.verdict is Verdict.BLOCK
 
 
-def test_none_passthrough_returns_a_unchanged():
+def test_none_passthrough_returns_equal_but_unaliased_copy():
     a = make_result(Verdict.AUTH, Risk.high)
-    assert combine(a, None) is a
+    out = combine(a, None)
+    assert out == a
+    assert out is not a
+    # No aliasing: mutating one reason list must not affect the other.
+    out.reason_codes.append(ReasonCode.downstream_error)
+    assert a.reason_codes == [ReasonCode.unknown_tool]
 
 
 def test_combine_never_lowers_property():
     """THE invariant: over many random pairs, combine never returns below
     max(a, b) on either axis, and never drops a reason code."""
-    rng = random.Random(20260607)  # noqa: S311 — deterministic test seed, not crypto
+    rng = random.Random(20260607)  # noqa: S311 — seeded PRNG for test determinism only
     codes = list(ReasonCode)
+
+    def random_result() -> GuardrailResult:
+        verdict = rng.choice(ALL_VERDICTS)
+        # PASS may legally carry ZERO reasons — include that in the distribution.
+        min_reasons = 0 if verdict is Verdict.PASS else 1
+        return make_result(
+            verdict,
+            rng.choice(ALL_RISKS),
+            reasons=rng.sample(codes, rng.randint(min_reasons, len(codes))),
+        )
+
     for _ in range(1000):
-        a = make_result(
-            rng.choice(ALL_VERDICTS),
-            rng.choice(ALL_RISKS),
-            reasons=rng.sample(codes, rng.randint(1, len(codes))),
-        )
-        b = make_result(
-            rng.choice(ALL_VERDICTS),
-            rng.choice(ALL_RISKS),
-            reasons=rng.sample(codes, rng.randint(1, len(codes))),
-        )
+        a = random_result()
+        b = random_result()
         combined = combine(a, b)
         assert VERDICT_ORDER[combined.verdict] >= VERDICT_ORDER[a.verdict]
         assert VERDICT_ORDER[combined.verdict] >= VERDICT_ORDER[b.verdict]
         assert RISK_ORDER[combined.risk] >= RISK_ORDER[a.risk]
         assert RISK_ORDER[combined.risk] >= RISK_ORDER[b.risk]
+        # No reason is ever lost...
         assert set(combined.reason_codes) == set(a.reason_codes) | set(b.reason_codes)
+        # ...and the union is order-preserving: a's codes (deduped) first,
+        # then b's new codes in b's order.
+        expected = list(dict.fromkeys([*a.reason_codes, *b.reason_codes]))
+        assert combined.reason_codes == expected
 
 
 def test_reason_union_is_deduplicated_and_order_preserving():

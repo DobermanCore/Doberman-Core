@@ -56,11 +56,12 @@ def combine(a: GuardrailResult, b: GuardrailResult | None) -> GuardrailResult:
     reason codes (order-preserving, ``a`` first). There is deliberately no
     code path that returns a verdict or risk lower than either input: the
     only operations used are max() over the severity orderings and set
-    union over reasons. ``b is None`` (subjective skipped) returns ``a``
-    unchanged.
+    union over reasons. ``b is None`` (subjective skipped) returns a copy of
+    ``a`` (never the same instance — reason_codes is a mutable list and the
+    caller must not be able to alias it).
     """
     if b is None:
-        return a
+        return a.model_copy(deep=True)
     merged_reasons = list(dict.fromkeys([*a.reason_codes, *b.reason_codes]))
     explanation = " ".join(part for part in (a.explanation.strip(), b.explanation.strip()) if part)
     return GuardrailResult(

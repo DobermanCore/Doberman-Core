@@ -71,6 +71,11 @@ class Verdict(StrEnum):
 VERDICT_ORDER: dict[Verdict, int] = {Verdict.PASS: 0, Verdict.AUTH: 1, Verdict.BLOCK: 2}
 RISK_ORDER: dict[Risk, int] = {Risk.low: 0, Risk.medium: 1, Risk.high: 2, Risk.critical: 3}
 
+# Fail at import time if an enum member is ever added without an ordering —
+# a KeyError mid-decision would crash instead of failing closed.
+if set(VERDICT_ORDER) != set(Verdict) or set(RISK_ORDER) != set(Risk):  # pragma: no cover
+    raise RuntimeError("VERDICT_ORDER/RISK_ORDER must cover every enum member")
+
 
 class ReasonCode(StrEnum):
     """Stable reason-code constants attached to every non-PASS decision.
