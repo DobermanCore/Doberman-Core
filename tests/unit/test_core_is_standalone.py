@@ -1,5 +1,6 @@
 """Slice 0 — bootstrap smoke tests and the standalone guarantee."""
 
+import subprocess
 import sys
 
 
@@ -16,10 +17,13 @@ def test_version_is_exposed():
 
 
 def test_policy_core_packages_import_cleanly():
-    import doberman.engine  # noqa: F401
-    import doberman.learning  # noqa: F401
-    import doberman.policy  # noqa: F401
-    import doberman.roles  # noqa: F401
-    import doberman.storage  # noqa: F401
-
-    assert "doberman.proxy" not in sys.modules
+    # Run in a fresh interpreter: importing the policy core must not pull in
+    # the proxy adapter. (Checking sys.modules in-process would be order-
+    # dependent — other tests legitimately import doberman.proxy.)
+    code = (
+        "import sys; "
+        "import doberman.engine, doberman.learning, doberman.policy, "
+        "doberman.roles, doberman.storage; "
+        "assert 'doberman.proxy' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=60)  # noqa: S603

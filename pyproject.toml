@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Adaptive authorization layer for coding agents (open core)"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2", "mcp", "aiosqlite", "pyotp", "pyyaml", "typer"]
+dependencies = ["pydantic>=2", "mcp>=1.27,<2", "aiosqlite", "pyotp", "pyyaml", "typer"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "import-linter"]
