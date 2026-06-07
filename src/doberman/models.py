@@ -87,6 +87,9 @@ class ReasonCode(StrEnum):
     normalization_failed = "normalization_failed"
     unknown_tool = "unknown_tool"
     downstream_error = "downstream_error"
+    objective_guardrail_error = "objective_guardrail_error"
+    subjective_guardrail_error = "subjective_guardrail_error"
+    subjective_block_clamped = "subjective_block_clamped"
 
 
 class GuardrailResult(BaseModel):

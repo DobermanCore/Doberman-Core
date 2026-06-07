@@ -1,21 +1,31 @@
-"""The decision engine: the `Guardrail` contract (and, next slices, the
-raise-only combination and the objective-first execution rule).
+"""The decision engine: the `Guardrail` contract, the raise-only
+combination, and the objective-first execution rule.
 
 This module is part of the policy core — it must never import
 ``doberman.proxy`` (enforced by import-linter).
 """
 
+from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from doberman.models import (
     RISK_ORDER,
     VERDICT_ORDER,
+    Decision,
     EvalContext,
     GuardrailResult,
+    ReasonCode,
     Risk,
     SecurityObject,
     Verdict,
 )
+
+# Reason codes for which a SUBJECTIVE BLOCK is honored as a hard block.
+# Deliberately EMPTY in the MVP: the subjective guardrail escalates to AUTH,
+# it does not hard-block ("subjective is for escalation, not paternalism").
+# Growing this list is a policy weakening of the clamp and must go through
+# the Feature 10 human-approved path.
+SUBJECTIVE_HARD_BLOCK_ALLOWLIST: frozenset[ReasonCode] = frozenset()
 
 
 @runtime_checkable
@@ -69,4 +79,111 @@ def combine(a: GuardrailResult, b: GuardrailResult | None) -> GuardrailResult:
         risk=max_risk(a.risk, b.risk),
         reason_codes=merged_reasons,
         explanation=explanation,
+    )
+
+
+def _safe_evaluate(
+    guardrail: Guardrail,
+    action: SecurityObject,
+    ctx: EvalContext,
+    *,
+    on_error_verdict: Verdict,
+    error_code: ReasonCode,
+    error_explanation: str,
+) -> GuardrailResult:
+    """Run one guardrail; ANY failure (raise or junk return) yields the
+    configured conservative result instead of escaping the engine."""
+    try:
+        result = guardrail.evaluate(action, ctx)
+    except Exception:  # noqa: BLE001 — the engine owns failure semantics
+        result = None
+    if not isinstance(result, GuardrailResult):
+        # Covers both the exception path and a signature-blind impostor
+        # returning garbage (the runtime_checkable Protocol cannot catch it).
+        return GuardrailResult(
+            verdict=on_error_verdict,
+            risk=Risk.high,
+            reason_codes=[error_code],
+            explanation=error_explanation,
+        )
+    return result
+
+
+def decide(
+    action: SecurityObject,
+    objective: Guardrail,
+    subjective: Guardrail,
+    ctx: EvalContext,
+) -> Decision:
+    """The execution rule (thesis §4/§8) — objective first, raise-only.
+
+    1. Run the objective guardrail. If it errors → **BLOCK** (fail closed).
+    2. Objective ``BLOCK`` → final BLOCK; subjective is NOT run.
+    3. Objective ``AUTH`` → final AUTH; subjective is NOT run (straight to
+       authentication — subjective can never weaken it).
+    4. Objective ``PASS`` → run the subjective guardrail (errors → treated
+       as AUTH, fail upward) and ``combine`` raise-only.
+    5. A subjective ``BLOCK`` is honored only if one of its reason codes is
+       on ``SUBJECTIVE_HARD_BLOCK_ALLOWLIST``; otherwise it is clamped to
+       ``AUTH`` (the original subjective result is preserved on the
+       Decision for audit).
+    """
+    objective_result = _safe_evaluate(
+        objective,
+        action,
+        ctx,
+        on_error_verdict=Verdict.BLOCK,
+        error_code=ReasonCode.objective_guardrail_error,
+        error_explanation="Objective guardrail failed; failing closed.",
+    )
+
+    # Steps 2–3: objective short-circuit — subjective never runs, so it can
+    # never weaken (or even observe) an objective AUTH/BLOCK.
+    if objective_result.verdict is not Verdict.PASS:
+        return Decision(
+            action_id=action.id,
+            final_verdict=objective_result.verdict,
+            final_risk=objective_result.risk,
+            objective=objective_result,
+            subjective=None,
+            reason_codes=list(objective_result.reason_codes),
+            explanation=objective_result.explanation,
+            decided_at=datetime.now(timezone.utc),
+        )
+
+    # Step 4: objective PASS → consult the subjective guardrail.
+    subjective_result = _safe_evaluate(
+        subjective,
+        action,
+        ctx,
+        on_error_verdict=Verdict.AUTH,
+        error_code=ReasonCode.subjective_guardrail_error,
+        error_explanation="Subjective guardrail failed; escalating to authentication.",
+    )
+
+    # Step 5: clamp a non-allowlisted subjective hard block to AUTH.
+    effective_subjective = subjective_result
+    if subjective_result.verdict is Verdict.BLOCK and not (
+        SUBJECTIVE_HARD_BLOCK_ALLOWLIST & set(subjective_result.reason_codes)
+    ):
+        effective_subjective = GuardrailResult(
+            verdict=Verdict.AUTH,
+            risk=subjective_result.risk,
+            reason_codes=[*subjective_result.reason_codes, ReasonCode.subjective_block_clamped],
+            explanation=(
+                f"{subjective_result.explanation} "
+                "(subjective block clamped to authentication; not on the hard-block allowlist)"
+            ).strip(),
+        )
+
+    combined = combine(objective_result, effective_subjective)
+    return Decision(
+        action_id=action.id,
+        final_verdict=combined.verdict,
+        final_risk=combined.risk,
+        objective=objective_result,
+        subjective=subjective_result,  # the ORIGINAL result, for audit truth
+        reason_codes=list(combined.reason_codes),
+        explanation=combined.explanation,
+        decided_at=datetime.now(timezone.utc),
     )
