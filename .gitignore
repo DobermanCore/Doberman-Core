@@ -15,3 +15,10 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Operating manual + implementation plans: local-only, never published
+CLAUDE.md
+AGENTS.md
+doberman_core_plan.md
+doberman_enterprise_plan.md
+doberman_implementation_plan.md
