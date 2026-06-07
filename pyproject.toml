@@ -1,0 +1,56 @@
+[project]
+name = "doberman"
+version = "0.0.0"
+description = "Adaptive authorization layer for coding agents (open core)"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2", "mcp", "aiosqlite", "pyotp", "pyyaml", "typer"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "import-linter"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/doberman"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["doberman"]
+branch = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+extend-select = ["I", "B", "S"]   # imports, bugbear, security
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]   # pytest tests use bare asserts by design
+
+[tool.importlinter]
+root_package = "doberman"
+include_external_packages = true
+
+# Inside-core decoupling: policy core must not import the proxy adapter.
+[[tool.importlinter.contracts]]
+name = "Policy core must not depend on the proxy adapter"
+type = "forbidden"
+source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "doberman.storage", "doberman.learning"]
+forbidden_modules = ["doberman.proxy"]
+
+# Cross-repo boundary: the public core must never import the private enterprise package.
+# NOTE: defense-in-depth only — enterprise is never installed in core CI, so this contract
+# is trivially kept there; the CI "standalone guarantee" step is the operative guard.
+[[tool.importlinter.contracts]]
+name = "Public core must not depend on the private enterprise package"
+type = "forbidden"
+source_modules = ["doberman"]
+forbidden_modules = ["doberman_enterprise"]
