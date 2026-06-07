@@ -65,6 +65,13 @@ class Verdict(StrEnum):
     BLOCK = "BLOCK"
 
 
+# Severity orderings: combination may only ever move UP these scales
+# (raise-only). Shared by the Decision consistency check below and the
+# engine's combine().
+VERDICT_ORDER: dict[Verdict, int] = {Verdict.PASS: 0, Verdict.AUTH: 1, Verdict.BLOCK: 2}
+RISK_ORDER: dict[Risk, int] = {Risk.low: 0, Risk.medium: 1, Risk.high: 2, Risk.critical: 3}
+
+
 class ReasonCode(StrEnum):
     """Stable reason-code constants attached to every non-PASS decision.
 
@@ -106,6 +113,10 @@ class EvalContext(BaseModel):
 
     Deliberately near-empty for now; later features add the security mode
     (F6), role boundaries (F4), and the baseline handle (F9).
+
+    NOTE: ``frozen=True`` is shallow — the ``metadata`` dict itself is
+    mutable. Guardrails are pure functions by contract and MUST NOT mutate
+    it; the engine treats any mutation as a guardrail bug.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -150,6 +161,14 @@ class Decision(BaseModel):
     contributing guardrail results, and any non-PASS outcome must be
     explained (reason codes + human explanation). ``subjective`` is ``None``
     when the execution rule skipped it (objective short-circuit).
+
+    Consistency invariant: ``final_verdict`` can never be WEAKER than the
+    objective guardrail's verdict (objective is never overridden downward).
+    It MAY be weaker than ``subjective.verdict`` — the execution rule clamps
+    a non-allowlisted subjective BLOCK to AUTH by design.
+
+    ``action_id`` must equal the ``SecurityObject.id`` of the action being
+    decided (chain of custody for audit).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -172,4 +191,18 @@ class Decision(BaseModel):
                 )
             if not self.explanation.strip():
                 raise ValueError(f"a {self.final_verdict} decision requires a human explanation")
+        return self
+
+    @model_validator(mode="after")
+    def _final_never_weaker_than_objective(self) -> "Decision":
+        if VERDICT_ORDER[self.final_verdict] < VERDICT_ORDER[self.objective.verdict]:
+            raise ValueError(
+                f"final_verdict {self.final_verdict} is weaker than the objective "
+                f"verdict {self.objective.verdict} — objective is never overridden downward"
+            )
+        if RISK_ORDER[self.final_risk] < RISK_ORDER[self.objective.risk]:
+            raise ValueError(
+                f"final_risk {self.final_risk} is lower than the objective "
+                f"risk {self.objective.risk} — risk is never lowered"
+            )
         return self

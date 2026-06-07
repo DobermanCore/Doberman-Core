@@ -18,6 +18,12 @@ class Guardrail(Protocol):
     mutation of the action (it is frozen anyway), one :class:`GuardrailResult`
     out. The engine — not the guardrail — owns combination and short-circuit
     semantics, so a guardrail can never lower another's verdict.
+
+    CAVEAT: ``isinstance(obj, Guardrail)`` is structural-only (method name,
+    not signature or return type) — ``runtime_checkable`` cannot verify more.
+    The engine must therefore never treat an isinstance check as a type-safety
+    gate: the real gate is that ``evaluate``'s return value is validated as a
+    ``GuardrailResult`` (anything else fails closed).
     """
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
