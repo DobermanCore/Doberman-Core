@@ -6,10 +6,12 @@ import re
 
 import pytest
 
-from doberman.proxy import interception_log
+from doberman.models import Verdict
+from doberman.proxy import executor, interception_log
 from doberman.proxy.interception_log import LOGGER_NAME
+from doberman.proxy.normalize import normalize
 
-from .test_proxy_passthrough import proxied_session
+from .test_proxy_passthrough import DeadSession, proxied_session
 
 
 def _log_records(caplog: pytest.LogCaptureFixture) -> list[dict]:
@@ -40,6 +42,9 @@ async def test_synthetic_secret_never_appears_in_log(caplog):
     async with proxied_session() as (_, agent):
         await agent.call_tool("fs_write", {"path": "a.txt", "content": secret})
         await agent.call_tool("net_get", {"url": "https://x.test", "api_key": secret})
+    # The redaction guarantee must actually have been exercised: both calls
+    # produced a log line, and neither contains the secret.
+    assert len(_log_records(caplog)) == 2
     assert secret not in caplog.text
 
 
@@ -68,9 +73,6 @@ def test_log_action_survives_total_logging_failure(monkeypatch):
         def warning(self, *args, **kwargs):
             raise RuntimeError("logger broken harder")
 
-    from doberman.models import Verdict
-    from doberman.proxy.normalize import normalize
-
     monkeypatch.setattr(interception_log, "logger", ExplodingLogger())
     action = normalize("fs_write", {"path": "x"})
     interception_log.log_action(action, Verdict.PASS)  # must not raise
@@ -78,10 +80,6 @@ def test_log_action_survives_total_logging_failure(monkeypatch):
 
 async def test_failed_calls_are_still_logged_and_ids_correlate(caplog):
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
-    from doberman.proxy import executor
-
-    from .test_proxy_passthrough import DeadSession
-
     result = await executor.decide_and_execute(
         DeadSession(),  # type: ignore[arg-type]
         "fs_delete",

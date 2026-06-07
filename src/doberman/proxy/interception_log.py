@@ -18,6 +18,9 @@ from doberman.models import SecurityObject, Verdict
 
 LOGGER_NAME = "doberman.interception"
 
+# Pre-built fallback line: if json.dumps itself failed we cannot use it again.
+_LOG_FAILED_LINE = '{"event": "interception_log_failed"}'
+
 logger = logging.getLogger(LOGGER_NAME)
 
 
@@ -26,6 +29,11 @@ def log_action(action: SecurityObject, verdict: Verdict) -> None:
 
     Best-effort: any failure is swallowed (after a last-ditch plain-text
     note) — the execution path must never see an exception from here.
+
+    Deliberately swallows ``Exception`` only, never ``BaseException``:
+    cancellation (CancelledError), GeneratorExit, and interpreter shutdown
+    must propagate — swallowing them here would break structured
+    concurrency, and an unwind executes nothing downstream (fail closed).
     """
     try:
         record: dict[str, Any] = {
@@ -36,6 +44,6 @@ def log_action(action: SecurityObject, verdict: Verdict) -> None:
         logger.info(json.dumps(record, default=str, ensure_ascii=False))
     except Exception:  # noqa: BLE001 — logging must never break execution
         try:
-            logger.warning('{"event": "interception_log_failed"}')
+            logger.warning(_LOG_FAILED_LINE)
         except Exception:  # noqa: BLE001, S110 — give up silently by design
             pass

@@ -49,10 +49,10 @@ async def decide_and_execute(
     """
     action: SecurityObject = normalize(tool_name, arguments)
     # --- decision hook (Feature 2 wires the engine in here) -----------------
-    # verdict = PASS (pass-through stub); `action` is what the engine judges.
+    verdict = Verdict.PASS  # pass-through stub; F2 replaces this with the engine result
     # ------------------------------------------------------------------------
     # Record every intercepted action (best-effort; never blocks execution).
-    log_action(action, Verdict.PASS)
+    log_action(action, verdict)
     try:
         return await downstream.call_tool(tool_name, arguments or {})
     except Exception as exc:  # noqa: BLE001 — fail closed on ANY failure mode
