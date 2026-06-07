@@ -26,4 +26,4 @@ def test_policy_core_packages_import_cleanly():
         "doberman.roles, doberman.storage; "
         "assert 'doberman.proxy' not in sys.modules"
     )
-    subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=60)  # noqa: S603

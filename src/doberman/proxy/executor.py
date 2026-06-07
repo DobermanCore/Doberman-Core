@@ -50,4 +50,8 @@ async def decide_and_execute(
     except Exception as exc:  # noqa: BLE001 — fail closed on ANY failure mode
         # Never re-raise into the serving path and never echo arguments:
         # the agent gets a generic denial carrying a stable reason code.
+        # Deliberately `Exception`, not `BaseException`: cancellation
+        # (asyncio.CancelledError) and interpreter shutdown must propagate —
+        # swallowing them would break structured concurrency, and they carry
+        # no payload to leak.
         return _denied_result(ReasonCode.downstream_error, type(exc).__name__)

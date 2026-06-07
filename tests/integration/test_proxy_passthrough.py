@@ -1,8 +1,11 @@
 """Slice 1.2 — integration tests for the pass-through MCP proxy chokepoint."""
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import NoReturn
 
 import pytest
+from mcp.client.session import ClientSession
 from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import CallToolResult
@@ -13,7 +16,7 @@ from tests.fixtures.fake_tool_server import KNOWN_TOOL_NAMES, FakeToolServer
 
 
 @asynccontextmanager
-async def proxied_session():
+async def proxied_session() -> AsyncIterator[tuple[FakeToolServer, ClientSession]]:
     """fake downstream <- doberman proxy <- agent-side client session."""
     fake = FakeToolServer()
     async with create_connected_server_and_client_session(fake.build()) as downstream:
@@ -25,10 +28,10 @@ async def proxied_session():
 class DeadSession:
     """Stands in for an unreachable downstream (every operation fails)."""
 
-    async def list_tools(self, *args, **kwargs):
+    async def list_tools(self, *args: object, **kwargs: object) -> NoReturn:
         raise ConnectionError("downstream unreachable")
 
-    async def call_tool(self, *args, **kwargs):
+    async def call_tool(self, *args: object, **kwargs: object) -> NoReturn:
         raise ConnectionError("downstream unreachable")
 
 
@@ -49,16 +52,22 @@ async def test_call_is_forwarded_and_recorded():
 async def test_unknown_tool_errors_and_nothing_recorded():
     async with proxied_session() as (fake, agent):
         result = await agent.call_tool("rm_rf_root", {})
+        # The downstream refuses the unknown tool; its error result is passed
+        # through (Doberman-side blocking of unknown tools is F2/F3 decision
+        # logic). The chokepoint property holds: nothing was executed.
         assert result.isError
         assert fake.calls == []
 
 
-async def test_downstream_unreachable_fails_closed():
+async def test_downstream_unreachable_fails_closed_and_sanitized():
     proxy = build_proxy_server(DeadSession())  # type: ignore[arg-type]
     async with create_connected_server_and_client_session(proxy) as agent:
         # tools/list before the downstream is ready/reachable -> error, no hang.
-        with pytest.raises(McpError):
+        with pytest.raises(McpError) as excinfo:
             await agent.list_tools()
+        # Raw downstream error text must not reach the agent — class name only.
+        assert "downstream unreachable" not in str(excinfo.value)
+        assert "ConnectionError" in str(excinfo.value)
 
 
 async def test_downstream_fails_mid_session_fails_closed():
@@ -84,7 +93,6 @@ async def test_transport_error_yields_denied_result_with_reason_code():
 
 
 async def test_error_result_never_echoes_arguments():
-    proxy = build_proxy_server(DeadSession())  # type: ignore[arg-type]
     secret = "AKIA-FAKE-SECRET-VALUE-12345"  # noqa: S105 — synthetic test value
     result = await executor.decide_and_execute(
         DeadSession(),  # type: ignore[arg-type]
@@ -93,7 +101,18 @@ async def test_error_result_never_echoes_arguments():
     )
     assert result.isError
     assert secret not in result.content[0].text
-    assert proxy is not None
+
+
+async def test_end_to_end_error_never_echoes_arguments():
+    # Full agent->proxy->downstream path: a failing call carrying a synthetic
+    # secret must yield an agent-visible error that never contains it.
+    secret = "AKIA-FAKE-SECRET-VALUE-67890"  # noqa: S105 — synthetic test value
+    async with proxied_session() as (fake, agent):
+        fake.fail_mode = True
+        result = await agent.call_tool("fs_write", {"path": "x", "content": secret})
+        assert result.isError
+        assert all(secret not in block.text for block in result.content)
+        assert fake.calls == []
 
 
 async def test_every_call_routes_through_decide_and_execute(monkeypatch):
