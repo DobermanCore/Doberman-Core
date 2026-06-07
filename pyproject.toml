@@ -47,6 +47,8 @@ source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "dober
 forbidden_modules = ["doberman.proxy"]
 
 # Cross-repo boundary: the public core must never import the private enterprise package.
+# NOTE: defense-in-depth only — enterprise is never installed in core CI, so this contract
+# is trivially kept there; the CI "standalone guarantee" step is the operative guard.
 [[tool.importlinter.contracts]]
 name = "Public core must not depend on the private enterprise package"
 type = "forbidden"
