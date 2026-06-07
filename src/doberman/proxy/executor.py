@@ -11,20 +11,24 @@ error result, never a silent success or a bypass.
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, TextContent
 
-from doberman.models import ReasonCode
+from doberman.models import ReasonCode, SecurityObject
+from doberman.proxy.normalize import normalize
 
 _DENIED_TEMPLATE = (
-    "doberman: downstream call failed; action denied (reason: {reason}; error class: {error_class})"
+    "doberman: downstream call failed; action denied "
+    "(reason: {reason}; error class: {error_class}; action id: {action_id})"
 )
 
 
-def _denied_result(reason: ReasonCode, error_class: str) -> CallToolResult:
+def _denied_result(reason: ReasonCode, error_class: str, action_id: str) -> CallToolResult:
     """Build a fail-closed error result (no payload or argument echo)."""
     return CallToolResult(
         content=[
             TextContent(
                 type="text",
-                text=_DENIED_TEMPLATE.format(reason=reason, error_class=error_class),
+                text=_DENIED_TEMPLATE.format(
+                    reason=reason, error_class=error_class, action_id=action_id
+                ),
             )
         ],
         isError=True,
@@ -42,16 +46,18 @@ async def decide_and_execute(
     stub — every call is forwarded — but the routing invariant (exactly one
     path, through this function) and the fail-closed error handling are real.
     """
+    action: SecurityObject = normalize(tool_name, arguments)
     # --- decision hook (Feature 2 wires the engine in here) -----------------
-    # verdict = PASS (pass-through stub)
+    # verdict = PASS (pass-through stub); `action` is what the engine judges.
     # ------------------------------------------------------------------------
     try:
         return await downstream.call_tool(tool_name, arguments or {})
     except Exception as exc:  # noqa: BLE001 — fail closed on ANY failure mode
         # Never re-raise into the serving path and never echo arguments:
-        # the agent gets a generic denial carrying a stable reason code.
+        # the agent gets a generic denial carrying a stable reason code and
+        # the action id for correlation with the interception log.
         # Deliberately `Exception`, not `BaseException`: cancellation
         # (asyncio.CancelledError) and interpreter shutdown must propagate —
         # swallowing them would break structured concurrency, and they carry
         # no payload to leak.
-        return _denied_result(ReasonCode.downstream_error, type(exc).__name__)
+        return _denied_result(ReasonCode.downstream_error, type(exc).__name__, action.id)
