@@ -41,6 +41,7 @@ from doberman.models import (
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
 from doberman.storage.db import active_elevations, grant_elevation, mark_used
+from doberman.storage.log import record_decision
 
 _engine_logger = logging.getLogger("doberman.proxy.engine")
 
@@ -184,6 +185,30 @@ async def _consume_single_use(action: SecurityObject, grants: tuple, now: dateti
         await mark_used(REPO_ROOT, grant.id)
 
 
+async def _persist(
+    decision: Decision,
+    action: SecurityObject,
+    *,
+    auth_result: str | None = None,
+    elevation_id: str | None = None,
+) -> None:
+    """Append one redacted row to the local decision log (best-effort).
+
+    Wrapped so that even a catastrophic logging failure can never alter, block,
+    or crash a decision that has already been enforced (logging is observational).
+    """
+    try:
+        await record_decision(
+            decision,
+            action,
+            repo_root=REPO_ROOT,
+            auth_result=auth_result,
+            elevation_id=elevation_id,
+        )
+    except Exception:  # noqa: BLE001 — logging must never break the execution path
+        _engine_logger.warning("decision log persist failed (action %s); continuing", action.id)
+
+
 async def _handle_auth(
     downstream: ClientSession,
     tool_name: str,
@@ -196,24 +221,29 @@ async def _handle_auth(
     auth_result = run_auth_challenge(decision, action)
     # Approval is bound to THIS action id — never honor a result for another call.
     if not auth_result.approved or auth_result.action_id != action.id:
+        await _persist(decision, action, auth_result="denied")
         return _verdict_result(decision)
 
     # A satisfied role elevation grants a narrow, temporary permission first.
+    elevation_id: str | None = None
     if auth_result.tier is AuthTier.role_elevation:
         scope = scope_for_target(action.target, root=REPO_ROOT)
         if scope is None:
             # No narrow scope can be formed (non-path / escapes root): refuse.
+            await _persist(decision, action, auth_result="denied")
             return _verdict_result(decision)
         try:
-            await grant_elevation(
+            grant = await grant_elevation(
                 REPO_ROOT,
                 scope,
                 action.id,
                 now=now,
                 single_use=_is_destructive(action),
             )
+            elevation_id = grant.id
         except Exception:  # noqa: BLE001 — a failed grant must fail closed
             _engine_logger.warning("elevation grant failed (action %s); denying", action.id)
+            await _persist(decision, action, auth_result="denied")
             return _verdict_result(decision)
 
     # TOCTOU guard: re-decide with refreshed elevations. A change to BLOCK must
@@ -222,11 +252,13 @@ async def _handle_auth(
     redecision = _safe_decide(action, _build_ctx(arguments, grants))
     if redecision.final_verdict is Verdict.BLOCK:
         log_action(action, redecision.final_verdict)
+        await _persist(redecision, action, auth_result="approved")
         return _verdict_result(redecision)
 
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _consume_single_use(action, grants, now)
+    await _persist(decision, action, auth_result="approved", elevation_id=elevation_id)
     return result
 
 
@@ -254,6 +286,7 @@ async def decide_and_execute(
     log_action(action, decision.final_verdict)
 
     if decision.final_verdict is Verdict.BLOCK:
+        await _persist(decision, action)
         return _verdict_result(decision)
 
     if decision.final_verdict is Verdict.AUTH:
@@ -263,4 +296,5 @@ async def decide_and_execute(
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _consume_single_use(action, grants, now)
+    await _persist(decision, action)
     return result

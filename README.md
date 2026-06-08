@@ -18,7 +18,7 @@
 Doberman is a security layer for AI coding agents. It sits **on the tool-execution path** — the agent talks to Doberman, and Doberman talks to the real tools (filesystem, shell, git, network, package managers) over the [Model Context Protocol](https://modelcontextprotocol.io). Every meaningful action is intercepted, normalized into a redacted, structured **security object**, and run through a risk-based decision engine that returns one of three verdicts — **allow**, **authenticate**, or **block** — before the action is ever forwarded. The guiding principle is simple: *if Doberman isn't on the execution path, it's advisory, not protective.* Doberman is built to **fail closed** (any error or uncertainty denies the action) and to be **raise-only** (guardrails may automatically tighten, never silently loosen), so an agent can never reach a tool around it and a buggy rule can never make the system less safe.
 
 > ### Project status
-> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), the **objective guardrail** (Feature 3 — basic rules + the plugin seam), **agent role policy** (Feature 4 — role boundaries + the policy-source seam), **capability discovery** (Feature 5 — `doberman scan`), **policy checklist + strength modes** (Feature 6), and **tiered authentication** (Feature 7 — action-specific confirm/2FA challenges, narrow/temporary role elevation, and the auth-provider seam) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), turns an `AUTH` verdict into a real, action-bound challenge that releases the call only on success, escalates actions that cross the agent's role boundary, reports the agent's blast radius, and offers one Light/Balanced/Strict/Paranoid dial over good defaults. The subjective guardrail and the remaining surfaces around the engine (audit log, drift defense) arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
+> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), the **objective guardrail** (Feature 3 — basic rules + the plugin seam), **agent role policy** (Feature 4 — role boundaries + the policy-source seam), **capability discovery** (Feature 5 — `doberman scan`), **policy checklist + strength modes** (Feature 6), **tiered authentication** (Feature 7 — action-specific confirm/2FA challenges, narrow/temporary role elevation, and the auth-provider seam), and the **local decision log & audit** (Feature 8 — an append-only, redacted SQLite log with `doberman log`/`memory` and the audit-sink seam) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), turns an `AUTH` verdict into a real, action-bound challenge that releases the call only on success, escalates actions that cross the agent's role boundary, reports the agent's blast radius, offers one Light/Balanced/Strict/Paranoid dial over good defaults, and records every decision to an explainable, privacy-preserving local audit trail. The subjective guardrail and the drift/poisoning defense arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
 
 ---
 
@@ -55,7 +55,7 @@ Doberman is a security layer for AI coding agents. It sits **on the tool-executi
 2. **Normalize** — each call becomes an immutable, redacted `SecurityObject` (action type, target, risk, redacted arguments, fingerprints). Normalization never raises; on bad input it produces a conservative high-risk object.
 3. **Decide** — the engine runs the objective guardrail first, then (if it passes) the subjective guardrail, combining results **raise-only** into a single explainable `Decision`.
 4. **Enforce** — `PASS` forwards the call; `AUTH` runs a tiered, action-specific challenge (confirm / 2FA / role elevation) and forwards only on success — after a TOCTOU re-decision — otherwise nothing is forwarded; `BLOCK` returns a "blocked by policy" error and the call is **never** forwarded. Any engine failure is itself a `BLOCK`.
-5. **Log** — every action is recorded as one redacted JSON line, correlated by a stable action id.
+5. **Log** — every action is recorded as one redacted JSON line *and* one append-only, redacted row in a local SQLite decision log (path **class**, reason codes, verdict, auth result — never a raw target, argument, or secret), correlated by a stable action id and fanned out to any registered audit sinks.
 
 ---
 
@@ -178,6 +178,15 @@ Turns an `AUTH` verdict into a real, **action-bound** challenge whose strength s
 - **Release after auth** — approval is bound to **one action id** (no replay), the action is **re-decided** before forwarding (TOCTOU — a flip to `BLOCK` still blocks), and only then does the call reach the tool.
 - **`AuthProvider` seam (extension point)** — alternative backends (SSO/RBAC, hosted/push approvals) register via the `doberman.auth_providers` entry-point group and replace the local provider without core importing them. A provider can only **grant or deny** — never change the verdict or required tier — and if it fails, the action is denied. With nothing installed, the local provider runs and behavior is unchanged.
 
+### Feature 8 — Local Decision Log & Audit · `v0.8.0` _(in review)_
+
+Persists every decision to a **local, append-only, redacted** audit trail — the explainability and privacy substrate that learning and drift defense build on — plus the seam for hosted/centralized audit.
+
+- **Local SQLite store** — `.doberman/doberman.db` (`0600`, never committed) holds the `decisions` log, a `secret_fingerprints` store, and the (initially empty) `baseline_counts`/`policy_changes` tables for Features 9–10. The schema is **structurally redaction-safe**: there is **no column** that can hold a raw secret, a raw path-to-a-secret, a full file, or an unredacted prompt — only a path **class**, reason codes, verdicts, the auth result, and ids. Secrets appear only as HMAC fingerprints.
+- **Append-only writer** — one redacted row per decision (the writer only ever `INSERT`s into `decisions`); writing is best-effort and isolated, so a storage failure can never alter, block, or crash a decision that has already been enforced.
+- **Plain-language views** — `doberman log [--last N]` shows the recent decision history (verdict, action type, path class, reasons, auth result); `doberman memory` shows a redaction-safe profile — verdict mix, most-touched path classes, and how many distinct secrets have been *seen* (a count only, never a value).
+- **`AuditSink` seam (extension point)** — additional destinations (centralized audit, hosted monitoring, SIEM export) register via the `doberman.audit_sinks` entry-point group and receive **only the already-redacted record** the local log stores. A sink can never request raw data, and a slow or failing sink is isolated — it can never block or alter a decision. With nothing installed, only the local log runs.
+
 ---
 
 ## Design invariants
@@ -206,6 +215,13 @@ The version line maps to the development roadmap:
 ## Changelog
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+### `v0.8.0` — Local Decision Log & Audit — _Unreleased (in review)_
+
+- **Slice 8.1** — local SQLite schema + additive migrations (`decisions`, `secret_fingerprints`, `baseline_counts`, `policy_changes`, `elevations`; `0600`; no secret-bearing columns).
+- **Slice 8.2** — append-only, redacted decision-log writer wired into the proxy (one row per decision; best-effort, never alters a verdict).
+- **Slice 8.3** — `doberman log` and `doberman memory` views (classes/habits and counts only; no fingerprint values or raw secrets).
+- **Slice 8.4** — the pluggable `AuditSink` interface (the enterprise seam; discovered via `doberman.audit_sinks`; sinks receive redacted records only and are isolated).
 
 ### `v0.7.0` — Tiered Authentication & Role Elevation — _Unreleased (in review)_
 
@@ -271,7 +287,6 @@ Upcoming versions add the guardrail *content* and the surfaces around the engine
 
 | Version | Theme |
 |---------|-------|
-| `v0.8.0` | **Decision log & audit** — local redacted decision log + storage interface. |
 | `v0.9.0` | **Subjective guardrail** — abnormality interface + a basic local baseline. |
 | `v0.10.0` | **Policy-drift & poisoning defense** — strengthen/weaken classification, gated approvals, append-only ledger. |
 

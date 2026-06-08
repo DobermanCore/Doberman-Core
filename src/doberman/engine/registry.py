@@ -40,6 +40,8 @@ DETECTOR_GROUP = "doberman.detectors"
 POLICY_SOURCE_GROUP = "doberman.policy_sources"
 #: Auth providers (Feature 7.6) register here; resolved by the auth layer.
 AUTH_PROVIDER_GROUP = "doberman.auth_providers"
+#: Audit sinks (Feature 8.4) register here; resolved by the storage layer.
+AUDIT_SINK_GROUP = "doberman.audit_sinks"
 
 
 def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
@@ -187,3 +189,34 @@ def discover_auth_providers() -> list[object]:
             continue
         providers.append(candidate)
     return providers
+
+
+def discover_audit_sinks() -> list[object]:
+    """Discover registered audit sinks (Feature 8.4, group ``doberman.audit_sinks``).
+
+    Loaded defensively like rules/providers: an import/constructor failure, or an
+    object that is not sink-shaped (no callable ``emit``), is logged and skipped.
+    Returns ``[]`` when nothing is installed — only the local decision log runs.
+    Core never imports a sink by name.
+    """
+    # Local import avoids an engine<->storage import cycle at module load.
+    from doberman.storage.sinks import _looks_like_audit_sink
+
+    sinks: list[object] = []
+    seen: set[str] = set()
+    for entry_point in _iter_entry_points(AUDIT_SINK_GROUP):
+        key = f"{AUDIT_SINK_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = _load_and_construct(entry_point)
+        if candidate is None:
+            continue
+        if not _looks_like_audit_sink(candidate):
+            logger.warning(
+                "skipping audit sink %r: not sink-shaped",
+                getattr(entry_point, "name", "?"),
+            )
+            continue
+        sinks.append(candidate)
+    return sinks

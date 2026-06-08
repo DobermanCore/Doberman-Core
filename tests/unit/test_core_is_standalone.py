@@ -13,7 +13,7 @@ def test_core_imports_with_no_enterprise_installed():
 def test_version_is_exposed():
     import doberman
 
-    assert doberman.__version__ == "0.7.0"
+    assert doberman.__version__ == "0.8.0"
 
 
 def test_policy_core_packages_import_cleanly():
@@ -48,6 +48,14 @@ def test_default_auth_provider_is_local_with_no_enterprise():
 
     assert discover_auth_providers() == []
     assert isinstance(active_provider(), LocalAuthProvider)
+
+
+def test_no_audit_sinks_registered_by_default():
+    # Slice 8.4 standalone guarantee: with no enterprise package installed, the
+    # audit-sink registry discovers nothing — only the local decision log runs.
+    from doberman.engine.registry import discover_audit_sinks
+
+    assert discover_audit_sinks() == []
 
 
 def test_objective_guardrail_runs_with_only_builtins():
