@@ -16,9 +16,8 @@ dist/
 build/
 *.egg-info/
 
-# Operating manual + implementation plans: local-only, never published
-CLAUDE.md
-AGENTS.md
+# Development plans: local-only, never published.
+# (The operating manual — CLAUDE.md / AGENTS.md — is published; these detailed plans are not.)
 doberman_core_plan.md
 doberman_enterprise_plan.md
 doberman_implementation_plan.md
