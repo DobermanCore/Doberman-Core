@@ -41,10 +41,10 @@ Doberman is a security layer for AI coding agents. It sits **on the tool-executi
 ## How it works
 
 ```
-                ┌─────────────────────── Doberman ───────────────────────┐
+                ┌─────────────────────── Doberman ────────────────────────┐
    coding       │                                                         │     real
-   agent  ──────┼──▶  normalize  ──▶  decision engine  ──▶  enforce  ─────┼──▶  tool
-  (MCP client)  │   (SecurityObject)   (PASS/AUTH/BLOCK)    (chokepoint)   │   servers
+   agent  ──────┼──▶  normalize  ──▶  decision engine  ──▶  enforce ────┼──▶  tool
+  (MCP client)  │   (SecurityObject)   (PASS/AUTH/BLOCK)    (chokepoint)  │    servers
                 │                                              │          │
                 │                                  redacted interception  │
                 │                                       log (JSON)        │
