@@ -157,6 +157,9 @@ class EvalContext(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     role: RoleDefinition | None = None
+    #: Active security strength mode (F6): "light"/"balanced"/"strict"/"paranoid".
+    #: Tunes step-up thresholds only; the hard-block floor is mode-independent.
+    mode: str = "balanced"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

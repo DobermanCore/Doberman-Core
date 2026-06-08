@@ -42,6 +42,7 @@ from doberman.models import (
     SecurityObject,
     Verdict,
 )
+from doberman.policy.modes import thresholds_for
 
 #: Default bulk-operation threshold: deleting/touching this many paths in one
 #: command steps up to AUTH. Overridable (F6 wires this from policy/mode).
@@ -268,10 +269,12 @@ class DestructiveCommandRule:
     def __init__(
         self,
         protected_branches: Iterable[str] = DEFAULT_PROTECTED_BRANCHES,
-        bulk_threshold: int = DEFAULT_BULK_THRESHOLD,
+        bulk_threshold: int | None = None,
     ) -> None:
         self._protected = tuple(protected_branches)
-        self._bulk_threshold = bulk_threshold
+        # None → derive the bulk threshold from the active security mode (F6);
+        # an explicit value overrides the mode (used by tests).
+        self._bulk_threshold_override = bulk_threshold
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         # Only relevant to shell/git actions. A non-command action abstains.
@@ -282,9 +285,12 @@ class DestructiveCommandRule:
         if not command or not command.strip():
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
-        return self._classify_line(command)
+        threshold = self._bulk_threshold_override
+        if threshold is None:
+            threshold = thresholds_for(getattr(ctx, "mode", "balanced")).bulk_delete_threshold
+        return self._classify_line(command, threshold)
 
-    def _classify_line(self, command: str) -> GuardrailResult:
+    def _classify_line(self, command: str, bulk_threshold: int) -> GuardrailResult:
         worst: GuardrailResult = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
         saw_unparseable = False
 
@@ -321,7 +327,7 @@ class DestructiveCommandRule:
                 pending.extend(_payload_segments(tokens))
                 continue
 
-            verdict = _segment_verdict(tokens, self._protected, self._bulk_threshold)
+            verdict = _segment_verdict(tokens, self._protected, bulk_threshold)
             if verdict is not None:
                 worst = _max_result(worst, verdict)
                 if worst.verdict is Verdict.BLOCK:
