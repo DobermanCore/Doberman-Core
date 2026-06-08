@@ -18,7 +18,7 @@
 Doberman is a security layer for AI coding agents. It sits **on the tool-execution path** — the agent talks to Doberman, and Doberman talks to the real tools (filesystem, shell, git, network, package managers) over the [Model Context Protocol](https://modelcontextprotocol.io). Every meaningful action is intercepted, normalized into a redacted, structured **security object**, and run through a risk-based decision engine that returns one of three verdicts — **allow**, **authenticate**, or **block** — before the action is ever forwarded. The guiding principle is simple: *if Doberman isn't on the execution path, it's advisory, not protective.* Doberman is built to **fail closed** (any error or uncertainty denies the action) and to be **raise-only** (guardrails may automatically tighten, never silently loosen), so an agent can never reach a tool around it and a buggy rule can never make the system less safe.
 
 > ### Project status
-> **Alpha — pre-1.0, API unstable.** Features 1–9 are implemented: the interception layer (1), the decision engine (2), the **objective guardrail** (3 — basic rules + the plugin seam), **agent role policy** (4 — role boundaries + the policy-source seam), **capability discovery** (5 — `doberman scan`), **policy checklist + strength modes** (6), **tiered authentication** (7 — action-specific confirm/2FA challenges, narrow/temporary role elevation, and the auth-provider seam), the **local decision log & audit** (8 — an append-only, redacted SQLite log with `doberman log`/`memory` and the audit-sink seam), and the **subjective guardrail** (9 — a local workflow baseline that escalates *unusual-for-you* actions, plus the detector seam). Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), turns an `AUTH` verdict into a real, action-bound challenge that releases the call only on success, escalates actions that cross the agent's role boundary **or** depart from its learned workflow, reports the agent's blast radius, offers one Light/Balanced/Strict/Paranoid dial over good defaults, and records every decision to an explainable, privacy-preserving local audit trail. The policy-drift & poisoning defense (Feature 10) arrives next (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
+> **Alpha — pre-1.0, API unstable.** The **complete MVP core (Features 1–10)** is implemented: the interception layer (1), the decision engine (2), the **objective guardrail** (3 — basic rules + the plugin seam), **agent role policy** (4 — role boundaries + the policy-source seam), **capability discovery** (5 — `doberman scan`), **policy checklist + strength modes** (6), **tiered authentication** (7 — action-specific confirm/2FA challenges, narrow/temporary role elevation, and the auth-provider seam), the **local decision log & audit** (8 — an append-only, redacted SQLite log with `doberman log`/`memory` and the audit-sink seam), the **subjective guardrail** (9 — a local workflow baseline that escalates *unusual-for-you* actions, plus the detector seam), and the **policy-drift & poisoning defense** (10 — strengthen/weaken classification, a 2FA-gated weakening chokepoint with a visible diff, an append-only change ledger, and the drift-observer seam). Doberman blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), turns an `AUTH` verdict into a real, action-bound challenge that releases the call only on success, escalates actions that cross the agent's role boundary **or** depart from its learned workflow, reports the agent's blast radius, offers one Light/Balanced/Strict/Paranoid dial over good defaults, records every decision to an explainable, privacy-preserving local audit trail, and ensures protection can only ever be *loosened* through an explicit, audited, 2FA-gated human approval. This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition (see the [Roadmap](#roadmap)).
 
 ---
 
@@ -196,6 +196,15 @@ The *second* guardrail: it learns what is normal for this repo/role/workflow and
 - **`SubjectiveGuardrail` + mode awareness** — maps the score to `PASS`/`AUTH` by the active mode's sensitivity (Strict/Paranoid step up sooner; **Light disables** the abnormality step-up). It is **raise-only** and **cannot hard-block** (the execution rule clamps a subjective block to `AUTH`) — escalation, not paternalism — so it can never weaken an objective verdict.
 - **`Detector` seam (extension point)** — advanced/behavioral (UEBA-style) detectors register via the `doberman.detectors` entry-point group and run in the subjective layer, bound by the same raise-only discipline and isolated on failure. With nothing installed, only the baseline signal runs.
 
+### Feature 10 — Policy-Drift Detection & Poisoning Defense · `v0.10.0` _(in review)_
+
+Makes the **raise-only** invariant enforceable over time: learning and edits may tighten freely, but any **weakening** of protection must be deliberate — classified, gated, and recorded — so protection cannot slowly erode (the policy-poisoning attack).
+
+- **Strengthen/weaken classifier** — `classify_change(before, after)` labels a proposed change by protection rank. **Ambiguous or mixed changes classify as *weaken*** (fail safe), so a disguised weakening cannot slip through as "neutral".
+- **2FA-gated weakening chokepoint** — `apply_change(...)` is the single path for a policy change: a weakening renders a Before/After **diff** and requires a **`two_factor`** confirmation, and is applied **only on approval**; strengthening/neutral changes apply automatically. A denial leaves protection unchanged.
+- **Append-only change ledger** — every change — **including denied weakening attempts** (the attack signal) — is recorded immutably in the `policy_changes` table; `doberman policy-history` prints the full time-ordered history (rule, before→after, classification, how it was approved).
+- **`DriftObserver` seam (extension point)** — org-wide drift monitoring / compliance tooling registers via the `doberman.drift_observers` entry-point group and receives **redacted** change events. An observer is purely observational — it can **never** approve, suppress, or alter a weakening (the 2FA gate is core and authoritative) — and a failing observer is isolated. With nothing installed, the gate and local ledger are unaffected.
+
 ---
 
 ## Design invariants
@@ -224,6 +233,13 @@ The version line maps to the development roadmap:
 ## Changelog
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+### `v0.10.0` — Policy-Drift Detection & Poisoning Defense — _Unreleased (in review)_
+
+- **Slice 10.1** — strengthen/weaken/neutral change classifier (ambiguous & mixed → weaken, fail safe).
+- **Slice 10.2** — `apply_change` chokepoint: a weakening requires 2FA + a rendered diff and applies only on approval; strengthen/neutral apply automatically.
+- **Slice 10.3** — append-only policy-change ledger + `doberman policy-history` (records applied changes **and** denied weakening attempts).
+- **Slice 10.4** — the pluggable `DriftObserver` interface (the enterprise seam; discovered via `doberman.drift_observers`; redacted events; can never override the gate).
 
 ### `v0.9.0` — Subjective Guardrail & Workflow Baseline — _Unreleased (in review)_
 
@@ -298,11 +314,16 @@ This project keeps a changelog in the spirit of [Keep a Changelog](https://keepa
 
 ## Roadmap
 
-Upcoming versions add the guardrail *content* and the surfaces around the engine (capability-level summary):
+The **MVP core (Features 1–10) is feature-complete** and in review. Beyond it, the planned (still open-source) directions are:
 
-| Version | Theme |
-|---------|-------|
-| `v0.10.0` | **Policy-drift & poisoning defense** — strengthen/weaken classification, gated approvals, append-only ledger. |
+| Theme | What |
+|-------|------|
+| Stronger auth tiers | passkeys / WebAuthn as a tier above TOTP. |
+| Async / remote challenges | a non-blocking approval model for hosted/remote humans. |
+| More adapters | Cursor / Claude-Code / OpenAI / LangChain / terminal / browser against the decoupled core. |
+| Hardening | signed (cryptographically tamper-evident) append-only logs; policy-as-code checked into the repo; a local web dashboard. |
+
+Advanced/hosted capabilities — premium detection, centralized audit, SSO/RBAC, org policy management, compliance — live in a separate commercial edition that attaches through the core extension points (`doberman.rules` / `detectors` / `auth_providers` / `audit_sinks` / `policy_sources` / `drift_observers`) **without core ever depending on it**.
 
 ---
 
