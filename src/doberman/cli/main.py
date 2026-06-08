@@ -8,9 +8,12 @@ lists currently-active elevations.
 
 import asyncio
 import json
+import logging
+import sys
 from datetime import datetime, timezone
 
 import typer
+from mcp import StdioServerParameters
 
 from doberman import __version__
 from doberman.auth import totp
@@ -19,6 +22,7 @@ from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, r
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import read_policy_changes
 from doberman.policy.modes import SecurityMode
+from doberman.proxy.serve import serve_stdio
 from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
 
@@ -30,6 +34,66 @@ app = typer.Typer(
 
 twofa_app = typer.Typer(help="Two-factor (TOTP) enrollment.", no_args_is_help=True)
 app.add_typer(twofa_app, name="2fa")
+
+
+def _configure_stderr_logging(level: int = logging.INFO) -> None:
+    """Send Doberman logs to STDERR only.
+
+    In ``serve`` mode this process's stdout IS the agent's MCP channel, so any log written
+    there would corrupt the protocol. Pin every ``doberman.*`` logger to stderr and stop
+    propagation, and — defense in depth — strip any stdout handler from the root logger so a
+    library (mcp/asyncio) or host-configured logger cannot leak a record onto stdout either.
+    """
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("doberman: %(message)s"))
+    doberman_logger = logging.getLogger("doberman")
+    for existing in doberman_logger.handlers[:]:
+        doberman_logger.removeHandler(existing)
+    doberman_logger.addHandler(handler)
+    doberman_logger.setLevel(level)
+    doberman_logger.propagate = False
+
+    root = logging.getLogger()
+    for existing in root.handlers[:]:
+        if (
+            isinstance(existing, logging.StreamHandler)
+            and getattr(existing, "stream", None) is sys.stdout
+        ):
+            root.removeHandler(existing)
+    if not root.handlers:  # keep a stderr fallback so non-doberman logs aren't silently dropped
+        root.addHandler(logging.StreamHandler(sys.stderr))
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    help="Run Doberman as an MCP proxy in front of a downstream MCP tool server.",
+)
+def serve(
+    ctx: typer.Context,
+    path: str = typer.Option(
+        ".", "--path", "-p", help="Repo root whose .doberman/ policy governs decisions."
+    ),
+) -> None:
+    """Run Doberman as an MCP proxy in front of a downstream MCP server.
+
+    Everything after `--` is the downstream server command, for example:
+
+        doberman serve -- npx -y @modelcontextprotocol/server-filesystem /path/to/repo
+
+    Point your agent's MCP config at this instead of the real server. AUTH prompts appear on
+    your terminal; with no terminal attached (headless) an AUTH action is denied (fail closed).
+    """
+    downstream_argv = list(ctx.args)
+    if not downstream_argv:
+        typer.echo("error: provide the downstream server command after `--`", err=True)
+        raise typer.Exit(code=2)
+    params = StdioServerParameters(command=downstream_argv[0], args=downstream_argv[1:])
+    _configure_stderr_logging()
+    try:
+        asyncio.run(serve_stdio(params, repo_root=path))
+    except Exception as exc:  # noqa: BLE001 — surface a clean stderr error, never a raw traceback
+        typer.echo(f"error: doberman serve failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
