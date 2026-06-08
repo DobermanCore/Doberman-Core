@@ -13,7 +13,7 @@ def test_core_imports_with_no_enterprise_installed():
 def test_version_is_exposed():
     import doberman
 
-    assert doberman.__version__ == "0.6.0"
+    assert doberman.__version__ == "0.7.0"
 
 
 def test_policy_core_packages_import_cleanly():
@@ -38,6 +38,16 @@ def test_default_plugin_registry_has_no_enterprise_plugins():
     assert plugins == []
     # And none of whatever (if anything) is installed comes from enterprise.
     assert all("enterprise" not in type(p).__module__ for p in plugins)
+
+
+def test_default_auth_provider_is_local_with_no_enterprise():
+    # Slice 7.6 standalone guarantee: with no enterprise package installed, the
+    # auth-provider registry discovers nothing and the local provider is active.
+    from doberman.auth.provider import LocalAuthProvider, active_provider
+    from doberman.engine.registry import discover_auth_providers
+
+    assert discover_auth_providers() == []
+    assert isinstance(active_provider(), LocalAuthProvider)
 
 
 def test_objective_guardrail_runs_with_only_builtins():

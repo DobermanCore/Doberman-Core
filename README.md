@@ -18,7 +18,7 @@
 Doberman is a security layer for AI coding agents. It sits **on the tool-execution path** — the agent talks to Doberman, and Doberman talks to the real tools (filesystem, shell, git, network, package managers) over the [Model Context Protocol](https://modelcontextprotocol.io). Every meaningful action is intercepted, normalized into a redacted, structured **security object**, and run through a risk-based decision engine that returns one of three verdicts — **allow**, **authenticate**, or **block** — before the action is ever forwarded. The guiding principle is simple: *if Doberman isn't on the execution path, it's advisory, not protective.* Doberman is built to **fail closed** (any error or uncertainty denies the action) and to be **raise-only** (guardrails may automatically tighten, never silently loosen), so an agent can never reach a tool around it and a buggy rule can never make the system less safe.
 
 > ### Project status
-> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), the **objective guardrail** (Feature 3 — basic rules + the plugin seam), **agent role policy** (Feature 4 — role boundaries + the policy-source seam), **capability discovery** (Feature 5 — `doberman scan`), and **policy checklist + strength modes** (Feature 6) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), steps up authentication on sensitive or unknown actions, escalates actions that cross the agent's role boundary, reports the agent's blast radius, and offers one Light/Balanced/Strict/Paranoid dial over good defaults. The subjective guardrail and the remaining surfaces around the engine (real authentication, audit log) arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
+> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), the **objective guardrail** (Feature 3 — basic rules + the plugin seam), **agent role policy** (Feature 4 — role boundaries + the policy-source seam), **capability discovery** (Feature 5 — `doberman scan`), **policy checklist + strength modes** (Feature 6), and **tiered authentication** (Feature 7 — action-specific confirm/2FA challenges, narrow/temporary role elevation, and the auth-provider seam) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), turns an `AUTH` verdict into a real, action-bound challenge that releases the call only on success, escalates actions that cross the agent's role boundary, reports the agent's blast radius, and offers one Light/Balanced/Strict/Paranoid dial over good defaults. The subjective guardrail and the remaining surfaces around the engine (audit log, drift defense) arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
 
 ---
 
@@ -54,7 +54,7 @@ Doberman is a security layer for AI coding agents. It sits **on the tool-executi
 1. **Intercept** — Doberman is an MCP *server* to the agent and an MCP *client* to the downstream tool servers. It re-exposes the downstream tools unchanged, so every `tools/call` flows through a single chokepoint.
 2. **Normalize** — each call becomes an immutable, redacted `SecurityObject` (action type, target, risk, redacted arguments, fingerprints). Normalization never raises; on bad input it produces a conservative high-risk object.
 3. **Decide** — the engine runs the objective guardrail first, then (if it passes) the subjective guardrail, combining results **raise-only** into a single explainable `Decision`.
-4. **Enforce** — `PASS` forwards the call; `AUTH` returns an "authentication required" error; `BLOCK` returns a "blocked by policy" error and the call is **never** forwarded. Any engine failure is itself a `BLOCK`.
+4. **Enforce** — `PASS` forwards the call; `AUTH` runs a tiered, action-specific challenge (confirm / 2FA / role elevation) and forwards only on success — after a TOCTOU re-decision — otherwise nothing is forwarded; `BLOCK` returns a "blocked by policy" error and the call is **never** forwarded. Any engine failure is itself a `BLOCK`.
 5. **Log** — every action is recorded as one redacted JSON line, correlated by a stable action id.
 
 ---
@@ -168,6 +168,16 @@ Good defaults as the product: a pre-checked policy generated from role + discove
 - **Strength modes** — `doberman mode <light|balanced|strict|paranoid>` (default **Balanced**) tunes step-up thresholds: stricter modes step up to AUTH sooner (e.g. the bulk-delete threshold drops from 100 → 25 → 10 → 3). Modes **only move step-ups** — the hard-block **floor is identical across every mode**, and even Light keeps all core BLOCKs. An unknown mode is rejected; a corrupt stored mode fails to the strictest.
 - **`doberman status`** — shows the active role, mode, and policy summary.
 
+### Feature 7 — Tiered Authentication & Role Elevation · `v0.7.0` _(in review)_
+
+Turns an `AUTH` verdict into a real, **action-bound** challenge whose strength scales with risk, and lets a satisfied role challenge grant a narrow, temporary permission — plus the seam for SSO/hosted approvals.
+
+- **Auth tiers** — `select_tier` derives one of `soft_confirm → local_auth → two_factor → role_elevation` from the **already-final** risk and reason codes (strongest-wins), so a sensitive delete demands 2FA while a minor unusual edit only needs a confirm. A hard `BLOCK` is never turned into a challenge.
+- **Action-specific challenge** — the prompt names the **exact** role, target, and reason ("approve THIS file", never a generic "enter 2FA"); any timeout, input error, or denial fails closed. TOTP 2FA (`doberman 2fa setup`) uses standard authenticator apps, with a ±1-step skew window, constant-time comparison, and a consecutive-failure rate limit; the secret is stored locally `0600` and never committed or logged.
+- **Narrow, temporary, single-use elevation** — a satisfied `role_elevation` grants permission for **one canonical path** (never `**`), time-limited (default 15 min), and **single-use for destructive scopes**. It satisfies only the role-boundary `AUTH` for that exact target — every other rule still runs, and it **never** relaxes a hard block. Elevations persist in a local SQLite store (`.doberman/doberman.db`, `0600`, never committed); `doberman status` lists them and `doberman revoke <id>` ends one early.
+- **Release after auth** — approval is bound to **one action id** (no replay), the action is **re-decided** before forwarding (TOCTOU — a flip to `BLOCK` still blocks), and only then does the call reach the tool.
+- **`AuthProvider` seam (extension point)** — alternative backends (SSO/RBAC, hosted/push approvals) register via the `doberman.auth_providers` entry-point group and replace the local provider without core importing them. A provider can only **grant or deny** — never change the verdict or required tier — and if it fails, the action is denied. With nothing installed, the local provider runs and behavior is unchanged.
+
 ---
 
 ## Design invariants
@@ -196,6 +206,15 @@ The version line maps to the development roadmap:
 ## Changelog
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+### `v0.7.0` — Tiered Authentication & Role Elevation — _Unreleased (in review)_
+
+- **Slice 7.1** — auth-tier selection from the final decision (risk + reasons, strongest-wins; a hard block never maps to a challenge).
+- **Slice 7.2** — TOTP 2FA (`doberman 2fa setup`; ±1-step skew, constant-time compare, failure rate-limit, `0600` secret, fail-closed when not enrolled).
+- **Slice 7.3** — the action-specific challenge (names the exact role/target/reason; timeout/error/denial → deny).
+- **Slice 7.4** — narrow/temporary/single-use role elevation persisted in local SQLite (`doberman status`/`revoke`; never lifts a hard block).
+- **Slice 7.5** — release after auth: approval bound to one action id, re-decided (TOCTOU) before forwarding.
+- **Slice 7.6** — the pluggable `AuthProvider` interface (the enterprise seam; discovered via `doberman.auth_providers`, defaulting to local; a provider can only grant or deny).
 
 ### `v0.6.0` — Policy Checklist & Security Strength Modes — _Unreleased (in review)_
 
@@ -252,7 +271,6 @@ Upcoming versions add the guardrail *content* and the surfaces around the engine
 
 | Version | Theme |
 |---------|-------|
-| `v0.7.0` | **Tiered authentication** — local confirmation, TOTP 2FA, narrow/temporary elevation. |
 | `v0.8.0` | **Decision log & audit** — local redacted decision log + storage interface. |
 | `v0.9.0` | **Subjective guardrail** — abnormality interface + a basic local baseline. |
 | `v0.10.0` | **Policy-drift & poisoning defense** — strengthen/weaken classification, gated approvals, append-only ledger. |

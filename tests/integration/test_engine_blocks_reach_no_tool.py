@@ -1,14 +1,33 @@
-"""Slice 2.4 — verdicts are enforced: a BLOCK means the tool NEVER runs."""
+"""Slice 2.4 — verdicts are enforced: a BLOCK means the tool NEVER runs.
+
+Feature 7 makes an ``AUTH`` run a challenge; these tests pin the challenge to a
+deterministic *denial* (no real stdin) so they keep asserting the F2 behavior:
+an un-approved AUTH forwards nothing.
+"""
 
 import json
 import logging
+from datetime import datetime, timezone
 
+from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.engine.decision_engine import StaticGuardrail
 from doberman.models import GuardrailResult, ReasonCode, Risk, Verdict
 from doberman.proxy import executor
 from doberman.proxy.interception_log import LOGGER_NAME
 
 from .test_proxy_passthrough import proxied_session
+
+
+def _deny_challenge(decision, action, *, prompter=None, at=None):
+    """A deterministic denied AuthResult (stands in for confirm/2FA failure)."""
+    return AuthResult(
+        approved=False,
+        tier=AuthTier.local_auth,
+        method="denied",
+        at=datetime.now(timezone.utc),
+        action_id=action.id,
+    )
+
 
 BLOCKING = StaticGuardrail(
     GuardrailResult(
@@ -60,6 +79,7 @@ async def test_block_returns_error_and_nothing_recorded(monkeypatch):
 
 async def test_auth_returns_error_and_nothing_recorded(monkeypatch):
     monkeypatch.setattr(executor, "DEFAULT_OBJECTIVE", AUTHING)
+    monkeypatch.setattr(executor, "run_auth_challenge", _deny_challenge)
     async with proxied_session() as (fake, agent):
         result = await agent.call_tool("shell_exec", {"command": "echo hi"})
         assert result.isError
@@ -84,6 +104,7 @@ async def test_engine_exception_fails_closed(monkeypatch):
 
 async def test_subjective_block_clamps_to_auth_end_to_end(monkeypatch):
     monkeypatch.setattr(executor, "DEFAULT_SUBJECTIVE", SUBJECTIVE_BLOCKING)
+    monkeypatch.setattr(executor, "run_auth_challenge", _deny_challenge)
     async with proxied_session() as (fake, agent):
         # A fetch to a TRUSTED host so the real objective guardrail (F3) PASSes
         # and the subjective guardrail actually runs (and is then clamped). With

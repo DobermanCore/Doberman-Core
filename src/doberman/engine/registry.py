@@ -38,6 +38,8 @@ RULE_GROUP = "doberman.rules"
 DETECTOR_GROUP = "doberman.detectors"
 #: Policy sources (Feature 4.4) register here; resolved by the policy layer.
 POLICY_SOURCE_GROUP = "doberman.policy_sources"
+#: Auth providers (Feature 7.6) register here; resolved by the auth layer.
+AUTH_PROVIDER_GROUP = "doberman.auth_providers"
 
 
 def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
@@ -153,3 +155,35 @@ def discover_policy_sources() -> list[object]:
             continue
         sources.append(candidate)
     return sources
+
+
+def discover_auth_providers() -> list[object]:
+    """Discover registered auth providers (Feature 7.6, group ``doberman.auth_providers``).
+
+    Loaded defensively like rules/sources: an import/constructor failure, or an
+    object that is not auth-provider-shaped (no callable ``authenticate``), is
+    logged and skipped. Returns ``[]`` when nothing is installed — the auth
+    layer then falls back to the built-in local provider. Core never imports a
+    provider by name.
+    """
+    # Local import avoids an engine<->auth import cycle at module load.
+    from doberman.auth.provider import _looks_like_auth_provider
+
+    providers: list[object] = []
+    seen: set[str] = set()
+    for entry_point in _iter_entry_points(AUTH_PROVIDER_GROUP):
+        key = f"{AUTH_PROVIDER_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = _load_and_construct(entry_point)
+        if candidate is None:
+            continue
+        if not _looks_like_auth_provider(candidate):
+            logger.warning(
+                "skipping auth provider %r: not auth-provider-shaped",
+                getattr(entry_point, "name", "?"),
+            )
+            continue
+        providers.append(candidate)
+    return providers

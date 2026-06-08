@@ -1,23 +1,32 @@
-"""The ``doberman`` CLI entry point (Feature 5).
+"""The ``doberman`` CLI entry point (Features 5–7).
 
-Currently exposes ``doberman scan`` — a read-only capability/risk-map report for
-the current repository. More commands (status, init, policy) arrive with later
-features.
+Exposes ``doberman scan`` (risk map), ``review`` / ``mode`` / ``status``
+(policy), and the Feature 7 auth surface: ``doberman 2fa setup`` (TOTP
+enrollment) and ``doberman revoke`` (revoke a role elevation). ``status`` also
+lists currently-active elevations.
 """
+
+import asyncio
+from datetime import datetime, timezone
 
 import typer
 
 from doberman import __version__
+from doberman.auth import totp
 from doberman.config import load_active_role, load_mode, load_policy, save_mode, save_policy
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.modes import SecurityMode
+from doberman.storage.db import active_elevations, revoke_elevation
 
 app = typer.Typer(
     help="Doberman — adaptive authorization layer for coding agents.",
     no_args_is_help=True,
     add_completion=False,
 )
+
+twofa_app = typer.Typer(help="Two-factor (TOTP) enrollment.", no_args_is_help=True)
+app.add_typer(twofa_app, name="2fa")
 
 
 @app.command()
@@ -102,6 +111,52 @@ def status(
     else:
         enabled = sum(1 for it in doc.items if it.enabled)
         typer.echo(f"Policy: {enabled}/{len(doc.items)} items enabled")
+
+    enrolled = "yes" if totp.is_enrolled() else "no (run `doberman 2fa setup`)"
+    typer.echo(f"2FA:    {enrolled}")
+
+    grants = asyncio.run(active_elevations(path, datetime.now(timezone.utc)))
+    if not grants:
+        typer.echo("Elevations: (none active)")
+    else:
+        typer.echo(f"Elevations: {len(grants)} active")
+        for grant in grants:
+            kind = "single-use" if grant.single_use else "reusable"
+            typer.echo(
+                f"  {grant.id}  {grant.scope_glob}  "
+                f"(expires {grant.expires_at.isoformat()}; {kind})"
+            )
+
+
+@twofa_app.command("setup")
+def twofa_setup(
+    force: bool = typer.Option(
+        False, "--force", help="Rotate an existing secret (invalidates the old one)."
+    ),
+) -> None:
+    """Enroll TOTP two-factor and print the provisioning URI for your authenticator."""
+    try:
+        uri = totp.enroll(force=force)
+    except RuntimeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("2FA enrolled. Add this to your authenticator app (or scan it as a QR):")
+    typer.echo(uri)
+    typer.echo("This secret is stored locally with owner-only permissions and is never committed.")
+
+
+@app.command()
+def revoke(
+    elevation_id: str = typer.Argument(..., help="Id of the elevation to revoke."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Revoke an active role elevation by id (see `doberman status`)."""
+    revoked = asyncio.run(revoke_elevation(path, elevation_id))
+    if revoked:
+        typer.echo(f"revoked elevation {elevation_id}")
+    else:
+        typer.echo(f"no elevation with id {elevation_id}", err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command()
