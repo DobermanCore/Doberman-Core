@@ -13,7 +13,7 @@ def test_core_imports_with_no_enterprise_installed():
 def test_version_is_exposed():
     import doberman
 
-    assert doberman.__version__ == "0.3.0"
+    assert doberman.__version__ == "0.4.0"
 
 
 def test_policy_core_packages_import_cleanly():

@@ -18,7 +18,7 @@
 Doberman is a security layer for AI coding agents. It sits **on the tool-execution path** — the agent talks to Doberman, and Doberman talks to the real tools (filesystem, shell, git, network, package managers) over the [Model Context Protocol](https://modelcontextprotocol.io). Every meaningful action is intercepted, normalized into a redacted, structured **security object**, and run through a risk-based decision engine that returns one of three verdicts — **allow**, **authenticate**, or **block** — before the action is ever forwarded. The guiding principle is simple: *if Doberman isn't on the execution path, it's advisory, not protective.* Doberman is built to **fail closed** (any error or uncertainty denies the action) and to be **raise-only** (guardrails may automatically tighten, never silently loosen), so an agent can never reach a tool around it and a buggy rule can never make the system less safe.
 
 > ### Project status
-> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), and the **objective guardrail** (Feature 3 — basic rules + the plugin seam) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands) and steps up authentication on sensitive or unknown actions. The subjective guardrail and roles arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
+> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), the **objective guardrail** (Feature 3 — basic rules + the plugin seam), and **agent role policy** (Feature 4 — role boundaries + the policy-source seam) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), steps up authentication on sensitive or unknown actions, and escalates actions that cross the agent's role boundary. The subjective guardrail and the surfaces around the engine (capability scan, strength modes, real authentication, audit log) arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
 
 ---
 
@@ -143,6 +143,15 @@ The deterministic, conservative rules for universal danger — the guardrail tha
 - **Plugin registry (extension point)** — additional rules/detectors are discovered via Python entry points (`doberman.rules`, `doberman.detectors`) and run alongside the built-ins. Plugins are bound by the same raise-only discipline (they can only *add* risk) and are loaded defensively — a misbehaving plugin is isolated, never crashes core, and core never imports any plugin by name. With nothing installed, only the built-ins run.
 - **Redaction throughout** — no rule ever puts a raw secret, path, argument value, or match excerpt into an explanation, reason, or log; explanations describe the *rule*, fingerprints are HMAC-only. Secret detection is defense-in-depth, not claimed airtight.
 
+### Feature 4 — Agent Role Policy & Boundaries · `v0.4.0` _(in review)_
+
+Makes the agent's **role** the top of the local authority hierarchy: an action that crosses the role's path boundaries escalates in the **objective** layer, so it cannot be learned away and casual user intent never lowers it.
+
+- **Built-in roles** — `frontend`, `backend`, `fullstack`, `devops`, `docs`, `test`, each declaring `allowed` / `suspicious` / `blocked` path globs (data in `roles/builtin_roles.yaml`). `blocked` wins on overlap; a target matched by no `allowed` glob is treated as out-of-scope (safe default). The active role is read from `.doberman/role.yaml` (a named built-in or an inline custom role); an unknown or malformed role falls back to the most-restrictive role.
+- **Boundary matcher** — classifies a target as allowed / suspicious / blocked through the **same** canonicalizer the path rule uses, so `..` traversal, symlink, and case bypasses cannot dodge a role boundary; a path escaping the repo root is treated as blocked.
+- **Cross-boundary escalation** — an out-of-scope target → **AUTH (`role_out_of_scope`)**, a role-blocked target → **BLOCK (`role_blocked_target`)**. The check lives in the objective layer; with no role configured it abstains, so role enforcement is opt-in.
+- **`PolicySource` seam (extension point)** — an ordered resolver merges policy from local sources (the agent role) plus any registered via the `doberman.policy_sources` entry-point group. The merge is **raise-only across sources** (a higher-authority source can only *tighten*), so an enterprise/org policy can outrank the role — without core importing the enterprise package.
+
 ---
 
 ## Design invariants
@@ -171,6 +180,13 @@ The version line maps to the development roadmap:
 ## Changelog
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+### `v0.4.0` — Agent Role Policy & Boundaries — _Unreleased (in review)_
+
+- **Slice 4.1** — built-in role definitions + schema (`allowed`/`suspicious`/`blocked` globs; `.doberman/role.yaml` active-role resolution).
+- **Slice 4.2** — role-boundary matcher (shared canonicalization; blocked-wins precedence; unmatched-by-allowed → suspicious).
+- **Slice 4.3** — cross-boundary escalation in the objective layer (`role_out_of_scope` → AUTH, `role_blocked_target` → BLOCK; user intent never lowers it).
+- **Slice 4.4** — ordered `PolicySource` resolver with authority layering (the enterprise seam; raise-only across sources; discovered via `doberman.policy_sources`).
 
 ### `v0.3.0` — Objective Guardrail — _Unreleased (in review)_
 
@@ -209,7 +225,6 @@ Upcoming versions add the guardrail *content* and the surfaces around the engine
 
 | Version | Theme |
 |---------|-------|
-| `v0.4.0` | **Agent role policy** — built-in roles and per-repo boundary matching. |
 | `v0.5.0` | **Capability discovery** — local scan and risk map. |
 | `v0.6.0` | **Policy checklist & strength modes** — Light / Balanced / Strict / Paranoid. |
 | `v0.7.0` | **Tiered authentication** — local confirmation, TOTP 2FA, narrow/temporary elevation. |
