@@ -91,6 +91,18 @@ class ReasonCode(StrEnum):
     subjective_guardrail_error = "subjective_guardrail_error"
     subjective_block_clamped = "subjective_block_clamped"
 
+    # Feature 3 — objective guardrail (basic rules + plugin seam).
+    secret_exfiltration = "secret_exfiltration"  # noqa: S105 — reason-code constant, not a secret
+    sensitive_secret_access = "sensitive_secret_access"  # noqa: S105 — reason code, not a secret
+    protected_path_blocked = "protected_path_blocked"
+    sensitive_path_access = "sensitive_path_access"
+    destructive_command = "destructive_command"
+    bulk_operation = "bulk_operation"
+    opaque_command = "opaque_command"
+    unknown_external_destination = "unknown_external_destination"
+    encoded_exfiltration = "encoded_exfiltration"
+    rule_error = "rule_error"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).
