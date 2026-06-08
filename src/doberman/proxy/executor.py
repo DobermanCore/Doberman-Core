@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, TextContent
 
-from doberman.auth.challenge import AuthTier, run_auth_challenge
+from doberman.auth.challenge import AuthTier, Prompter, run_auth_challenge
 from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import load_active_role, load_mode
 from doberman.engine.decision_engine import PASS_STUB, Guardrail, decide
@@ -47,6 +47,12 @@ _engine_logger = logging.getLogger("doberman.proxy.engine")
 #: Repo root used for config + the elevation store. Module-level so tests can
 #: point it at an isolated temp dir (the DB/config must never touch the repo).
 REPO_ROOT = "."
+
+#: Prompter for AUTH challenges. None ⇒ the provider's default CLI prompter
+#: (stdin/stdout). The stdio ``serve`` path sets this to a controlling-terminal
+#: prompter so a challenge never reads/writes the agent's MCP stream. Module-level
+#: so tests can inject a headless fake.
+AUTH_PROMPTER: Prompter | None = None
 
 # Guardrail implementations used by the proxy. The objective guardrail is the
 # real Feature 3 rule set; the subjective guardrail stays a PASS stub until
@@ -193,7 +199,7 @@ async def _handle_auth(
     now: datetime,
 ) -> CallToolResult:
     """Run the tiered challenge for an AUTH decision and act on the outcome."""
-    auth_result = run_auth_challenge(decision, action)
+    auth_result = run_auth_challenge(decision, action, prompter=AUTH_PROMPTER)
     # Approval is bound to THIS action id — never honor a result for another call.
     if not auth_result.approved or auth_result.action_id != action.id:
         return _verdict_result(decision)
