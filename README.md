@@ -18,7 +18,7 @@
 Doberman is a security layer for AI coding agents. It sits **on the tool-execution path** — the agent talks to Doberman, and Doberman talks to the real tools (filesystem, shell, git, network, package managers) over the [Model Context Protocol](https://modelcontextprotocol.io). Every meaningful action is intercepted, normalized into a redacted, structured **security object**, and run through a risk-based decision engine that returns one of three verdicts — **allow**, **authenticate**, or **block** — before the action is ever forwarded. The guiding principle is simple: *if Doberman isn't on the execution path, it's advisory, not protective.* Doberman is built to **fail closed** (any error or uncertainty denies the action) and to be **raise-only** (guardrails may automatically tighten, never silently loosen), so an agent can never reach a tool around it and a buggy rule can never make the system less safe.
 
 > ### Project status
-> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1) and the decision engine (Feature 2) are implemented. The bundled guardrails are currently permissive stubs — the **basic objective rules** (protected paths, dangerous commands, secret-leak and exfiltration detection) arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
+> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), and the **objective guardrail** (Feature 3 — basic rules + the plugin seam) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands) and steps up authentication on sensitive or unknown actions. The subjective guardrail and roles arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
 
 ---
 
@@ -121,7 +121,7 @@ Puts Doberman physically between the agent and its tools and turns every tool ca
 - **`normalize()`** — maps raw tool calls to action types, extracts targets, and redacts secret-shaped and oversized argument values. Never raises; degrades to a conservative high-risk object on malformed input.
 - **Redacted interception log** — one structured JSON line per action, correlated by a stable action id. Best-effort by contract: logging can never alter, block, or crash the execution path, and never emits raw secrets.
 
-### Feature 2 — Decision Engine & Execution Rule · `v0.2.0` _(in review)_
+### Feature 2 — Decision Engine & Execution Rule · `v0.2.0`
 
 Replaces the pass-through stub with the real control core, so every guardrail added later automatically obeys the safety rules.
 
@@ -129,6 +129,19 @@ Replaces the pass-through stub with the real control core, so every guardrail ad
 - **Raise-only combination** — `combine()` takes the **max** verdict (`PASS < AUTH < BLOCK`), **max** risk, and the **union** of reasons. There is deliberately no code path that lowers either axis — verified by an exhaustive matrix and a randomized property test.
 - **Objective-first execution rule** — objective guardrail first; a `BLOCK`/`AUTH` short-circuits (the subjective guardrail can never weaken it); a non-allowlisted subjective `BLOCK` is clamped to `AUTH`. Objective errors fail **closed** (`BLOCK`); subjective errors fail **upward** (`AUTH`).
 - **Enforcement at the chokepoint** — the proxy now acts on verdicts: `PASS` forwards, `AUTH`/`BLOCK` return explanatory errors (reason codes + human explanation + action id) and **never** forward. A blocked call provably never reaches a tool; an engine failure is a `BLOCK`.
+
+### Feature 3 — Objective Guardrail · `v0.3.0` _(in review)_
+
+The deterministic, conservative rules for universal danger — the guardrail that protects even when everything *looks* normal — plus the plugin seam that lets premium detectors attach later.
+
+- **Basic rules (raise-only, fail-upward):** four pure rules run on every action and combine strongest-wins:
+  - **Secret leakage** — detects credential shapes (`AKIA…`, `sk-…`, `ghp_…`, PEM keys, `.env` `KEY=value`) and base64/hex-encoded carriers; secret material bound for an external destination → **BLOCK**, local secret access → **AUTH**. Two confidence tiers mean a benign high-entropy blob (a base64 asset) is never hard-blocked on encoding alone.
+  - **Protected paths** — matches the **canonicalized** target (resolving `..`, symlinks, and case via one shared helper) against blocked/sensitive globs; traversal, symlink, and case bypasses are caught, and a path escaping the repo root is blocked.
+  - **Destructive commands** — adversarially parses shell/git command lines (`;` `&&` `|` `$()` backticks, env prefixes, `sudo`); `rm -rf /`, disk wipes, and force-pushes to a protected branch → **BLOCK**; bulk deletes and opaque `bash -c` payloads → **AUTH** (never a guessed `PASS`).
+  - **External destinations** — classifies network hosts on their **registered domain** (defeating punycode/homoglyph, `user@host`, IP-literal, and substring spoofs); unknown destinations → **AUTH**, which combines with a secret to a **BLOCK**.
+- **HMAC fingerprinting** — keyed (`HMAC-SHA256`) one-way fingerprints recognize secrets without ever storing them; the local key is generated on first use, kept `0600`, and never committed or logged.
+- **Plugin registry (extension point)** — additional rules/detectors are discovered via Python entry points (`doberman.rules`, `doberman.detectors`) and run alongside the built-ins. Plugins are bound by the same raise-only discipline (they can only *add* risk) and are loaded defensively — a misbehaving plugin is isolated, never crashes core, and core never imports any plugin by name. With nothing installed, only the built-ins run.
+- **Redaction throughout** — no rule ever puts a raw secret, path, argument value, or match excerpt into an explanation, reason, or log; explanations describe the *rule*, fingerprints are HMAC-only. Secret detection is defense-in-depth, not claimed airtight.
 
 ---
 
@@ -159,7 +172,18 @@ The version line maps to the development roadmap:
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
 
-### `v0.2.0` — Decision Engine & Execution Rule — _Unreleased (in review)_
+### `v0.3.0` — Objective Guardrail — _Unreleased (in review)_
+
+- **Slice 3.1** — HMAC secret-fingerprinting helper (keyed, `0600` key, never logged/committed).
+- **Slice 3.2** — secret-leakage detection rule (credential shapes, exfil → `BLOCK`, local → `AUTH`).
+- **Slice 3.3** — protected-path rule with safe canonicalization (traversal/symlink/case bypasses caught).
+- **Slice 3.4** — destructive shell/git command rule (adversarial parsing; opaque → `AUTH`).
+- **Slice 3.5** — external-destination classification (registered-domain match; punycode/IP/embedded-cred spoofs flagged).
+- **Slice 3.6** — encoded/indirect exfiltration checks (bounded base64/hex decode-and-rescan).
+- **Slice 3.7** — `ObjectiveGuardrail` assembling all rules (raise-only combine, per-rule error isolation); wired into the proxy.
+- **Slice 3.8** — entry-point plugin registry for rules/detectors (the enterprise seam; plugins can only raise risk, isolated on failure).
+
+### `v0.2.0` — Decision Engine & Execution Rule
 
 - **Slice 2.1** — `Guardrail` interface & frozen, always-explained `Decision` model.
 - **Slice 2.2** — raise-only verdict/risk `combine()` with exhaustive + property tests.
@@ -185,7 +209,6 @@ Upcoming versions add the guardrail *content* and the surfaces around the engine
 
 | Version | Theme |
 |---------|-------|
-| `v0.3.0` | **Objective guardrail** — basic rules: protected paths, dangerous commands, external destinations, secret-leak and encoded-exfiltration detection, plus a rule plugin seam. |
 | `v0.4.0` | **Agent role policy** — built-in roles and per-repo boundary matching. |
 | `v0.5.0` | **Capability discovery** — local scan and risk map. |
 | `v0.6.0` | **Policy checklist & strength modes** — Light / Balanced / Strict / Paranoid. |
