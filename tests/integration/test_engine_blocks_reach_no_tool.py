@@ -85,7 +85,10 @@ async def test_engine_exception_fails_closed(monkeypatch):
 async def test_subjective_block_clamps_to_auth_end_to_end(monkeypatch):
     monkeypatch.setattr(executor, "DEFAULT_SUBJECTIVE", SUBJECTIVE_BLOCKING)
     async with proxied_session() as (fake, agent):
-        result = await agent.call_tool("net_get", {"url": "https://example.com"})
+        # A fetch to a TRUSTED host so the real objective guardrail (F3) PASSes
+        # and the subjective guardrail actually runs (and is then clamped). With
+        # an unknown host the objective would AUTH and short-circuit instead.
+        result = await agent.call_tool("net_get", {"url": "https://github.com/owner/repo"})
         assert result.isError
         text = result.content[0].text
         # Clamped: authentication, not a hard block.

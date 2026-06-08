@@ -143,7 +143,9 @@ async def test_every_call_routes_through_decide_and_execute(monkeypatch):
 
     monkeypatch.setattr(executor, "decide_and_execute", spy)
     async with proxied_session() as (fake, agent):
+        # Benign actions that the real objective guardrail (F3) lets PASS so the
+        # forward still happens: a trivial echo and a fetch to a trusted host.
         await agent.call_tool("shell_exec", {"command": "echo hi"})
-        await agent.call_tool("net_get", {"url": "https://example.com"})
+        await agent.call_tool("net_get", {"url": "https://github.com/owner/repo"})
     assert routed == ["shell_exec", "net_get"]
     assert [name for name, _ in fake.calls] == ["shell_exec", "net_get"]
