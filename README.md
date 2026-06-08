@@ -18,7 +18,7 @@
 Doberman is a security layer for AI coding agents. It sits **on the tool-execution path** — the agent talks to Doberman, and Doberman talks to the real tools (filesystem, shell, git, network, package managers) over the [Model Context Protocol](https://modelcontextprotocol.io). Every meaningful action is intercepted, normalized into a redacted, structured **security object**, and run through a risk-based decision engine that returns one of three verdicts — **allow**, **authenticate**, or **block** — before the action is ever forwarded. The guiding principle is simple: *if Doberman isn't on the execution path, it's advisory, not protective.* Doberman is built to **fail closed** (any error or uncertainty denies the action) and to be **raise-only** (guardrails may automatically tighten, never silently loosen), so an agent can never reach a tool around it and a buggy rule can never make the system less safe.
 
 > ### Project status
-> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), the **objective guardrail** (Feature 3 — basic rules + the plugin seam), **agent role policy** (Feature 4 — role boundaries + the policy-source seam), and **capability discovery** (Feature 5 — `doberman scan`) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), steps up authentication on sensitive or unknown actions, escalates actions that cross the agent's role boundary, and can report the agent's blast radius. The subjective guardrail and the remaining surfaces around the engine (strength modes, real authentication, audit log) arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
+> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), the **objective guardrail** (Feature 3 — basic rules + the plugin seam), **agent role policy** (Feature 4 — role boundaries + the policy-source seam), **capability discovery** (Feature 5 — `doberman scan`), and **policy checklist + strength modes** (Feature 6) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), steps up authentication on sensitive or unknown actions, escalates actions that cross the agent's role boundary, reports the agent's blast radius, and offers one Light/Balanced/Strict/Paranoid dial over good defaults. The subjective guardrail and the remaining surfaces around the engine (real authentication, audit log) arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
 
 ---
 
@@ -160,6 +160,14 @@ A read-only onboarding scan that answers "how much power does my agent actually 
 - **Risk rating + map** — each capability is rated (`.env`/key material → critical; shell, fs-write/delete, network, git-push, package-install → high), and `doberman scan` renders a readable risk map (capability names, risk, path-class evidence — never secrets). The scan is depth- and count-bounded so a huge or hostile repo cannot make it run unbounded.
 - **`doberman` CLI** — the first command-line surface (`doberman scan`, `doberman version`), built with Typer.
 
+### Feature 6 — Policy Checklist & Security Strength Modes · `v0.6.0` _(in review)_
+
+Good defaults as the product: a pre-checked policy generated from role + discovery, and one strength dial instead of dozens of toggles.
+
+- **Recommended checklist** — `recommend_policy(role, capabilities)` produces an editable `PolicyDoc` (persisted to `.doberman/policies.yaml`): core hard-blocks (always present, enabled, **non-disableable here**), plus step-ups tailored to the role and discovered capabilities (an item whose capability is absent is kept and marked N/A). `doberman review [--yes]` views/saves it; disabling a core hard-block is refused (that requires the Feature 10 flow).
+- **Strength modes** — `doberman mode <light|balanced|strict|paranoid>` (default **Balanced**) tunes step-up thresholds: stricter modes step up to AUTH sooner (e.g. the bulk-delete threshold drops from 100 → 25 → 10 → 3). Modes **only move step-ups** — the hard-block **floor is identical across every mode**, and even Light keeps all core BLOCKs. An unknown mode is rejected; a corrupt stored mode fails to the strictest.
+- **`doberman status`** — shows the active role, mode, and policy summary.
+
 ---
 
 ## Design invariants
@@ -188,6 +196,12 @@ The version line maps to the development roadmap:
 ## Changelog
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+### `v0.6.0` — Policy Checklist & Security Strength Modes — _Unreleased (in review)_
+
+- **Slice 6.1** — recommended policy checklist (`recommend_policy`; core hard-blocks always present, step-ups tailored to role/capabilities).
+- **Slice 6.2** — `doberman review` to view/persist `.doberman/policies.yaml` (core blocks non-disableable; atomic save).
+- **Slice 6.3** — Light/Balanced/Strict/Paranoid modes (`doberman mode`/`status`); thresholds tune step-ups only, the hard-block floor is mode-independent.
 
 ### `v0.5.0` — Capability Discovery & Local Risk Map — _Unreleased (in review)_
 
@@ -238,7 +252,6 @@ Upcoming versions add the guardrail *content* and the surfaces around the engine
 
 | Version | Theme |
 |---------|-------|
-| `v0.6.0` | **Policy checklist & strength modes** — Light / Balanced / Strict / Paranoid. |
 | `v0.7.0` | **Tiered authentication** — local confirmation, TOTP 2FA, narrow/temporary elevation. |
 | `v0.8.0` | **Decision log & audit** — local redacted decision log + storage interface. |
 | `v0.9.0` | **Subjective guardrail** — abnormality interface + a basic local baseline. |
