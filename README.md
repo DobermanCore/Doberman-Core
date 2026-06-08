@@ -92,21 +92,50 @@ A green run means the core engine, proxy, and guardrail wiring all behave as spe
 
 ## Quickstart
 
-At this stage Doberman is a **library**, not a standalone binary — you embed the proxy in front of a downstream MCP tool server. The proxy is created from an active downstream client session:
+Doberman ships a **`doberman serve`** runtime: it runs as an MCP server to your agent and an MCP client to your
+real tool server, so it sits *on* the execution path with no code changes on either side. The pattern is one line —
+**instead of pointing your agent at the real MCP server, point it at `doberman serve -- <that server>`.**
 
-```python
-from doberman.proxy.mcp_proxy import build_proxy_server
+```bash
+# Run Doberman in front of any MCP tool server (everything after `--` is the downstream command):
+doberman serve -- npx -y @modelcontextprotocol/server-filesystem /path/to/repo
 
-# `downstream` is an mcp.client.session.ClientSession connected to your
-# real tool server. The returned MCP server re-exposes its tools and routes
-# every tools/call through Doberman's decision chokepoint.
-proxy = build_proxy_server(downstream)
-# ...serve `proxy` to the agent over your preferred MCP transport.
+# Policy, decision log, and elevations live in <repo>/.doberman — choose the repo with --path:
+doberman serve --path /path/to/repo -- npx -y @modelcontextprotocol/server-filesystem /path/to/repo
 ```
 
-For a complete, runnable wiring (an in-process downstream + proxy + agent client),
-see [`tests/integration/test_proxy_passthrough.py`](./tests/integration/test_proxy_passthrough.py)
-and [`tests/integration/test_engine_blocks_reach_no_tool.py`](./tests/integration/test_engine_blocks_reach_no_tool.py).
+### Connect your agent
+
+Swap the agent's MCP server entry to launch Doberman, which then spawns the real server. The decision happens in
+between; `AUTH` prompts appear on **your terminal** (with no terminal attached, an `AUTH` action is denied — fail
+closed), and every decision is recorded — inspect it with `doberman log` and `doberman status`.
+
+**Claude Code**
+
+```bash
+claude mcp add doberman -- doberman serve -- npx -y @modelcontextprotocol/server-filesystem ~/repo
+```
+
+**Claude Desktop / Cursor / Codex** (`mcpServers` block in the client's config, e.g. `claude_desktop_config.json`)
+
+```jsonc
+{
+  "mcpServers": {
+    "doberman": {
+      "command": "doberman",
+      "args": ["serve", "--",
+               "npx", "-y", "@modelcontextprotocol/server-filesystem", "~/repo"]
+    }
+  }
+}
+```
+
+That's it — your agent sees exactly the same tools, now mediated by Doberman.
+
+For the embeddable form (build the proxy yourself and serve it over your own transport), use
+[`build_proxy_server`](./src/doberman/proxy/mcp_proxy.py); for runnable wiring examples see
+[`tests/integration/test_serve_end_to_end.py`](./tests/integration/test_serve_end_to_end.py) and
+[`tests/integration/test_proxy_passthrough.py`](./tests/integration/test_proxy_passthrough.py).
 
 ---
 
@@ -233,6 +262,12 @@ The version line maps to the development roadmap:
 ## Changelog
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+### `v0.11.0` — Agent Integration: `doberman serve` — _Unreleased (in review)_
+
+- **`doberman serve -- <downstream cmd>`** — a runnable stdio MCP proxy that fronts any downstream MCP tool server (MCP server to the agent, MCP client to the downstream); makes Doberman usable from Claude Code, Codex, Claude Desktop, Cursor, and any MCP client with a one-line config swap.
+- **Controlling-terminal AUTH** — in serve mode an `AUTH` challenge is routed to the local terminal (`/dev/tty` / `CONIN$`/`CONOUT$`) so it never touches the agent's stdin/stdout MCP stream; with no terminal attached the action is denied (fail closed).
+- Logs are pinned to **stderr** (stdout is the agent's protocol channel); the engine's repo root (`.doberman/`) is selectable with `--path`.
 
 ### `v0.10.0` — Policy-Drift Detection & Poisoning Defense — _Unreleased (in review)_
 

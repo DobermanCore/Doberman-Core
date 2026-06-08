@@ -1,3 +1,3 @@
 """Doberman — adaptive authorization layer for coding agents (open core)."""
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
