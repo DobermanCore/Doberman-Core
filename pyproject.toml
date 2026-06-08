@@ -1,6 +1,6 @@
 [project]
 name = "doberman"
-version = "0.0.0"
+version = "0.2.0"
 description = "Adaptive authorization layer for coding agents (open core)"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
