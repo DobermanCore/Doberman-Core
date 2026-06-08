@@ -110,9 +110,15 @@ def test_fixture_plugin_is_discovered(patch_entry_points):
     assert isinstance(rules[0], AlwaysAuthPlugin)
 
 
-def test_detectors_group_is_also_discovered(patch_entry_points):
+def test_detectors_attach_to_the_subjective_seam_not_objective(patch_entry_points):
+    # Detectors are the behavioral/subjective seam (Feature 9): discover_rules
+    # (objective) ignores them, and discover_detectors picks them up. This keeps
+    # a detector plugin running in exactly one place (no double-run).
     patch_entry_points(detector_group=[_FakeEntryPoint("d", AlwaysAuthPlugin)])
-    assert len(registry.discover_rules()) == 1
+    assert registry.discover_rules() == []
+    detectors = registry.discover_detectors()
+    assert len(detectors) == 1
+    assert isinstance(detectors[0], AlwaysAuthPlugin)
 
 
 def test_plugin_runs_alongside_builtins(patch_entry_points):

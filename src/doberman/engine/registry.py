@@ -106,18 +106,17 @@ def _instantiate(entry_point: EntryPoint) -> Guardrail | None:
     return candidate
 
 
-def discover_rules() -> list[Guardrail]:
-    """Discover and instantiate all registered rule/detector plugins.
+def _discover_guardrails(groups: tuple[str, ...]) -> list[Guardrail]:
+    """Discover + instantiate Guardrail-shaped plugins across ``groups``.
 
     Always returns a list (empty when nothing is installed). Each plugin is
-    loaded defensively; failures are logged and skipped. The result is the set
-    of EXTRA guardrails to run alongside core's built-ins.
+    loaded defensively; failures are logged and skipped. Duplicate name+group
+    registrations are de-duplicated.
     """
     plugins: list[Guardrail] = []
     seen: set[str] = set()
-    for group in (RULE_GROUP, DETECTOR_GROUP):
+    for group in groups:
         for entry_point in _iter_entry_points(group):
-            # Guard against duplicate registration of the same name+group.
             key = f"{group}:{getattr(entry_point, 'name', id(entry_point))}"
             if key in seen:
                 continue
@@ -126,6 +125,29 @@ def discover_rules() -> list[Guardrail]:
             if instance is not None:
                 plugins.append(instance)
     return plugins
+
+
+def discover_rules() -> list[Guardrail]:
+    """Discover registered **rule** plugins (group ``doberman.rules``).
+
+    These run alongside the built-in basic rules in the **objective** guardrail.
+    ``doberman.detectors`` is intentionally NOT loaded here — behavioral
+    detectors are the **subjective** seam and are discovered by
+    :func:`discover_detectors` (their single home, so they never double-run).
+    Returns ``[]`` with nothing installed.
+    """
+    return _discover_guardrails((RULE_GROUP,))
+
+
+def discover_detectors() -> list[Guardrail]:
+    """Discover registered **detector** plugins (group ``doberman.detectors``).
+
+    These run in the **subjective** guardrail (Feature 9) — the home for
+    advanced/behavioral (UEBA-style) detection — bound by the same raise-only
+    discipline (a detector can only add risk). Returns ``[]`` with nothing
+    installed.
+    """
+    return _discover_guardrails((DETECTOR_GROUP,))
 
 
 def discover_policy_sources() -> list[object]:

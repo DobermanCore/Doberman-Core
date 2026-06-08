@@ -13,7 +13,7 @@ def test_core_imports_with_no_enterprise_installed():
 def test_version_is_exposed():
     import doberman
 
-    assert doberman.__version__ == "0.8.0"
+    assert doberman.__version__ == "0.9.0"
 
 
 def test_policy_core_packages_import_cleanly():
@@ -48,6 +48,14 @@ def test_default_auth_provider_is_local_with_no_enterprise():
 
     assert discover_auth_providers() == []
     assert isinstance(active_provider(), LocalAuthProvider)
+
+
+def test_no_detectors_registered_by_default():
+    # Slice 9.3 standalone guarantee: with no enterprise package installed, the
+    # detector registry discovers nothing — only the baseline signal runs.
+    from doberman.engine.registry import discover_detectors
+
+    assert discover_detectors() == []
 
 
 def test_no_audit_sinks_registered_by_default():

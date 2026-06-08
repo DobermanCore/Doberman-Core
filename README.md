@@ -18,7 +18,7 @@
 Doberman is a security layer for AI coding agents. It sits **on the tool-execution path** — the agent talks to Doberman, and Doberman talks to the real tools (filesystem, shell, git, network, package managers) over the [Model Context Protocol](https://modelcontextprotocol.io). Every meaningful action is intercepted, normalized into a redacted, structured **security object**, and run through a risk-based decision engine that returns one of three verdicts — **allow**, **authenticate**, or **block** — before the action is ever forwarded. The guiding principle is simple: *if Doberman isn't on the execution path, it's advisory, not protective.* Doberman is built to **fail closed** (any error or uncertainty denies the action) and to be **raise-only** (guardrails may automatically tighten, never silently loosen), so an agent can never reach a tool around it and a buggy rule can never make the system less safe.
 
 > ### Project status
-> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), the **objective guardrail** (Feature 3 — basic rules + the plugin seam), **agent role policy** (Feature 4 — role boundaries + the policy-source seam), **capability discovery** (Feature 5 — `doberman scan`), **policy checklist + strength modes** (Feature 6), **tiered authentication** (Feature 7 — action-specific confirm/2FA challenges, narrow/temporary role elevation, and the auth-provider seam), and the **local decision log & audit** (Feature 8 — an append-only, redacted SQLite log with `doberman log`/`memory` and the audit-sink seam) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), turns an `AUTH` verdict into a real, action-bound challenge that releases the call only on success, escalates actions that cross the agent's role boundary, reports the agent's blast radius, offers one Light/Balanced/Strict/Paranoid dial over good defaults, and records every decision to an explainable, privacy-preserving local audit trail. The subjective guardrail and the drift/poisoning defense arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
+> **Alpha — pre-1.0, API unstable.** Features 1–9 are implemented: the interception layer (1), the decision engine (2), the **objective guardrail** (3 — basic rules + the plugin seam), **agent role policy** (4 — role boundaries + the policy-source seam), **capability discovery** (5 — `doberman scan`), **policy checklist + strength modes** (6), **tiered authentication** (7 — action-specific confirm/2FA challenges, narrow/temporary role elevation, and the auth-provider seam), the **local decision log & audit** (8 — an append-only, redacted SQLite log with `doberman log`/`memory` and the audit-sink seam), and the **subjective guardrail** (9 — a local workflow baseline that escalates *unusual-for-you* actions, plus the detector seam). Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), turns an `AUTH` verdict into a real, action-bound challenge that releases the call only on success, escalates actions that cross the agent's role boundary **or** depart from its learned workflow, reports the agent's blast radius, offers one Light/Balanced/Strict/Paranoid dial over good defaults, and records every decision to an explainable, privacy-preserving local audit trail. The policy-drift & poisoning defense (Feature 10) arrives next (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
 
 ---
 
@@ -53,7 +53,7 @@ Doberman is a security layer for AI coding agents. It sits **on the tool-executi
 
 1. **Intercept** — Doberman is an MCP *server* to the agent and an MCP *client* to the downstream tool servers. It re-exposes the downstream tools unchanged, so every `tools/call` flows through a single chokepoint.
 2. **Normalize** — each call becomes an immutable, redacted `SecurityObject` (action type, target, risk, redacted arguments, fingerprints). Normalization never raises; on bad input it produces a conservative high-risk object.
-3. **Decide** — the engine runs the objective guardrail first, then (if it passes) the subjective guardrail, combining results **raise-only** into a single explainable `Decision`.
+3. **Decide** — the engine runs the objective guardrail first, then (if it passes) the subjective guardrail — which escalates actions that are *unusual for the learned workflow* — combining results **raise-only** into a single explainable `Decision`.
 4. **Enforce** — `PASS` forwards the call; `AUTH` runs a tiered, action-specific challenge (confirm / 2FA / role elevation) and forwards only on success — after a TOCTOU re-decision — otherwise nothing is forwarded; `BLOCK` returns a "blocked by policy" error and the call is **never** forwarded. Any engine failure is itself a `BLOCK`.
 5. **Log** — every action is recorded as one redacted JSON line *and* one append-only, redacted row in a local SQLite decision log (path **class**, reason codes, verdict, auth result — never a raw target, argument, or secret), correlated by a stable action id and fanned out to any registered audit sinks.
 
@@ -187,6 +187,15 @@ Persists every decision to a **local, append-only, redacted** audit trail — th
 - **Plain-language views** — `doberman log [--last N]` shows the recent decision history (verdict, action type, path class, reasons, auth result); `doberman memory` shows a redaction-safe profile — verdict mix, most-touched path classes, and how many distinct secrets have been *seen* (a count only, never a value).
 - **`AuditSink` seam (extension point)** — additional destinations (centralized audit, hosted monitoring, SIEM export) register via the `doberman.audit_sinks` entry-point group and receive **only the already-redacted record** the local log stores. A sink can never request raw data, and a slow or failing sink is isolated — it can never block or alter a decision. With nothing installed, only the local log runs.
 
+### Feature 9 — Subjective Guardrail & Workflow Baseline · `v0.9.0` _(in review)_
+
+The *second* guardrail: it learns what is normal for this repo/role/workflow and raises **unusual-for-you** actions to `AUTH`, catching context-specific anomalies even when no objective rule trips — plus the seam for advanced behavioral detection.
+
+- **Workflow baseline (update-on-allow)** — a local store of **class-level** habits (path classes, command verbs, destination hosts — never raw paths, prompts, or secrets), in the SQLite `baseline_counts` table. It is updated **only after an action is allowed**, so a blocked or denied attempt can never train the system to accept the very thing it should escalate (raise-only learning).
+- **Abnormality scorer** — scores how unusual an action is for the established baseline (a never-seen path class / destination / command is novel; a familiar one is not). **Cold start is conservative, not paranoid** — a sparse baseline yields only a mild signal for clearly-sensitive surfaces, so a fresh repo is not a storm of prompts; a new-but-benign area is a one-time `AUTH`, then normal.
+- **`SubjectiveGuardrail` + mode awareness** — maps the score to `PASS`/`AUTH` by the active mode's sensitivity (Strict/Paranoid step up sooner; **Light disables** the abnormality step-up). It is **raise-only** and **cannot hard-block** (the execution rule clamps a subjective block to `AUTH`) — escalation, not paternalism — so it can never weaken an objective verdict.
+- **`Detector` seam (extension point)** — advanced/behavioral (UEBA-style) detectors register via the `doberman.detectors` entry-point group and run in the subjective layer, bound by the same raise-only discipline and isolated on failure. With nothing installed, only the baseline signal runs.
+
 ---
 
 ## Design invariants
@@ -215,6 +224,12 @@ The version line maps to the development roadmap:
 ## Changelog
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+### `v0.9.0` — Subjective Guardrail & Workflow Baseline — _Unreleased (in review)_
+
+- **Slice 9.1** — workflow baseline store updated **on allowed actions only** (class-level habits in `baseline_counts`; blocked attempts never train it).
+- **Slice 9.2** — abnormality scorer (novelty over the established baseline; conservative cold start).
+- **Slice 9.3** — the `SubjectiveGuardrail` (mode-aware step-up, raise-only, can't hard-block) + the `Detector` seam (`doberman.detectors`, relocated from the objective layer to its single behavioral home).
 
 ### `v0.8.0` — Local Decision Log & Audit — _Unreleased (in review)_
 
@@ -287,7 +302,6 @@ Upcoming versions add the guardrail *content* and the surfaces around the engine
 
 | Version | Theme |
 |---------|-------|
-| `v0.9.0` | **Subjective guardrail** — abnormality interface + a basic local baseline. |
 | `v0.10.0` | **Policy-drift & poisoning defense** — strengthen/weaken classification, gated approvals, append-only ledger. |
 
 ---
