@@ -15,21 +15,29 @@ entry-point registry (slice 3.8) — core never imports it.
 from doberman.engine.rules.commands import DestructiveCommandRule
 from doberman.engine.rules.destinations import ExternalDestinationRule
 from doberman.engine.rules.paths import ProtectedPathRule
+from doberman.engine.rules.policy_source import PolicySourceRule
+from doberman.engine.rules.role_boundary import RoleBoundaryRule
 from doberman.engine.rules.secrets import SecretLeakageRule
 
 #: The built-in rule set, in a stable order. ``ObjectiveGuardrail`` instantiates
-#: these with their defaults; F6 will later override the policy lists.
+#: these with their defaults; F6 will later override the policy lists. The role
+#: and policy-source rules abstain unless the context supplies a role / resolved
+#: policy, so they are inert until F4 wiring (or a registered source) is active.
 BUILTIN_RULE_TYPES = (
     SecretLeakageRule,
     ProtectedPathRule,
     DestructiveCommandRule,
     ExternalDestinationRule,
+    RoleBoundaryRule,
+    PolicySourceRule,
 )
 
 __all__ = [
     "BUILTIN_RULE_TYPES",
     "DestructiveCommandRule",
     "ExternalDestinationRule",
+    "PolicySourceRule",
     "ProtectedPathRule",
+    "RoleBoundaryRule",
     "SecretLeakageRule",
 ]

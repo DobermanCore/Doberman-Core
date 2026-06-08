@@ -12,6 +12,8 @@ from typing import Any
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
+from doberman.roles.roles import RoleDefinition
+
 
 class ActionType(StrEnum):
     """What kind of action the agent is attempting."""
@@ -103,6 +105,12 @@ class ReasonCode(StrEnum):
     encoded_exfiltration = "encoded_exfiltration"
     rule_error = "rule_error"
 
+    # Feature 4 — agent role policy & boundaries (+ policy-source seam).
+    role_blocked_target = "role_blocked_target"
+    role_out_of_scope = "role_out_of_scope"
+    policy_source_blocked = "policy_source_blocked"
+    policy_source_sensitive = "policy_source_sensitive"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).
@@ -136,8 +144,10 @@ class GuardrailResult(BaseModel):
 class EvalContext(BaseModel):
     """Context handed to every guardrail evaluation (immutable).
 
-    Deliberately near-empty for now; later features add the security mode
-    (F6), role boundaries (F4), and the baseline handle (F9).
+    Carries the active agent role (F4) so the objective layer can escalate
+    actions that cross the role's boundaries; later features add the security
+    mode (F6) and the baseline handle (F9). ``role`` is ``None`` when no role
+    is configured — role enforcement is opt-in and the role rule then abstains.
 
     NOTE: ``frozen=True`` is shallow — the ``metadata`` dict itself is
     mutable. Guardrails are pure functions by contract and MUST NOT mutate
@@ -146,6 +156,7 @@ class EvalContext(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    role: RoleDefinition | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

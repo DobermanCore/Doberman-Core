@@ -36,6 +36,8 @@ logger = logging.getLogger("doberman.engine.registry")
 #: ``policy_sources``/``drift_observers`` against this same mechanism.
 RULE_GROUP = "doberman.rules"
 DETECTOR_GROUP = "doberman.detectors"
+#: Policy sources (Feature 4.4) register here; resolved by the policy layer.
+POLICY_SOURCE_GROUP = "doberman.policy_sources"
 
 
 def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
@@ -54,11 +56,11 @@ def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
     yield from selected
 
 
-def _instantiate(entry_point: EntryPoint) -> Guardrail | None:
-    """Load + instantiate one entry point into a Guardrail, or skip it.
+def _load_and_construct(entry_point: EntryPoint) -> object | None:
+    """Load an entry point and instantiate it if it is a class, or skip it.
 
-    Returns ``None`` (after logging) on any import/instantiation error or if the
-    loaded object is not Guardrail-shaped. We never let a plugin's failure
+    Returns ``None`` (after logging) on any import or constructor error. The
+    caller applies its own structural check. We never let a plugin's failure
     propagate — isolation is the whole contract.
     """
     try:
@@ -67,7 +69,6 @@ def _instantiate(entry_point: EntryPoint) -> Guardrail | None:
         logger.warning("skipping plugin %r: failed to import", getattr(entry_point, "name", "?"))
         return None
 
-    # The entry point may point at a class (instantiate it) or an instance.
     candidate = loaded
     if isinstance(loaded, type):
         try:
@@ -77,7 +78,18 @@ def _instantiate(entry_point: EntryPoint) -> Guardrail | None:
                 "skipping plugin %r: constructor raised", getattr(entry_point, "name", "?")
             )
             return None
+    return candidate
 
+
+def _instantiate(entry_point: EntryPoint) -> Guardrail | None:
+    """Load + instantiate one entry point into a Guardrail, or skip it.
+
+    Returns ``None`` (after logging) on any import/instantiation error or if the
+    loaded object is not Guardrail-shaped.
+    """
+    candidate = _load_and_construct(entry_point)
+    if candidate is None:
+        return None
     # Structural check only (runtime_checkable can't verify the signature) — the
     # real safety gate is that the objective guardrail validates every returned
     # value as a GuardrailResult and isolates exceptions.
@@ -110,3 +122,34 @@ def discover_rules() -> list[Guardrail]:
             if instance is not None:
                 plugins.append(instance)
     return plugins
+
+
+def discover_policy_sources() -> list[object]:
+    """Discover registered policy sources (Feature 4.4, group ``doberman.policy_sources``).
+
+    Loaded defensively like rules: an import/constructor failure, or an object
+    that is not policy-source-shaped (no ``snapshot``/``authority``), is logged
+    and skipped. Returns ``[]`` when nothing is installed. Core never imports a
+    source by name — the policy resolver merges whatever is registered.
+    """
+    # Local import avoids an engine<->policy import cycle at module load.
+    from doberman.policy.sources import _looks_like_policy_source
+
+    sources: list[object] = []
+    seen: set[str] = set()
+    for entry_point in _iter_entry_points(POLICY_SOURCE_GROUP):
+        key = f"{POLICY_SOURCE_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = _load_and_construct(entry_point)
+        if candidate is None:
+            continue
+        if not _looks_like_policy_source(candidate):
+            logger.warning(
+                "skipping policy source %r: not policy-source-shaped",
+                getattr(entry_point, "name", "?"),
+            )
+            continue
+        sources.append(candidate)
+    return sources
