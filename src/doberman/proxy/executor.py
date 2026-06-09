@@ -2,23 +2,54 @@
 
 Every tool call intercepted by the proxy MUST flow through
 :func:`decide_and_execute` — there is no other route to a downstream tool.
-For now the decision hook is a pass-through (observation only); Feature 2
-replaces it with the real decision engine. The fail-closed contract is
-already in force: any error on the way to the downstream tool yields an
-error result, never a silent success or a bypass.
+The decision engine (Feature 2) judges every normalized action: ``PASS``
+forwards, ``AUTH`` returns an authentication-required error (real auth
+arrives with Feature 7), ``BLOCK`` returns a policy error and the call is
+NEVER forwarded. Any engine failure is itself a ``BLOCK`` (fail closed).
 """
+
+import logging
+from datetime import datetime, timezone
 
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, TextContent
 
-from doberman.models import ReasonCode, SecurityObject, Verdict
+from doberman.engine.decision_engine import PASS_STUB, Guardrail, decide
+from doberman.models import (
+    Decision,
+    EvalContext,
+    GuardrailResult,
+    ReasonCode,
+    Risk,
+    SecurityObject,
+    Verdict,
+)
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
+
+_engine_logger = logging.getLogger("doberman.proxy.engine")
+
+# Guardrail implementations used by the proxy. Stubs (PASS/low) until
+# Feature 3 (objective rules) and Feature 9 (subjective baseline) replace
+# them. Module-level so tests can monkeypatch the policy without touching
+# the routing.
+DEFAULT_OBJECTIVE: Guardrail = PASS_STUB
+DEFAULT_SUBJECTIVE: Guardrail = PASS_STUB
 
 _DENIED_TEMPLATE = (
     "doberman: downstream call failed; action denied "
     "(reason: {reason}; error class: {error_class}; action id: {action_id})"
 )
+
+_VERDICT_TEMPLATES = {
+    Verdict.AUTH: (
+        "doberman: authentication required "
+        "(reasons: {reasons}; {explanation}; action id: {action_id})"
+    ),
+    Verdict.BLOCK: (
+        "doberman: blocked by policy (reasons: {reasons}; {explanation}; action id: {action_id})"
+    ),
+}
 
 
 def _denied_result(reason: ReasonCode, error_class: str, action_id: str) -> CallToolResult:
@@ -36,23 +67,76 @@ def _denied_result(reason: ReasonCode, error_class: str, action_id: str) -> Call
     )
 
 
+def _verdict_result(decision: Decision) -> CallToolResult:
+    """Agent-visible explanatory error for an AUTH/BLOCK decision."""
+    template = _VERDICT_TEMPLATES[decision.final_verdict]
+    return CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=template.format(
+                    reasons=", ".join(decision.reason_codes) or "unspecified",
+                    explanation=decision.explanation.strip() or "no further detail",
+                    action_id=decision.action_id,
+                ),
+            )
+        ],
+        isError=True,
+    )
+
+
+def _engine_failure_decision(action: SecurityObject) -> Decision:
+    """A synthetic fail-closed BLOCK used when the engine itself fails."""
+    blocked = GuardrailResult(
+        verdict=Verdict.BLOCK,
+        risk=Risk.high,
+        reason_codes=[ReasonCode.objective_guardrail_error],
+        explanation="Decision engine failed; failing closed.",
+    )
+    return Decision(
+        action_id=action.id,
+        final_verdict=Verdict.BLOCK,
+        final_risk=Risk.high,
+        objective=blocked,
+        subjective=None,
+        reason_codes=list(blocked.reason_codes),
+        explanation=blocked.explanation,
+        decided_at=datetime.now(timezone.utc),
+    )
+
+
 async def decide_and_execute(
     downstream: ClientSession,
     tool_name: str,
     arguments: dict | None,
 ) -> CallToolResult:
-    """Decide whether to execute a tool call, then (if allowed) forward it.
+    """Decide whether to execute a tool call, then act on the verdict.
 
-    This is THE chokepoint. The decision hook is currently a pass-through
-    stub — every call is forwarded — but the routing invariant (exactly one
-    path, through this function) and the fail-closed error handling are real.
+    This is THE chokepoint: normalize → decide → enforce. The downstream
+    forward happens in exactly one place, reachable only on a PASS decision.
     """
     action: SecurityObject = normalize(tool_name, arguments)
-    # --- decision hook (Feature 2 wires the engine in here) -----------------
-    verdict = Verdict.PASS  # pass-through stub; F2 replaces this with the engine result
-    # ------------------------------------------------------------------------
-    # Record every intercepted action (best-effort; never blocks execution).
-    log_action(action, verdict)
+
+    try:
+        decision = decide(action, DEFAULT_OBJECTIVE, DEFAULT_SUBJECTIVE, EvalContext())
+    except Exception:  # noqa: BLE001 — engine failure must fail closed, not crash
+        # BaseException (CancelledError, SystemExit) propagates on purpose —
+        # an unwind is fail-closed by construction (the forward below is
+        # never reached). Log the failure server-side for forensics; the
+        # exception text never reaches the agent.
+        _engine_logger.exception("decision engine raised; failing closed (action %s)", action.id)
+        decision = _engine_failure_decision(action)
+
+    # Record every intercepted action with its REAL verdict. Logged BEFORE
+    # the verdict gate — safe because log_action can never bypass the gate
+    # (it swallows its own failures and forwards nothing).
+    log_action(action, decision.final_verdict)
+
+    if decision.final_verdict is not Verdict.PASS:
+        # AUTH (F7 adds the real challenge) and BLOCK both stop here:
+        # the downstream call below is never reached.
+        return _verdict_result(decision)
+
     try:
         return await downstream.call_tool(tool_name, arguments or {})
     except Exception as exc:  # noqa: BLE001 — fail closed on ANY failure mode

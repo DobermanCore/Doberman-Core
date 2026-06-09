@@ -65,6 +65,18 @@ class Verdict(StrEnum):
     BLOCK = "BLOCK"
 
 
+# Severity orderings: combination may only ever move UP these scales
+# (raise-only). Shared by the Decision consistency check below and the
+# engine's combine().
+VERDICT_ORDER: dict[Verdict, int] = {Verdict.PASS: 0, Verdict.AUTH: 1, Verdict.BLOCK: 2}
+RISK_ORDER: dict[Risk, int] = {Risk.low: 0, Risk.medium: 1, Risk.high: 2, Risk.critical: 3}
+
+# Fail at import time if an enum member is ever added without an ordering —
+# a KeyError mid-decision would crash instead of failing closed.
+if set(VERDICT_ORDER) != set(Verdict) or set(RISK_ORDER) != set(Risk):  # pragma: no cover
+    raise RuntimeError("VERDICT_ORDER/RISK_ORDER must cover every enum member")
+
+
 class ReasonCode(StrEnum):
     """Stable reason-code constants attached to every non-PASS decision.
 
@@ -75,6 +87,9 @@ class ReasonCode(StrEnum):
     normalization_failed = "normalization_failed"
     unknown_tool = "unknown_tool"
     downstream_error = "downstream_error"
+    objective_guardrail_error = "objective_guardrail_error"
+    subjective_guardrail_error = "subjective_guardrail_error"
+    subjective_block_clamped = "subjective_block_clamped"
 
 
 class GuardrailResult(BaseModel):
@@ -82,6 +97,11 @@ class GuardrailResult(BaseModel):
 
     Explainability contract: every non-PASS verdict must carry at least one
     stable :class:`ReasonCode` and a human-readable explanation.
+
+    SECURITY: ``explanation`` is shown to the agent on AUTH/BLOCK. Guardrail
+    authors MUST NOT embed raw argument values, file contents, secret
+    material, or match excerpts in it — describe the rule, not the payload
+    (e.g. "path is under a protected directory", never the path's contents).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -99,6 +119,22 @@ class GuardrailResult(BaseModel):
             if not self.explanation.strip():
                 raise ValueError(f"a {self.verdict} verdict requires a human explanation")
         return self
+
+
+class EvalContext(BaseModel):
+    """Context handed to every guardrail evaluation (immutable).
+
+    Deliberately near-empty for now; later features add the security mode
+    (F6), role boundaries (F4), and the baseline handle (F9).
+
+    NOTE: ``frozen=True`` is shallow — the ``metadata`` dict itself is
+    mutable. Guardrails are pure functions by contract and MUST NOT mutate
+    it; the engine treats any mutation as a guardrail bug.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SecurityObject(BaseModel):
@@ -129,3 +165,57 @@ class SecurityObject(BaseModel):
     # enforced by normalize() and its tests, not by this type.
     raw_args_redacted: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Decision(BaseModel):
+    """The engine's final, immutable answer for one action.
+
+    This is the audit record's source of truth: it always carries the
+    contributing guardrail results, and any non-PASS outcome must be
+    explained (reason codes + human explanation). ``subjective`` is ``None``
+    when the execution rule skipped it (objective short-circuit).
+
+    Consistency invariant: ``final_verdict`` can never be WEAKER than the
+    objective guardrail's verdict (objective is never overridden downward).
+    It MAY be weaker than ``subjective.verdict`` — the execution rule clamps
+    a non-allowlisted subjective BLOCK to AUTH by design.
+
+    ``action_id`` must equal the ``SecurityObject.id`` of the action being
+    decided (chain of custody for audit).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    action_id: str = Field(min_length=1)
+    final_verdict: Verdict
+    final_risk: Risk
+    objective: GuardrailResult
+    subjective: GuardrailResult | None = None
+    reason_codes: list[ReasonCode] = Field(default_factory=list)
+    explanation: str = ""
+    decided_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def _non_pass_must_be_explained(self) -> "Decision":
+        if self.final_verdict is not Verdict.PASS:
+            if not self.reason_codes:
+                raise ValueError(
+                    f"a {self.final_verdict} decision requires at least one reason code"
+                )
+            if not self.explanation.strip():
+                raise ValueError(f"a {self.final_verdict} decision requires a human explanation")
+        return self
+
+    @model_validator(mode="after")
+    def _final_never_weaker_than_objective(self) -> "Decision":
+        if VERDICT_ORDER[self.final_verdict] < VERDICT_ORDER[self.objective.verdict]:
+            raise ValueError(
+                f"final_verdict {self.final_verdict} is weaker than the objective "
+                f"verdict {self.objective.verdict} — objective is never overridden downward"
+            )
+        if RISK_ORDER[self.final_risk] < RISK_ORDER[self.objective.risk]:
+            raise ValueError(
+                f"final_risk {self.final_risk} is lower than the objective "
+                f"risk {self.objective.risk} — risk is never lowered"
+            )
+        return self
