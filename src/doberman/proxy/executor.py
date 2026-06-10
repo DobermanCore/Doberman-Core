@@ -43,8 +43,14 @@ from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
 from doberman.storage.db import active_elevations, grant_elevation, mark_used
 from doberman.storage.log import record_decision
-from doberman.subjective.baseline import budget_allows_step_up, entity_id, observe
+from doberman.subjective.baseline import (
+    budget_allows_step_up,
+    entity_id,
+    observe,
+    total_observations,
+)
 from doberman.subjective.drift import note_allowed, surprise_blended
+from doberman.subjective.martingale import MONITOR_EVERY, note_belief, run_monitor
 from doberman.subjective.revealed import (
     grant_scope_token,
     has_scope_token,
@@ -222,17 +228,23 @@ async def _budget_or_surface(eid: str) -> bool:
     return budget_ok
 
 
-async def _observe_allowed(action: SecurityObject, eid: str) -> None:
-    """Record an allowed action in its entity baseline + drift monitor (best-effort).
+async def _observe_allowed(action: SecurityObject, eid: str, surprise_score: float) -> None:
+    """Record an allowed action in its entity baseline + monitors (best-effort).
 
     Only ever called after a successful forward — a blocked/denied attempt must
     never teach the baseline that it is "normal" (raise-only learning). The
     drift hook (ADWIN) feeds on the same allowed-only stream and may trigger a
-    raise-safe baseline refresh.
+    raise-safe refresh; the layer's belief (1 − surprise) feeds the SL8
+    Martingale self-monitor, which runs every MONITOR_EVERY observations and
+    can only ever refresh, hold, or surface for review — never loosen.
     """
     try:
         await observe(action, entity_id=eid, repo_root=REPO_ROOT)
         await note_allowed(action, entity_id=eid, repo_root=REPO_ROOT)
+        await note_belief(eid, 1.0 - surprise_score, repo_root=REPO_ROOT)
+        total = await total_observations(entity_id=eid, repo_root=REPO_ROOT)
+        if total and total % MONITOR_EVERY == 0:
+            await run_monitor(eid, repo_root=REPO_ROOT)
     except Exception:  # noqa: BLE001 — learning must never break the execution path
         _engine_logger.warning("baseline observe failed (action %s); continuing", action.id)
 
@@ -356,7 +368,7 @@ async def _handle_auth(
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _consume_single_use(action, grants, now)
-        await _observe_allowed(action, eid)
+        await _observe_allowed(action, eid, surprise_score)
     await _persist(decision, action, auth_result="approved", elevation_id=elevation_id, eid=eid)
     return result
 
@@ -407,6 +419,6 @@ async def decide_and_execute(
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _consume_single_use(action, grants, now)
-        await _observe_allowed(action, eid)
+        await _observe_allowed(action, eid, score)
     await _persist(decision, action, eid=eid)
     return result
