@@ -82,9 +82,7 @@ def test_repeat_challenge_approved_with_valid_2fa():
 def test_repeat_challenge_denied_when_refused():
     register_block("ent", "hmac:abc", ReasonCode.secret_export, now=_NOW)
     record = lookup("ent", "hmac:abc", now=_NOW)
-    result = challenge_repeat(
-        _turn(), record, prompter=RecordingPrompter(confirm=False), at=_NOW
-    )
+    result = challenge_repeat(_turn(), record, prompter=RecordingPrompter(confirm=False), at=_NOW)
     assert result.approved is False
 
 
