@@ -216,14 +216,17 @@ Persists every decision to a **local, append-only, redacted** audit trail — th
 - **Plain-language views** — `doberman log [--last N]` shows the recent decision history (verdict, action type, path class, reasons, auth result); `doberman memory` shows a redaction-safe profile — verdict mix, most-touched path classes, and how many distinct secrets have been *seen* (a count only, never a value).
 - **`AuditSink` seam (extension point)** — additional destinations (centralized audit, hosted monitoring, SIEM export) register via the `doberman.audit_sinks` entry-point group and receive **only the already-redacted record** the local log stores. A sink can never request raw data, and a slow or failing sink is isolated — it can never block or alter a decision. With nothing installed, only the local log runs.
 
-### Feature 9 — Subjective Guardrail & Workflow Baseline · `v0.9.0` _(in review)_
+### Feature 9 — Universal Subjective Layer · `v0.9.0` → `v0.12.0` _(in review)_
 
-The *second* guardrail: it learns what is normal for this repo/role/workflow and raises **unusual-for-you** actions to `AUTH`, catching context-specific anomalies even when no objective rule trips — plus the seam for advanced behavioral detection.
+The *second* guardrail, rebuilt as **one universal mechanism** (`v0.12.0` supersedes the basic `v0.9.0` baseline): it estimates whether an action is unusual or unwanted *for this deployment* — across application types (coding assistants, mail/workflow automations, browsing agents) with **no per-application code required** — and can only ever **raise** risk.
 
-- **Workflow baseline (update-on-allow)** — a local store of **class-level** habits (path classes, command verbs, destination hosts — never raw paths, prompts, or secrets), in the SQLite `baseline_counts` table. It is updated **only after an action is allowed**, so a blocked or denied attempt can never train the system to accept the very thing it should escalate (raise-only learning).
-- **Abnormality scorer** — scores how unusual an action is for the established baseline (a never-seen path class / destination / command is novel; a familiar one is not). **Cold start is conservative, not paranoid** — a sparse baseline yields only a mild signal for clearly-sensitive surfaces, so a fresh repo is not a storm of prompts; a new-but-benign area is a one-time `AUTH`, then normal.
-- **`SubjectiveGuardrail` + mode awareness** — maps the score to `PASS`/`AUTH` by the active mode's sensitivity (Strict/Paranoid step up sooner; **Light disables** the abnormality step-up). It is **raise-only** and **cannot hard-block** (the execution rule clamps a subjective block to `AUTH`) — escalation, not paternalism — so it can never weaken an objective verdict.
-- **`Detector` seam (extension point)** — advanced/behavioral (UEBA-style) detectors register via the `doberman.detectors` entry-point group and run in the subjective layer, bound by the same raise-only discipline and isolated on failure. With nothing installed, only the baseline signal runs.
+- **Action algebra + generic inference (always on)** — every action reduces to a small, fixed, versioned vocabulary (`capability`, `target_class`, `destination_class`, `blast_radius`, `provenance`, `classification_confidence`) inferred from universally observable signals: the tool's name, the argument shapes, and the destination. **Tool metadata is untrusted** (tool-poisoning defense): a description may raise sensitivity, never lower it; ambiguity resolves to the higher class at lower confidence; an unclassified action is treated as *elevated*, never benign.
+- **Refine-only adapters (extension point)** — an optional `AlgebraAdapter` (entry-point group `doberman.algebra_adapters`) can *sharpen* the classification for an application type it knows. Its output is **clamped raise-only** against the generic floor (it can never lower `target_class` or launder `provenance` to trusted); removing every adapter changes *precision*, never *coverage*.
+- **Per-entity streaming baseline + calibrated surprise** — habits are learned per **deployment instance** (a keyed HMAC of role+workspace, never a raw path), updated **on allowed actions only**, as class-level counts, Welford/EWMA numeric stats, and a Markov transition model. Surprise is an ensemble (frequency novelty, River **Half-Space Trees**, sequence surprisal, robust volume-z), each quantile-calibrated against the entity's own history so one threshold policy holds across application types. Cold start blends a **peer-group prior**; River **ADWIN** drift triggers a raise-safe baseline **refresh** (familiarity only ever discounts). A pinned-schema change forgets that tool's familiarity (the MCP rug-pull tie-in).
+- **Preference vector ("care")** — what a deployment cares about is an operator value: weights for `confidentiality`, `reversibility`, `interruption_tolerance`, `blast_radius` (`doberman prefs`); the four strength modes are presets over it. **Revealed-preference learning** nudges weights toward the operator's observed approve/deny tolerance — bounded, hysteresis-banded, and every *weakening* routes through the Feature 10 gate (2FA + ledger). TTL'd, session-only **scope tokens** absorb repeat asks after an approval.
+- **The scoring engine** — `score = (surprise × sensitivity × care)^⅓`, a geometric soft-AND that is high only when the terms are jointly high, mapped through the mode threshold scaled by interruption tolerance, with a sliding fatigue budget (≤ 1 subjective step-up / 20 actions per entity; a *denied* step-up never exhausts it). **The lethal-trifecta floor is deterministic and untouchable**: a sensitive/secret target + untrusted/mixed provenance + an external destination steps up regardless of score, preset (including Light), weights, budget, or tokens. Every step-up names its dominant driver in classes only — never a raw value.
+- **Martingale self-monitor** — the layer audits its **own** per-entity belief stream for entrenchment (He et al., NeurIPS 2025: under rational updating, belief changes are unpredictable from the prior). Entrenched-toward-safe triggers the raise-safe refresh; entrenched-toward-risky is surfaced with protection held; and the **self-improvement guard** blocks any preference nudge whose evidence is entrenched or insufficient — findings can never auto-loosen anything.
+- **`Detector` seam (extension point)** — advanced/behavioral (UEBA-style) detectors still register via `doberman.detectors`, bound by the same raise-only discipline and isolated on failure.
 
 ### Feature 10 — Policy-Drift Detection & Poisoning Defense · `v0.10.0` _(in review)_
 
@@ -238,12 +241,15 @@ Makes the **raise-only** invariant enforceable over time: learning and edits may
 
 ## Design invariants
 
-These two rules are non-negotiable and define the product:
+These rules are non-negotiable and define the product:
 
 1. **Fail closed.** On any error, uncertainty, or unhandled case, the action is **denied**. The agent must never reach a tool around Doberman.
 2. **Raise-only.** Guardrails and learning may automatically *tighten*; they may **never** silently *loosen*. Any weakening must go through an explicit, human-approved path.
+3. **Allowed-only learning.** Baselines and revealed preferences update only on actions that were actually allowed — a blocked or denied attempt can never teach the system that it is "normal".
+4. **The lethal-trifecta floor is absolute.** Sensitive data + untrusted provenance + an external destination always steps up — independent of scores, presets, preference weights, the fatigue budget, scope tokens, and revealed learning.
+5. **Self-monitoring never auto-loosens.** A Martingale entrenchment finding triggers a refresh, a hold, or operator review — never an automatic relaxation; self-updates whose evidence is not evidence-driven are blocked outright.
 
-Internally the policy core (`engine`, `roles`, `policy`, `storage`, `learning`) is decoupled from the proxy adapter, and the public core never depends on any private/commercial package — both enforced in CI by [import-linter](https://import-linter.readthedocs.io/).
+Internally the policy core (`engine`, `roles`, `policy`, `storage`, `subjective`, `auth`) is decoupled from the proxy adapter, and the public core never depends on any private/commercial package — both enforced in CI by [import-linter](https://import-linter.readthedocs.io/).
 
 ---
 
@@ -262,6 +268,20 @@ The version line maps to the development roadmap:
 ## Changelog
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+### `v0.12.0` — Universal Subjective Layer (SL1–SL9) — _Unreleased (in review)_
+
+Replaces the basic Feature 9 guardrail with one application-agnostic adaptive layer (see the feature section above). Built from F10 as a single feature branch, slice per commit:
+
+- **SL1** — the frozen action `Algebra` on `SecurityObject` (closed enums, conservative defaults, severity orders).
+- **SL2** — the always-on generic inference layer (capability/target from interface+arguments; destination/reversibility/provenance/blast from observable signals; untrusted-metadata discipline).
+- **SL3** — the refine-only `AlgebraAdapter` seam (`doberman.algebra_adapters`, clamped raise-only) + the conservative default and bounded novelty signal for unclassified actions.
+- **SL4** — per-entity streaming baselines (schema v3: entity-keyed counts, transitions, score history; keyed-HMAC entity ids), the calibrated surprise ensemble (HST + surprisal + robust z + novelty, quantile-weighted per entity), the sliding fatigue budget, peer-group cold start, and ADWIN drift refresh.
+- **SL5** — the preference vector (`doberman prefs`; modes as presets) and the `care` term.
+- **SL6** — revealed-preference learning (bounded, hysteresis-banded nudges; weakenings through the F10 gate + ledger; session-only TTL scope tokens, refused for the trifecta).
+- **SL7** — the universal scoring engine (geometric soft-AND, threshold scaled by interruption tolerance, deterministic **lethal-trifecta floor**, dominant-driver explanations).
+- **SL8** — the Martingale belief-entrenchment self-monitor + the self-improvement guard.
+- **SL9** — full decision-path integration (normalize populates the algebra; the proxy precomputes per-entity surprise/budget/tokens; legacy `doberman.learning` removed). New runtime deps: `river`, `numpy`, `scipy`.
 
 ### `v0.11.0` — Agent Integration: `doberman serve` — _Unreleased (in review)_
 
@@ -358,7 +378,7 @@ The **MVP core (Features 1–10) is feature-complete** and in review. Beyond it,
 | More adapters | Cursor / Claude-Code / OpenAI / LangChain / terminal / browser against the decoupled core. |
 | Hardening | signed (cryptographically tamper-evident) append-only logs; policy-as-code checked into the repo; a local web dashboard. |
 
-Advanced/hosted capabilities — premium detection, centralized audit, SSO/RBAC, org policy management, compliance — live in a separate commercial edition that attaches through the core extension points (`doberman.rules` / `detectors` / `auth_providers` / `audit_sinks` / `policy_sources` / `drift_observers`) **without core ever depending on it**.
+Advanced/hosted capabilities — premium detection, centralized audit, SSO/RBAC, org policy management, compliance — live in a separate commercial edition that attaches through the core extension points (`doberman.rules` / `detectors` / `algebra_adapters` / `auth_providers` / `audit_sinks` / `policy_sources` / `drift_observers`) **without core ever depending on it**.
 
 ---
 
