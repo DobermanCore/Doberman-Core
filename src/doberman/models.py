@@ -236,6 +236,13 @@ class ReasonCode(StrEnum):
     # Feature 9 — subjective guardrail & workflow baseline (+ detector seam).
     unusual_for_workflow = "unusual_for_workflow"
 
+    # Universal subjective layer (SL7) — three-axis scoring + trifecta floor.
+    unusual_for_deployment = "unusual_for_deployment"
+    confidentiality_sensitive_destination = "confidentiality_sensitive_destination"
+    irreversible_high_blast = "irreversible_high_blast"
+    lethal_trifecta = "lethal_trifecta"
+    unclassified_action = "unclassified_action"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).

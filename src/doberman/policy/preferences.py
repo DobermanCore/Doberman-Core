@@ -139,6 +139,21 @@ def _confidentiality_signal(algebra: Algebra) -> float:
     return 0.0
 
 
+def care_contributions(
+    vector: PreferenceVector, algebra: Algebra, reversibility: Reversibility
+) -> dict[str, float]:
+    """Per-concern care contributions (weight × signal), each in [0, 1].
+
+    Exposed so the engine can name WHICH concern drove a step-up (SL7.2
+    explainability) without re-deriving the signals.
+    """
+    return {
+        "confidentiality": vector.confidentiality * _confidentiality_signal(algebra),
+        "reversibility": vector.reversibility * _REVERSIBILITY_SIGNAL[reversibility],
+        "blast_radius": vector.blast_radius * _BLAST_SIGNAL[algebra.blast_radius],
+    }
+
+
 def care(vector: PreferenceVector, algebra: Algebra, reversibility: Reversibility) -> float:
     """The care term in [0, 1]: how much THIS deployment wants to be involved.
 
@@ -148,12 +163,8 @@ def care(vector: PreferenceVector, algebra: Algebra, reversibility: Reversibilit
     deliberately not part of this term — it scales the step-up threshold via
     :func:`effective_threshold` instead.
     """
-    contributions = (
-        vector.confidentiality * _confidentiality_signal(algebra),
-        vector.reversibility * _REVERSIBILITY_SIGNAL[reversibility],
-        vector.blast_radius * _BLAST_SIGNAL[algebra.blast_radius],
-    )
-    return max(0.0, min(1.0, max(contributions)))
+    contributions = care_contributions(vector, algebra, reversibility)
+    return max(0.0, min(1.0, max(contributions.values())))
 
 
 def effective_threshold(base: float, vector: PreferenceVector) -> float:
