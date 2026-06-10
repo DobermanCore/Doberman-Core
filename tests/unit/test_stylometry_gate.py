@@ -53,7 +53,9 @@ def _turn(intent: ApparentIntent = ApparentIntent.benign) -> TurnObject:
 
 
 def _ctx(style_pvalue: float | None = None, text: str = "hello") -> EvalContext:
-    metadata = {RAW_TURN_KEY: RawTurn(segments=(RawSegment(origin=SegmentOrigin.typed, text=text),))}
+    metadata = {
+        RAW_TURN_KEY: RawTurn(segments=(RawSegment(origin=SegmentOrigin.typed, text=text),))
+    }
     if style_pvalue is not None:
         metadata[STYLE_PVALUE_KEY] = style_pvalue
     return EvalContext(metadata=metadata)
@@ -204,9 +206,7 @@ async def test_tier0_still_blocks_from_turn_one(tmp_path):
 
 async def test_cold_start_cooccurrence_does_not_step_up(tmp_path):
     repeat.clear_repeat_cache()
-    outcome = await gate_turn(
-        _OUTLIER_SENSITIVE, entity_id="e", repo_root=str(tmp_path), ts=_TS
-    )
+    outcome = await gate_turn(_OUTLIER_SENSITIVE, entity_id="e", repo_root=str(tmp_path), ts=_TS)
     assert outcome.released is True
     assert outcome.verdict is Verdict.PASS
 
