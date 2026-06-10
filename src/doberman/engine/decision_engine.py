@@ -17,6 +17,7 @@ from doberman.models import (
     ReasonCode,
     Risk,
     SecurityObject,
+    TurnObject,
     Verdict,
 )
 
@@ -210,6 +211,108 @@ def decide(
         final_risk=combined.risk,
         objective=objective_result,
         subjective=subjective_result,  # the ORIGINAL result, for audit truth
+        reason_codes=list(combined.reason_codes),
+        explanation=combined.explanation,
+        decided_at=datetime.now(timezone.utc),
+    )
+
+
+# --- Feature 11 — turn gate: the engine's second invocation point ----------
+
+
+@runtime_checkable
+class TurnGuardrail(Protocol):
+    """A guardrail evaluated at the pre-inference hook, on a :class:`TurnObject`.
+
+    Same purity contract as :class:`Guardrail` (one result out, no side
+    effects). Tier 0 guardrails may return BLOCK; Tier 1 guardrails are
+    AUTH-only and any BLOCK they emit is clamped by :func:`decide_turn`.
+    """
+
+    def evaluate(self, turn: TurnObject, ctx: EvalContext) -> GuardrailResult:
+        """Judge one turn and return a verdict with reasons."""
+        ...
+
+
+def _safe_evaluate_turn(
+    guardrail: TurnGuardrail, turn: TurnObject, ctx: EvalContext
+) -> GuardrailResult:
+    """Run one turn guardrail; any failure becomes AUTH/high (turn_gate_error).
+
+    AUTH-first by design: an internal failure defers the turn to the human, never
+    a silent PASS (which would let an unscreened turn reach the model) and never a
+    hard BLOCK (a BLOCK on a *bug* would be an escape-hatch-less lockout). Mirrors
+    :func:`_safe_evaluate` but fails *upward* rather than closed-to-BLOCK.
+    """
+    try:
+        result = guardrail.evaluate(turn, ctx)
+    except Exception:  # noqa: BLE001 — the engine owns turn-guardrail failure
+        result = None
+    if not isinstance(result, GuardrailResult):
+        return GuardrailResult(
+            verdict=Verdict.AUTH,
+            risk=Risk.high,
+            reason_codes=[ReasonCode.turn_gate_error],
+            explanation="Turn guardrail failed to evaluate; deferring to the human (fail upward).",
+        )
+    return result
+
+
+def decide_turn(
+    turn: TurnObject,
+    tier0: TurnGuardrail,
+    tier1: TurnGuardrail,
+    ctx: EvalContext,
+) -> Decision:
+    """The turn-gate execution rule — Tier 0 first, raise-only, AUTH-first.
+
+    1. Run **Tier 0** (deterministic signatures). Any non-PASS verdict is final
+       and **Tier 1 never runs** (the same short-circuit as the action path's
+       objective layer). A Tier 0 error fails to AUTH (defer to the human).
+    2. Tier 0 ``PASS`` → run **Tier 1** (heuristic). Tier 1 is structurally
+       AUTH-only: a Tier 1 ``BLOCK`` is **clamped to AUTH** (mirror of the
+       subjective clamp) so the only hard-stop in the gate is Tier 0.
+
+    Returns a :class:`Decision` whose ``objective`` slot is the Tier 0 result and
+    ``subjective`` slot is the Tier 1 result (``None`` on Tier 0 short-circuit),
+    so the unified audit model and the never-weaker-than-objective invariant both
+    apply unchanged.
+    """
+    tier0_result = _safe_evaluate_turn(tier0, turn, ctx)
+
+    if tier0_result.verdict is not Verdict.PASS:
+        return Decision(
+            action_id=turn.id,
+            final_verdict=tier0_result.verdict,
+            final_risk=tier0_result.risk,
+            objective=tier0_result,
+            subjective=None,
+            reason_codes=list(tier0_result.reason_codes),
+            explanation=tier0_result.explanation,
+            decided_at=datetime.now(timezone.utc),
+        )
+
+    tier1_result = _safe_evaluate_turn(tier1, turn, ctx)
+
+    effective_tier1 = tier1_result
+    if tier1_result.verdict is Verdict.BLOCK:
+        effective_tier1 = GuardrailResult(
+            verdict=Verdict.AUTH,
+            risk=tier1_result.risk,
+            reason_codes=[*tier1_result.reason_codes, ReasonCode.subjective_block_clamped],
+            explanation=(
+                f"{tier1_result.explanation} "
+                "(Tier 1 block clamped to authentication; only Tier 0 may hard-block a turn)"
+            ).strip(),
+        )
+
+    combined = combine(tier0_result, effective_tier1)
+    return Decision(
+        action_id=turn.id,
+        final_verdict=combined.verdict,
+        final_risk=combined.risk,
+        objective=tier0_result,
+        subjective=tier1_result,  # the ORIGINAL result, for audit truth
         reason_codes=list(combined.reason_codes),
         explanation=combined.explanation,
         decided_at=datetime.now(timezone.utc),
