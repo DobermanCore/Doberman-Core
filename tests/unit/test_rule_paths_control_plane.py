@@ -65,9 +65,7 @@ def test_deleting_the_ledger_db_is_blocked(tmp_path):
 
 
 def test_deleting_the_whole_control_plane_dir_is_blocked(tmp_path):
-    result = RULE.evaluate(
-        _action(".doberman", action_type=ActionType.file_delete), _ctx(tmp_path)
-    )
+    result = RULE.evaluate(_action(".doberman", action_type=ActionType.file_delete), _ctx(tmp_path))
     assert result.verdict is Verdict.BLOCK
 
 
@@ -88,9 +86,7 @@ def test_reading_the_control_plane_is_blocked(tmp_path):
 
 def test_traversal_into_control_plane_is_caught(tmp_path):
     # a/b/../../.doberman/policies.yaml canonicalizes back into .doberman → BLOCK.
-    result = RULE.evaluate(
-        _action("a/b/../../.doberman/policies.yaml"), _ctx(tmp_path)
-    )
+    result = RULE.evaluate(_action("a/b/../../.doberman/policies.yaml"), _ctx(tmp_path))
     assert result.verdict is Verdict.BLOCK
 
 

@@ -168,7 +168,7 @@ The deterministic, conservative rules for universal danger — the guardrail tha
 
 - **Basic rules (raise-only, fail-upward):** four pure rules run on every action and combine strongest-wins:
   - **Secret leakage** — detects credential shapes (`AKIA…`, `sk-…`, `ghp_…`, PEM keys, `.env` `KEY=value`) and base64/hex-encoded carriers; secret material bound for an external destination → **BLOCK**, local secret access → **AUTH**. Two confidence tiers mean a benign high-entropy blob (a base64 asset) is never hard-blocked on encoding alone.
-  - **Protected paths** — matches the **canonicalized** target (resolving `..`, symlinks, and case via one shared helper) against blocked/sensitive globs; traversal, symlink, and case bypasses are caught, and a path escaping the repo root is blocked.
+  - **Protected paths** — matches the **canonicalized** target (resolving `..`, symlinks, and case via one shared helper) against blocked/sensitive globs; traversal, symlink, and case bypasses are caught, and a path escaping the repo root is blocked. Doberman's own control plane (`.doberman/` — the policy doc, the active role, and the DB holding the append-only policy-change ledger, decision log, baselines, and elevations) is a **hard-blocked** path, so a proxied agent cannot rewrite policy, expand its role, or wipe the ledger on disk and sidestep the Feature 10 gate.
   - **Destructive commands** — adversarially parses shell/git command lines (`;` `&&` `|` `$()` backticks, env prefixes, `sudo`); `rm -rf /`, disk wipes, and force-pushes to a protected branch → **BLOCK**; bulk deletes and opaque `bash -c` payloads → **AUTH** (never a guessed `PASS`).
   - **External destinations** — classifies network hosts on their **registered domain** (defeating punycode/homoglyph, `user@host`, IP-literal, and substring spoofs); unknown destinations → **AUTH**, which combines with a secret to a **BLOCK**.
 - **HMAC fingerprinting** — keyed (`HMAC-SHA256`) one-way fingerprints recognize secrets without ever storing them; the local key is generated on first use, kept `0600`, and never committed or logged.
@@ -278,6 +278,7 @@ This project keeps a changelog in the spirit of [Keep a Changelog](https://keepa
 - **Slice 10.2** — `apply_change` chokepoint: a weakening requires 2FA + a rendered diff and applies only on approval; strengthen/neutral apply automatically.
 - **Slice 10.3** — append-only policy-change ledger + `doberman policy-history` (records applied changes **and** denied weakening attempts).
 - **Slice 10.4** — the pluggable `DriftObserver` interface (the enterprise seam; discovered via `doberman.drift_observers`; redacted events; can never override the gate).
+- **Hardening** — the protected-path rule now **hard-blocks** Doberman's own control plane (`.doberman/` — the policy doc, the active role, and the DB holding the ledger, decision log, baselines, and elevations). This closes a bypass where a proxied agent could rewrite policy, expand its role, or delete the ledger directly on disk without ever going through the 2FA-gated `apply_change` chokepoint. (Doberman writes `.doberman/` via direct I/O, never through the proxy, so its own operation is unaffected.)
 
 ### `v0.9.0` — Subjective Guardrail & Workflow Baseline — _Unreleased (in review)_
 
