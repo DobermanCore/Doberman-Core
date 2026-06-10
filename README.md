@@ -18,7 +18,7 @@
 Doberman is a security layer for AI coding agents. It sits **on the tool-execution path** — the agent talks to Doberman, and Doberman talks to the real tools (filesystem, shell, git, network, package managers) over the [Model Context Protocol](https://modelcontextprotocol.io). Every meaningful action is intercepted, normalized into a redacted, structured **security object**, and run through a risk-based decision engine that returns one of three verdicts — **allow**, **authenticate**, or **block** — before the action is ever forwarded. The guiding principle is simple: *if Doberman isn't on the execution path, it's advisory, not protective.* Doberman is built to **fail closed** (any error or uncertainty denies the action) and to be **raise-only** (guardrails may automatically tighten, never silently loosen), so an agent can never reach a tool around it and a buggy rule can never make the system less safe.
 
 > ### Project status
-> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), the **objective guardrail** (Feature 3 — basic rules + the plugin seam), and **agent role policy** (Feature 4 — role boundaries + the policy-source seam) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), steps up authentication on sensitive or unknown actions, and escalates actions that cross the agent's role boundary. The subjective guardrail and the surfaces around the engine (capability scan, strength modes, real authentication, audit log) arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
+> **Alpha — pre-1.0, API unstable.** The interception layer (Feature 1), the decision engine (Feature 2), the **objective guardrail** (Feature 3 — basic rules + the plugin seam), **agent role policy** (Feature 4 — role boundaries + the policy-source seam), and **capability discovery** (Feature 5 — `doberman scan`) are implemented: Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), steps up authentication on sensitive or unknown actions, escalates actions that cross the agent's role boundary, and can report the agent's blast radius. The subjective guardrail and the remaining surfaces around the engine (strength modes, real authentication, audit log) arrive in upcoming versions (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
 
 ---
 
@@ -152,6 +152,14 @@ Makes the agent's **role** the top of the local authority hierarchy: an action t
 - **Cross-boundary escalation** — an out-of-scope target → **AUTH (`role_out_of_scope`)**, a role-blocked target → **BLOCK (`role_blocked_target`)**. The check lives in the objective layer; with no role configured it abstains, so role enforcement is opt-in.
 - **`PolicySource` seam (extension point)** — an ordered resolver merges policy from local sources (the agent role) plus any registered via the `doberman.policy_sources` entry-point group. The merge is **raise-only across sources** (a higher-authority source can only *tighten*), so an enterprise/org policy can outrank the role — without core importing the enterprise package.
 
+### Feature 5 — Capability Discovery & Local Risk Map · `v0.5.0` _(in review)_
+
+A read-only onboarding scan that answers "how much power does my agent actually have?" — the missing blast-radius picture.
+
+- **Capability enumeration** — infers capabilities from the downstream **tool list** (shell, filesystem read/write/delete, network, git, git-push, package install, env access) and a **read-only** scan of the repo's sensitive surface (`.env*`, `secrets/`, key material, `infra/`, CI workflows, migrations). Sensitive files are detected **by name/existence only — never read** — and nothing is ever written.
+- **Risk rating + map** — each capability is rated (`.env`/key material → critical; shell, fs-write/delete, network, git-push, package-install → high), and `doberman scan` renders a readable risk map (capability names, risk, path-class evidence — never secrets). The scan is depth- and count-bounded so a huge or hostile repo cannot make it run unbounded.
+- **`doberman` CLI** — the first command-line surface (`doberman scan`, `doberman version`), built with Typer.
+
 ---
 
 ## Design invariants
@@ -180,6 +188,11 @@ The version line maps to the development roadmap:
 ## Changelog
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+### `v0.5.0` — Capability Discovery & Local Risk Map — _Unreleased (in review)_
+
+- **Slice 5.1** — read-only capability enumeration (tools + sensitive-surface scan by name; depth/count bounded; never reads secret contents).
+- **Slice 5.2** — risk rating + `doberman scan` risk-map renderer + the `doberman` CLI (Typer).
 
 ### `v0.4.0` — Agent Role Policy & Boundaries — _Unreleased (in review)_
 
@@ -225,7 +238,6 @@ Upcoming versions add the guardrail *content* and the surfaces around the engine
 
 | Version | Theme |
 |---------|-------|
-| `v0.5.0` | **Capability discovery** — local scan and risk map. |
 | `v0.6.0` | **Policy checklist & strength modes** — Light / Balanced / Strict / Paranoid. |
 | `v0.7.0` | **Tiered authentication** — local confirmation, TOTP 2FA, narrow/temporary elevation. |
 | `v0.8.0` | **Decision log & audit** — local redacted decision log + storage interface. |
