@@ -7,8 +7,12 @@ around it. This is the deployable counterpart to :func:`doberman.proxy.mcp_proxy
 which builds the proxy object; this module gives it a transport.
 
 SECURITY: nothing here writes this process's stdout (that is the agent's MCP channel). AUTH
-challenges are routed to the controlling terminal via :class:`~doberman.auth.tty_prompter.TtyPrompter`
-so a prompt never touches the agent stream; with no terminal the challenge denies (fail closed).
+challenges surface as a topmost GUI dialog (:class:`~doberman.auth.gui_prompter.GuiPrompter`)
+first — when an agent's TUI owns the console, a terminal prompt opens "successfully" but is
+invisible and its input is contested, so the dialog is the only channel the human can actually
+see. With no display the chain falls back to the controlling terminal
+(:class:`~doberman.auth.tty_prompter.TtyPrompter`); with neither, the challenge denies (fail
+closed). A prompt never touches the agent stream.
 """
 
 import logging
@@ -16,6 +20,7 @@ import logging
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.server.stdio import stdio_server
 
+from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
 from doberman.auth.tty_prompter import TtyPrompter
 from doberman.proxy import executor
 from doberman.proxy.mcp_proxy import build_proxy_server
@@ -27,12 +32,13 @@ async def serve_stdio(downstream: StdioServerParameters, *, repo_root: str = "."
     """Spawn ``downstream``, then serve the Doberman proxy to the agent over stdio.
 
     Points the engine at ``repo_root`` (its ``.doberman/`` holds the active role, policy,
-    decision log, and elevation store) and installs the controlling-terminal prompter so an
-    ``AUTH`` challenge never reads/writes the agent's stdin/stdout. Returns when the agent
-    disconnects; any transport failure propagates (the caller exits non-zero, forwarding nothing).
+    decision log, and elevation store) and installs the GUI-first prompter chain so an
+    ``AUTH`` challenge never reads/writes the agent's stdin/stdout — and is actually
+    *visible* when the agent's TUI owns the console. Returns when the agent disconnects;
+    any transport failure propagates (the caller exits non-zero, forwarding nothing).
     """
     executor.REPO_ROOT = repo_root
-    executor.AUTH_PROMPTER = TtyPrompter()
+    executor.AUTH_PROMPTER = FallbackPrompter([GuiPrompter(), TtyPrompter()])
     logger.info("starting downstream: %s", downstream.command)
     async with stdio_client(downstream) as (downstream_read, downstream_write):
         async with ClientSession(downstream_read, downstream_write) as session:
