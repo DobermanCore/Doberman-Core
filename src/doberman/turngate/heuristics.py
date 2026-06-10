@@ -16,6 +16,14 @@ Classes:
 * ``obfuscated_content`` — sub-threshold encoded runs, zero-width characters, and
   long hex-escape sequences.
 * ``urgency_secrecy_framing`` — "don't tell the user", "do this quietly".
+* ``stylometric_outlier`` (TG3.2) — the co-occurrence gate: steps up ONLY when
+  the turn's style is an extreme outlier for this entity (hook-precomputed
+  empirical-CDF p-value ≤ :data:`STYLE_EXTREME_P`) **and** the apparent intent
+  touches a sensitive capability (credential / destructive / external-send).
+  Style-weird alone is **tagged, never gated** — the tag rides as a reason code
+  on a PASS result (people type differently tired/mobile/pasting; a device or
+  language switch is baseline drift, not an attack). With no precomputed
+  p-value (cold start, immature baseline, storage failure) the gate abstains.
 """
 
 import math
@@ -30,10 +38,15 @@ from doberman.models import (
     TurnObject,
     Verdict,
 )
-from doberman.turngate.raw import RawSegment, raw_turn_from_ctx
+from doberman.turngate.raw import RawSegment, raw_turn_from_ctx, style_pvalue_from_ctx
 
 _MAX_SCAN_CHARS = 200_000
 _PASS = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
+
+#: A style p-value at or below this is an *extreme* outlier for the entity.
+#: With the empirical (add-one) CDF this is roughly the rarest 1-in-50 turns —
+#: and even then the gate fires only on sensitive apparent intent.
+STYLE_EXTREME_P = 0.02
 
 #: Agent-directed phrasing (not mere imperative mood) — embedded-instruction tell.
 _AGENT_DIRECTED = re.compile(
@@ -94,6 +107,36 @@ def _looks_obfuscated(text: str) -> bool:
     return False
 
 
+def _stylometric_gate(turn: TurnObject, ctx: EvalContext) -> GuardrailResult:
+    """The TG3.2 co-occurrence gate: extreme style outlier × sensitive intent.
+
+    No precomputed p-value (cold start / immature baseline / failure) → abstain.
+    Outlier without sensitive intent → **tag-and-pass**: a PASS result carrying
+    ``stylometric_outlier`` as a reason code, which ``combine`` merges into the
+    decision (visible in the audit log, and the TG3.3 handoff's raw material)
+    without ever gating on style alone.
+    """
+    pvalue = style_pvalue_from_ctx(ctx)
+    if pvalue is None or pvalue > STYLE_EXTREME_P:
+        return _PASS
+    if turn.apparent_intent.is_sensitive:
+        return GuardrailResult(
+            verdict=Verdict.AUTH,
+            risk=Risk.medium,
+            reason_codes=[ReasonCode.stylometric_outlier],
+            explanation=(
+                "Prompt style is an extreme outlier for this entity AND the turn "
+                f"appears to involve {turn.apparent_intent.value} — approve this "
+                "turn before it reaches the model?"
+            ),
+        )
+    return GuardrailResult(
+        verdict=Verdict.PASS,
+        risk=Risk.low,
+        reason_codes=[ReasonCode.stylometric_outlier],
+    )
+
+
 def _scan_segment(segment: RawSegment) -> GuardrailResult:
     text = segment.text[:_MAX_SCAN_CHARS]
     worst = _PASS
@@ -120,15 +163,17 @@ def _scan_segment(segment: RawSegment) -> GuardrailResult:
 class Tier1HeuristicGuardrail:
     """The AUTH-only Tier 1 turn guardrail (the recall layer).
 
-    Scans each raw segment and reduces results raise-only; the only verdicts it
-    can ever produce are PASS and AUTH. Abstains (PASS) with no in-memory raw turn.
+    Runs the stylometric co-occurrence gate (off the hook-precomputed p-value in
+    the context — no raw text needed), then scans each raw segment, reducing
+    results raise-only; the only verdicts it can ever produce are PASS and AUTH.
+    The text scan abstains (PASS) with no in-memory raw turn.
     """
 
     def evaluate(self, turn: TurnObject, ctx: EvalContext) -> GuardrailResult:
+        worst = _stylometric_gate(turn, ctx)
         raw = raw_turn_from_ctx(ctx)
         if raw is None:
-            return _PASS
-        worst = _PASS
+            return worst
         for segment in raw.segments:
             worst = combine(worst, _scan_segment(segment))
         # Structural guarantee: Tier 1 never hard-blocks (defensive — _flag only

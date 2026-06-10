@@ -39,11 +39,11 @@ from doberman.models import (
     TurnObject,
     Verdict,
 )
-from doberman.turngate import repeat
+from doberman.turngate import repeat, stylometry
 from doberman.turngate.heuristics import Tier1HeuristicGuardrail
 from doberman.turngate.log import record_turn_decision
 from doberman.turngate.normalize import normalize_turn
-from doberman.turngate.raw import RAW_TURN_KEY
+from doberman.turngate.raw import RAW_TURN_KEY, STYLE_PVALUE_KEY
 from doberman.turngate.signatures import Tier0SignatureGuardrail
 
 logger = logging.getLogger("doberman.turngate.hook")
@@ -227,16 +227,39 @@ async def gate_turn(
 
     try:
         turn, raw = normalize_turn(prompt, entity_id=entity_id, ts=when, segments=segments)
-        ctx = EvalContext(metadata={RAW_TURN_KEY: raw})
+        metadata: dict = {RAW_TURN_KEY: raw}
+        # TG3.2: precompute the stylometric p-value (async DB read) so the
+        # synchronous Tier 1 guardrail can gate on it — the same pattern the
+        # action path uses for the SL4 surprise term. None (immature baseline /
+        # failure) ⇒ the key is absent and the stylometric gate abstains.
+        style_p = await stylometry.style_pvalue(
+            raw.full_text, entity_id=entity_id, repo_root=repo_root
+        )
+        if style_p is not None:
+            metadata[STYLE_PVALUE_KEY] = style_p
+        ctx = EvalContext(metadata=metadata)
         record = repeat.lookup(entity_id, turn.prompt_fingerprint, now=when)
         if record is not None:
-            return await _handle_repeat(
+            outcome = await _handle_repeat(
                 turn, record, prompter=prompter, repo_root=repo_root, entity_id=entity_id, when=when
             )
-        decision = decide_turn(turn, tier0, tier1, ctx)
-        return await _enforce(
-            turn, decision, prompter=prompter, repo_root=repo_root, entity_id=entity_id, when=when
-        )
+        else:
+            decision = decide_turn(turn, tier0, tier1, ctx)
+            outcome = await _enforce(
+                turn,
+                decision,
+                prompter=prompter,
+                repo_root=repo_root,
+                entity_id=entity_id,
+                when=when,
+            )
+        if outcome.released:
+            # Released turns ONLY teach the prompt-style baseline — a blocked
+            # or denied turn never teaches "normal" (the SL4 invariant).
+            await stylometry.observe_style(
+                raw.full_text, entity_id=entity_id, repo_root=repo_root, now=when
+            )
+        return outcome
     except Exception:  # noqa: BLE001 — fail toward the human, never silent-pass
         logger.warning("turn gate raised; failing toward the human (AUTH)")
         fallback_turn = TurnObject(
