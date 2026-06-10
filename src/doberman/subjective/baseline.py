@@ -424,6 +424,18 @@ async def _novelty_score(conn, eid: str, action: SecurityObject) -> float:
     return worst
 
 
+async def novelty_score(action: SecurityObject, *, entity_id: str, repo_root: str) -> float:
+    """Public frequency-novelty read for ``action`` (drift monitoring input).
+
+    Pure read; failure → 1.0 (fail toward caution).
+    """
+    try:
+        async with open_db(repo_root) as conn:
+            return await _novelty_score(conn, entity_id, action)
+    except Exception:  # noqa: BLE001 — a read failure must never crash the path
+        return 1.0
+
+
 async def _surprisal_score(conn, eid: str, action: SecurityObject) -> float | None:
     """Markov sequence surprisal −log₂P(state|last), scaled to [0,1].
 
