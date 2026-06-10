@@ -128,6 +128,15 @@ def _budget_ok(ctx: EvalContext) -> bool:
     return True
 
 
+def _scope_token_active(ctx: EvalContext) -> bool:
+    """Whether an SL6 "approve for this task" token covers this action.
+
+    Tokens suppress only the SCORE path (a bounded, TTL'd nuisance reduction
+    granted by an operator approval) — never the trifecta floor or detectors.
+    """
+    return bool(isinstance(ctx.metadata, dict) and ctx.metadata.get("scope_token") is True)
+
+
 def _step_up_result(
     surprise: float,
     sensitivity_term: float,
@@ -201,9 +210,9 @@ def _score_result(action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
     if score < effective_threshold(thresholds.abnormality_threshold, prefs):
         return _PASS
 
-    # 5. The fatigue budget suppresses only this score-path step-up; the
-    #    overflow is logged by the proxy, which computed budget_ok.
-    if not _budget_ok(ctx):
+    # 5. The fatigue budget and any live SL6 scope token suppress only this
+    #    score-path step-up; the overflow/consumption is logged by the proxy.
+    if not _budget_ok(ctx) or _scope_token_active(ctx):
         return _PASS
 
     return _step_up_result(surprise, sensitivity_term, care_terms, algebra)

@@ -45,6 +45,12 @@ from doberman.storage.db import active_elevations, grant_elevation, mark_used
 from doberman.storage.log import record_decision
 from doberman.subjective.baseline import budget_allows_step_up, entity_id, observe
 from doberman.subjective.drift import note_allowed, surprise_blended
+from doberman.subjective.revealed import (
+    grant_scope_token,
+    has_scope_token,
+    maybe_nudge,
+    record_feedback,
+)
 
 _engine_logger = logging.getLogger("doberman.proxy.engine")
 
@@ -144,6 +150,7 @@ def _build_ctx(
     *,
     budget_ok: bool = True,
     eid: str = "",
+    scope_token: bool = False,
 ) -> EvalContext:
     """Assemble the EvalContext for one decision.
 
@@ -163,10 +170,33 @@ def _build_ctx(
             "elevations": grants,
             "surprise": surprise_score,
             "budget_ok": budget_ok,
+            "scope_token": scope_token,
             "entity_id": eid,
             "preferences": load_preferences(REPO_ROOT),
         },
     )
+
+
+async def _learn_from_auth(
+    action: SecurityObject, decision: Decision, approved: bool, eid: str
+) -> None:
+    """SL6 hook: a SUBJECTIVE step-up's outcome is a revealed-preference label.
+
+    Only fires when the subjective layer drove the ask (objective PASSed but
+    the final verdict was AUTH). On approval a TTL'd, session-only scope token
+    covers repeats of this exact algebra point (never for the trifecta), and
+    accumulated feedback may propose a bounded weight nudge — every weakening
+    still routes through the F10 gate. Best-effort, never breaks the path.
+    """
+    if decision.subjective is None or decision.objective.verdict is not Verdict.PASS:
+        return
+    try:
+        await record_feedback(action, approved, entity_id=eid, repo_root=REPO_ROOT)
+        if approved:
+            grant_scope_token(action, list(decision.reason_codes), entity_id=eid)
+            await maybe_nudge(entity_id=eid, repo_root=REPO_ROOT, prompter=AUTH_PROMPTER)
+    except Exception:  # noqa: BLE001 — learning must never break the execution path
+        _engine_logger.warning("revealed-preference hook failed (action %s); continuing", action.id)
 
 
 async def _surprise_or_caution(action: SecurityObject, eid: str) -> float:
@@ -286,7 +316,9 @@ async def _handle_auth(
     """Run the tiered challenge for an AUTH decision and act on the outcome."""
     auth_result = run_auth_challenge(decision, action, prompter=AUTH_PROMPTER)
     # Approval is bound to THIS action id — never honor a result for another call.
-    if not auth_result.approved or auth_result.action_id != action.id:
+    approved = auth_result.approved and auth_result.action_id == action.id
+    await _learn_from_auth(action, decision, approved, eid)
+    if not approved:
         await _persist(decision, action, auth_result="denied", eid=eid)
         return _verdict_result(decision)
 
@@ -350,8 +382,10 @@ async def decide_and_execute(
     grants = tuple(await active_elevations(REPO_ROOT, now))
     score = await _surprise_or_caution(action, eid)
     budget_ok = await _budget_or_surface(eid)
+    token = has_scope_token(action, entity_id=eid)
     decision = _safe_decide(
-        action, _build_ctx(arguments, grants, score, budget_ok=budget_ok, eid=eid)
+        action,
+        _build_ctx(arguments, grants, score, budget_ok=budget_ok, eid=eid, scope_token=token),
     )
 
     # Record every intercepted action with its REAL verdict. Logged before the
