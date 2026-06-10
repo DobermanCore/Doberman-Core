@@ -45,10 +45,16 @@ _FAMILIAR_AT = 3
 
 _PATH_ACTIONS = frozenset({ActionType.file_read, ActionType.file_write, ActionType.file_delete})
 
+# Transitional (until SL9.1 replaces this module with the per-entity baseline
+# in doberman.subjective.baseline): the legacy global baseline lives under a
+# fixed entity bucket in the now entity-keyed table.
+_LEGACY_ENTITY = "__global__"
+
 _UPSERT_COUNT = (
-    "INSERT INTO baseline_counts (feature_key, count, first_seen, last_seen) "
-    "VALUES (?, 1, ?, ?) "
-    "ON CONFLICT(feature_key) DO UPDATE SET count = count + 1, last_seen = excluded.last_seen"
+    "INSERT INTO baseline_counts (entity_id, feature_key, count, first_seen, last_seen) "
+    "VALUES (?, ?, 1, ?, ?) "
+    "ON CONFLICT(entity_id, feature_key) "
+    "DO UPDATE SET count = count + 1, last_seen = excluded.last_seen"
 )
 
 
@@ -95,7 +101,7 @@ async def observe(action: SecurityObject, *, repo_root: str, now: datetime | Non
     try:
         async with open_db(repo_root) as conn:
             for key in keys:
-                await conn.execute(_UPSERT_COUNT, (key, stamp, stamp))
+                await conn.execute(_UPSERT_COUNT, (_LEGACY_ENTITY, key, stamp, stamp))
             await conn.commit()
     except Exception:  # noqa: BLE001 — learning must never break the execution path
         return
@@ -108,7 +114,8 @@ async def frequency(key: str, *, repo_root: str) -> int:
     try:
         async with open_db(repo_root) as conn:
             async with conn.execute(
-                "SELECT count FROM baseline_counts WHERE feature_key = ?", (key,)
+                "SELECT count FROM baseline_counts WHERE entity_id = ? AND feature_key = ?",
+                (_LEGACY_ENTITY, key),
             ) as cur:
                 row = await cur.fetchone()
     except Exception:  # noqa: BLE001 — a read failure must never crash the decision path

@@ -40,12 +40,16 @@ from doberman.auth.elevation import DEFAULT_TTL_SECONDS, ElevationGrant
 CONFIG_DIR = ".doberman"
 DB_FILE = "doberman.db"
 
-#: Current schema version. Bumped to 2 in Feature 8 (decision log + stores).
-SCHEMA_VERSION = 2
+#: Current schema version. Bumped to 2 in Feature 8 (decision log + stores) and
+#: to 3 for the universal subjective layer (SL4/SL6/SL8: baselines re-keyed by
+#: entity, transitions, score history, preference feedback).
+SCHEMA_VERSION = 3
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
-# adds the new tables (a forward-only, additive migration). No column ever holds
-# a raw secret/path/file/prompt — see the module docstring.
+# adds the new tables (a forward-only, additive migration; the one re-shape —
+# baseline_counts gaining its entity_id key — is handled by _migrate_legacy). No
+# column ever holds a raw secret/path/file/prompt — see the module docstring.
+# entity_id values are keyed HMAC fingerprints, never raw role/path strings.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
@@ -74,7 +78,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     reason_codes_json TEXT,
     auth_required     INTEGER NOT NULL DEFAULT 0,
     auth_result       TEXT,
-    elevation_id      TEXT
+    elevation_id      TEXT,
+    entity_id         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS secret_fingerprints (
@@ -86,10 +91,48 @@ CREATE TABLE IF NOT EXISTS secret_fingerprints (
 );
 
 CREATE TABLE IF NOT EXISTS baseline_counts (
-    feature_key TEXT PRIMARY KEY,
+    entity_id   TEXT NOT NULL,
+    feature_key TEXT NOT NULL,
+    role        TEXT,
     count       INTEGER NOT NULL DEFAULT 0,
+    mean        REAL NOT NULL DEFAULT 0,
+    m2          REAL NOT NULL DEFAULT 0,
+    ewma_var    REAL NOT NULL DEFAULT 0,
     first_seen  TEXT,
-    last_seen   TEXT
+    last_seen   TEXT,
+    PRIMARY KEY (entity_id, feature_key)
+);
+
+CREATE TABLE IF NOT EXISTS baseline_transitions (
+    entity_id  TEXT NOT NULL,
+    from_state TEXT NOT NULL,
+    to_state   TEXT NOT NULL,
+    count      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (entity_id, from_state, to_state)
+);
+
+CREATE TABLE IF NOT EXISTS baseline_state (
+    entity_id  TEXT PRIMARY KEY,
+    last_state TEXT,
+    prev_state TEXT
+);
+
+CREATE TABLE IF NOT EXISTS score_history (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id TEXT NOT NULL,
+    ts        TEXT NOT NULL,
+    kind      TEXT NOT NULL,
+    value     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_score_history ON score_history (entity_id, kind, id);
+
+CREATE TABLE IF NOT EXISTS preference_feedback (
+    entity_id  TEXT NOT NULL,
+    dimension  TEXT NOT NULL,
+    approvals  INTEGER NOT NULL DEFAULT 0,
+    denials    INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    PRIMARY KEY (entity_id, dimension)
 );
 
 CREATE TABLE IF NOT EXISTS policy_changes (
@@ -122,10 +165,35 @@ def _restrict_permissions(path: Path) -> None:
         pass
 
 
+async def _table_columns(conn: aiosqlite.Connection, table: str) -> list[str]:
+    """Column names of ``table`` ([] when the table does not exist)."""
+    async with conn.execute(f"PRAGMA table_info({table})") as cur:  # noqa: S608 — fixed names
+        rows = await cur.fetchall()
+    return [row[1] for row in rows]
+
+
+async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
+    """v2 → v3: baselines become per-entity; decisions gain ``entity_id``.
+
+    The old global ``baseline_counts`` (PK ``feature_key`` only) cannot be
+    re-keyed in place, so it is DROPPED and recreated per-entity. Losing the
+    learned counts is raise-SAFE by construction: a colder baseline scores
+    everything as MORE novel (more step-ups, never fewer) until it relearns.
+    """
+    counts_cols = await _table_columns(conn, "baseline_counts")
+    if counts_cols and "entity_id" not in counts_cols:
+        await conn.execute("DROP TABLE baseline_counts")
+    decision_cols = await _table_columns(conn, "decisions")
+    if decision_cols and "entity_id" not in decision_cols:
+        await conn.execute("ALTER TABLE decisions ADD COLUMN entity_id TEXT")
+
+
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:
     # Additive migration: executescript creates any missing tables on an older
     # DB without touching existing data, then we record the current version
     # (replace the single row so an upgraded DB reflects the new schema).
+    # The one non-additive change (per-entity baselines) runs first.
+    await _migrate_legacy(conn)
     await conn.executescript(_SCHEMA)
     await conn.execute("DELETE FROM schema_version")
     await conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
