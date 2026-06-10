@@ -119,6 +119,20 @@ async def _feedback_rates(entity_id: str, repo_root: str) -> dict[str, tuple[int
     return {str(r[0]): (int(r[1]), int(r[2])) for r in rows}
 
 
+async def _record_guard_block(entity_id: str, repo_root: str, now: datetime | None) -> None:
+    """Surface a guard-blocked proposal for review (redacted, best-effort)."""
+    stamp = (now or datetime.now(timezone.utc)).isoformat()
+    try:
+        async with open_db(repo_root) as conn:
+            await conn.execute(
+                "INSERT INTO score_history (entity_id, ts, kind, value) VALUES (?, ?, ?, ?)",
+                (entity_id, stamp, "martingale_review", 1.0),
+            )
+            await conn.commit()
+    except Exception:  # noqa: BLE001 — best-effort surfacing
+        logger.warning("guard-block record failed (entity %s)", entity_id[:12])
+
+
 async def _reset_feedback(entity_id: str, dimensions: list[str], repo_root: str) -> None:
     """Zero the counters after a nudge attempt — evidence is never reused."""
     try:
@@ -180,15 +194,32 @@ async def maybe_nudge(
 ) -> PreferenceVector | None:
     """Propose and (if approved) apply bounded weight nudges from feedback.
 
-    Returns the new vector when a change was applied, else ``None``. Every
-    weakening goes through :func:`apply_change` (diff + 2FA + append-only
-    ledger, denied attempts included); strengthenings auto-apply. Counters for
-    the involved dimensions reset after the attempt either way.
+    Returns the new vector when a change was applied, else ``None``. Two
+    layers gate every proposal: the SL8.2 **Martingale self-improvement
+    guard** blocks updates whose driving belief stream is entrenched or too
+    short (regardless of direction), then every weakening goes through
+    :func:`apply_change` (diff + 2FA + append-only ledger, denied attempts
+    included); strengthenings auto-apply. Counters for the involved dimensions
+    reset after the attempt either way.
     """
+    from doberman.subjective.martingale import guard_self_update, read_beliefs
+
     rates = await _feedback_rates(entity_id, repo_root)
     current = load_preferences(repo_root)
     proposals = _proposed_changes(rates, current)
     if not proposals:
+        return None
+
+    beliefs = await read_beliefs(entity_id, repo_root=repo_root)
+    guard = guard_self_update(beliefs)
+    if not guard.allowed:
+        logger.warning(
+            "preference nudge blocked by the self-improvement guard (entity %s): %s",
+            entity_id[:12],
+            guard.reason,
+        )
+        await _record_guard_block(entity_id, repo_root, now)
+        await _reset_feedback(entity_id, list(proposals), repo_root)
         return None
 
     before, after = _gate_states(current, proposals)

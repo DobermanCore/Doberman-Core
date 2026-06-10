@@ -9,6 +9,7 @@ session-only, suppress only the score path, and are refused for the trifecta.
 
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pyotp
 
 from doberman.auth import totp
@@ -93,12 +94,24 @@ async def _feed(root, approved, times):
         )
 
 
+async def _seed_rational_beliefs(root, eid=_EID, n=60):
+    """A seeded, evidence-driven (martingale) belief stream so the SL8.2
+    self-improvement guard lets the nudge through to the F10 gate."""
+    from doberman.subjective.martingale import note_belief
+
+    deltas = np.random.default_rng(42).normal(0.0, 0.02, n)
+    beliefs = np.clip(0.5 + np.cumsum(deltas), 0.01, 0.99)
+    for value in beliefs:
+        await note_belief(eid, float(value), repo_root=root, now=_NOW)
+
+
 # --- gated nudges -----------------------------------------------------------------
 
 
 async def test_approve_history_lowers_nuisance_asks_only_via_the_gate(tmp_path):
     root = str(tmp_path)
     await _feed(root, True, MIN_SAMPLES + 5)
+    await _seed_rational_beliefs(root)
     code = _enrolled_code()
     prompter = ScriptedPrompter(confirm=True, code=code)
     updated = await maybe_nudge(entity_id=_EID, repo_root=root, prompter=prompter, now=_NOW)
@@ -113,6 +126,7 @@ async def test_approve_history_lowers_nuisance_asks_only_via_the_gate(tmp_path):
 async def test_denied_weakening_changes_nothing_but_is_ledgered(tmp_path):
     root = str(tmp_path)
     await _feed(root, True, MIN_SAMPLES + 5)
+    await _seed_rational_beliefs(root)
     updated = await maybe_nudge(
         entity_id=_EID, repo_root=root, prompter=ScriptedPrompter(confirm=False), now=_NOW
     )
@@ -127,6 +141,7 @@ async def test_denied_weakening_changes_nothing_but_is_ledgered(tmp_path):
 async def test_deny_history_tightens_automatically_without_a_prompt(tmp_path):
     root = str(tmp_path)
     await _feed(root, False, MIN_SAMPLES + 5)
+    await _seed_rational_beliefs(root)
     prompter = ScriptedPrompter(confirm=False)  # would refuse if ever consulted
     updated = await maybe_nudge(entity_id=_EID, repo_root=root, prompter=prompter, now=_NOW)
     assert updated is not None
@@ -149,6 +164,7 @@ async def test_small_samples_and_hysteresis_are_no_ops(tmp_path):
 async def test_evidence_is_never_reused_after_a_nudge(tmp_path):
     root = str(tmp_path)
     await _feed(root, False, MIN_SAMPLES + 5)
+    await _seed_rational_beliefs(root)
     first = await maybe_nudge(entity_id=_EID, repo_root=root, now=_NOW)
     assert first is not None
     # The counters were reset: the same evidence cannot drive a second nudge.
