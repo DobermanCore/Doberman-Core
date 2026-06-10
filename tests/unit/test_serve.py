@@ -15,6 +15,7 @@ from mcp import StdioServerParameters
 from typer.testing import CliRunner
 
 import doberman.cli.main as cli
+from doberman.auth.elicitation_prompter import ElicitationPrompter
 from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
 from doberman.auth.tty_prompter import TtyPrompter
 from doberman.proxy import executor
@@ -123,13 +124,15 @@ def test_stderr_logging_keeps_stdout_clean():
 # --- serve_stdio wiring ----------------------------------------------------------
 
 
-async def test_serve_stdio_sets_repo_root_and_gui_first_prompter(monkeypatch):
-    """serve_stdio points the engine at repo_root and installs a GUI-first prompter, then runs.
+async def test_serve_stdio_sets_repo_root_and_elicitation_first_prompter(monkeypatch):
+    """serve_stdio points the engine at repo_root and installs the challenge chain, then runs.
 
-    GUI first is load-bearing: when an agent's TUI (Claude Code etc.) owns the console,
-    CONIN$/CONOUT$ still OPEN successfully but the prompt is invisible and input is
-    contested — so a TTY-first chain would never reach the dialog the human can see.
-    The terminal is only the fallback for headless/SSH sessions with no display.
+    The order is load-bearing: elicitation renders the challenge INSIDE the agent client
+    (best UX, works remotely) but only for clients that support it; the GUI dialog covers
+    desktop sessions (and is the only 2FA-code channel — the MCP spec forbids sensitive
+    data via elicitation); the terminal is the last resort for headless/SSH sessions.
+    A TTY-first chain would never fall through: the agent-owned console OPENS successfully
+    even though its prompt is invisible.
     """
     ran: dict = {}
 
@@ -171,7 +174,11 @@ async def test_serve_stdio_sets_repo_root_and_gui_first_prompter(monkeypatch):
 
     assert executor.REPO_ROOT == "/some/repo"
     assert isinstance(executor.AUTH_PROMPTER, FallbackPrompter)
-    assert [type(p) for p in executor.AUTH_PROMPTER.prompters] == [GuiPrompter, TtyPrompter]
+    assert [type(p) for p in executor.AUTH_PROMPTER.prompters] == [
+        ElicitationPrompter,
+        GuiPrompter,
+        TtyPrompter,
+    ]
     assert ran["session_args"] == ("d_read", "d_write")  # downstream streams wired into the session
     assert ran["initialized"] is True
     assert ran["run"] == ("a_read", "a_write", "init-opts")
