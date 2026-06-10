@@ -15,6 +15,7 @@ from mcp import StdioServerParameters
 from typer.testing import CliRunner
 
 import doberman.cli.main as cli
+from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
 from doberman.auth.tty_prompter import TtyPrompter
 from doberman.proxy import executor
 from doberman.proxy import serve as serve_mod
@@ -122,8 +123,14 @@ def test_stderr_logging_keeps_stdout_clean():
 # --- serve_stdio wiring ----------------------------------------------------------
 
 
-async def test_serve_stdio_sets_repo_root_and_tty_prompter(monkeypatch):
-    """serve_stdio points the engine at repo_root and installs a non-stdio prompter, then runs."""
+async def test_serve_stdio_sets_repo_root_and_gui_first_prompter(monkeypatch):
+    """serve_stdio points the engine at repo_root and installs a GUI-first prompter, then runs.
+
+    GUI first is load-bearing: when an agent's TUI (Claude Code etc.) owns the console,
+    CONIN$/CONOUT$ still OPEN successfully but the prompt is invisible and input is
+    contested — so a TTY-first chain would never reach the dialog the human can see.
+    The terminal is only the fallback for headless/SSH sessions with no display.
+    """
     ran: dict = {}
 
     @asynccontextmanager
@@ -163,7 +170,8 @@ async def test_serve_stdio_sets_repo_root_and_tty_prompter(monkeypatch):
     await serve_mod.serve_stdio(params, repo_root="/some/repo")
 
     assert executor.REPO_ROOT == "/some/repo"
-    assert isinstance(executor.AUTH_PROMPTER, TtyPrompter)
+    assert isinstance(executor.AUTH_PROMPTER, FallbackPrompter)
+    assert [type(p) for p in executor.AUTH_PROMPTER.prompters] == [GuiPrompter, TtyPrompter]
     assert ran["session_args"] == ("d_read", "d_write")  # downstream streams wired into the session
     assert ran["initialized"] is True
     assert ran["run"] == ("a_read", "a_write", "init-opts")
