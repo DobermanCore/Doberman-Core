@@ -17,6 +17,7 @@ Any engine failure is itself a ``BLOCK`` (fail closed). The approval is bound to
 exactly one action id (no replay onto a different call).
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -326,7 +327,12 @@ async def _handle_auth(
     eid: str,
 ) -> CallToolResult:
     """Run the tiered challenge for an AUTH decision and act on the outcome."""
-    auth_result = run_auth_challenge(decision, action, prompter=AUTH_PROMPTER)
+    # Off the event loop: the challenge blocks for a human, and an elicitation
+    # answer arrives over the very session this loop services — waiting in-loop
+    # would deadlock it (and freeze the proxy during GUI/TTY prompts too).
+    auth_result = await asyncio.to_thread(
+        run_auth_challenge, decision, action, prompter=AUTH_PROMPTER
+    )
     # Approval is bound to THIS action id — never honor a result for another call.
     approved = auth_result.approved and auth_result.action_id == action.id
     await _learn_from_auth(action, decision, approved, eid)
