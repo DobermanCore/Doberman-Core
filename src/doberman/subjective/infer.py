@@ -122,6 +122,62 @@ _ADDRESS_LIKE = re.compile(
 )
 
 
+# --- conservative default for unrecognized application types (SL3.2) -----------
+
+#: Below this classification confidence an action counts as UNCLASSIFIED and is
+#: handled conservatively: its sensitivity is floored at "elevated" and it
+#: contributes a bounded novelty signal to the surprise term.
+CONFIDENCE_FLOOR = 0.4
+
+#: The bounded novelty contribution an unclassified action adds to surprise.
+#: One constant per ACTION (never per dimension, never compounding) so a
+#: brand-new-but-benign application type leans cautious without storming.
+NOVELTY_BONUS = 0.2
+
+#: Sensitivity tier per target class, in [0, 1]. ``unknown`` deliberately sits
+#: in elevated territory — unclassified never resolves to benign.
+SENSITIVITY_BY_TARGET: dict[TargetClass, float] = {
+    TargetClass.public: 0.1,
+    TargetClass.internal: 0.4,
+    TargetClass.unknown: 0.6,
+    TargetClass.sensitive: 0.7,
+    TargetClass.secret: 1.0,
+}
+
+#: The sensitivity floor applied to any unclassified action.
+UNCLASSIFIED_SENSITIVITY_FLOOR = 0.6
+
+if set(SENSITIVITY_BY_TARGET) != set(TargetClass):  # pragma: no cover — import-time guard
+    raise RuntimeError("SENSITIVITY_BY_TARGET must cover every TargetClass member")
+
+
+def is_unclassified(algebra: Algebra) -> bool:
+    """True when neither the generic layer nor an adapter classified confidently."""
+    return algebra.classification_confidence < CONFIDENCE_FLOOR
+
+
+def novelty_bonus(algebra: Algebra) -> float:
+    """Bounded novelty contribution for the surprise term (0 when classified).
+
+    An unrecognized action is itself mildly anomalous; the bonus is a single
+    bounded constant so it biases toward step-up without dominating the score.
+    """
+    return NOVELTY_BONUS if is_unclassified(algebra) else 0.0
+
+
+def sensitivity(algebra: Algebra) -> float:
+    """The algebra's sensitivity term in [0, 1] (the SL7 engine's second axis).
+
+    Maps the target class to its tier; an UNCLASSIFIED action is floored at
+    elevated sensitivity — low confidence biases toward step-up, never toward
+    allow, and no input ever resolves to zero.
+    """
+    base = SENSITIVITY_BY_TARGET[algebra.target_class]
+    if is_unclassified(algebra):
+        return max(base, UNCLASSIFIED_SENSITIVITY_FLOOR)
+    return base
+
+
 def _keyword_capability(text: str) -> Capability | None:
     """Most-severe capability whose verb keywords appear in ``text``."""
     for capability, pattern in _CAPABILITY_KEYWORDS:
