@@ -1,20 +1,21 @@
-"""SL7 (transitional) — end-to-end subjective escalation through the executor.
+"""Slice SL9.1 — end-to-end subjective escalation on the real decision path.
 
-Until SL9 wires the per-entity surprise + algebra inference into the proxy,
-the executor still hands the engine the legacy abnormality score and a
-default (unclassified) algebra. In STRICT mode an unusual action's
-jointly-elevated terms (full novelty × unclassified-elevated sensitivity ×
-strict care) clear the threshold, so the F9 end-to-end properties still hold:
-an unusual action escalates, a familiar one passes, and a denied attempt
-never teaches the baseline. SL9 finalizes this test against the full path.
+The full SL pipeline through the executor: normalize infers the algebra, the
+proxy precomputes the per-entity blended surprise + fatigue budget, and the
+engine combines surprise × sensitivity × care. A mature baseline (≥ K own
+observations, seeded in balanced mode, then tightened to strict — the
+realistic operator flow) lets a familiar action PASS while a jointly-risky
+novel action (an irreversible glob delete) escalates; a denied attempt is
+never learned AND never exhausts the budget (denial holds protection).
 """
 
 from datetime import datetime, timezone
 
 from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.config import save_mode
-from doberman.learning.baseline import _COLD_START_MIN
 from doberman.proxy import executor
+from doberman.subjective.baseline import reset_hst
+from doberman.subjective.drift import K_OBSERVATIONS, reset_adwin
 
 from .test_proxy_passthrough import proxied_session
 
@@ -29,37 +30,46 @@ def _deny(decision, action, *, prompter=None, at=None):
     )
 
 
-async def test_unusual_action_escalates_normal_action_passes(monkeypatch):
+async def _seed_habit(agent, count=K_OBSERVATIONS):
+    """Establish a frontend-editing habit (enough to outgrow the peer prior)."""
+    for i in range(count):
+        ok = await agent.call_tool("fs_write", {"path": f"frontend/c{i % 25}.tsx", "content": "x"})
+        assert not ok.isError
+
+
+async def test_unusual_risky_action_escalates_familiar_action_passes(monkeypatch):
     monkeypatch.setattr(executor, "run_auth_challenge", _deny)
-    save_mode("strict", executor.REPO_ROOT)
+    reset_hst()
+    reset_adwin()
     async with proxied_session() as (fake, agent):
-        # Establish a frontend-editing habit (>= the cold-start minimum).
-        for i in range(_COLD_START_MIN + 1):
-            ok = await agent.call_tool("fs_write", {"path": f"frontend/c{i}.tsx", "content": "x"})
-            assert not ok.isError
+        await _seed_habit(agent)
+        # The operator tightens the dial once the workflow has settled.
+        save_mode("strict", executor.REPO_ROOT)
 
         # A familiar frontend edit still PASSes (the class is normal now).
         familiar = await agent.call_tool("fs_write", {"path": "frontend/Hero.tsx", "content": "x"})
         assert not familiar.isError
         forwarded_before = len(fake.calls)
 
-        # A never-seen path class for this workflow → subjective AUTH → the
-        # denied challenge forwards nothing.
-        unusual = await agent.call_tool("fs_write", {"path": "backend/api.ts", "content": "x"})
+        # A never-seen, hard-to-undo, high-blast shape (glob delete) for this
+        # workflow → subjective AUTH → the denied challenge forwards nothing.
+        unusual = await agent.call_tool("fs_delete", {"path": "src/*.py"})
         assert unusual.isError
         assert "authentication required" in unusual.content[0].text
-        assert "unusual" in unusual.content[0].text
         assert len(fake.calls) == forwarded_before  # the unusual action did NOT run
 
 
-async def test_blocked_attempt_does_not_teach_the_baseline(monkeypatch):
-    # A denied (un-forwarded) unusual action must not be recorded as "normal":
-    # repeating it still escalates rather than being learned as routine.
+async def test_denied_attempt_neither_teaches_nor_exhausts_the_budget(monkeypatch):
+    # A denied (un-forwarded) unusual action must not be recorded as "normal",
+    # and the denial must not consume the fatigue budget — repeating the very
+    # action that was just refused still escalates (raise-only).
     monkeypatch.setattr(executor, "run_auth_challenge", _deny)
-    save_mode("strict", executor.REPO_ROOT)
+    reset_hst()
+    reset_adwin()
     async with proxied_session() as (fake, agent):
-        for i in range(_COLD_START_MIN + 1):
-            await agent.call_tool("fs_write", {"path": f"frontend/c{i}.tsx", "content": "x"})
-        first = await agent.call_tool("fs_write", {"path": "backend/api.ts", "content": "x"})
-        second = await agent.call_tool("fs_write", {"path": "backend/api.ts", "content": "x"})
+        await _seed_habit(agent)
+        save_mode("strict", executor.REPO_ROOT)
+        first = await agent.call_tool("fs_delete", {"path": "src/*.py"})
+        second = await agent.call_tool("fs_delete", {"path": "src/*.py"})
         assert first.isError and second.isError  # still escalating, never learned
+        assert all(name != "fs_delete" for name, _ in fake.calls)

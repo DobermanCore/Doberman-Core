@@ -331,6 +331,10 @@ def infer_destination_class(action: SecurityObject) -> tuple[DestinationClass, f
     destination = action.external_destination
     if not destination and action.action_type in _EGRESS_ACTIONS and action.target:
         destination = str(action.target)
+    # A URL-shaped target is a destination signal regardless of the action-type
+    # family (a "send_email"-style tool maps to `other` but still egresses).
+    if not destination and action.target and "://" in str(action.target):
+        destination = str(action.target)
 
     if not destination:
         if action.action_type in _EGRESS_ACTIONS:

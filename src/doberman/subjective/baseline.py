@@ -577,22 +577,29 @@ async def budget_allows_step_up(
     Multiple sub-scorers per action otherwise inflate the family-wise flag rate
     past the approval-fatigue target. Counts AUTH decisions the subjective
     layer participated in (``decided_layer='combined'``) among the entity's
-    last ``n`` decisions. Failure → ``True`` (the budget is a comfort
-    mechanism; on doubt the step-up surfaces — more caution, never less).
-    NEVER consulted for the lethal-trifecta floor or detector verdicts.
+    last ``n`` decisions.
+
+    RAISE-ONLY guard: a window containing a **denied** subjective step-up never
+    exhausts the budget — the operator's denial means protection is doing its
+    job, and suppressing the next ask would silently allow the very thing that
+    was just refused. Only answered-or-approved nuisance asks count toward
+    fatigue. Failure → ``True`` (on doubt the step-up surfaces — more caution,
+    never less). NEVER consulted for the trifecta floor or detector verdicts.
     """
     try:
         async with open_db(repo_root) as conn:
             async with conn.execute(
-                "SELECT final_verdict, decided_layer FROM decisions "
+                "SELECT final_verdict, decided_layer, auth_result FROM decisions "
                 "WHERE entity_id = ? ORDER BY id DESC LIMIT ?",
                 (entity_id, n),
             ) as cur:
                 rows = await cur.fetchall()
     except Exception:  # noqa: BLE001 — budget read failure must not suppress a step-up
         return True
-    step_ups = sum(1 for verdict, layer in rows if verdict == "AUTH" and layer == "combined")
-    return step_ups < k
+    step_ups = [row for row in rows if row[0] == "AUTH" and row[1] == "combined"]
+    if any(row[2] == "denied" for row in step_ups):
+        return True
+    return len(step_ups) < k
 
 
 async def reset_tool_contribution(tool_name: str, *, entity_id: str, repo_root: str) -> None:

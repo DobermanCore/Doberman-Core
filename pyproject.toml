@@ -56,7 +56,7 @@ include_external_packages = true
 [[tool.importlinter.contracts]]
 name = "Policy core must not depend on the proxy adapter"
 type = "forbidden"
-source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "doberman.storage", "doberman.learning", "doberman.auth", "doberman.subjective"]
+source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "doberman.storage", "doberman.auth", "doberman.subjective"]
 forbidden_modules = ["doberman.proxy"]
 
 # Cross-repo boundary: the public core must never import the private enterprise package.
