@@ -264,6 +264,22 @@ class ReasonCode(StrEnum):
     # fingerprint) in an outbound payload: a confirmed read-then-send exfiltration.
     confirmed_exfil = "confirmed_exfil"
 
+    # Feature 11 — turn gate (pre-inference). Tier 0 (deterministic, BLOCK) and
+    # Tier 1 (heuristic, AUTH-only). Every turn verdict carries one of these.
+    turn_gate_error = "turn_gate_error"
+    instruction_nullification = "instruction_nullification"
+    authority_override = "authority_override"
+    secret_export = "secret_export"  # noqa: S105 — reason-code constant, not a secret
+    encoded_payload = "encoded_payload"
+    indirect_injection = "indirect_injection"
+    embedded_instruction = "embedded_instruction"
+    persona_override = "persona_override"
+    obfuscated_content = "obfuscated_content"
+    urgency_secrecy_framing = "urgency_secrecy_framing"
+    stylometric_outlier = "stylometric_outlier"
+    repeat_after_block = "repeat_after_block"
+    turn_blocked_repeatedly = "turn_blocked_repeatedly"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).
@@ -445,3 +461,93 @@ class CostEvent(BaseModel):
     model: str | None = None
     #: Keyed HMAC fingerprint of the entity, never a raw role/path string.
     entity_id: str | None = None
+
+
+# --- Feature 11 — turn gate (pre-inference) models -------------------------
+
+
+class SegmentOrigin(StrEnum):
+    """Where a content segment of a turn came from (turn-level provenance).
+
+    ``pasted`` and ``tool_fetched`` content is **untrusted by construction** —
+    it is the turn-level analogue of ``provenance=untrusted_data``. An attack
+    signature in an untrusted segment is essentially never benign (indirect
+    injection), which is why the Tier 0 origin rule blocks it unconditionally.
+    """
+
+    typed = "typed"
+    pasted = "pasted"
+    tool_fetched = "tool_fetched"
+
+    @property
+    def is_untrusted(self) -> bool:
+        return self in (SegmentOrigin.pasted, SegmentOrigin.tool_fetched)
+
+
+class ApparentIntent(StrEnum):
+    """A coarse, inferred class of what the turn appears to want.
+
+    Used by the Tier 1 stylometric co-occurrence gate, which fires only when an
+    extreme style outlier coincides with a *sensitive* apparent intent (never on
+    style alone). ``unknown`` is the conservative default.
+    """
+
+    benign = "benign"
+    credential_access = "credential_access"  # noqa: S105 — intent label, not a secret
+    destructive = "destructive"
+    external_send = "external_send"
+    configuration = "configuration"
+    unknown = "unknown"
+
+    @property
+    def is_sensitive(self) -> bool:
+        return self in (
+            ApparentIntent.credential_access,
+            ApparentIntent.destructive,
+            ApparentIntent.external_send,
+        )
+
+
+class ContentSegment(BaseModel):
+    """One origin-tagged segment of a turn (immutable, redaction-safe).
+
+    Carries the segment's :class:`SegmentOrigin`, an HMAC ``fingerprint`` (never
+    raw text), and any coarse ``flags`` set by inference (e.g. ``"encoded"``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    origin: SegmentOrigin
+    fingerprint: str = Field(min_length=1)
+    flags: list[str] = Field(default_factory=list)
+
+
+class TurnObject(BaseModel):
+    """The normalized, redacted description of one pre-inference turn.
+
+    Frozen, and — like :class:`SecurityObject` — it stores **no raw prompt
+    text**: only the prompt's HMAC ``prompt_fingerprint``, coarse
+    ``prompt_features`` (length bucket, style buckets, encoding flags), the
+    origin-tagged ``segments``, and an inferred ``apparent_intent``. Redaction
+    is enforced by ``normalize_turn`` and its tests, and structurally by the
+    absence of any raw-text field on this type.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(min_length=1)
+    ts: AwareDatetime
+    #: Keyed HMAC fingerprint of (agent + workspace) — the per-deployment entity.
+    entity_id: str
+    #: HMAC of the normalized prompt (lower/whitespace/punct-folded); the
+    #: repeat-after-block cache (TG4) keys on this.
+    prompt_fingerprint: str = Field(min_length=1)
+    prompt_features: dict[str, Any] = Field(default_factory=dict)
+    segments: list[ContentSegment] = Field(default_factory=list)
+    apparent_intent: ApparentIntent = ApparentIntent.unknown
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def has_untrusted_segment(self) -> bool:
+        """Whether any segment is pasted/tool-fetched (untrusted origin)."""
+        return any(segment.origin.is_untrusted for segment in self.segments)
