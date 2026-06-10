@@ -1,0 +1,21 @@
+# gitleaks configuration for doberman-core.
+#
+# Doberman is a secret-DETECTION tool, so its test suite necessarily contains
+# synthetic, secret-SHAPED fixtures — fake API keys, PEM blocks, high-entropy
+# tokens — that exist only to exercise the rules (e.g. proving a high-entropy
+# blob staying local does NOT block). Those are not real credentials, so the
+# generic secret rules false-positive on them.
+#
+# Policy: keep the FULL default gitleaks ruleset for everything (src/, configs,
+# CI, repo root) and allowlist only synthetic fixtures under tests/. Real
+# secrets never live in tests/ — key files and .env are gitignored and stored
+# outside the repo (see .gitignore and src/doberman/storage/fingerprint.py).
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic, secret-shaped test fixtures (not real credentials)"
+paths = [
+  '''tests/.*''',
+]

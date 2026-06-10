@@ -15,6 +15,7 @@ from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, TextContent
 
 from doberman.engine.decision_engine import PASS_STUB, Guardrail, decide
+from doberman.engine.objective import ObjectiveGuardrail
 from doberman.models import (
     Decision,
     EvalContext,
@@ -29,11 +30,11 @@ from doberman.proxy.normalize import normalize
 
 _engine_logger = logging.getLogger("doberman.proxy.engine")
 
-# Guardrail implementations used by the proxy. Stubs (PASS/low) until
-# Feature 3 (objective rules) and Feature 9 (subjective baseline) replace
-# them. Module-level so tests can monkeypatch the policy without touching
-# the routing.
-DEFAULT_OBJECTIVE: Guardrail = PASS_STUB
+# Guardrail implementations used by the proxy. The objective guardrail is now
+# the real Feature 3 rule set; the subjective guardrail stays a PASS stub until
+# Feature 9 lands. Module-level so tests can monkeypatch the policy without
+# touching the routing.
+DEFAULT_OBJECTIVE: Guardrail = ObjectiveGuardrail()
 DEFAULT_SUBJECTIVE: Guardrail = PASS_STUB
 
 _DENIED_TEMPLATE = (
@@ -117,8 +118,14 @@ async def decide_and_execute(
     """
     action: SecurityObject = normalize(tool_name, arguments)
 
+    # The objective rules (Feature 3) need to inspect the UN-redacted call
+    # content to detect secrets / parse commands. We hand it to them through
+    # EvalContext.metadata, which is in-memory only and never logged or
+    # persisted — the SecurityObject itself stays redacted for the audit log.
+    ctx = EvalContext(metadata={"raw_arguments": dict(arguments or {})})
+
     try:
-        decision = decide(action, DEFAULT_OBJECTIVE, DEFAULT_SUBJECTIVE, EvalContext())
+        decision = decide(action, DEFAULT_OBJECTIVE, DEFAULT_SUBJECTIVE, ctx)
     except Exception:  # noqa: BLE001 — engine failure must fail closed, not crash
         # BaseException (CancelledError, SystemExit) propagates on purpose —
         # an unwind is fail-closed by construction (the forward below is
