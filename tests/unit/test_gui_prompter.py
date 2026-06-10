@@ -105,81 +105,161 @@ def test_open_root_raises_prompter_unavailable_when_tk_init_fails(monkeypatch):
         gui_prompter._open_root()
 
 
-# --- GuiPrompter: real dialog internals (faked root + faked tkinter dialogs) -------
+# --- GuiPrompter: custom dialog internals (faked root + faked widget builders) -----
 
 
 class _FakeRoot:
+    """Duck-typed stand-in for a Tk root so the dialog plumbing runs headless."""
+
     def __init__(self):
         self.destroyed = False
-        self.withdrawn = False
         self.attrs: dict = {}
-
-    def withdraw(self):
-        self.withdrawn = True
+        self.config: dict = {}
+        self.titles: list[str] = []
+        self.resizable_args: tuple | None = None
+        self.protocols: dict = {}
+        self.bindings: dict = {}
+        self.geometries: list[str] = []
+        self.close_on_mainloop = False
 
     def attributes(self, name, value):
         self.attrs[name] = value
 
-    def update(self):
+    def configure(self, **kwargs):
+        self.config.update(kwargs)
+
+    def title(self, text):
+        self.titles.append(text)
+
+    def resizable(self, w, h):
+        self.resizable_args = (w, h)
+
+    def protocol(self, name, callback):
+        self.protocols[name] = callback
+
+    def bind(self, sequence, callback):
+        self.bindings[sequence] = callback
+
+    def geometry(self, spec):
+        self.geometries.append(spec)
+
+    def update_idletasks(self):
+        pass
+
+    def winfo_reqwidth(self):
+        return 420
+
+    def winfo_reqheight(self):
+        return 220
+
+    def winfo_screenwidth(self):
+        return 1920
+
+    def winfo_screenheight(self):
+        return 1080
+
+    def winfo_id(self):
+        return 0
+
+    def mainloop(self):
+        # Simulate the human closing the window instead of answering.
+        if self.close_on_mainloop:
+            self.protocols["WM_DELETE_WINDOW"]()
+
+    def quit(self):
         pass
 
     def destroy(self):
         self.destroyed = True
 
 
-def test_confirm_dialog_uses_hidden_topmost_root_and_destroys_it(monkeypatch):
-    pytest.importorskip("tkinter")
-    from tkinter import messagebox
-
+@pytest.fixture
+def fake_root(monkeypatch):
     root = _FakeRoot()
-    seen: dict = {}
     monkeypatch.setattr(gui_prompter, "_open_root", lambda: root)
+    return root
 
-    def _fake_askyesno(title, message, parent=None):
-        seen["title"], seen["message"], seen["parent"] = title, message, parent
-        return True
 
-    monkeypatch.setattr(messagebox, "askyesno", _fake_askyesno)
+def test_run_dialog_returns_the_populated_answer_and_destroys_root(monkeypatch, fake_root):
+    def _fake_populate(root, message, answer):
+        assert message == "Approve THIS exact action?"
+        answer["value"] = True
+
+    monkeypatch.setattr(gui_prompter, "_populate_confirm", _fake_populate)
     assert gui_prompter._confirm_dialog("Approve THIS exact action?") is True
-    assert seen["message"] == "Approve THIS exact action?"
-    assert seen["parent"] is root
-    assert root.withdrawn is True
-    assert root.attrs.get("-topmost") is True
-    assert root.destroyed is True  # never leak a Tk root
+    assert fake_root.destroyed is True  # never leak a Tk root
 
 
-def test_code_dialog_masks_input_and_destroys_root(monkeypatch):
-    pytest.importorskip("tkinter")
-    from tkinter import simpledialog
-
-    root = _FakeRoot()
-    seen: dict = {}
-    monkeypatch.setattr(gui_prompter, "_open_root", lambda: root)
-
-    def _fake_askstring(title, message, *, show=None, parent=None):
-        seen["show"], seen["parent"] = show, parent
-        return "123456"
-
-    monkeypatch.setattr(simpledialog, "askstring", _fake_askstring)
-    assert gui_prompter._code_dialog("Enter your 2FA code") == "123456"
-    assert seen["show"] == "*"  # the code must be masked on screen
-    assert root.destroyed is True
+def test_closing_the_window_is_a_denial_never_an_approval(monkeypatch, fake_root):
+    fake_root.close_on_mainloop = True
+    monkeypatch.setattr(gui_prompter, "_populate_confirm", lambda *_a: None)
+    monkeypatch.setattr(gui_prompter, "_populate_code", lambda *_a: None)
+    assert gui_prompter._confirm_dialog("Approve?") is False
+    assert gui_prompter._code_dialog("Enter your 2FA code") is None
 
 
-def test_dialog_root_destroyed_even_when_dialog_raises(monkeypatch):
-    pytest.importorskip("tkinter")
-    from tkinter import messagebox
-
-    root = _FakeRoot()
-    monkeypatch.setattr(gui_prompter, "_open_root", lambda: root)
-
-    def _boom(*_a, **_k):
+def test_root_destroyed_even_when_the_widget_builder_raises(monkeypatch, fake_root):
+    def _boom(*_a):
         raise RuntimeError("dialog exploded")
 
-    monkeypatch.setattr(messagebox, "askyesno", _boom)
+    monkeypatch.setattr(gui_prompter, "_populate_confirm", _boom)
     with pytest.raises(RuntimeError, match="dialog exploded"):
         gui_prompter._confirm_dialog("Approve?")
-    assert root.destroyed is True
+    assert fake_root.destroyed is True
+
+
+def test_window_is_topmost_dark_and_fixed_size(monkeypatch, fake_root):
+    """The dialog must pop OVER the agent terminal and use the dark theme base."""
+    monkeypatch.setattr(gui_prompter, "_populate_confirm", lambda *_a: None)
+    gui_prompter._confirm_dialog("Approve?")
+    assert fake_root.attrs.get("-topmost") is True
+    assert fake_root.titles and fake_root.titles[0] == gui_prompter._TITLE
+    assert fake_root.config.get("bg") == gui_prompter._BG
+    assert fake_root.resizable_args == (False, False)
+
+
+def test_palette_is_dark_black_and_orange():
+    """Design contract: dark/black surfaces, orange accent — no purple, no neon."""
+
+    def _rgb(color: str) -> tuple[int, int, int]:
+        return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+    for surface in (gui_prompter._BG, gui_prompter._PANEL):
+        assert max(_rgb(surface)) < 48  # near-black surfaces
+    r, g, b = _rgb(gui_prompter._ACCENT)
+    assert r > 200 and r > g > b  # orange: red-dominant, green mid, low blue
+    assert b < 80  # nothing purple/neon-blue about the accent
+
+
+def test_real_dialog_widgets_dark_theme_and_masked_entry(monkeypatch):
+    """With a real display: the code entry is masked and surfaces use the dark palette.
+
+    Skipped where Tk cannot open (headless CI) — the contract above still covers the
+    plumbing; this verifies the actual widget construction when a display exists.
+    """
+    tkinter = pytest.importorskip("tkinter")
+    try:
+        root = tkinter.Tk()
+    except tkinter.TclError:
+        pytest.skip("no display available")
+    try:
+        root.withdraw()
+        answer: dict = {}
+        gui_prompter._configure_window(root)
+        gui_prompter._populate_code(root, "Enter your 2FA code", answer)
+
+        def _walk(widget):
+            yield widget
+            for child in widget.winfo_children():
+                yield from _walk(child)
+
+        widgets = list(_walk(root))
+        entries = [w for w in widgets if isinstance(w, tkinter.Entry)]
+        assert entries, "code dialog must contain an entry field"
+        assert entries[0].cget("show") == "*"  # the code must be masked on screen
+        assert root.cget("bg") == gui_prompter._BG
+    finally:
+        root.destroy()
 
 
 # --- FallbackPrompter ---------------------------------------------------------------
