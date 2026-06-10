@@ -107,8 +107,10 @@ doberman serve --path /path/to/repo -- npx -y @modelcontextprotocol/server-files
 ### Connect your agent
 
 Swap the agent's MCP server entry to launch Doberman, which then spawns the real server. The decision happens in
-between; `AUTH` prompts appear on **your terminal** (with no terminal attached, an `AUTH` action is denied — fail
-closed), and every decision is recorded — inspect it with `doberman log` and `doberman status`.
+between; `AUTH` challenges **pop up as a dialog window** above your agent's terminal (agent TUIs like Claude Code own
+the console, so a terminal prompt would be invisible there). With no display, the prompt falls back to **your
+terminal**; with neither, the `AUTH` action is denied — fail closed. Every decision is recorded — inspect it with
+`doberman log` and `doberman status`.
 
 **Claude Code**
 
@@ -286,7 +288,7 @@ Replaces the basic Feature 9 guardrail with one application-agnostic adaptive la
 ### `v0.11.0` — Agent Integration: `doberman serve` — _Unreleased (in review)_
 
 - **`doberman serve -- <downstream cmd>`** — a runnable stdio MCP proxy that fronts any downstream MCP tool server (MCP server to the agent, MCP client to the downstream); makes Doberman usable from Claude Code, Codex, Claude Desktop, Cursor, and any MCP client with a one-line config swap.
-- **Controlling-terminal AUTH** — in serve mode an `AUTH` challenge is routed to the local terminal (`/dev/tty` / `CONIN$`/`CONOUT$`) so it never touches the agent's stdin/stdout MCP stream; with no terminal attached the action is denied (fail closed).
+- **Out-of-band AUTH** — in serve mode an `AUTH` challenge pops up as a **topmost GUI dialog** (stdlib tkinter; masked 2FA entry), so it is visible even when an agent TUI such as Claude Code owns the console; it never touches the agent's stdin/stdout MCP stream. With no display it falls back to the controlling terminal (`/dev/tty` / `CONIN$`/`CONOUT$`); with neither channel available the action is denied (fail closed). A denial on one channel is final — it is never re-asked on another.
 - Logs are pinned to **stderr** (stdout is the agent's protocol channel); the engine's repo root (`.doberman/`) is selectable with `--path`.
 
 ### `v0.10.0` — Policy-Drift Detection & Poisoning Defense — _Unreleased (in review)_
