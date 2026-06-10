@@ -209,8 +209,10 @@ def test_code_requests_skip_elicitation_and_reach_the_next_channel(loop):
 # --- the executor must run challenges OFF the event loop ------------------------------
 
 
-async def test_executor_runs_the_challenge_off_the_event_loop(monkeypatch):
+async def test_executor_runs_the_challenge_off_the_event_loop(monkeypatch, tmp_path):
     """An in-loop challenge would deadlock elicitation; the prompter must see a worker thread."""
+    import inspect
+
     from doberman.models import (
         ActionType,
         Decision,
@@ -234,6 +236,8 @@ async def test_executor_runs_the_challenge_off_the_event_loop(monkeypatch):
             raise AssertionError("code requested for a confirm-tier challenge")
 
     monkeypatch.setattr(executor, "AUTH_PROMPTER", _ThreadRecorder())
+    # Isolate any denied-path persistence (later features record challenge outcomes).
+    monkeypatch.setattr(executor, "REPO_ROOT", str(tmp_path))
     now = datetime(2026, 6, 10, tzinfo=timezone.utc)
     action = SecurityObject(
         id="act-thread-1",
@@ -259,7 +263,14 @@ async def test_executor_runs_the_challenge_off_the_event_loop(monkeypatch):
         decided_at=now,
     )
 
-    result = await executor._handle_auth(None, "fs_write", {}, action, decision, now)
+    # The signature gains feature-specific scores on later branches — fill any
+    # extras neutrally so this contract test holds across the whole stack.
+    extras: dict = {}
+    defaults = {"abnormality_score": 0.0, "surprise_score": 0.0, "eid": "entity-test"}
+    for name in inspect.signature(executor._handle_auth).parameters:
+        if name in defaults:
+            extras[name] = defaults[name]
+    result = await executor._handle_auth(None, "fs_write", {}, action, decision, now, **extras)
 
     assert result.isError  # denied — nothing forwarded
     assert seen["thread"] is not loop_thread
