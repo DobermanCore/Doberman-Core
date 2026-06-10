@@ -1,0 +1,109 @@
+# Built-in agent roles (Feature 4).
+#
+# Each role declares three path-glob boundary sets, matched against the
+# CANONICAL, root-relative, lower-cased path (see doberman.canonical):
+#   allowed     in-scope; the agent may act here without a role escalation
+#   suspicious  out-of-scope but recoverable; step up to AUTH
+#   blocked     forbidden for this role; BLOCK (never, even with auth)
+#
+# Precedence is blocked > suspicious > allowed (blocked wins on overlap), and a
+# target matched by none of `allowed` is treated as suspicious (safe default:
+# nothing is implicitly in-scope). Globs are case-insensitive.
+#
+# The built-in roles map out-of-scope areas to `suspicious` (AUTH), keeping
+# `blocked` empty: hard universal blocks (.env, secrets, backend/auth) are
+# already enforced by the objective path rule, and a generic role should escalate
+# rather than hard-forbid. The `blocked` tier is for custom/enterprise roles that
+# need a role-specific hard prohibition.
+roles:
+  frontend:
+    description: "Frontend / UI work. Backend, infra, and secrets are out of scope."
+    allowed:
+      - "frontend/**"
+      - "src/components/**"
+      - "src/pages/**"
+      - "src/styles/**"
+      - "public/**"
+      - "**/*.css"
+      - "**/*.scss"
+    suspicious:
+      - "backend/**"
+      - "backend/auth/**"
+      - "api/**"
+      - "server/**"
+      - "src/server/**"
+      - "infra/**"
+      - ".github/workflows/**"
+    blocked: []
+  backend:
+    description: "Backend / API / service work. Frontend assets and CI are out of scope."
+    allowed:
+      - "backend/**"
+      - "api/**"
+      - "server/**"
+      - "src/server/**"
+      - "migrations/**"
+    suspicious:
+      - "frontend/**"
+      - "infra/**"
+      - ".github/workflows/**"
+    blocked: []
+  fullstack:
+    description: "Frontend and backend. Infra and CI still escalate."
+    allowed:
+      - "frontend/**"
+      - "backend/**"
+      - "api/**"
+      - "server/**"
+      - "src/**"
+      - "public/**"
+      - "migrations/**"
+    suspicious:
+      - "infra/**"
+      - ".github/workflows/**"
+    blocked: []
+  devops:
+    description: "Infrastructure, CI/CD, deployment. Application source is out of scope."
+    allowed:
+      - "infra/**"
+      - ".github/workflows/**"
+      - "deploy/**"
+      - "docker/**"
+      - "**/dockerfile"
+      - "**/*.tf"
+    suspicious:
+      - "backend/**"
+      - "frontend/**"
+      - "src/**"
+    blocked: []
+  docs:
+    description: "Documentation only. Code, infra, and CI escalate."
+    allowed:
+      - "docs/**"
+      - "**/*.md"
+      - "**/*.mdx"
+      - "**/*.rst"
+    suspicious:
+      - "src/**"
+      - "backend/**"
+      - "backend/auth/**"
+      - "frontend/**"
+      - "infra/**"
+      - ".github/workflows/**"
+    blocked: []
+  test:
+    description: "Tests and fixtures. Production source escalates."
+    allowed:
+      - "tests/**"
+      - "test/**"
+      - "**/*_test.py"
+      - "**/*.test.ts"
+      - "**/*.spec.ts"
+      - "**/__tests__/**"
+    suspicious:
+      - "src/**"
+      - "backend/**"
+      - "backend/auth/**"
+      - "frontend/**"
+      - "infra/**"
+    blocked: []
