@@ -58,6 +58,7 @@ from doberman.subjective.revealed import (
     maybe_nudge,
     record_feedback,
 )
+from doberman.subjective.score import inherit_turn_provenance, raised_surprise
 
 _engine_logger = logging.getLogger("doberman.proxy.engine")
 
@@ -207,12 +208,18 @@ async def _learn_from_auth(
 
 
 async def _surprise_or_caution(action: SecurityObject, eid: str) -> float:
-    """Precompute the per-entity surprise; ANY failure scores 1.0 (caution)."""
+    """Precompute the per-entity surprise; ANY failure scores 1.0 (caution).
+
+    The entity's current turn context (TG3.3) is applied raise-only on top —
+    a flagged or style-outlier turn makes its follow-on actions score harsher;
+    a clean turn contributes exactly nothing.
+    """
     try:
-        return await surprise_blended(action, entity_id=eid, repo_root=REPO_ROOT)
+        score = await surprise_blended(action, entity_id=eid, repo_root=REPO_ROOT)
     except Exception:  # noqa: BLE001 — a scoring failure must bias toward step-up
         _engine_logger.warning("surprise precompute failed (action %s); scoring 1.0", action.id)
         return 1.0
+    return raised_surprise(score, eid)
 
 
 async def _budget_or_surface(eid: str) -> bool:
@@ -392,6 +399,9 @@ async def decide_and_execute(
     action: SecurityObject = normalize(tool_name, arguments)
     now = datetime.now(timezone.utc)
     eid = entity_id(action.agent_role, REPO_ROOT)
+    # TG3.3: actions tracing to a flagged pasted turn inherit untrusted
+    # provenance (raise-only — an already-untrusted class is left alone).
+    action = inherit_turn_provenance(action, eid)
 
     # Active elevations (F7) may satisfy a role-boundary AUTH for the exact
     # covered target; the per-entity surprise (SL4) and fatigue-budget verdict

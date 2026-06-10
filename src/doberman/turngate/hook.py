@@ -40,6 +40,7 @@ from doberman.models import (
     Verdict,
 )
 from doberman.turngate import repeat, stylometry
+from doberman.turngate.handoff import publish_turn_context
 from doberman.turngate.heuristics import Tier1HeuristicGuardrail
 from doberman.turngate.log import record_turn_decision
 from doberman.turngate.normalize import normalize_turn
@@ -259,6 +260,11 @@ async def gate_turn(
             await stylometry.observe_style(
                 raw.full_text, entity_id=entity_id, repo_root=repo_root, now=when
             )
+        # TG3.3: a released turn's signals (style p-value + flags) ride along
+        # to the action stage as the entity's TurnContext (raise-only there).
+        publish_turn_context(
+            turn, outcome.decision, style_pvalue=style_p, released=outcome.released
+        )
         return outcome
     except Exception:  # noqa: BLE001 — fail toward the human, never silent-pass
         logger.warning("turn gate raised; failing toward the human (AUTH)")
