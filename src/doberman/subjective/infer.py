@@ -16,15 +16,22 @@ Reuses the objective layer's (F3) secret/destination classifiers as
 This module is policy core: it must never import ``doberman.proxy``.
 """
 
+import ipaddress
 import re
 from typing import Any
 
+from doberman.engine.rules import destinations as _dest_classifiers
 from doberman.engine.rules import secrets as _secret_classifiers
 from doberman.models import (
     ActionType,
     Algebra,
+    BlastRadius,
     Capability,
+    DestinationClass,
+    Provenance,
+    Reversibility,
     SecurityObject,
+    SourceContext,
     TargetClass,
 )
 
@@ -204,6 +211,162 @@ def infer_target_class(
     return inferred
 
 
+# --- destination / provenance / blast radius / reversibility (SL2.2) ----------
+
+#: Action families whose business is data egress: with no parseable destination
+#: at all they classify ``unknown_external`` (conservative), never ``none``.
+_EGRESS_ACTIONS = frozenset(
+    {ActionType.network_request, ActionType.git_op, ActionType.final_output}
+)
+
+#: SourceContext → (Provenance, confidence). The origin being UNCLEAR defaults
+#: to ``untrusted_data`` at low confidence (fail toward caution, never toward
+#: trusted); ``tool_output`` is ``mixed`` (instruction passed through content
+#: the agent ingested from tools).
+_SOURCE_PROVENANCE: dict[SourceContext, tuple[Provenance, float]] = {
+    SourceContext.user: (Provenance.trusted_instruction, 0.8),
+    SourceContext.tool_output: (Provenance.mixed, 0.7),
+    SourceContext.github_issue: (Provenance.untrusted_data, 0.7),
+    SourceContext.readme: (Provenance.untrusted_data, 0.7),
+    SourceContext.webpage: (Provenance.untrusted_data, 0.7),
+    SourceContext.email: (Provenance.untrusted_data, 0.7),
+    SourceContext.unknown: (Provenance.untrusted_data, 0.3),
+}
+
+if set(_SOURCE_PROVENANCE) != set(SourceContext):  # pragma: no cover — import-time guard
+    raise RuntimeError("_SOURCE_PROVENANCE must cover every SourceContext member")
+
+# Volume signals: argument keys that carry recipient/target collections, glob
+# metacharacters, and recursive shell flags.
+_RECIPIENT_KEYS = ("to", "cc", "bcc", "recipients", "emails", "targets", "ids", "user_ids")
+_GLOB_CHARS = re.compile(r"[*?\[]")
+_RECURSIVE_SHELL = re.compile(r"(?i)(?:^|\s)-[a-z]*r[a-z]*f?\b|--recursive\b|\*\*?")
+
+# Shell text whose effects are effectively irreversible (destroyed data /
+# rewritten remote history). Matching is on the command string only.
+_IRREVERSIBLE_SHELL = re.compile(
+    r"(?i)\brm\b|\bshred\b|\bmkfs\b|\bdd\b\s+if=|drop\s+(?:table|database)"
+    r"|\btruncate\b|push\s+.*--force|--hard\b"
+)
+
+# Blast-radius tier boundaries on an observed target/recipient count.
+_FEW_AT_MOST = 5
+_MANY_AT_MOST = 50
+
+
+def _is_internal_host(host: str) -> bool:
+    """Loopback / private-range / link-local style hosts count as internal."""
+    bare = host.strip("[]")
+    try:
+        ip = ipaddress.ip_address(bare)
+    except ValueError:
+        return bare == "localhost" or bare.endswith((".local", ".internal", ".lan"))
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def infer_destination_class(action: SecurityObject) -> tuple[DestinationClass, float]:
+    """Classify where data goes, reusing the F3 destination parsing.
+
+    Punycode/homoglyphs, embedded credentials, and IP literals are handled by
+    the same hardened parser the objective rule uses. Unknowns are conservative:
+    an egress-family action with no parseable destination is
+    ``unknown_external``, never ``none``.
+    """
+    destination = action.external_destination
+    if not destination and action.action_type in _EGRESS_ACTIONS and action.target:
+        destination = str(action.target)
+
+    if not destination:
+        if action.action_type in _EGRESS_ACTIONS:
+            return DestinationClass.unknown_external, _CONF_WEAK
+        return DestinationClass.none, 0.8
+
+    host, had_credentials = _dest_classifiers._parse_host(destination)
+    if host is None:
+        return DestinationClass.unknown_external, _CONF_AMBIGUOUS
+    if _is_internal_host(host):
+        return DestinationClass.internal, 0.8
+    if had_credentials or _dest_classifiers._is_ip_literal(host):
+        return DestinationClass.unknown_external, 0.7
+    if _dest_classifiers._registered_match(host, _dest_classifiers.TRUSTED_HOSTS):
+        return DestinationClass.known_external, _CONF_STRONG
+    return DestinationClass.unknown_external, 0.7
+
+
+def infer_provenance(action: SecurityObject) -> tuple[Provenance, float]:
+    """Map the action's source context to a provenance class (cautious default)."""
+    return _SOURCE_PROVENANCE[action.source_context]
+
+
+def _recipient_count(raw_arguments: dict[str, Any] | None) -> int:
+    """Total size of recipient/target collections in the arguments (0 if none)."""
+    if not isinstance(raw_arguments, dict):
+        return 0
+    total = 0
+    for key in _RECIPIENT_KEYS:
+        value = raw_arguments.get(key)
+        if isinstance(value, (list, tuple)):
+            total += len(value)
+    return total
+
+
+def _count_to_blast(count: int) -> BlastRadius:
+    if count <= 1:
+        return BlastRadius.single
+    if count <= _FEW_AT_MOST:
+        return BlastRadius.few
+    if count <= _MANY_AT_MOST:
+        return BlastRadius.many
+    return BlastRadius.mass
+
+
+def infer_blast_radius(
+    action: SecurityObject, raw_arguments: dict[str, Any] | None
+) -> tuple[BlastRadius, float]:
+    """Infer how many entities the action touches from volume signals.
+
+    Explicit counts (target arrays, recipient lists) map to tiers; glob
+    metacharacters or recursive shell flags imply an UNKNOWN-but-large reach
+    (``many``, low confidence); a single concrete target is ``single``.
+    """
+    counted = 0
+    meta_count = action.metadata.get("target_count") if isinstance(action.metadata, dict) else None
+    if isinstance(meta_count, int) and meta_count > 0:
+        counted = meta_count
+    counted += _recipient_count(raw_arguments)
+    if counted:
+        return _count_to_blast(counted), 0.8
+
+    target = str(action.target) if action.target else ""
+    if target:
+        if action.action_type is ActionType.shell_exec and _RECURSIVE_SHELL.search(target):
+            return BlastRadius.many, _CONF_AMBIGUOUS
+        if _GLOB_CHARS.search(target):
+            return BlastRadius.many, _CONF_AMBIGUOUS
+        return BlastRadius.single, 0.7
+    return BlastRadius.unknown, _CONF_WEAK
+
+
+def infer_reversibility(
+    action: SecurityObject, raw_arguments: dict[str, Any] | None = None
+) -> Reversibility:
+    """Reversibility from operation semantics (`low` = hardest to undo).
+
+    Deletions and destructive shell patterns (rm/shred/drop/force-push/--hard)
+    are ``low``; pure reads are ``high`` (nothing to undo); anything else keeps
+    the action's existing assessment (default ``medium``).
+    """
+    capability, _ = infer_capability(action, raw_arguments)
+    if capability is Capability.delete:
+        return Reversibility.low
+    if action.action_type is ActionType.shell_exec and action.target:
+        if _IRREVERSIBLE_SHELL.search(str(action.target)):
+            return Reversibility.low
+    if capability is Capability.read:
+        return Reversibility.high
+    return action.reversibility
+
+
 def infer_algebra(
     action: SecurityObject,
     raw_arguments: dict[str, Any] | None = None,
@@ -213,16 +376,23 @@ def infer_algebra(
 
     Any internal failure returns the conservative default :class:`Algebra`
     (all-unknown, zero confidence) — an inference bug fails toward caution,
-    never toward benign.
+    never toward benign. ``classification_confidence`` is the mean of the
+    per-dimension signal strengths.
     """
     try:
         capability, cap_conf = infer_capability(action, raw_arguments)
         target_class, target_conf = infer_target_class(action, raw_arguments, tool_description)
-        confidence = max(0.0, min(1.0, (cap_conf + target_conf) / 2))
+        destination_class, dest_conf = infer_destination_class(action)
+        provenance, prov_conf = infer_provenance(action)
+        blast_radius, blast_conf = infer_blast_radius(action, raw_arguments)
+        confidence = (cap_conf + target_conf + dest_conf + prov_conf + blast_conf) / 5
         return Algebra(
             capability=capability,
             target_class=target_class,
-            classification_confidence=confidence,
+            destination_class=destination_class,
+            blast_radius=blast_radius,
+            provenance=provenance,
+            classification_confidence=max(0.0, min(1.0, confidence)),
         )
     except Exception:  # noqa: BLE001 — inference must never break the decision path
         return Algebra()
