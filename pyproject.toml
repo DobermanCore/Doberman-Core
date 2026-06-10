@@ -1,6 +1,6 @@
 [project]
 name = "doberman"
-version = "0.12.0"
+version = "0.13.0"
 description = "Adaptive authorization layer for coding agents (open core)"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
@@ -52,12 +52,15 @@ extend-select = ["I", "B", "S"]   # imports, bugbear, security
 root_package = "doberman"
 include_external_packages = true
 
-# Inside-core decoupling: policy core must not import the proxy adapter.
+# Inside-core decoupling: the policy core must not import an invocation adapter
+# (the proxy = the action gate, the turngate = the pre-inference gate). Both are
+# adapters that depend on the engine, never the reverse — decide()/decide_turn()
+# take their guardrails by injection so the engine holds no static reference.
 [[tool.importlinter.contracts]]
-name = "Policy core must not depend on the proxy adapter"
+name = "Policy core must not depend on an invocation adapter"
 type = "forbidden"
 source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "doberman.storage", "doberman.auth", "doberman.subjective"]
-forbidden_modules = ["doberman.proxy"]
+forbidden_modules = ["doberman.proxy", "doberman.turngate"]
 
 # Cross-repo boundary: the public core must never import the private enterprise package.
 # NOTE: defense-in-depth only — enterprise is never installed in core CI, so this contract

@@ -48,12 +48,12 @@ def test_semantically_different_prompt_has_a_different_fingerprint():
 
 
 def test_no_raw_prompt_text_survives_into_the_turn_object():
-    secret = "distinctive-prompt-marker-xyz"
-    turn, raw = normalize_turn(f"please {secret} now", entity_id="e", ts=_TS)
+    marker = "distinctive-prompt-marker-xyz"
+    turn, raw = normalize_turn(f"please {marker} now", entity_id="e", ts=_TS)
     blob = turn.model_dump_json()
-    assert secret not in blob
+    assert marker not in blob
     # ...but the raw (in-memory only) view does carry it for the scan.
-    assert secret in raw.full_text
+    assert marker in raw.full_text
 
 
 def test_apparent_intent_inference():
