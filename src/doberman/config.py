@@ -25,6 +25,8 @@ from pathlib import Path
 
 import yaml
 
+from doberman.policy.checklist import PolicyDoc, recommend_policy
+from doberman.policy.modes import DEFAULT_MODE, resolve_mode
 from doberman.roles.roles import (
     MOST_RESTRICTIVE_ROLE,
     RoleDefinition,
@@ -36,10 +38,15 @@ logger = logging.getLogger("doberman.config")
 #: Per-repo config directory (never committed; see .gitignore).
 CONFIG_DIR = ".doberman"
 ROLE_FILE = "role.yaml"
+POLICY_FILE = "policies.yaml"
 
 
 def _role_file_path(repo_root: str) -> Path:
     return Path(repo_root) / CONFIG_DIR / ROLE_FILE
+
+
+def _policy_file_path(repo_root: str) -> Path:
+    return Path(repo_root) / CONFIG_DIR / POLICY_FILE
 
 
 def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
@@ -92,3 +99,68 @@ def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
         logger.warning("unknown role %r; using the most-restrictive role", name)
         return MOST_RESTRICTIVE_ROLE
     return role
+
+
+def load_policy(repo_root: str = ".") -> PolicyDoc | None:
+    """Load the saved policy checklist, or ``None`` if none is saved.
+
+    Never raises: a corrupt/unreadable file logs and returns ``None`` (callers
+    fall back to the recommended defaults), never crashes the decision path.
+    """
+    path = _policy_file_path(repo_root)
+    if not path.exists():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        logger.warning("could not read %s; ignoring saved policy", path)
+        return None
+    if not isinstance(data, dict):
+        logger.warning("%s is not a mapping; ignoring saved policy", path)
+        return None
+    try:
+        return PolicyDoc.from_mapping(data)
+    except (TypeError, ValueError, KeyError):
+        logger.warning("invalid policy in %s; ignoring saved policy", path)
+        return None
+
+
+def save_policy(doc: PolicyDoc, repo_root: str = ".") -> None:
+    """Persist ``doc`` to ``.doberman/policies.yaml`` (creating the dir).
+
+    Writes via a temp file + replace so a failed write never corrupts a prior
+    valid policy file.
+    """
+    path = _policy_file_path(repo_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = yaml.safe_dump(doc.to_mapping(), sort_keys=False)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_mode(repo_root: str = ".") -> str:
+    """Return the active security mode name (default Balanced).
+
+    Reads the mode from the saved policy; an unknown/garbage stored mode falls
+    back to the default rather than failing.
+    """
+    doc = load_policy(repo_root)
+    if doc is None:
+        return DEFAULT_MODE.value
+    try:
+        return resolve_mode(doc.mode).value
+    except ValueError:
+        logger.warning("saved mode %r is unknown; using %s", doc.mode, DEFAULT_MODE.value)
+        return DEFAULT_MODE.value
+
+
+def save_mode(name: str, repo_root: str = ".") -> str:
+    """Validate and persist the security mode; returns the canonical name.
+
+    Raises ``ValueError`` on an unknown mode (the caller surfaces the error).
+    """
+    mode = resolve_mode(name)
+    doc = load_policy(repo_root) or recommend_policy()
+    save_policy(doc.with_mode(mode.value), repo_root)
+    return mode.value

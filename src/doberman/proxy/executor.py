@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, TextContent
 
-from doberman.config import load_active_role
+from doberman.config import load_active_role, load_mode
 from doberman.engine.decision_engine import PASS_STUB, Guardrail, decide
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.models import (
@@ -127,6 +127,7 @@ async def decide_and_execute(
     # is None when no role is configured, in which case the role rule abstains.
     ctx = EvalContext(
         role=load_active_role("."),
+        mode=load_mode("."),
         metadata={"raw_arguments": dict(arguments or {})},
     )
 
