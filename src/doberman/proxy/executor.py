@@ -1,23 +1,36 @@
 """The single execution chokepoint between the agent and downstream tools.
 
 Every tool call intercepted by the proxy MUST flow through
-:func:`decide_and_execute` — there is no other route to a downstream tool.
-The decision engine (Feature 2) judges every normalized action: ``PASS``
-forwards, ``AUTH`` returns an authentication-required error (real auth
-arrives with Feature 7), ``BLOCK`` returns a policy error and the call is
-NEVER forwarded. Any engine failure is itself a ``BLOCK`` (fail closed).
+:func:`decide_and_execute` — there is no other route to a downstream tool. The
+decision engine (Feature 2) judges every normalized action; Feature 7 turns an
+``AUTH`` into a real, action-specific challenge:
+
+* ``PASS`` forwards the call.
+* ``AUTH`` runs a tiered challenge (confirm / 2FA / role elevation). On approval
+  the action is **re-decided** (TOCTOU guard) and, unless it now ``BLOCK``s,
+  forwarded; a satisfied ``role_elevation`` grants a narrow, temporary, (for
+  destructive scopes) single-use elevation first. Denial/timeout forwards
+  nothing.
+* ``BLOCK`` returns a policy error and is NEVER forwarded.
+
+Any engine failure is itself a ``BLOCK`` (fail closed). The approval is bound to
+exactly one action id (no replay onto a different call).
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, TextContent
 
+from doberman.auth.challenge import AuthTier, Prompter, run_auth_challenge
+from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import load_active_role, load_mode
 from doberman.engine.decision_engine import PASS_STUB, Guardrail, decide
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.models import (
+    ActionType,
     Decision,
     EvalContext,
     GuardrailResult,
@@ -28,15 +41,30 @@ from doberman.models import (
 )
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
+from doberman.storage.db import active_elevations, grant_elevation, mark_used
 
 _engine_logger = logging.getLogger("doberman.proxy.engine")
 
-# Guardrail implementations used by the proxy. The objective guardrail is now
-# the real Feature 3 rule set; the subjective guardrail stays a PASS stub until
+#: Repo root used for config + the elevation store. Module-level so tests can
+#: point it at an isolated temp dir (the DB/config must never touch the repo).
+REPO_ROOT = "."
+
+#: Prompter for AUTH challenges. None ⇒ the provider's default CLI prompter
+#: (stdin/stdout). The stdio ``serve`` path sets this to a controlling-terminal
+#: prompter so a challenge never reads/writes the agent's MCP stream. Module-level
+#: so tests can inject a headless fake.
+AUTH_PROMPTER: Prompter | None = None
+
+# Guardrail implementations used by the proxy. The objective guardrail is the
+# real Feature 3 rule set; the subjective guardrail stays a PASS stub until
 # Feature 9 lands. Module-level so tests can monkeypatch the policy without
 # touching the routing.
 DEFAULT_OBJECTIVE: Guardrail = ObjectiveGuardrail()
 DEFAULT_SUBJECTIVE: Guardrail = PASS_STUB
+
+#: Action types whose elevations are single-use (a destructive op should not be
+#: silently repeatable on one approval).
+_DESTRUCTIVE_ACTIONS = frozenset({ActionType.file_delete})
 
 _DENIED_TEMPLATE = (
     "doberman: downstream call failed; action denied "
@@ -107,6 +135,113 @@ def _engine_failure_decision(action: SecurityObject) -> Decision:
     )
 
 
+def _build_ctx(arguments: dict | None, grants: tuple) -> EvalContext:
+    """Assemble the EvalContext for one decision.
+
+    The objective rules (Feature 3) inspect the UN-redacted call content via
+    ``metadata['raw_arguments']`` (in-memory only, never logged/persisted). The
+    active role (F4), mode (F6), and active elevations (F7) ride along too.
+    """
+    return EvalContext(
+        role=load_active_role(REPO_ROOT),
+        mode=load_mode(REPO_ROOT),
+        metadata={
+            "raw_arguments": dict(arguments or {}),
+            "repo_root": REPO_ROOT,
+            "elevations": grants,
+        },
+    )
+
+
+def _safe_decide(action: SecurityObject, ctx: EvalContext) -> Decision:
+    """Run the engine; any failure becomes a fail-closed BLOCK (never crashes)."""
+    try:
+        return decide(action, DEFAULT_OBJECTIVE, DEFAULT_SUBJECTIVE, ctx)
+    except Exception:  # noqa: BLE001 — engine failure must fail closed, not crash
+        # BaseException (CancelledError, SystemExit) propagates on purpose — an
+        # unwind is fail-closed by construction (no forward is reached).
+        _engine_logger.exception("decision engine raised; failing closed (action %s)", action.id)
+        return _engine_failure_decision(action)
+
+
+def _is_destructive(action: SecurityObject) -> bool:
+    return action.action_type in _DESTRUCTIVE_ACTIONS
+
+
+async def _forward(
+    downstream: ClientSession,
+    tool_name: str,
+    arguments: dict | None,
+    action: SecurityObject,
+) -> CallToolResult:
+    """Forward an approved call downstream, failing closed on any error."""
+    try:
+        return await downstream.call_tool(tool_name, arguments or {})
+    except Exception as exc:  # noqa: BLE001 — fail closed on ANY failure mode
+        # Never re-raise into the serving path and never echo arguments.
+        # Deliberately `Exception`, not `BaseException`: cancellation and
+        # interpreter shutdown must propagate (they carry no payload to leak).
+        return _denied_result(ReasonCode.downstream_error, type(exc).__name__, action.id)
+
+
+async def _consume_single_use(action: SecurityObject, grants: tuple, now: datetime) -> None:
+    """Mark a single-use elevation spent after it released a forward (best-effort)."""
+    grant = find_cover(action.target, grants, root=REPO_ROOT)
+    if grant is not None and grant.single_use:
+        await mark_used(REPO_ROOT, grant.id)
+
+
+async def _handle_auth(
+    downstream: ClientSession,
+    tool_name: str,
+    arguments: dict | None,
+    action: SecurityObject,
+    decision: Decision,
+    now: datetime,
+) -> CallToolResult:
+    """Run the tiered challenge for an AUTH decision and act on the outcome."""
+    # Off the event loop: the challenge blocks for a human, and an elicitation
+    # answer arrives over the very session this loop services — waiting in-loop
+    # would deadlock it (and freeze the proxy during GUI/TTY prompts too).
+    auth_result = await asyncio.to_thread(
+        run_auth_challenge, decision, action, prompter=AUTH_PROMPTER
+    )
+    # Approval is bound to THIS action id — never honor a result for another call.
+    if not auth_result.approved or auth_result.action_id != action.id:
+        return _verdict_result(decision)
+
+    # A satisfied role elevation grants a narrow, temporary permission first.
+    if auth_result.tier is AuthTier.role_elevation:
+        scope = scope_for_target(action.target, root=REPO_ROOT)
+        if scope is None:
+            # No narrow scope can be formed (non-path / escapes root): refuse.
+            return _verdict_result(decision)
+        try:
+            await grant_elevation(
+                REPO_ROOT,
+                scope,
+                action.id,
+                now=now,
+                single_use=_is_destructive(action),
+            )
+        except Exception:  # noqa: BLE001 — a failed grant must fail closed
+            _engine_logger.warning("elevation grant failed (action %s); denying", action.id)
+            return _verdict_result(decision)
+
+    # TOCTOU guard: re-decide with refreshed elevations. A change to BLOCK must
+    # block even post-approval; otherwise the human-approved action is released.
+    grants = tuple(await active_elevations(REPO_ROOT, now))
+    redecision = _safe_decide(action, _build_ctx(arguments, grants))
+    if redecision.final_verdict is Verdict.BLOCK:
+        log_action(action, redecision.final_verdict)
+        return _verdict_result(redecision)
+
+    result = await _forward(downstream, tool_name, arguments, action)
+    if not result.isError:
+        await _consume_single_use(action, grants, now)
+    return result
+
+
 async def decide_and_execute(
     downstream: ClientSession,
     tool_name: str,
@@ -114,51 +249,30 @@ async def decide_and_execute(
 ) -> CallToolResult:
     """Decide whether to execute a tool call, then act on the verdict.
 
-    This is THE chokepoint: normalize → decide → enforce. The downstream
-    forward happens in exactly one place, reachable only on a PASS decision.
+    This is THE chokepoint: normalize → decide → enforce. The downstream forward
+    happens only on a PASS decision or a successfully-authenticated AUTH.
     """
     action: SecurityObject = normalize(tool_name, arguments)
+    now = datetime.now(timezone.utc)
 
-    # The objective rules (Feature 3) need to inspect the UN-redacted call
-    # content to detect secrets / parse commands. We hand it to them through
-    # EvalContext.metadata, which is in-memory only and never logged or
-    # persisted — the SecurityObject itself stays redacted for the audit log.
-    # The active agent role (Feature 4) is loaded from .doberman/role.yaml; it
-    # is None when no role is configured, in which case the role rule abstains.
-    ctx = EvalContext(
-        role=load_active_role("."),
-        mode=load_mode("."),
-        metadata={"raw_arguments": dict(arguments or {})},
-    )
+    # Active elevations (F7) may satisfy a role-boundary AUTH for the exact
+    # covered target, so they are loaded BEFORE the first decision.
+    grants = tuple(await active_elevations(REPO_ROOT, now))
+    decision = _safe_decide(action, _build_ctx(arguments, grants))
 
-    try:
-        decision = decide(action, DEFAULT_OBJECTIVE, DEFAULT_SUBJECTIVE, ctx)
-    except Exception:  # noqa: BLE001 — engine failure must fail closed, not crash
-        # BaseException (CancelledError, SystemExit) propagates on purpose —
-        # an unwind is fail-closed by construction (the forward below is
-        # never reached). Log the failure server-side for forensics; the
-        # exception text never reaches the agent.
-        _engine_logger.exception("decision engine raised; failing closed (action %s)", action.id)
-        decision = _engine_failure_decision(action)
-
-    # Record every intercepted action with its REAL verdict. Logged BEFORE
-    # the verdict gate — safe because log_action can never bypass the gate
-    # (it swallows its own failures and forwards nothing).
+    # Record every intercepted action with its REAL verdict. Logged before the
+    # gate — safe because log_action swallows its own failures and forwards
+    # nothing.
     log_action(action, decision.final_verdict)
 
-    if decision.final_verdict is not Verdict.PASS:
-        # AUTH (F7 adds the real challenge) and BLOCK both stop here:
-        # the downstream call below is never reached.
+    if decision.final_verdict is Verdict.BLOCK:
         return _verdict_result(decision)
 
-    try:
-        return await downstream.call_tool(tool_name, arguments or {})
-    except Exception as exc:  # noqa: BLE001 — fail closed on ANY failure mode
-        # Never re-raise into the serving path and never echo arguments:
-        # the agent gets a generic denial carrying a stable reason code and
-        # the action id for correlation with the interception log.
-        # Deliberately `Exception`, not `BaseException`: cancellation
-        # (asyncio.CancelledError) and interpreter shutdown must propagate —
-        # swallowing them would break structured concurrency, and they carry
-        # no payload to leak.
-        return _denied_result(ReasonCode.downstream_error, type(exc).__name__, action.id)
+    if decision.final_verdict is Verdict.AUTH:
+        return await _handle_auth(downstream, tool_name, arguments, action, decision, now)
+
+    # PASS — forward, then consume any single-use elevation that released it.
+    result = await _forward(downstream, tool_name, arguments, action)
+    if not result.isError:
+        await _consume_single_use(action, grants, now)
+    return result

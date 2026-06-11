@@ -17,8 +17,16 @@ rules):
 SECURITY: the explanation names the role and the boundary class only — never
 the raw path. With ``ctx.role is None`` the rule abstains, so role enforcement
 is strictly opt-in and never silently blocks a repo that has not set a role.
+
+Role elevation (Feature 7.4): an active, narrow elevation grant (passed in via
+``ctx.metadata['elevations']``) satisfies a ``suspicious`` (out-of-scope) target
+for exactly that path — turning its AUTH into a PASS *for the role rule only*.
+A ``blocked`` target is NEVER softened by an elevation, and every other
+objective rule still runs and combines, so elevation can only ever lift the role
+boundary's own escalation, nothing else.
 """
 
+from doberman.auth.elevation import ElevationGrant, find_cover
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -48,6 +56,21 @@ _SEVERITY = {
 }
 
 
+def _active_elevations(ctx: EvalContext) -> tuple[ElevationGrant, ...]:
+    """Read the already-active elevation grants the proxy loaded into context.
+
+    The proxy queries the storage layer (which filters expired/revoked/spent
+    grants) and hands the survivors in via ``ctx.metadata['elevations']`` — so
+    the rule never touches the database and time/expiry are decided upstream.
+    """
+    if not isinstance(ctx.metadata, dict):
+        return ()
+    raw = ctx.metadata.get("elevations")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(g for g in raw if isinstance(g, ElevationGrant))
+
+
 def _candidate_paths(action: SecurityObject) -> list[str]:
     raw_paths = action.metadata.get("raw_paths") if isinstance(action.metadata, dict) else None
     if isinstance(raw_paths, (list, tuple)) and raw_paths:
@@ -74,10 +97,19 @@ class RoleBoundaryRule:
         root = _DEFAULT_ROOT
         if isinstance(ctx.metadata, dict):
             root = str(ctx.metadata.get("repo_root") or _DEFAULT_ROOT)
+        grants = _active_elevations(ctx)
 
         worst = RoleBoundary.allowed
         for raw_path in paths:
             boundary = classify(role, raw_path, root=root)
+            # A narrow, temporary elevation can satisfy a suspicious (out-of-
+            # scope) target for exactly that path — but never a blocked one.
+            if (
+                boundary is RoleBoundary.suspicious
+                and grants
+                and find_cover(raw_path, grants, root=root) is not None
+            ):
+                boundary = RoleBoundary.allowed
             if _SEVERITY[boundary] > _SEVERITY[worst]:
                 worst = boundary
             if worst is RoleBoundary.blocked:
