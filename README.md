@@ -18,7 +18,7 @@
 Doberman is a security layer for AI coding agents. It sits **on the tool-execution path** — the agent talks to Doberman, and Doberman talks to the real tools (filesystem, shell, git, network, package managers) over the [Model Context Protocol](https://modelcontextprotocol.io). Every meaningful action is intercepted, normalized into a redacted, structured **security object**, and run through a risk-based decision engine that returns one of three verdicts — **allow**, **authenticate**, or **block** — before the action is ever forwarded. The guiding principle is simple: *if Doberman isn't on the execution path, it's advisory, not protective.* Doberman is built to **fail closed** (any error or uncertainty denies the action) and to be **raise-only** (guardrails may automatically tighten, never silently loosen), so an agent can never reach a tool around it and a buggy rule can never make the system less safe.
 
 > ### Project status
-> **Alpha — pre-1.0, API unstable.** Features 1–9 are implemented: the interception layer (1), the decision engine (2), the **objective guardrail** (3 — basic rules + the plugin seam), **agent role policy** (4 — role boundaries + the policy-source seam), **capability discovery** (5 — `doberman scan`), **policy checklist + strength modes** (6), **tiered authentication** (7 — action-specific confirm/2FA challenges, narrow/temporary role elevation, and the auth-provider seam), the **local decision log & audit** (8 — an append-only, redacted SQLite log with `doberman log`/`memory` and the audit-sink seam), and the **subjective guardrail** (9 — a local workflow baseline that escalates *unusual-for-you* actions, plus the detector seam). Doberman now actively blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), turns an `AUTH` verdict into a real, action-bound challenge that releases the call only on success, escalates actions that cross the agent's role boundary **or** depart from its learned workflow, reports the agent's blast radius, offers one Light/Balanced/Strict/Paranoid dial over good defaults, and records every decision to an explainable, privacy-preserving local audit trail. The policy-drift & poisoning defense (Feature 10) arrives next (see the [Roadmap](#roadmap)). This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition.
+> **Alpha — pre-1.0, API unstable.** The **complete MVP core (Features 1–10)** is implemented: the interception layer (1), the decision engine (2), the **objective guardrail** (3 — basic rules + the plugin seam), **agent role policy** (4 — role boundaries + the policy-source seam), **capability discovery** (5 — `doberman scan`), **policy checklist + strength modes** (6), **tiered authentication** (7 — action-specific confirm/2FA challenges, narrow/temporary role elevation, and the auth-provider seam), the **local decision log & audit** (8 — an append-only, redacted SQLite log with `doberman log`/`memory` and the audit-sink seam), the **subjective guardrail** (9 — a local workflow baseline that escalates *unusual-for-you* actions, plus the detector seam), and the **policy-drift & poisoning defense** (10 — strengthen/weaken classification, a 2FA-gated weakening chokepoint with a visible diff, an append-only change ledger, and the drift-observer seam). Doberman blocks the headline disasters (secret exfiltration, protected-path writes, catastrophic commands), turns an `AUTH` verdict into a real, action-bound challenge that releases the call only on success, escalates actions that cross the agent's role boundary **or** depart from its learned workflow, reports the agent's blast radius, offers one Light/Balanced/Strict/Paranoid dial over good defaults, records every decision to an explainable, privacy-preserving local audit trail, and ensures protection can only ever be *loosened* through an explicit, audited, 2FA-gated human approval. This is the open-source **core**; advanced/hosted capabilities live in a separate commercial edition (see the [Roadmap](#roadmap)).
 
 ---
 
@@ -41,10 +41,10 @@ Doberman is a security layer for AI coding agents. It sits **on the tool-executi
 ## How it works
 
 ```
-                ┌─────────────────────── Doberman ───────────────────────┐
+                ┌─────────────────────── Doberman ────────────────────────┐
    coding       │                                                         │     real
-   agent  ──────┼──▶  normalize  ──▶  decision engine  ──▶  enforce  ─────┼──▶  tool
-  (MCP client)  │   (SecurityObject)   (PASS/AUTH/BLOCK)    (chokepoint)   │   servers
+   agent  ──────┼──▶  normalize  ──▶  decision engine  ──▶  enforce ────┼──▶  tool
+  (MCP client)  │   (SecurityObject)   (PASS/AUTH/BLOCK)    (chokepoint)  │    servers
                 │                                              │          │
                 │                                  redacted interception  │
                 │                                       log (JSON)        │
@@ -92,21 +92,53 @@ A green run means the core engine, proxy, and guardrail wiring all behave as spe
 
 ## Quickstart
 
-At this stage Doberman is a **library**, not a standalone binary — you embed the proxy in front of a downstream MCP tool server. The proxy is created from an active downstream client session:
+Doberman ships a **`doberman serve`** runtime: it runs as an MCP server to your agent and an MCP client to your
+real tool server, so it sits *on* the execution path with no code changes on either side. The pattern is one line —
+**instead of pointing your agent at the real MCP server, point it at `doberman serve -- <that server>`.**
 
-```python
-from doberman.proxy.mcp_proxy import build_proxy_server
+```bash
+# Run Doberman in front of any MCP tool server (everything after `--` is the downstream command):
+doberman serve -- npx -y @modelcontextprotocol/server-filesystem /path/to/repo
 
-# `downstream` is an mcp.client.session.ClientSession connected to your
-# real tool server. The returned MCP server re-exposes its tools and routes
-# every tools/call through Doberman's decision chokepoint.
-proxy = build_proxy_server(downstream)
-# ...serve `proxy` to the agent over your preferred MCP transport.
+# Policy, decision log, and elevations live in <repo>/.doberman — choose the repo with --path:
+doberman serve --path /path/to/repo -- npx -y @modelcontextprotocol/server-filesystem /path/to/repo
 ```
 
-For a complete, runnable wiring (an in-process downstream + proxy + agent client),
-see [`tests/integration/test_proxy_passthrough.py`](./tests/integration/test_proxy_passthrough.py)
-and [`tests/integration/test_engine_blocks_reach_no_tool.py`](./tests/integration/test_engine_blocks_reach_no_tool.py).
+### Connect your agent
+
+Swap the agent's MCP server entry to launch Doberman, which then spawns the real server. The decision happens in
+between; an `AUTH` challenge reaches you on the first available channel: rendered **natively inside your agent's UI**
+(MCP elicitation, for clients that support it — confirmations only, never 2FA codes), else **a dialog window** above
+your agent's terminal (agent TUIs like Claude Code own the console, so a terminal prompt would be invisible there),
+else **your terminal** (headless/SSH). With no channel available, the `AUTH` action is denied — fail closed. Every
+decision is recorded — inspect it with `doberman log` and `doberman status`.
+
+**Claude Code**
+
+```bash
+claude mcp add doberman -- doberman serve -- npx -y @modelcontextprotocol/server-filesystem ~/repo
+```
+
+**Claude Desktop / Cursor / Codex** (`mcpServers` block in the client's config, e.g. `claude_desktop_config.json`)
+
+```jsonc
+{
+  "mcpServers": {
+    "doberman": {
+      "command": "doberman",
+      "args": ["serve", "--",
+               "npx", "-y", "@modelcontextprotocol/server-filesystem", "~/repo"]
+    }
+  }
+}
+```
+
+That's it — your agent sees exactly the same tools, now mediated by Doberman.
+
+For the embeddable form (build the proxy yourself and serve it over your own transport), use
+[`build_proxy_server`](./src/doberman/proxy/mcp_proxy.py); for runnable wiring examples see
+[`tests/integration/test_serve_end_to_end.py`](./tests/integration/test_serve_end_to_end.py) and
+[`tests/integration/test_proxy_passthrough.py`](./tests/integration/test_proxy_passthrough.py).
 
 ---
 
@@ -136,7 +168,7 @@ The deterministic, conservative rules for universal danger — the guardrail tha
 
 - **Basic rules (raise-only, fail-upward):** four pure rules run on every action and combine strongest-wins:
   - **Secret leakage** — detects credential shapes (`AKIA…`, `sk-…`, `ghp_…`, PEM keys, `.env` `KEY=value`) and base64/hex-encoded carriers; secret material bound for an external destination → **BLOCK**, local secret access → **AUTH**. Two confidence tiers mean a benign high-entropy blob (a base64 asset) is never hard-blocked on encoding alone.
-  - **Protected paths** — matches the **canonicalized** target (resolving `..`, symlinks, and case via one shared helper) against blocked/sensitive globs; traversal, symlink, and case bypasses are caught, and a path escaping the repo root is blocked.
+  - **Protected paths** — matches the **canonicalized** target (resolving `..`, symlinks, and case via one shared helper) against blocked/sensitive globs; traversal, symlink, and case bypasses are caught, and a path escaping the repo root is blocked. Doberman's own control plane (`.doberman/` — the policy doc, the active role, and the DB holding the append-only policy-change ledger, decision log, baselines, and elevations) is a **hard-blocked** path, so a proxied agent cannot rewrite policy, expand its role, or wipe the ledger on disk and sidestep the Feature 10 gate.
   - **Destructive commands** — adversarially parses shell/git command lines (`;` `&&` `|` `$()` backticks, env prefixes, `sudo`); `rm -rf /`, disk wipes, and force-pushes to a protected branch → **BLOCK**; bulk deletes and opaque `bash -c` payloads → **AUTH** (never a guessed `PASS`).
   - **External destinations** — classifies network hosts on their **registered domain** (defeating punycode/homoglyph, `user@host`, IP-literal, and substring spoofs); unknown destinations → **AUTH**, which combines with a secret to a **BLOCK**.
 - **HMAC fingerprinting** — keyed (`HMAC-SHA256`) one-way fingerprints recognize secrets without ever storing them; the local key is generated on first use, kept `0600`, and never committed or logged.
@@ -196,6 +228,15 @@ The *second* guardrail: it learns what is normal for this repo/role/workflow and
 - **`SubjectiveGuardrail` + mode awareness** — maps the score to `PASS`/`AUTH` by the active mode's sensitivity (Strict/Paranoid step up sooner; **Light disables** the abnormality step-up). It is **raise-only** and **cannot hard-block** (the execution rule clamps a subjective block to `AUTH`) — escalation, not paternalism — so it can never weaken an objective verdict.
 - **`Detector` seam (extension point)** — advanced/behavioral (UEBA-style) detectors register via the `doberman.detectors` entry-point group and run in the subjective layer, bound by the same raise-only discipline and isolated on failure. With nothing installed, only the baseline signal runs.
 
+### Feature 10 — Policy-Drift Detection & Poisoning Defense · `v0.10.0` _(in review)_
+
+Makes the **raise-only** invariant enforceable over time: learning and edits may tighten freely, but any **weakening** of protection must be deliberate — classified, gated, and recorded — so protection cannot slowly erode (the policy-poisoning attack).
+
+- **Strengthen/weaken classifier** — `classify_change(before, after)` labels a proposed change by protection rank. **Ambiguous or mixed changes classify as *weaken*** (fail safe), so a disguised weakening cannot slip through as "neutral".
+- **2FA-gated weakening chokepoint** — `apply_change(...)` is the single path for a policy change: a weakening renders a Before/After **diff** and requires a **`two_factor`** confirmation, and is applied **only on approval**; strengthening/neutral changes apply automatically. A denial leaves protection unchanged.
+- **Append-only change ledger** — every change — **including denied weakening attempts** (the attack signal) — is recorded immutably in the `policy_changes` table; `doberman policy-history` prints the full time-ordered history (rule, before→after, classification, how it was approved).
+- **`DriftObserver` seam (extension point)** — org-wide drift monitoring / compliance tooling registers via the `doberman.drift_observers` entry-point group and receives **redacted** change events. An observer is purely observational — it can **never** approve, suppress, or alter a weakening (the 2FA gate is core and authoritative) — and a failing observer is isolated. With nothing installed, the gate and local ledger are unaffected.
+
 ---
 
 ## Design invariants
@@ -224,6 +265,20 @@ The version line maps to the development roadmap:
 ## Changelog
 
 This project keeps a changelog in the spirit of [Keep a Changelog](https://keepachangelog.com/).
+
+### `v0.11.0` — Agent Integration: `doberman serve` — _Unreleased (in review)_
+
+- **`doberman serve -- <downstream cmd>`** — a runnable stdio MCP proxy that fronts any downstream MCP tool server (MCP server to the agent, MCP client to the downstream); makes Doberman usable from Claude Code, Codex, Claude Desktop, Cursor, and any MCP client with a one-line config swap.
+- **Out-of-band AUTH** — in serve mode an `AUTH` challenge tries three channels in order: **MCP elicitation** (rendered natively inside the agent client's UI, for clients that declare the capability — confirmations only; the spec forbids sensitive data, so 2FA codes never transit the agent client), a **topmost GUI dialog** (stdlib tkinter, dark themed, masked 2FA entry — visible even when an agent TUI such as Claude Code owns the console), then the controlling terminal (`/dev/tty` / `CONIN$`/`CONOUT$`). None of these touch the agent's stdin/stdout MCP stream; with no channel available the action is denied (fail closed). A denial on one channel is final — it is never re-asked on another. Challenges run off the event loop, so the proxy stays responsive while a prompt is open.
+- Logs are pinned to **stderr** (stdout is the agent's protocol channel); the engine's repo root (`.doberman/`) is selectable with `--path`.
+
+### `v0.10.0` — Policy-Drift Detection & Poisoning Defense — _Unreleased (in review)_
+
+- **Slice 10.1** — strengthen/weaken/neutral change classifier (ambiguous & mixed → weaken, fail safe).
+- **Slice 10.2** — `apply_change` chokepoint: a weakening requires 2FA + a rendered diff and applies only on approval; strengthen/neutral apply automatically.
+- **Slice 10.3** — append-only policy-change ledger + `doberman policy-history` (records applied changes **and** denied weakening attempts).
+- **Slice 10.4** — the pluggable `DriftObserver` interface (the enterprise seam; discovered via `doberman.drift_observers`; redacted events; can never override the gate).
+- **Hardening** — the protected-path rule now **hard-blocks** Doberman's own control plane (`.doberman/` — the policy doc, the active role, and the DB holding the ledger, decision log, baselines, and elevations). This closes a bypass where a proxied agent could rewrite policy, expand its role, or delete the ledger directly on disk without ever going through the 2FA-gated `apply_change` chokepoint. (Doberman writes `.doberman/` via direct I/O, never through the proxy, so its own operation is unaffected.)
 
 ### `v0.9.0` — Subjective Guardrail & Workflow Baseline — _Unreleased (in review)_
 
@@ -298,11 +353,16 @@ This project keeps a changelog in the spirit of [Keep a Changelog](https://keepa
 
 ## Roadmap
 
-Upcoming versions add the guardrail *content* and the surfaces around the engine (capability-level summary):
+The **MVP core (Features 1–10) is feature-complete** and in review. Beyond it, the planned (still open-source) directions are:
 
-| Version | Theme |
-|---------|-------|
-| `v0.10.0` | **Policy-drift & poisoning defense** — strengthen/weaken classification, gated approvals, append-only ledger. |
+| Theme | What |
+|-------|------|
+| Stronger auth tiers | passkeys / WebAuthn as a tier above TOTP. |
+| Async / remote challenges | a non-blocking approval model for hosted/remote humans. |
+| More adapters | Cursor / Claude-Code / OpenAI / LangChain / terminal / browser against the decoupled core. |
+| Hardening | signed (cryptographically tamper-evident) append-only logs; policy-as-code checked into the repo; a local web dashboard. |
+
+Advanced/hosted capabilities — premium detection, centralized audit, SSO/RBAC, org policy management, compliance — live in a separate commercial edition that attaches through the core extension points (`doberman.rules` / `detectors` / `auth_providers` / `audit_sinks` / `policy_sources` / `drift_observers`) **without core ever depending on it**.
 
 ---
 

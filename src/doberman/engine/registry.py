@@ -42,6 +42,8 @@ POLICY_SOURCE_GROUP = "doberman.policy_sources"
 AUTH_PROVIDER_GROUP = "doberman.auth_providers"
 #: Audit sinks (Feature 8.4) register here; resolved by the storage layer.
 AUDIT_SINK_GROUP = "doberman.audit_sinks"
+#: Drift observers (Feature 10.4) register here; resolved by the policy layer.
+DRIFT_OBSERVER_GROUP = "doberman.drift_observers"
 
 
 def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
@@ -242,3 +244,34 @@ def discover_audit_sinks() -> list[object]:
             continue
         sinks.append(candidate)
     return sinks
+
+
+def discover_drift_observers() -> list[object]:
+    """Discover registered drift observers (Feature 10.4, group ``doberman.drift_observers``).
+
+    Loaded defensively like rules/sinks: an import/constructor failure, or an
+    object that is not observer-shaped (no callable ``on_change``), is logged and
+    skipped. Returns ``[]`` when nothing is installed — the 2FA gate + local
+    ledger are unaffected. Core never imports an observer by name.
+    """
+    # Local import avoids an engine<->policy import cycle at module load.
+    from doberman.policy.drift import _looks_like_drift_observer
+
+    observers: list[object] = []
+    seen: set[str] = set()
+    for entry_point in _iter_entry_points(DRIFT_OBSERVER_GROUP):
+        key = f"{DRIFT_OBSERVER_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = _load_and_construct(entry_point)
+        if candidate is None:
+            continue
+        if not _looks_like_drift_observer(candidate):
+            logger.warning(
+                "skipping drift observer %r: not observer-shaped",
+                getattr(entry_point, "name", "?"),
+            )
+            continue
+        observers.append(candidate)
+    return observers

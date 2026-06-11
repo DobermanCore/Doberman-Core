@@ -20,6 +20,7 @@ from doberman.auth import totp
 from doberman.config import load_active_role, load_mode, load_policy, save_mode, save_policy
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
+from doberman.policy.drift import read_policy_changes
 from doberman.policy.modes import SecurityMode
 from doberman.proxy.serve import serve_stdio
 from doberman.storage.db import active_elevations, revoke_elevation
@@ -274,6 +275,32 @@ def memory(
         for cls, count in summary["top_path_classes"]:
             typer.echo(f"  {cls}  ×{count}")
     typer.echo(f"Distinct secrets seen (count only, never stored): {summary['secrets_seen']}")
+
+
+@app.command("policy-history")
+def policy_history(
+    last: int = typer.Option(20, "--last", "-n", help="Show the most recent N changes."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show the append-only policy-change ledger (newest first).
+
+    Records every classified change — strengthen / weaken / neutral — **including
+    denied weakening attempts** (the poisoning signal). Each row shows the rule,
+    the before→after states, the classification, and how it was approved.
+    """
+    rows = asyncio.run(read_policy_changes(path, limit=max(0, last)))
+    if not rows:
+        typer.echo("(no policy changes recorded yet)")
+        return
+    typer.echo("Doberman policy-change ledger")
+    typer.echo("=" * 32)
+    for row in rows:
+        status = "approved" if row["approved"] else "DENIED"
+        typer.echo(
+            f"{row['ts']}  {row['classification']:<10} {row['rule_id']}: "
+            f"{row['from_state']} → {row['to_state']}  "
+            f"[{status} via {row['approval_method']}]"
+        )
 
 
 @app.command()

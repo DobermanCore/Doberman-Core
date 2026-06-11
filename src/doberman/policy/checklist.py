@@ -50,7 +50,7 @@ _CORE_HARD_BLOCKS: tuple[PolicyItem, ...] = (
     ),
     PolicyItem(
         "hard_block.protected_path",
-        "Block writes/deletes to protected paths (.env, secrets, keys).",
+        "Block writes/deletes to protected paths (.env, secrets, keys, Doberman's own .doberman/ state).",
         CATEGORY_HARD_BLOCK,
         Verdict.BLOCK,
         core=True,
