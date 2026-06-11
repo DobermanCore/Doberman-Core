@@ -111,6 +111,9 @@ class ReasonCode(StrEnum):
     policy_source_blocked = "policy_source_blocked"
     policy_source_sensitive = "policy_source_sensitive"
 
+    # Feature 9 — subjective guardrail & workflow baseline (+ detector seam).
+    unusual_for_workflow = "unusual_for_workflow"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).

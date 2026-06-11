@@ -27,8 +27,10 @@ from mcp.types import CallToolResult, TextContent
 from doberman.auth.challenge import AuthTier, Prompter, run_auth_challenge
 from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import load_active_role, load_mode
-from doberman.engine.decision_engine import PASS_STUB, Guardrail, decide
+from doberman.engine.decision_engine import Guardrail, decide
 from doberman.engine.objective import ObjectiveGuardrail
+from doberman.engine.subjective import SubjectiveGuardrail
+from doberman.learning.baseline import abnormality, observe
 from doberman.models import (
     ActionType,
     Decision,
@@ -56,12 +58,11 @@ REPO_ROOT = "."
 #: so tests can inject a headless fake.
 AUTH_PROMPTER: Prompter | None = None
 
-# Guardrail implementations used by the proxy. The objective guardrail is the
-# real Feature 3 rule set; the subjective guardrail stays a PASS stub until
-# Feature 9 lands. Module-level so tests can monkeypatch the policy without
-# touching the routing.
+# Guardrail implementations used by the proxy: the real Feature 3 objective rule
+# set and the real Feature 9 subjective (workflow-baseline) guardrail. Module-
+# level so tests can monkeypatch the policy without touching the routing.
 DEFAULT_OBJECTIVE: Guardrail = ObjectiveGuardrail()
-DEFAULT_SUBJECTIVE: Guardrail = PASS_STUB
+DEFAULT_SUBJECTIVE: Guardrail = SubjectiveGuardrail()
 
 #: Action types whose elevations are single-use (a destructive op should not be
 #: silently repeatable on one approval).
@@ -136,12 +137,15 @@ def _engine_failure_decision(action: SecurityObject) -> Decision:
     )
 
 
-def _build_ctx(arguments: dict | None, grants: tuple) -> EvalContext:
+def _build_ctx(arguments: dict | None, grants: tuple, abnormality_score: float) -> EvalContext:
     """Assemble the EvalContext for one decision.
 
     The objective rules (Feature 3) inspect the UN-redacted call content via
     ``metadata['raw_arguments']`` (in-memory only, never logged/persisted). The
-    active role (F4), mode (F6), and active elevations (F7) ride along too.
+    active role (F4), mode (F6), active elevations (F7), and the precomputed
+    workflow-abnormality score (F9) ride along too — the score is computed by the
+    proxy (async DB read) so the synchronous subjective guardrail never touches
+    the database.
     """
     return EvalContext(
         role=load_active_role(REPO_ROOT),
@@ -150,8 +154,21 @@ def _build_ctx(arguments: dict | None, grants: tuple) -> EvalContext:
             "raw_arguments": dict(arguments or {}),
             "repo_root": REPO_ROOT,
             "elevations": grants,
+            "abnormality": abnormality_score,
         },
     )
+
+
+async def _observe_allowed(action: SecurityObject) -> None:
+    """Record an allowed action in the workflow baseline (best-effort).
+
+    Only ever called after a successful forward — a blocked/denied attempt must
+    never teach the baseline that it is "normal" (raise-only learning).
+    """
+    try:
+        await observe(action, repo_root=REPO_ROOT)
+    except Exception:  # noqa: BLE001 — learning must never break the execution path
+        _engine_logger.warning("baseline observe failed (action %s); continuing", action.id)
 
 
 def _safe_decide(action: SecurityObject, ctx: EvalContext) -> Decision:
@@ -223,6 +240,7 @@ async def _handle_auth(
     action: SecurityObject,
     decision: Decision,
     now: datetime,
+    abnormality_score: float,
 ) -> CallToolResult:
     """Run the tiered challenge for an AUTH decision and act on the outcome."""
     # Off the event loop: the challenge blocks for a human, and an elicitation
@@ -261,7 +279,7 @@ async def _handle_auth(
     # TOCTOU guard: re-decide with refreshed elevations. A change to BLOCK must
     # block even post-approval; otherwise the human-approved action is released.
     grants = tuple(await active_elevations(REPO_ROOT, now))
-    redecision = _safe_decide(action, _build_ctx(arguments, grants))
+    redecision = _safe_decide(action, _build_ctx(arguments, grants, abnormality_score))
     if redecision.final_verdict is Verdict.BLOCK:
         log_action(action, redecision.final_verdict)
         await _persist(redecision, action, auth_result="approved")
@@ -270,6 +288,7 @@ async def _handle_auth(
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _consume_single_use(action, grants, now)
+        await _observe_allowed(action)
     await _persist(decision, action, auth_result="approved", elevation_id=elevation_id)
     return result
 
@@ -288,9 +307,12 @@ async def decide_and_execute(
     now = datetime.now(timezone.utc)
 
     # Active elevations (F7) may satisfy a role-boundary AUTH for the exact
-    # covered target, so they are loaded BEFORE the first decision.
+    # covered target, and the workflow-abnormality score (F9) feeds the
+    # subjective guardrail — both are computed BEFORE the first decision so the
+    # synchronous engine can read them from the context.
     grants = tuple(await active_elevations(REPO_ROOT, now))
-    decision = _safe_decide(action, _build_ctx(arguments, grants))
+    score = await abnormality(action, repo_root=REPO_ROOT, now=now)
+    decision = _safe_decide(action, _build_ctx(arguments, grants, score))
 
     # Record every intercepted action with its REAL verdict. Logged before the
     # gate — safe because log_action swallows its own failures and forwards
@@ -302,11 +324,13 @@ async def decide_and_execute(
         return _verdict_result(decision)
 
     if decision.final_verdict is Verdict.AUTH:
-        return await _handle_auth(downstream, tool_name, arguments, action, decision, now)
+        return await _handle_auth(downstream, tool_name, arguments, action, decision, now, score)
 
-    # PASS — forward, then consume any single-use elevation that released it.
+    # PASS — forward, then consume any single-use elevation that released it and
+    # teach the baseline (allowed actions only).
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _consume_single_use(action, grants, now)
+        await _observe_allowed(action)
     await _persist(decision, action)
     return result

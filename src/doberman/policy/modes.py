@@ -51,6 +51,10 @@ class ModeThresholds:
     escalate_out_of_scope: bool = True
     escalate_unknown_destination: bool = True
     escalate_unusual: bool = True
+    #: Abnormality score (0..1) at/above which the subjective guardrail (F9)
+    #: steps an action up to AUTH. Lower = stricter (more AUTH). Only applies
+    #: when ``escalate_unusual`` is True (Light disables the step-up entirely).
+    abnormality_threshold: float = 0.7
 
 
 #: Per-mode thresholds. Stricter modes lower the bulk threshold (more AUTH);
@@ -59,15 +63,19 @@ MODES: dict[SecurityMode, ModeThresholds] = {
     SecurityMode.light: ModeThresholds(
         bulk_delete_threshold=100,
         escalate_unusual=False,
+        abnormality_threshold=1.1,  # unreachable: Light never steps up on abnormality
     ),
     SecurityMode.balanced: ModeThresholds(
         bulk_delete_threshold=25,
+        abnormality_threshold=0.7,
     ),
     SecurityMode.strict: ModeThresholds(
         bulk_delete_threshold=10,
+        abnormality_threshold=0.5,
     ),
     SecurityMode.paranoid: ModeThresholds(
         bulk_delete_threshold=3,
+        abnormality_threshold=0.3,
     ),
 }
 
