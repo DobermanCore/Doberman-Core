@@ -7,6 +7,7 @@ lists currently-active elevations.
 """
 
 import asyncio
+import json
 import logging
 import sys
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from doberman.policy.checklist import recommend_policy
 from doberman.policy.modes import SecurityMode
 from doberman.proxy.serve import serve_stdio
 from doberman.storage.db import active_elevations, revoke_elevation
+from doberman.storage.log import memory_summary, read_decisions
 
 app = typer.Typer(
     help="Doberman — adaptive authorization layer for coding agents.",
@@ -221,6 +223,57 @@ def revoke(
     else:
         typer.echo(f"no elevation with id {elevation_id}", err=True)
         raise typer.Exit(code=1)
+
+
+@app.command()
+def log(
+    last: int = typer.Option(20, "--last", "-n", help="Show the most recent N decisions."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show the recent redacted decision log (newest first).
+
+    Every row is already redacted — a path class, reason codes, the verdict, and
+    the auth outcome. No raw target, argument, or secret is ever stored or shown.
+    """
+    rows = asyncio.run(read_decisions(path, limit=max(0, last)))
+    if not rows:
+        typer.echo("(no decisions recorded yet)")
+        return
+    typer.echo("Doberman decision log")
+    typer.echo("=" * 32)
+    for row in rows:
+        target = row["target_path_class"] or "-"
+        reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
+        auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
+        typer.echo(
+            f"{row['ts']}  {row['final_verdict']:<5} {row['action_type']:<13} "
+            f"{target}  [{reasons}]{auth}"
+        )
+
+
+@app.command()
+def memory(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show a plain-language, redaction-safe profile of what Doberman has learned.
+
+    Reads as classifications and habits — counts, verdict mix, most-touched path
+    classes, and how many distinct secrets have been *seen* (a count only). It
+    never shows a fingerprint value or any raw secret.
+    """
+    summary = asyncio.run(memory_summary(path))
+    typer.echo("Doberman learned memory")
+    typer.echo("=" * 32)
+    typer.echo(f"Decisions recorded: {summary['decisions']}")
+    verdicts = summary["verdicts"]
+    if verdicts:
+        mix = ", ".join(f"{v}={n}" for v, n in verdicts.items())
+        typer.echo(f"Verdict mix:        {mix}")
+    if summary["top_path_classes"]:
+        typer.echo("Most-touched path classes:")
+        for cls, count in summary["top_path_classes"]:
+            typer.echo(f"  {cls}  ×{count}")
+    typer.echo(f"Distinct secrets seen (count only, never stored): {summary['secrets_seen']}")
 
 
 @app.command()

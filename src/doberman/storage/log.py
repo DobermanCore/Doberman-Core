@@ -1,0 +1,224 @@
+"""Append-only, redacted decision log (Feature 8, slice 8.2).
+
+One immutable, **redacted** row per engine decision, written to the local
+SQLite ``decisions`` table and fanned out to any registered audit sinks
+(slice 8.4). This is the substrate explainability, learning, and drift defense
+build on.
+
+Redaction is structural and load-bearing:
+
+* The row stores a path **class** (filename dropped), the action type, the
+  verdict, reason codes, the decided layer, and ids — **never** the raw target,
+  raw arguments, file contents, or a prompt. Secrets are represented only by the
+  HMAC fingerprints already on the action, upserted into ``secret_fingerprints``.
+* Writing is **append-only**: this module only ever ``INSERT``s into
+  ``decisions`` (and upserts ``last_seen`` on fingerprints) — there is no
+  ``UPDATE``/``DELETE`` path for a decision row.
+* Writing is **best-effort**: any failure is logged to stderr and swallowed —
+  it can never raise into the execution path and never flips a verdict. The
+  decision has already been made and enforced before this runs.
+"""
+
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import PurePosixPath
+
+from doberman.models import ActionType, Decision, SecurityObject
+from doberman.storage.db import open_db
+from doberman.storage.sinks import emit_to_sinks
+
+logger = logging.getLogger("doberman.storage.log")
+
+_PATH_ACTIONS = frozenset({ActionType.file_read, ActionType.file_write, ActionType.file_delete})
+
+_INSERT_DECISION = (
+    "INSERT INTO decisions "
+    "(ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
+    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+_UPSERT_FINGERPRINT = (
+    "INSERT INTO secret_fingerprints (fingerprint, label, first_seen, last_seen, source_path_class) "
+    "VALUES (?, ?, ?, ?, ?) "
+    "ON CONFLICT(fingerprint) DO UPDATE SET last_seen = excluded.last_seen"
+)
+
+_SELECT_DECISIONS = (
+    "SELECT ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
+    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id "
+    "FROM decisions ORDER BY id DESC"
+)
+
+
+def _path_class(action: SecurityObject) -> str | None:
+    """A redaction-safe class for a file target: drop the filename, keep dir + ext.
+
+    ``backend/auth/session.ts`` → ``backend/auth/*.ts``; ``.env`` → ``.env``
+    (dotfiles/extensionless names are themselves the class). Non-file actions
+    have no path class. Never returns the raw filename of an extensioned file.
+    """
+    if action.target_path_class:
+        return action.target_path_class
+    if action.action_type not in _PATH_ACTIONS or not action.target:
+        return None
+    pure = PurePosixPath(str(action.target).replace("\\", "/"))
+    parent = pure.parent.as_posix()
+    parent = "" if parent == "." else parent
+    stem_class = f"*{pure.suffix}" if pure.suffix else pure.name
+    return f"{parent}/{stem_class}" if parent else stem_class
+
+
+def _decided_layer(decision: Decision) -> str:
+    """Which layer produced the verdict: objective alone, or combined with subjective."""
+    return "objective" if decision.subjective is None else "combined"
+
+
+def build_record(
+    decision: Decision,
+    action: SecurityObject,
+    *,
+    auth_result: str | None,
+    elevation_id: str | None,
+    now: datetime,
+) -> dict:
+    """Build the single redacted record persisted and handed to every sink."""
+    return {
+        "ts": now.isoformat(),
+        "action_id": decision.action_id,
+        "agent_role": action.agent_role,
+        "action_type": action.action_type.value,
+        "target_path_class": _path_class(action),
+        "risk": decision.final_risk.value,
+        "source_context": action.source_context.value,
+        "final_verdict": decision.final_verdict.value,
+        "decided_layer": _decided_layer(decision),
+        "reason_codes": [rc.value for rc in decision.reason_codes],
+        "auth_required": decision.final_verdict.value == "AUTH",
+        "auth_result": auth_result,
+        "elevation_id": elevation_id,
+    }
+
+
+async def record_decision(
+    decision: Decision,
+    action: SecurityObject,
+    *,
+    repo_root: str,
+    auth_result: str | None = None,
+    elevation_id: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Persist one redacted decision row and fan it out to sinks (best-effort).
+
+    Never raises: building the record, the storage write, and the sink fan-out
+    are all inside the failure boundary, so nothing here can alter or block the
+    decision (which has already been enforced).
+    """
+    try:
+        record = build_record(
+            decision,
+            action,
+            auth_result=auth_result,
+            elevation_id=elevation_id,
+            now=now or datetime.now(timezone.utc),
+        )
+    except Exception:  # noqa: BLE001 — the decision log must never break execution
+        logger.warning("decision log: could not build record for action %s", decision.action_id)
+        return
+
+    try:
+        async with open_db(repo_root) as conn:
+            await conn.execute(
+                _INSERT_DECISION,
+                (
+                    record["ts"],
+                    record["action_id"],
+                    record["agent_role"],
+                    record["action_type"],
+                    record["target_path_class"],
+                    record["risk"],
+                    record["source_context"],
+                    record["final_verdict"],
+                    record["decided_layer"],
+                    json.dumps(record["reason_codes"]),
+                    int(record["auth_required"]),
+                    record["auth_result"],
+                    record["elevation_id"],
+                ),
+            )
+            for fp in action.payload_fingerprints:
+                await conn.execute(
+                    _UPSERT_FINGERPRINT,
+                    (fp, "secret", record["ts"], record["ts"], record["target_path_class"]),
+                )
+            await conn.commit()
+    except Exception:  # noqa: BLE001 — the decision log must never break execution
+        logger.warning("decision log write failed for action %s; continuing", decision.action_id)
+
+    # Fan-out is best-effort and isolated; never let it raise either.
+    try:
+        emit_to_sinks(record)
+    except Exception:  # noqa: BLE001 — defense in depth (emit_to_sinks already isolates)
+        logger.warning("audit sink fan-out failed for action %s; continuing", decision.action_id)
+
+
+async def read_decisions(repo_root: str, *, limit: int | None = None) -> list[dict]:
+    """Read decision rows, newest first (for ``doberman log``). Fails closed to []."""
+    from doberman.storage.db import db_path
+
+    if not db_path(repo_root).exists():
+        return []
+    query = _SELECT_DECISIONS + (f" LIMIT {int(limit)}" if limit else "")
+    cols = [
+        "ts",
+        "action_id",
+        "agent_role",
+        "action_type",
+        "target_path_class",
+        "risk",
+        "source_context",
+        "final_verdict",
+        "decided_layer",
+        "reason_codes_json",
+        "auth_required",
+        "auth_result",
+        "elevation_id",
+    ]
+    try:
+        async with open_db(repo_root) as conn:
+            async with conn.execute(query) as cur:
+                rows = await cur.fetchall()
+    except Exception:  # noqa: BLE001 — a read failure must never crash the CLI
+        return []
+    return [dict(zip(cols, row, strict=True)) for row in rows]
+
+
+async def memory_summary(repo_root: str) -> dict:
+    """Plain-language, redaction-safe profile for ``doberman memory``.
+
+    Reports *classes and habits only*: how many decisions, the verdict mix, the
+    most-touched path classes, and how many distinct secrets have been seen — as
+    a **count**, never a fingerprint value, and never a raw secret.
+    """
+    from collections import Counter
+
+    from doberman.storage.db import db_path
+
+    summary = {"decisions": 0, "verdicts": {}, "top_path_classes": [], "secrets_seen": 0}
+    if not db_path(repo_root).exists():
+        return summary
+    decisions = await read_decisions(repo_root)
+    summary["decisions"] = len(decisions)
+    summary["verdicts"] = dict(Counter(d["final_verdict"] for d in decisions))
+    classes = Counter(d["target_path_class"] for d in decisions if d["target_path_class"])
+    summary["top_path_classes"] = classes.most_common(5)
+    try:
+        async with open_db(repo_root) as conn:
+            async with conn.execute("SELECT COUNT(*) FROM secret_fingerprints") as cur:
+                row = await cur.fetchone()
+        summary["secrets_seen"] = row[0] if row else 0
+    except Exception:  # noqa: BLE001 — best-effort summary
+        summary["secrets_seen"] = 0
+    return summary

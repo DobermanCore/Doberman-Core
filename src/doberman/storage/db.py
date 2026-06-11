@@ -1,24 +1,29 @@
-"""Local SQLite storage (Feature 7; extended by Feature 8).
+"""Local SQLite storage (Features 7–8).
 
 Doberman is local-first: persistent state lives in ``.doberman/doberman.db`` —
 a per-repo SQLite database that is **never committed** (``.doberman/`` is
-gitignored). Feature 7 introduces it to persist **role elevations** (slice 7.4);
-Feature 8 extends the same schema with the decision log and fingerprint store.
+gitignored). Feature 7 introduced it to persist **role elevations** (slice 7.4);
+Feature 8 adds the **decision log** and the **secret-fingerprint store**, plus
+the (initially empty) ``baseline_counts`` (F9) and ``policy_changes`` (F10)
+tables so later features only ever read/write, never migrate the shape.
 
-This module owns schema creation and the elevation queries. The *matching* logic
-(which grant covers which target) lives in :mod:`doberman.auth.elevation` so the
-decision engine can reason about elevations without depending on the database.
+This module owns schema creation and the low-level queries. The decision-log
+*writer* and its redaction live in :mod:`doberman.storage.log`; the elevation
+*matching* logic lives in :mod:`doberman.auth.elevation` — so neither the engine
+nor the redaction layer depends on the database internals.
 
 SECURITY / resilience:
 
 * The DB file is created ``0600`` inside a ``0700`` directory (best-effort;
-  Windows ACLs make ``chmod`` a no-op). No elevation row holds a raw secret —
-  only a path **glob**, ids, and timestamps.
-* Reads **fail closed toward no-elevation**: any error querying active grants
-  returns an empty list, so a corrupt/locked DB can only ever cause an action to
-  *stay* at ``AUTH`` — never to be silently elevated. Writes surface errors to
-  the caller (the proxy treats a failed grant as "not authorized").
-* ``busy_timeout`` lets a momentarily-locked DB retry rather than erroring.
+  Windows ACLs make ``chmod`` a no-op).
+* **No column can hold a raw secret, a raw path-to-a-secret, a full file, or an
+  unredacted prompt** — the schema makes it structurally impossible. The
+  ``decisions`` table stores a path *class* (never the raw target), reason
+  codes, verdicts, and ids; secrets are represented only by HMAC fingerprints
+  in ``secret_fingerprints``.
+* Reads **fail closed**: any error querying active grants returns an empty list,
+  so a corrupt/locked DB can only ever cause an action to *stay* at ``AUTH`` —
+  never to be silently elevated. ``busy_timeout`` lets a locked DB retry.
 """
 
 import os
@@ -35,9 +40,12 @@ from doberman.auth.elevation import DEFAULT_TTL_SECONDS, ElevationGrant
 CONFIG_DIR = ".doberman"
 DB_FILE = "doberman.db"
 
-#: Current schema version. Feature 8 bumps this when it adds its tables.
-SCHEMA_VERSION = 1
+#: Current schema version. Bumped to 2 in Feature 8 (decision log + stores).
+SCHEMA_VERSION = 2
 
+# Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
+# adds the new tables (a forward-only, additive migration). No column ever holds
+# a raw secret/path/file/prompt — see the module docstring.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
@@ -50,6 +58,51 @@ CREATE TABLE IF NOT EXISTS elevations (
     revoked     INTEGER NOT NULL DEFAULT 0,
     single_use  INTEGER NOT NULL DEFAULT 0,
     used        INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                TEXT NOT NULL,
+    action_id         TEXT NOT NULL,
+    agent_role        TEXT,
+    action_type       TEXT,
+    target_path_class TEXT,
+    risk              TEXT,
+    source_context    TEXT,
+    final_verdict     TEXT NOT NULL,
+    decided_layer     TEXT,
+    reason_codes_json TEXT,
+    auth_required     INTEGER NOT NULL DEFAULT 0,
+    auth_result       TEXT,
+    elevation_id      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS secret_fingerprints (
+    fingerprint       TEXT PRIMARY KEY,
+    label             TEXT,
+    first_seen        TEXT,
+    last_seen         TEXT,
+    source_path_class TEXT
+);
+
+CREATE TABLE IF NOT EXISTS baseline_counts (
+    feature_key TEXT PRIMARY KEY,
+    count       INTEGER NOT NULL DEFAULT 0,
+    first_seen  TEXT,
+    last_seen   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS policy_changes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              TEXT NOT NULL,
+    rule_id         TEXT,
+    from_state      TEXT,
+    to_state        TEXT,
+    classification  TEXT,
+    reason          TEXT,
+    approval_method TEXT,
+    approved        INTEGER,
+    approved_by     TEXT
 );
 """
 
@@ -70,11 +123,12 @@ def _restrict_permissions(path: Path) -> None:
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:
+    # Additive migration: executescript creates any missing tables on an older
+    # DB without touching existing data, then we record the current version
+    # (replace the single row so an upgraded DB reflects the new schema).
     await conn.executescript(_SCHEMA)
-    async with conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
-        row = await cur.fetchone()
-    if row is not None and row[0] == 0:
-        await conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+    await conn.execute("DELETE FROM schema_version")
+    await conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     await conn.commit()
 
 
