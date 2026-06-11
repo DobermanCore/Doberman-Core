@@ -177,6 +177,36 @@ Basic protection works immediately out of the box. Pick a strength mode to match
 
 ---
 
+## Verify it end-to-end (real downstream, no fakes)
+
+Two ways to watch Doberman front a **real** MCP server — no in-process test doubles anywhere in the chain.
+
+**Interactive demo — MCP Inspector + a real filesystem server:**
+
+```bash
+npx -y @modelcontextprotocol/inspector doberman serve -- npx -y @modelcontextprotocol/server-filesystem ~/my-project
+```
+
+Open the Inspector UI and call tools through Doberman: routine reads and writes PASS straight through to the real filesystem server; a destructive call comes back as a policy error and never executes.
+
+**End-to-end test — in a dev checkout:**
+
+```bash
+pytest tests/integration/test_serve_end_to_end.py -q
+```
+
+This spawns `doberman serve` as a real subprocess fronting a real stdio tool server ([`tests/fixtures/stdio_tool_server.py`](tests/fixtures/stdio_tool_server.py)), connects to it with a real MCP client playing the agent, and asserts the deployable chain over actual stdio:
+
+1. the downstream's tools are re-exposed through the proxy,
+2. a PASS verdict reaches the tool (the downstream's call log records it), and
+3. a BLOCK verdict (`rm -rf /`) never reaches it — the call log stays empty.
+
+That last assertion is the **chokepoint property** the whole project hangs on.
+
+> **Note on the test fixtures:** the rest of the integration suite deliberately uses an *in-process* fake downstream ([`tests/fixtures/fake_tool_server.py`](tests/fixtures/fake_tool_server.py)) that records every call it executes — recording is how the tests prove a blocked action reached *nothing*. It is a test fixture, not the runtime. `doberman serve` always spawns and talks to the real server you give it after `--`.
+
+---
+
 ## Tune to your risk tolerance
 
 Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`:
