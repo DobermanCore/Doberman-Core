@@ -114,6 +114,10 @@ class ReasonCode(StrEnum):
     # Feature 9 — subjective guardrail & workflow baseline (+ detector seam).
     unusual_for_workflow = "unusual_for_workflow"
 
+    # OOD / smuggled-token channel defense (objective rule + subjective detector).
+    smuggled_token_channel = "smuggled_token_channel"  # noqa: S105 — reason code, not a secret
+    anomalous_token_pattern = "anomalous_token_pattern"  # noqa: S105 — reason code, not a secret
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).

