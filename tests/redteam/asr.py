@@ -65,10 +65,7 @@ def _make_ctx(text: str) -> EvalContext:
 
 def _is_caught(rule_result: Any, det_result: Any) -> bool:
     """Return True if either the rule or detector raised above PASS."""
-    return (
-        rule_result.verdict is not Verdict.PASS
-        or det_result.verdict is not Verdict.PASS
-    )
+    return rule_result.verdict is not Verdict.PASS or det_result.verdict is not Verdict.PASS
 
 
 def run_asr(seed: int = 1337) -> dict:

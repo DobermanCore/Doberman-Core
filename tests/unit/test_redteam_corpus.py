@@ -130,9 +130,7 @@ def test_legit_flag_tag_sequences_pass_scan_text_clean():
     """
     corpus = build_corpus()
     flag_items = [
-        item
-        for item in corpus
-        if item["expected"] == "benign" and "flag_tag" in item["technique"]
+        item for item in corpus if item["expected"] == "benign" and "flag_tag" in item["technique"]
     ]
     assert len(flag_items) > 0, "Corpus must contain flag tag sequence items"
 
@@ -149,9 +147,7 @@ def test_legit_emoji_zwj_pass_scan_text():
     """Legit emoji ZWJ sequences are not flagged by the scanner."""
     corpus = build_corpus()
     zwj_items = [
-        item
-        for item in corpus
-        if item["expected"] == "benign" and "zwj" in item["technique"]
+        item for item in corpus if item["expected"] == "benign" and "zwj" in item["technique"]
     ]
     assert len(zwj_items) > 0, "Corpus must contain ZWJ emoji items"
 
@@ -178,6 +174,7 @@ def test_gcg_suffixes_pass_scan_text_clean():
     # If no GCG suffixes loaded (file missing), skip gracefully
     if not gcg_items:
         import pytest
+
         pytest.skip("No GCG suffix fixtures found")
 
     for item in gcg_items:

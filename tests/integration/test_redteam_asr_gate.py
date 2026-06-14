@@ -137,9 +137,7 @@ def test_soft_channel_asr_within_ceiling(asr_report):
             )
 
     if failures:
-        pytest.fail(
-            "Soft channel(s) exceeded ASR ceiling:\n" + "\n".join(failures)
-        )
+        pytest.fail("Soft channel(s) exceeded ASR ceiling:\n" + "\n".join(failures))
 
 
 def test_perplexity_only_bypasses_deterministic_scanner(asr_report):
@@ -235,8 +233,10 @@ def test_print_full_asr_table(asr_report, capsys):
     per_channel = asr_report["per_channel"]
     lines = ["\n=== PER-CHANNEL ASR REPORT (baseline — known signatures) ==="]
     for channel, stats in sorted(per_channel.items()):
-        severity = "HARD" if channel in _HARD_CHANNELS else (
-            "SOFT" if channel in _SOFT_CHANNELS else "PERP"
+        severity = (
+            "HARD"
+            if channel in _HARD_CHANNELS
+            else ("SOFT" if channel in _SOFT_CHANNELS else "PERP")
         )
         bypass_flag = " [BYPASS!]" if severity == "HARD" and stats["asr"] > 0.0 else ""
         lines.append(
@@ -254,12 +254,8 @@ def test_print_full_asr_table(asr_report, capsys):
 
     evasion = asr_report.get("evasion", {})
     lines.append("\n=== EVASION SET REPORT (documented deterministic-soft gap) ===")
-    lines.append(
-        "  NOTE: high asr here is EXPECTED — these are the documented gaps that"
-    )
-    lines.append(
-        "  the enterprise perplexity detector (plan slice P2.4) is designed to close."
-    )
+    lines.append("  NOTE: high asr here is EXPECTED — these are the documented gaps that")
+    lines.append("  the enterprise perplexity detector (plan slice P2.4) is designed to close.")
     for channel, stats in sorted(evasion.items()):
         lines.append(
             f"  EVSN channel={channel:<35} "
