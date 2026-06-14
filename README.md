@@ -223,6 +223,20 @@ That last assertion is the **chokepoint property** the whole project hangs on.
 
 ---
 
+## Benchmark it (ASR / FPR)
+
+A suite-agnostic harness scores Doberman as a **filter over labeled actions** and reports **ASR** (attack bypass rate) and **FPR** (benign over-block / friction). It runs the real decision engine over each labeled tool-call — Doberman is the filter, not the agent — so the gated path is deterministic and offline.
+
+```bash
+python -m tests.benchmarks.run --suite synthetic --profile both
+```
+
+It reports two profiles — `builtins_only` and `with_plugins` (built-ins plus any installed entry-point plugins) — and their uplift. A deterministic synthetic suite gates in CI; map external task suites (**AgentDojo**, AgentDyn, AgentSentry, …) onto core's types with a small adapter — see [`tests/benchmarks/README.md`](tests/benchmarks/README.md).
+
+> Reports hold counts, verdicts, and reason codes only — never payload text. ASR is reported alongside a stricter `asr_strict` (where only a hard `BLOCK` counts as mitigation): honest measurement, not a single headline number.
+
+---
+
 ## Tune to your risk tolerance
 
 Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`:
@@ -249,6 +263,7 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 ## Roadmap <a name="roadmap"></a>
 
 - ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense · universal subjective layer (SL1–SL9) · turn gate (pre-inference prompt-injection screening)
+- ✅ Benchmark harness (suite-agnostic ASR/FPR over labeled actions; `builtins_only` vs `with_plugins`; deterministic synthetic gate; external-suite adapters via `tests/benchmarks/`)
 - 📋 Cost observability (`CostEvent` meter + raise-only loop-anomaly detection)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC
 
