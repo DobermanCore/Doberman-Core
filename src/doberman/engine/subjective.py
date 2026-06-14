@@ -27,6 +27,7 @@ import logging
 from collections.abc import Sequence
 
 from doberman.engine.decision_engine import Guardrail, combine
+from doberman.engine.detectors import BUILTIN_DETECTOR_TYPES
 from doberman.engine.registry import discover_detectors
 from doberman.models import (
     EvalContext,
@@ -77,21 +78,30 @@ def _abnormality_result(score: float, mode: str) -> GuardrailResult:
 
 
 class SubjectiveGuardrail:
-    """Baseline abnormality + registered detectors, combined raise-only.
+    """Baseline abnormality + built-in + registered detectors, combined raise-only.
 
-    Detector plugins are discovered once at init via the entry-point registry
-    (group ``doberman.detectors``); with nothing installed, only the baseline
-    signal runs. Pass ``extra_detectors`` to inject detectors directly (tests).
+    Built-in detectors (:data:`~doberman.engine.detectors.BUILTIN_DETECTOR_TYPES`)
+    are constructed once at init with their defaults and always run; they abstain
+    (PASS) on benign input, so with nothing unusual present this is equivalent to
+    the baseline signal alone. Detector *plugins* are discovered once at init via
+    the entry-point registry (group ``doberman.detectors``) and are gated by
+    ``load_plugins`` (mirrors :class:`~doberman.engine.objective.ObjectiveGuardrail`).
+    Pass ``extra_detectors`` to inject detectors directly (tests); pass
+    ``load_builtins=False`` to run baseline-only (tests).
     """
 
     def __init__(
         self,
         *,
         load_plugins: bool = True,
+        load_builtins: bool = True,
         extra_detectors: Sequence[Guardrail] = (),
     ) -> None:
-        detectors: list[Guardrail] = list(discover_detectors()) if load_plugins else []
-        self._detectors: tuple[Guardrail, ...] = (*extra_detectors, *detectors)
+        builtin: list[Guardrail] = (
+            [detector_type() for detector_type in BUILTIN_DETECTOR_TYPES] if load_builtins else []
+        )
+        plugins: list[Guardrail] = list(discover_detectors()) if load_plugins else []
+        self._detectors: tuple[Guardrail, ...] = (*builtin, *extra_detectors, *plugins)
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         """Reduce the abnormality signal + every detector raise-only.
