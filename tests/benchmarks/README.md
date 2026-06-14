@@ -50,11 +50,14 @@ tests/benchmarks/
 ├── run.py         # CLI: python -m tests.benchmarks.run --suite <name> --profile both
 ├── suites/
 │   ├── synthetic.py   # built-in, deterministic, dependency-free (the CI gate)
+│   ├── agentdojo.py   # AgentDojo + AgentDyn adapters (on-demand; lazy `agentdojo` import)
 │   └── <your_suite>.py
 └── README.md      # this file
 ```
 
-Tests: `tests/unit/test_benchmark_harness.py` (metrics/selector/isolation) and
+Tests: `tests/unit/test_benchmark_harness.py` (metrics/selector/isolation),
+`tests/unit/test_benchmark_agentdojo.py` (the AgentDojo/AgentDyn mapping +
+redaction, with the `agentdojo` package faked), and
 `tests/integration/test_benchmark_synthetic_gate.py` (real-engine gate).
 
 ---
@@ -179,7 +182,7 @@ python -m pytest tests/integration/test_benchmark_synthetic_gate.py  # the gate
 > load them from an operator-supplied path and commit only a tiny synthetic or
 > license-clear subset for any gated test.
 
-### AgentDojo (reference, best-documented)
+### AgentDojo (reference, best-documented) — adapter shipped
 - Source: `https://github.com/ethz-spylab/agentdojo`. Tasks are organized into
   **suites** (banking, slack, travel, workspace) with **user tasks** (benign) and
   **injection tasks** (attack), each naming the tool calls and the attacker goal.
@@ -187,12 +190,21 @@ python -m pytest tests/integration/test_benchmark_synthetic_gate.py  # the gate
   whose success = the injected goal → an `attack` case (`attacker_goal_index`
   pointing at the goal call). Put injected content's origin in `source_context`
   (`tool_output` / `webpage`). Pin a commit hash for reproducibility.
+- **Implemented** in `suites/agentdojo.py` (`AgentDojoAdapter`), registered in
+  `BUILTIN_ADAPTERS` as `agentdojo`. It imports the `agentdojo` package **lazily**
+  (so CI never depends on it) and vendors **no** suite data — `pip install
+  agentdojo`, then `python -m tests.benchmarks.run --suite agentdojo`.
 
-### AgentDyn
-- **Confirm the exact project name, schema, and license first** (not yet
-  verified here). It is expected to be *dynamic*/multi-step — model each step as
-  an ordered `CandidateAction` in one `BenchmarkCase` and set
-  `attacker_goal_index` to the goal step, so multi-step correlation is exercised.
+### AgentDyn — adapter shipped (data is operator-supplied)
+- *Dynamic*/multi-step, AgentDojo-derived; reuses the same `agentdojo` package
+  API and adds the `shopping`/`github`/`dailylife` suites. Each step is emitted
+  as an ordered `CandidateAction` in one `BenchmarkCase` with `attacker_goal_index`
+  at the consummating egress step, so multi-step correlation is exercised.
+- **Implemented** as `AgentDynAdapter` in `suites/agentdojo.py` (registered as
+  `agentdyn`). Put the AgentDyn checkout on the path to resolve its data, e.g.
+  `PYTHONPATH=/path/to/AgentDyn/src python -m tests.benchmarks.run --suite agentdyn`.
+- **Confirm AgentDyn's license before redistributing any of its data**; the
+  adapter loads it from your supplied path and vendors nothing here.
 
 ### AgentSentry
 - **Confirm the exact project name, schema, and license first** (not yet
