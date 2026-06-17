@@ -121,7 +121,15 @@ Doberman: PASS
 
 ### 1. Install
 
-> ⚠️ Not yet published to PyPI (the `doberman` name there belongs to an unrelated project — do **not** `pip install doberman`). Install from source:
+```bash
+pip install doberman-core
+```
+
+> The distribution is **`doberman-core`** (the bare `doberman` name on PyPI belongs to an
+> unrelated, abandoned project). The import name and CLI are unchanged — after install you
+> still `import doberman` and run the `doberman` command.
+
+Or install the latest from source:
 
 ```bash
 pip install git+https://github.com/fu351/Doberman-Core.git
@@ -135,7 +143,7 @@ cd Doberman-Core
 pip install -e ".[dev]"
 ```
 
-Either way you get the `doberman` CLI on your PATH.
+Either way you get the `doberman` CLI on your PATH. (Maintainers: see [`RELEASING.md`](RELEASING.md).)
 
 ### 2. Wrap your tool server with Doberman
 
