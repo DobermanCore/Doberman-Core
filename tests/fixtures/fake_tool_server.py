@@ -64,6 +64,22 @@ _TOOLS: list[Tool] = [
             "required": ["url", "to", "body"],
         },
     ),
+    # A pure domain-tool (egress-coverage tests): carries a recipient via 'to'
+    # with NO 'url' arg so it normalises to ActionType.other. Used to prove that
+    # benign sends PASS and secret-exfil sends BLOCK via the trifecta / secret
+    # floors without ExternalDestinationRule AUTHing on every recipient.
+    Tool(
+        name="send_message",
+        description="Send a direct message to a recipient.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "body": {"type": "string"},
+            },
+            "required": ["to", "body"],
+        },
+    ),
 ]
 
 KNOWN_TOOL_NAMES = {tool.name for tool in _TOOLS}

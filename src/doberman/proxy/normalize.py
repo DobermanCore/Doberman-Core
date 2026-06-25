@@ -61,6 +61,23 @@ _TOOL_PREFIX_MAP: list[tuple[tuple[str, ...], ActionType]] = [
 # Keys commonly carrying the action's target, in priority order.
 _TARGET_KEYS = ("path", "file", "filename", "url", "command", "target")
 
+# Arg keys whose value is an outbound recipient/address/channel, in priority
+# order. Generic (matched by key shape, never tool name) so domain tools that
+# normalize to ActionType.other still carry a destination for the trifecta /
+# secret-exfil floors. Mirrors the benchmark adapter's _DEST_KEYS.
+_EGRESS_DEST_KEYS: tuple[str, ...] = (
+    "url",
+    "recipient",
+    "recipients",
+    "to",
+    "email",
+    "address",
+    "phone",
+    "channel",
+    "repo",
+    "remote",
+)
+
 
 def _map_action_type(tool_name: str) -> ActionType:
     name = tool_name.lower()
@@ -97,6 +114,20 @@ def _redact_args(arguments: dict[str, Any]) -> dict[str, Any]:
     return {str(key): _redact_value(str(key), value) for key, value in arguments.items()}
 
 
+def _extract_egress_destination(redacted_args: dict[str, Any]) -> str | None:
+    """Pick an outbound destination from well-known egress arg-keys (reads the
+    REDACTED args, so a secret-shaped value is already redacted)."""
+    for key in _EGRESS_DEST_KEYS:
+        value = redacted_args.get(key)
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(value, list | tuple) and value:
+            parts = [str(v) for v in value if isinstance(v, str) and v]
+            if parts:
+                return ",".join(parts)
+    return None
+
+
 def _extract_target(action_type: ActionType, arguments: dict[str, Any]) -> tuple[str | None, dict]:
     """Pick a representative target; extra info (e.g. path counts) → metadata."""
     metadata: dict[str, Any] = {}
@@ -129,7 +160,10 @@ def normalize(
         # raw_args_redacted (a redacted value yields target="<redacted>").
         redacted_args = _redact_args(args)
         target, metadata = _extract_target(action_type, redacted_args)
-        external_destination = target if action_type is ActionType.network_request else None
+        if action_type is ActionType.network_request:
+            external_destination = target
+        else:
+            external_destination = _extract_egress_destination(redacted_args)
         base = SecurityObject(
             id=uuid.uuid4().hex,
             ts=datetime.now(timezone.utc),
