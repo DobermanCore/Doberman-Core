@@ -51,7 +51,7 @@ def test_missing_downstream_command_exits_2(monkeypatch):
         nonlocal called
         called = True
 
-    monkeypatch.setattr(cli, "serve_stdio", _spy)
+    monkeypatch.setattr(serve_mod, "serve_stdio", _spy)
     result = runner.invoke(cli.app, ["serve"])
     assert result.exit_code == 2
     assert not called
@@ -64,7 +64,7 @@ def test_builds_stdio_params_from_argv(monkeypatch, _no_logging_mutation):
         seen["params"] = params
         seen["repo_root"] = repo_root
 
-    monkeypatch.setattr(cli, "serve_stdio", _spy)
+    monkeypatch.setattr(serve_mod, "serve_stdio", _spy)
     result = runner.invoke(cli.app, ["serve", "--", "mytool", "a", "b"])
     assert result.exit_code == 0
     assert result.output == ""  # nothing on stdout — that is the agent's MCP channel
@@ -79,7 +79,7 @@ def test_path_option_threads_repo_root(monkeypatch, _no_logging_mutation):
     async def _spy(params, *, repo_root):
         seen["repo_root"] = repo_root
 
-    monkeypatch.setattr(cli, "serve_stdio", _spy)
+    monkeypatch.setattr(serve_mod, "serve_stdio", _spy)
     result = runner.invoke(cli.app, ["serve", "-p", "/repo", "--", "mytool"])
     assert result.exit_code == 0
     assert seen["repo_root"] == "/repo"
@@ -91,7 +91,7 @@ def test_serve_reports_downstream_failure_cleanly(monkeypatch, _no_logging_mutat
     async def _boom(*_a, **_k):
         raise RuntimeError("downstream boom")
 
-    monkeypatch.setattr(cli, "serve_stdio", _boom)
+    monkeypatch.setattr(serve_mod, "serve_stdio", _boom)
     result = runner.invoke(cli.app, ["serve", "--", "mytool"])
     assert result.exit_code == 1
     assert "doberman serve failed" in result.output
