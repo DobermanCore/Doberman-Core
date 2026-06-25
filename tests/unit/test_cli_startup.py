@@ -22,7 +22,9 @@ def test_cli_import_does_not_pull_the_heavy_numeric_stack():
         "print(','.join(heavy)); "
         "sys.exit(1 if heavy else 0)"
     )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    result = subprocess.run(  # noqa: S603 — controlled call: our own interpreter + a fixed string
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
     assert result.returncode == 0, (
         f"`import doberman.cli.main` pulled the heavy numeric stack: "
         f"{result.stdout.strip()!r} (stderr: {result.stderr.strip()!r})"

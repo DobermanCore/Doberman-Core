@@ -13,7 +13,6 @@ import sys
 from datetime import datetime, timezone
 
 import typer
-from mcp import StdioServerParameters
 
 from doberman import __version__
 from doberman.auth import totp
@@ -31,7 +30,6 @@ from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import read_policy_changes
 from doberman.policy.modes import SecurityMode
 from doberman.policy.preferences import DIMENSIONS, preset_name
-from doberman.proxy.serve import serve_stdio
 from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
 
@@ -92,6 +90,14 @@ def serve(
     Point your agent's MCP config at this instead of the real server. AUTH prompts appear on
     your terminal; with no terminal attached (headless) an AUTH action is denied (fail closed).
     """
+    # Imported here, not at module scope, so non-serve CLI commands (`--help`,
+    # `log`, `status`, `scan`, …) don't pay the cost of loading the subjective
+    # layer's heavy numeric stack (river/numpy/scipy) on every invocation. These
+    # imports run synchronously, before asyncio.run, so nothing loads in-loop.
+    from mcp import StdioServerParameters
+
+    from doberman.proxy.serve import serve_stdio
+
     downstream_argv = list(ctx.args)
     if not downstream_argv:
         typer.echo("error: provide the downstream server command after `--`", err=True)
