@@ -11,6 +11,23 @@ Two ASR numbers are reported, on purpose (don't oversell — §9):
 * **asr_strict** — mitigation counts ``BLOCK`` *only*; ``AUTH`` is treated as not
   stopped (a human might approve). The conservative lower bound on protection.
 
+Operator model
+--------------
+``AUTH`` verdicts only stop an attack if the human operator *denies* the prompt.
+The operator model quantifies effective attack-success-rate as a function of the
+operator's approval behaviour and — crucially — **alert fatigue**:
+
+* ``effective_asr(approval_rate)`` interpolates between ``asr`` (always-deny) and
+  ``asr_strict`` (always-approve).
+* ``FatigueModel`` captures the observation that operators approve *more* prompts
+  as the AUTH burden rises.  A report with a higher AUTH fraction therefore
+  produces a higher ``asr_under_fatigue`` — making the thesis concrete:
+  moving serious threats from AUTH to BLOCK lowers burden → lowers fatigue-driven
+  approvals → lowers effective attacks-through.
+
+``FatigueModel`` is a *model* with illustrative defaults, not a calibrated ground
+truth.  Calibration against real operator data is future work.
+
 All fields are counts; nothing here holds payload text.
 """
 
@@ -37,8 +54,39 @@ class ActionOutcome:
     reason_codes: tuple[ReasonCode, ...] = ()
 
 
-def _safe_div(numerator: int, denominator: int) -> float:
+def _safe_div(numerator: float | int, denominator: float | int) -> float:
     return numerator / denominator if denominator else 0.0
+
+
+def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, value))
+
+
+@dataclass(frozen=True)
+class FatigueModel:
+    """A parametric model of operator alert fatigue.
+
+    As the fraction of actions that generate AUTH prompts (the *AUTH burden*)
+    rises, an operator's effective approval rate rises too — they start rubber-
+    stamping prompts rather than evaluating each one carefully.
+
+    Fields
+    ------
+    base_approval:
+        The operator's approval rate when the AUTH burden is zero (no prompts
+        at all).  Default 0.3 is illustrative; calibrate against real data.
+    slope:
+        How steeply the approval rate rises per unit of AUTH burden.
+        ``approval = clamp(base_approval + slope * auth_burden, 0, 1)``.
+        Default 1.0 produces a full [0, 1] range as burden sweeps [0, 1].
+
+    This is a *model*, not a calibrated ground truth.  The defaults give
+    qualitatively reasonable behaviour for benchmark comparisons; they should
+    not be treated as empirically validated parameters.
+    """
+
+    base_approval: float = 0.3
+    slope: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -78,8 +126,92 @@ class SuiteReport:
         """Benign hard-block rate: BLOCK on a legitimate action."""
         return _safe_div(self.benign_block, self.n_benign)
 
+    # ------------------------------------------------------------------
+    # Operator model
+    # ------------------------------------------------------------------
+
+    def effective_asr(self, approval_rate: float) -> float:
+        """Effective attack-success-rate given an operator who approves AUTH
+        prompts at *approval_rate* ∈ [0, 1].
+
+        ``(attack_bypassed + approval_rate * attack_auth) / n_attack``
+
+        Endpoints:
+          * ``approval_rate=0.0`` → ``asr`` (always-deny operator stops every AUTH).
+          * ``approval_rate=1.0`` → ``asr_strict`` (always-approve operator lets every AUTH through).
+
+        *approval_rate* is clamped to [0, 1] before use.
+        """
+        r = _clamp(approval_rate)
+        return _safe_div(self.attack_bypassed + r * self.attack_auth, self.n_attack)
+
+    def effective_fpr(self, approval_rate: float) -> float:
+        """Effective benign-friction rate given an operator approval rate.
+
+        Models the friction the operator *actually has to act on* — i.e. the
+        benign actions that were stopped or that the operator had to evaluate
+        and *deny*:
+
+        ``(benign_block + (1 - approval_rate) * benign_auth) / n_benign``
+
+        Interpretation:
+          * ``approval_rate=0.0`` → operator denies all AUTH; friction is maximised
+            (equals ``fpr``, every non-PASS benign action costs the operator a stop).
+          * ``approval_rate=1.0`` → operator approves all AUTH; only hard blocks remain
+            as friction (equals ``hard_fpr``).
+
+        *approval_rate* is clamped to [0, 1] before use.
+        """
+        r = _clamp(approval_rate)
+        return _safe_div(self.benign_block + (1.0 - r) * self.benign_auth, self.n_benign)
+
+    def fatigue_approval_rate(self, model: FatigueModel = FatigueModel()) -> float:  # noqa: B008
+        """Operator approval rate predicted by *model* for this report's AUTH burden.
+
+        ``auth_burden = (attack_auth + benign_auth) / (n_attack + n_benign)``
+
+        The burden is the overall fraction of actions that prompt the human.
+        The predicted approval rate is:
+
+        ``clamp(model.base_approval + model.slope * auth_burden, 0, 1)``
+
+        A report with a higher AUTH burden produces a higher approval rate —
+        capturing alert fatigue: more prompts → more rubber-stamping.
+        """
+        total = self.n_attack + self.n_benign
+        burden = _safe_div(self.attack_auth + self.benign_auth, total)
+        return _clamp(model.base_approval + model.slope * burden)
+
+    def asr_under_fatigue(self, model: FatigueModel = FatigueModel()) -> float:  # noqa: B008
+        """Effective ASR when the operator's approval rate is predicted by *model*.
+
+        Combines :meth:`fatigue_approval_rate` and :meth:`effective_asr` to
+        answer: *if a real, fatigued operator handles AUTH prompts, how many
+        attacks get through?*
+
+        A benchmark comparison of two configurations with the same raw bypass
+        count but different AUTH fractions will show the AUTH-heavy one scoring
+        worse here — quantifying the core thesis.
+        """
+        return self.effective_asr(self.fatigue_approval_rate(model))
+
     def to_dict(self) -> dict:
-        """A redacted, JSON-serializable summary (counts + rates only)."""
+        """A redacted, JSON-serializable summary (counts + rates only).
+
+        The ``"operator"`` block shows how effective the filter is under
+        different assumptions about the human who handles AUTH prompts:
+
+        * ``effective_asr_deny`` — operator always denies (== ``asr``).
+        * ``effective_asr_half`` — operator approves half of AUTH prompts.
+        * ``effective_asr_approve`` — operator always approves (== ``asr_strict``).
+        * ``asr_under_fatigue`` — effective ASR under the default
+          :class:`FatigueModel` (alert-fatigue-adjusted approval rate).
+        * ``auth_burden`` — fraction of all actions that generated an AUTH
+          prompt; the input to the fatigue model.
+        """
+        default_model = FatigueModel()
+        total = self.n_attack + self.n_benign
+        auth_burden = _safe_div(self.attack_auth + self.benign_auth, total)
         return {
             "suite": self.suite,
             "profile": self.profile,
@@ -98,6 +230,13 @@ class SuiteReport:
                 "pass": self.benign_pass,
                 "auth": self.benign_auth,
                 "block": self.benign_block,
+            },
+            "operator": {
+                "effective_asr_deny": round(self.effective_asr(0.0), 6),
+                "effective_asr_half": round(self.effective_asr(0.5), 6),
+                "effective_asr_approve": round(self.effective_asr(1.0), 6),
+                "asr_under_fatigue": round(self.asr_under_fatigue(default_model), 6),
+                "auth_burden": round(auth_burden, 6),
             },
             "verdict_histogram": dict(sorted(self.verdict_histogram.items())),
             "reason_codes": dict(sorted(self.reason_codes.items())),
