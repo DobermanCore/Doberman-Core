@@ -20,14 +20,19 @@ from doberman.models import (
     Verdict,
 )
 
-# Reason codes for which a SUBJECTIVE BLOCK is honored as a hard block.
-# Deliberately EMPTY in the MVP: the subjective guardrail escalates to AUTH,
-# it does not hard-block ("subjective is for escalation, not paternalism").
-# Growing this list is a policy weakening of the clamp and must go through
-# the Feature 10 human-approved path. NOTE: this is a module-global frozenset;
-# rebinding the NAME at runtime is possible for code inside the process trust
-# boundary and would bypass F10 — treat any runtime rebinding as an attack.
-SUBJECTIVE_HARD_BLOCK_ALLOWLIST: frozenset[ReasonCode] = frozenset()
+# Reason codes for which a SUBJECTIVE BLOCK is honored as a hard block (rather
+# than clamped to AUTH). The subjective guardrail is otherwise AUTH-only
+# ("escalation, not paternalism") — a learned/score signal must not hard-lock the
+# user out on a false positive. The ONE exception is the deterministic
+# lethal-trifecta floor (sensitive data + untrusted provenance + external dest): a
+# high-confidence, score-independent check that only emits a BLOCK in the strictest
+# modes (strict/paranoid, ``ModeThresholds.trifecta_hard_block``). Honoring it is
+# therefore raise-only and user-directed (ADR 0021), not a weakening. Adding ANY
+# OTHER code here weakens the clamp and must go through the Feature 10 human-approved
+# path. NOTE: this is a module-global frozenset; rebinding the NAME at runtime is
+# possible for code inside the process trust boundary and would bypass F10 — treat
+# any runtime rebinding as an attack.
+SUBJECTIVE_HARD_BLOCK_ALLOWLIST: frozenset[ReasonCode] = frozenset({ReasonCode.lethal_trifecta})
 
 
 @runtime_checkable

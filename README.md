@@ -249,14 +249,16 @@ It reports two profiles — `builtins_only` and `with_plugins` (built-ins plus a
 
 Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`:
 
-| Mode | Best for | Bulk-delete threshold | Step-up for unknown destinations | Step-up for behavioral anomalies |
-|---|---|---|---|---|
-| **Light** | Exploratory / trusted environments | 100 files | Yes | No |
-| **Balanced** *(default)* | Everyday coding agents | 25 files | Yes | Yes |
-| **Strict** | Production repos, shared codebases | 10 files | Yes | Yes |
-| **Paranoid** | Highly autonomous or security-critical agents | 3 files | Yes | Yes |
+| Mode | Best for | Bulk-delete threshold | Step-up for unknown destinations | Step-up for behavioral anomalies | Lethal-trifecta exfil |
+|---|---|---|---|---|---|
+| **Light** | Exploratory / trusted environments | 100 files | Yes | No | AUTH |
+| **Balanced** *(default)* | Everyday coding agents | 25 files | Yes | Yes | AUTH |
+| **Strict** | Production repos, shared codebases | 10 files | Yes | Yes | **BLOCK** |
+| **Paranoid** | Highly autonomous or security-critical agents | 3 files | Yes | Yes | **BLOCK** |
 
 > Hard blocks (secret exfiltration, destructive commands, role-boundary violations, smuggled-token-channel exfiltration) are **identical in every mode**. The mode dial only affects where step-up authentication is required for ambiguous or high-risk actions.
+>
+> One escalation is mode-gated: the **lethal trifecta** — sensitive data **and** untrusted-content provenance **and** an external destination — steps up to authentication in Light/Balanced, and is a hard **BLOCK** in Strict/Paranoid. Those high-security modes refuse this serious-exfil pattern outright rather than leaving it to a confirmation prompt that alert fatigue could rubber-stamp.
 
 ---
 

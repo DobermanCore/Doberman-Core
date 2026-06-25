@@ -137,15 +137,24 @@ def test_missing_metadata_is_safe():
 # --- the trifecta floor -----------------------------------------------------------
 
 
-def test_trifecta_steps_up_regardless_of_score_weights_mode_and_budget():
+def test_trifecta_floor_fires_in_every_mode_regardless_of_score_weights_and_budget():
+    # The floor fires in EVERY mode, independent of score/weights/budget, and
+    # always names lethal_trifecta. Its VERDICT is mode-gated (ADR 0021): a
+    # step-up to AUTH in light/balanced, a hard BLOCK in the strictest modes.
     action = _trifecta_action()
     assert trifecta_fires(action.algebra)
     minimal = PreferenceVector(0.0, 0.0, 0.0, 0.0)
-    for mode in ("light", "balanced", "strict", "paranoid"):
+    expected = {
+        "light": Verdict.AUTH,
+        "balanced": Verdict.AUTH,
+        "strict": Verdict.BLOCK,
+        "paranoid": Verdict.BLOCK,
+    }
+    for mode, verdict in expected.items():
         result = _engine().evaluate(
             action, _ctx(0.0, mode=mode, preferences=minimal, budget_ok=False)
         )
-        assert result.verdict is Verdict.AUTH, f"trifecta must fire in {mode}"
+        assert result.verdict is verdict, f"trifecta in {mode} expected {verdict}"
         assert ReasonCode.lethal_trifecta in result.reason_codes
 
 

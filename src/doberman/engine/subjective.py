@@ -181,21 +181,29 @@ def _step_up_result(
 def _score_result(action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
     """Trifecta floor → mode gate → three-axis score → threshold → budget."""
     algebra = action.algebra
+    thresholds = thresholds_for(ctx.mode)
 
-    # 1. The deterministic floor — before any score math, in EVERY preset.
+    # 1. The deterministic floor — before any score math, in EVERY preset. In the
+    #    strictest modes it hard-BLOCKs the exfil (ADR 0021); otherwise it steps up
+    #    to AUTH. Either way it fires regardless of score/weights/budget/tokens.
     if trifecta_fires(algebra):
+        hard = thresholds.trifecta_hard_block
         return GuardrailResult(
-            verdict=Verdict.AUTH,
-            risk=Risk.high,
+            verdict=Verdict.BLOCK if hard else Verdict.AUTH,
+            risk=Risk.critical if hard else Risk.high,
             reason_codes=[ReasonCode.lethal_trifecta],
             explanation=(
                 "Sensitive data + untrusted provenance + external destination "
-                "(lethal trifecta); authentication required regardless of score."
+                "(lethal trifecta); "
+                + (
+                    "blocked regardless of score."
+                    if hard
+                    else "authentication required regardless of score."
+                )
             ),
         )
 
     # 2. The mode gate (Light disables the SCORE path only — never the floor).
-    thresholds = thresholds_for(ctx.mode)
     if not thresholds.escalate_unusual:
         return _PASS
 

@@ -108,6 +108,25 @@ def test_allowlisted_subjective_block_is_honored(monkeypatch):
     assert ReasonCode.subjective_block_clamped not in decision.reason_codes
 
 
+def test_real_allowlist_honors_a_lethal_trifecta_subjective_block():
+    # ADR 0021: the REAL allowlist (not monkeypatched) honors a subjective BLOCK
+    # carrying lethal_trifecta as a hard block — never clamped to AUTH. This is
+    # the path by which a strict/paranoid trifecta floor reaches a final BLOCK.
+    objective = CountingGuardrail(result(Verdict.PASS))
+    subjective = CountingGuardrail(
+        GuardrailResult(
+            verdict=Verdict.BLOCK,
+            risk=Risk.critical,
+            reason_codes=[ReasonCode.lethal_trifecta],
+            explanation="lethal trifecta; blocked regardless of score.",
+        )
+    )
+    decision = decide(ACTION, objective, subjective, CTX)
+    assert decision.final_verdict is Verdict.BLOCK
+    assert ReasonCode.subjective_block_clamped not in decision.reason_codes
+    assert ReasonCode.lethal_trifecta in decision.reason_codes
+
+
 def test_objective_error_fails_closed_and_skips_subjective():
     objective = CountingGuardrail(RuntimeError("objective exploded"))
     subjective = CountingGuardrail(result(Verdict.PASS))

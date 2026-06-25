@@ -5,11 +5,13 @@ how aggressively Doberman steps up to authentication, instead of dozens of
 toggles. Stricter modes lower step-up thresholds (→ *more* AUTH); they never
 touch the **floor** of core hard blocks, which are identical across every mode.
 
-SECURITY: modes may only tune **step-ups** (AUTH thresholds). They can never
-remove or weaken a core hard **BLOCK** — that floor (:data:`FLOOR_HARD_BLOCKS`)
-is mode-independent, and even Light keeps every one of them. Loosening a hard
-block is not a mode change; it is a policy weakening that must go through the
-Feature 10 human-approved path.
+SECURITY: modes tune **step-ups** (AUTH thresholds) and may *escalate* the
+deterministic lethal-trifecta step-up to a hard **BLOCK** in the strictest modes
+(``trifecta_hard_block``, strict/paranoid) — this is **raise-only** (ADR 0021). A
+mode can never **remove or weaken** a core hard **BLOCK**: the floor
+(:data:`FLOOR_HARD_BLOCKS`) is mode-independent, and even Light keeps every one
+of them. Loosening a hard block is not a mode change; it is a policy weakening
+that must go through the Feature 10 human-approved path.
 
 This module is policy core: it imports only ``doberman.models`` and never the
 proxy.
@@ -55,6 +57,11 @@ class ModeThresholds:
     #: steps an action up to AUTH. Lower = stricter (more AUTH). Only applies
     #: when ``escalate_unusual`` is True (Light disables the step-up entirely).
     abnormality_threshold: float = 0.7
+    #: Whether the deterministic lethal-trifecta floor (sensitive data + untrusted
+    #: provenance + external destination) hard-**BLOCKs** instead of stepping up to
+    #: AUTH. True only in the strictest modes (strict/paranoid). Raise-only: it
+    #: escalates an existing AUTH step-up to a BLOCK, never weakens a block (ADR 0021).
+    trifecta_hard_block: bool = False
 
 
 #: Per-mode thresholds. Stricter modes lower the bulk threshold (more AUTH);
@@ -72,10 +79,12 @@ MODES: dict[SecurityMode, ModeThresholds] = {
     SecurityMode.strict: ModeThresholds(
         bulk_delete_threshold=10,
         abnormality_threshold=0.5,
+        trifecta_hard_block=True,
     ),
     SecurityMode.paranoid: ModeThresholds(
         bulk_delete_threshold=3,
         abnormality_threshold=0.3,
+        trifecta_hard_block=True,
     ),
 }
 

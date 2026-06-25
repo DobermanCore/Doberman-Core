@@ -81,3 +81,12 @@ def test_hard_block_is_identical_across_modes():
         result = _run("rm -rf /", mode)
         assert result.verdict is Verdict.BLOCK
         assert ReasonCode.destructive_command in result.reason_codes
+
+
+def test_trifecta_hard_block_only_in_strict_and_paranoid():
+    # ADR 0021: the lethal-trifecta floor hard-BLOCKs only in the strictest
+    # modes; light/balanced keep it as an AUTH step-up (raise-only escalation).
+    assert thresholds_for("light").trifecta_hard_block is False
+    assert thresholds_for("balanced").trifecta_hard_block is False
+    assert thresholds_for("strict").trifecta_hard_block is True
+    assert thresholds_for("paranoid").trifecta_hard_block is True
