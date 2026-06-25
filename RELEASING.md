@@ -1,0 +1,95 @@
+# Releasing `doberman-core`
+
+Doberman publishes to PyPI as the distribution **`doberman-core`**. The *import* name
+and CLI command stay `doberman` (`import doberman`, `doberman --help`) — only the
+`pip install` command differs.
+
+> Why not `doberman`? That name is already taken on PyPI by an unrelated, abandoned
+> 2020 project. See "Claiming the `doberman` name" at the bottom.
+
+Releasing uses **PyPI Trusted Publishing (OIDC)** via
+`.github/workflows/publish.yml` — there are **no API tokens** stored in this repo.
+
+---
+
+## One-time setup (do this once, requires your PyPI account)
+
+You configure PyPI/TestPyPI to trust this repo. Because the project doesn't exist on
+PyPI yet, you register a **pending publisher** so the very first upload works over OIDC.
+
+### 1. PyPI (production)
+1. Log in at <https://pypi.org> → **Account settings → Publishing** →
+   **Add a pending publisher**.
+2. Fill in:
+   - **PyPI project name:** `doberman-core`
+   - **Owner:** `fu351`
+   - **Repository name:** `Doberman-Core`
+   - **Workflow name:** `publish.yml`
+   - **Environment name:** `pypi`
+3. Save.
+
+### 2. TestPyPI (optional but recommended for dry-runs)
+Repeat the same at <https://test.pypi.org> with **Environment name:** `testpypi`.
+
+### 3. GitHub Environments
+In the repo: **Settings → Environments** → create `pypi` and `testpypi`
+(names must match the workflow). Optionally add protection rules / required reviewers
+to `pypi` so a human approves every production publish.
+
+---
+
+## Cut a release
+
+1. Bump `version` in `pyproject.toml` (follow semver; the changelog/README should
+   reflect what changed).
+2. Commit + merge to `main`.
+3. (Optional dry-run) GitHub → **Actions → Publish → Run workflow** on `main`.
+   This builds + uploads to **TestPyPI**. Verify:
+   ```bash
+   pip install -i https://test.pypi.org/simple/ \
+       --extra-index-url https://pypi.org/simple/ doberman-core
+   ```
+4. Create a **GitHub Release** with tag `vX.Y.Z` (matching the version).
+   Publishing the release triggers the workflow's `pypi-publish` job → uploads to PyPI.
+5. Verify from a clean environment:
+   ```bash
+   python -m venv /tmp/dob && /tmp/dob/bin/pip install doberman-core
+   /tmp/dob/bin/doberman --help
+   ```
+
+---
+
+## Local build / inspect (sanity check before tagging)
+
+```bash
+python -m pip install --upgrade build twine
+python -m build                 # -> dist/doberman_core-X.Y.Z-py3-none-any.whl + .tar.gz
+twine check dist/*
+# Public-release safety: confirm NOTHING local leaks into the artifacts.
+unzip -l dist/*.whl
+tar tzf dist/*.tar.gz
+```
+The sdist file list is pinned in `pyproject.toml`
+(`[tool.hatch.build.targets.sdist]`) to `src/doberman`, `tests`, `README.md`,
+`LICENSE`, `pyproject.toml` — so `graphify-out/`, `.doberman/`, DBs, keys, and dev
+plan files can never be shipped.
+
+---
+
+## Claiming the `doberman` name (PEP 541)
+
+To eventually offer `pip install doberman`, the abandoned PyPI name must be
+transferred to you. It's a manual, human-reviewed process and not guaranteed.
+
+1. **Contact the current owner first.** Email the maintainer listed on
+   <https://pypi.org/project/doberman/> and ask if they'll transfer the name.
+   Keep the message for your records.
+2. **If no response / they agree,** file a name request under PEP 541 at
+   <https://github.com/pypi/support/issues> (choose the project-name-related
+   template). Note the project is abandoned (last release 0.0.4, Sept 2020),
+   link this repo as evidence of active intended use, and reference any prior
+   contact attempt.
+3. If granted, add `doberman` as the distribution name (or publish a thin
+   `doberman` package that depends on `doberman-core`) and update install docs.
+
+Until then, `doberman-core` is the canonical install name.

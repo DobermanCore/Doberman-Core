@@ -50,6 +50,16 @@ DEFAULT_BLOCKED_GLOBS: tuple[str, ...] = (
     "**/secrets/**",
     "**/id_rsa*",
     "**/id_ed25519*",
+    # Doberman's own control plane: the policy doc, the active role, and the DB
+    # holding the append-only policy_changes ledger / decision log / baselines /
+    # elevations. A proxied agent has no legitimate path here — Doberman writes
+    # it via direct I/O, never through the proxy — and reaching it would bypass
+    # the Feature 10 apply_change gate (policy rewrite, role expansion, ledger
+    # wipe). Block any agent-proxied read/write/delete of it.
+    ".doberman",
+    ".doberman/**",
+    "**/.doberman",
+    "**/.doberman/**",
 )
 
 #: Paths that are sensitive: allowed, but only after authentication.
