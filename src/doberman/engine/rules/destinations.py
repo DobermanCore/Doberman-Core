@@ -100,12 +100,14 @@ def _registered_match(host: str, trusted: Iterable[str]) -> bool:
 
 
 def _extract_destination(action: SecurityObject) -> str | None:
-    """Pick the destination string to classify (URL / host) for this action."""
-    if action.external_destination:
-        return action.external_destination
-    if action.action_type is ActionType.network_request and action.target:
-        return action.target
-    return None
+    """The destination this rule classifies. Only network requests are stepped
+    up here. Domain tools (send_email/…) also carry external_destination so the
+    trifecta + secret-exfil floors can see the recipient, but their unknown
+    recipients are deliberately NOT auto-AUTH'd by this rule (alert fatigue);
+    serious domain exfil is caught by those floors instead (ADR 0021)."""
+    if action.action_type is not ActionType.network_request:
+        return None
+    return action.external_destination or action.target
 
 
 def _parse_host(destination: str) -> tuple[str | None, bool]:
