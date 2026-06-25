@@ -230,7 +230,14 @@ doberman uninstall-hooks          # remove only Doberman's entries (leaves your 
 
 `install-hooks` is idempotent (safe to re-run), backs up an existing `settings.json` before writing, and never touches your other settings or hooks.
 
-> One-command onboarding — `doberman setup`, an interactive wizard that sets your alertness/guardrails and then runs `install-hooks` for you — is the next slice. The adaptive per-entity layer over the hook path arrives with the warm-daemon slice.
+**Easiest of all — `doberman setup`:** an interactive wizard that picks your alertness mode, tunes your guardrails, and wires the hooks in one step:
+
+```bash
+doberman setup          # interactive: choose mode, guardrails, install scope
+doberman setup --yes    # accept sensible defaults (balanced mode), non-interactively
+```
+
+> The adaptive per-entity layer over the hook path arrives with the warm-daemon slice.
 
 ### 4. Scan (optional)
 
@@ -316,7 +323,8 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 - ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense · universal subjective layer (SL1–SL9) · turn gate (pre-inference prompt-injection screening)
 - ✅ Benchmark harness (suite-agnostic ASR/FPR over labeled actions; `builtins_only` vs `with_plugins`; deterministic synthetic gate; external-suite adapters via `tests/benchmarks/`)
 - ✅ Host-harness integration: Claude Code `PreToolUse` + `PostToolUse` hooks (`doberman hook pre`/`post`) gate every built-in *and* MCP tool call — and scan tool **output** for leaked secrets — with no MCP reconfig; fail-closed, import-light, and recording a local redacted history
-- 📋 Host-harness, continued: one-command `doberman setup` onboarding · `install-hooks` · cross-call multi-step prompt-injection floor over the local history
+- ✅ One-command onboarding: `doberman setup` (alertness + guardrails + auto-wires the hooks) · `install-hooks`/`uninstall-hooks`
+- 📋 Host-harness, continued: cross-call multi-step prompt-injection floor over the local history · warm-daemon adaptive layer
 - 📋 Cost observability (`CostEvent` meter + raise-only loop-anomaly detection)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC
 

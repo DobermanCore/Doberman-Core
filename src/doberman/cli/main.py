@@ -537,6 +537,172 @@ def uninstall_hooks(
 
 
 @app.command()
+def setup(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Accept all defaults with no prompts."),
+    mode_name: str = typer.Option(
+        None, "--mode", "-m", help="Security mode (light/balanced/strict/paranoid)."
+    ),
+    global_: bool = typer.Option(
+        False, "--global", "-g", help="Install hooks into ~/.claude/settings.json."
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
+) -> None:
+    """Friendly first-run wizard: choose your security posture and wire Claude Code hooks.
+
+    Walks through alertness mode, preference tuning, and automatic hook installation.
+    Pass ``--yes`` for a fully non-interactive run (useful for CI or scripting).
+    """
+    from doberman.hosthooks.install import (
+        load_settings,
+        merge_doberman_hooks,
+        resolve_settings_path,
+        write_settings,
+    )
+    from doberman.hosthooks.setup import PROFILE_CHOICES, mode_menu_lines, parse_mode_choice
+    from doberman.policy.preferences import vector_for
+
+    # ------------------------------------------------------------------
+    # a. Welcome
+    # ------------------------------------------------------------------
+    typer.echo("")
+    typer.echo("Welcome to Doberman setup!")
+    typer.echo(
+        "Doberman sits between your coding agent and its tools, turning every "
+        "meaningful action into a risk-based allow / authenticate / block decision."
+    )
+    typer.echo("")
+
+    # ------------------------------------------------------------------
+    # b. Alertness / mode
+    # ------------------------------------------------------------------
+    if mode_name is not None:
+        # Caller pre-selected a mode; validate it immediately.
+        try:
+            chosen_mode = parse_mode_choice(mode_name)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+    elif yes:
+        from doberman.policy.modes import SecurityMode
+
+        chosen_mode = SecurityMode.balanced
+    else:
+        typer.echo("── Security mode ───────────────────────────────────────")
+        for line in mode_menu_lines():
+            typer.echo(line)
+        typer.echo("")
+        raw = typer.prompt("Choose a mode (name or number)", default="balanced")
+        try:
+            chosen_mode = parse_mode_choice(raw)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+
+    # Save the chosen mode.
+    try:
+        save_mode(chosen_mode.value, path)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    # ------------------------------------------------------------------
+    # c. Guardrails / preferences
+    # ------------------------------------------------------------------
+    preset_vector = vector_for(chosen_mode)
+    tune_prefs = False
+
+    if not yes:
+        typer.echo("")
+        typer.echo("── Preference tuning ───────────────────────────────────")
+        typer.echo(
+            f"The {chosen_mode.value!r} preset applies these weights: "
+            + "  ".join(f"{n}={getattr(preset_vector, n):.2f}" for n in DIMENSIONS)
+        )
+        tune_prefs = typer.confirm("Tune individual weights? (advanced)", default=False)
+
+    if tune_prefs:
+        vector = preset_vector
+        typer.echo("Enter a weight in [0, 1] for each dimension (press Enter to keep current):")
+        for dim in DIMENSIONS:
+            current = getattr(vector, dim)
+            raw_w = typer.prompt(f"  {dim} [{current:.2f}]", default=str(current))
+            try:
+                vector = vector.with_weight(dim, float(raw_w))
+            except (KeyError, ValueError) as exc:
+                typer.echo(f"  warning: {exc} — keeping {current:.2f}")
+        save_preferences(vector, path)
+    else:
+        # Persist the preset so load_preferences returns the mode's preset explicitly.
+        save_preferences(preset_vector, path)
+
+    # ------------------------------------------------------------------
+    # d. Profile (informational only — no persistence)
+    # ------------------------------------------------------------------
+    profile_answer: str | None = None
+    if not yes:
+        typer.echo("")
+        typer.echo("── Agent profile (informational) ───────────────────────")
+        typer.echo(
+            "This helps you think about your setup. "
+            "Doberman infers the app type automatically at runtime."
+        )
+        choices_str = " / ".join(PROFILE_CHOICES)
+        profile_answer = typer.prompt(
+            f"What does this agent mostly do? [{choices_str}]",
+            default="coding",
+        )
+
+    # ------------------------------------------------------------------
+    # e. Hook installation scope
+    # ------------------------------------------------------------------
+    if global_:
+        scope = "global"
+    elif yes:
+        scope = "project"
+    else:
+        typer.echo("")
+        typer.echo("── Hook installation ───────────────────────────────────")
+        use_global = typer.confirm(
+            "Install hooks globally (~/.claude/settings.json)?",
+            default=False,
+        )
+        scope = "global" if use_global else "project"
+
+    settings_path = resolve_settings_path(scope, path)
+
+    try:
+        current = load_settings(settings_path)
+    except ValueError as exc:
+        typer.echo(f"error: could not read existing settings: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    merged = merge_doberman_hooks(current)
+
+    try:
+        write_settings(settings_path, merged)
+    except OSError as exc:
+        typer.echo(f"error: could not write {settings_path}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    # ------------------------------------------------------------------
+    # f. Summary
+    # ------------------------------------------------------------------
+    typer.echo("")
+    typer.echo("── Setup complete ──────────────────────────────────────────")
+    typer.echo(f"Mode:       {chosen_mode.value}")
+    typer.echo(
+        f"Prefs:      {'custom (tuned)' if tune_prefs else 'preset defaults for ' + chosen_mode.value}"
+    )
+    if profile_answer is not None:
+        typer.echo(f"Profile:    {profile_answer} (noted — not persisted; inferred at runtime)")
+    typer.echo(f"Hooks:      written to {settings_path}")
+    typer.echo("")
+    typer.echo("Doberman is now active.")
+    typer.echo("Restart your Claude Code session to pick up the hooks.")
+    typer.echo("Next steps: `doberman 2fa setup`  |  `doberman status`")
+
+
+@app.command()
 def version() -> None:
     """Print the installed Doberman version."""
     typer.echo(__version__)
