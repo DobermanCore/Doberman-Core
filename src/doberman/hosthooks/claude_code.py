@@ -56,9 +56,30 @@ _BUILTIN_TOOL: dict[str, tuple[str, dict[str, str]]] = {
     "Edit": ("file_write", {"file_path": "path"}),
     "Write": ("file_write", {"file_path": "path"}),
     "NotebookEdit": ("file_write", {"notebook_path": "path"}),
+    # Read is NOT in GATED_BUILTINS (reads abstain pre). This mapping is a
+    # forward-declaration for the PostToolUse output-scan slice, which WILL gate
+    # reads; it is unreached until then.
     "Read": ("read_file", {"file_path": "path"}),
     "WebFetch": ("http_request", {}),  # {url, prompt} — url is a target/egress key
-    "WebSearch": ("http_request", {"query": "url"}),
+    # WebSearch is intentionally NOT remapped: its `query` is search *content*, not
+    # a routable destination. Mapping query->url made normalize treat the query as
+    # an external destination and AUTH'd every search (alert fatigue). Passed
+    # through, it normalises to a no-destination action whose query is still scanned
+    # for secrets.
+}
+
+#: A gated built-in must expose the field that identifies its action; if that field
+#: is absent or empty we cannot see what we are being asked to gate, so we fail
+#: closed (deny) rather than abstain. MCP tools have arbitrary, server-defined
+#: schemas and therefore no required-field check — normalize's generic extraction
+#: plus the engine handle them.
+_REQUIRED_FIELD: dict[str, str] = {
+    "Bash": "command",
+    "Edit": "file_path",
+    "Write": "file_path",
+    "NotebookEdit": "notebook_path",
+    "WebFetch": "url",
+    "WebSearch": "query",
 }
 
 _HOOK_EVENT = "PreToolUse"
@@ -78,6 +99,8 @@ def to_normalize_input(
     args = dict(tool_input or {})
     canonical, renames = _BUILTIN_TOOL.get(tool_name, (tool_name, {}))
     for src, dst in renames.items():
+        # If dst is already present (agent sent both, e.g. file_path AND path),
+        # keep dst and leave src untouched rather than clobbering dst.
         if src in args and dst not in args:
             args[dst] = args.pop(src)
     return canonical, args
@@ -125,6 +148,15 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
 
         raw_input = payload.get("tool_input")
         tool_input = raw_input if isinstance(raw_input, dict) else {}
+
+        # Fail closed: a gated built-in whose required input field is missing/empty
+        # is an action we cannot actually see — refuse it rather than abstain.
+        required = _REQUIRED_FIELD.get(tool_name)
+        if required is not None:
+            value = tool_input.get(required)
+            if not isinstance(value, str) or not value.strip():
+                return _deny()
+
         cwd = payload.get("cwd")
         repo_root = cwd if isinstance(cwd, str) and cwd else "."
 

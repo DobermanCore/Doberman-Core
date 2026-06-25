@@ -272,14 +272,20 @@ def hook_pre() -> None:
     Wire it into Claude Code's settings (a later slice adds `doberman
     install-hooks` to do this for you).
     """
+    # This process's stdout IS the harness's hook channel (it parses our JSON), so
+    # pin every doberman.* log to stderr and strip any stdout handler first — a
+    # stray log line on stdout would corrupt the decision the harness reads (and a
+    # malformed hook response can fail open). Same guard the `serve` command uses.
+    _configure_stderr_logging()
     # Imported here, not at module scope, so the other CLI commands don't load
     # the decision path on every `--help`/`status`/`log` invocation.
     from doberman.hosthooks.claude_code import run_pre_hook
 
     out = run_pre_hook(sys.stdin.read())
     if out is not None:
-        # The harness parses stdout as JSON; write ONLY the decision there.
-        sys.stdout.write(out)
+        # The harness parses stdout as JSON; write ONLY the decision there, with a
+        # trailing newline so a line-delimited reader sees a complete record.
+        sys.stdout.write(out + "\n")
     raise typer.Exit(0)
 
 
