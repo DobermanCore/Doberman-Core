@@ -53,9 +53,19 @@ _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"AKIA[0-9A-Z]{16}"),  # AWS access key id
     re.compile(r"ASIA[0-9A-Z]{16}"),  # AWS temporary access key id
     re.compile(r"sk-[A-Za-z0-9]{20,}"),  # OpenAI-style secret key
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),  # GitHub tokens
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),  # GitHub classic/app tokens
+    re.compile(r"github_pat_[A-Za-z0-9_]{22,}"),  # GitHub fine-grained PAT
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),  # Slack tokens
+    # Slack incoming-webhook URL (carries send capability)
+    re.compile(r"https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{16,}"),
     re.compile(r"AIza[0-9A-Za-z_\-]{20,}"),  # Google API key
+    re.compile(r"(?:sk|rk)_live_[A-Za-z0-9]{20,}"),  # Stripe live secret/restricted key
+    re.compile(r"SG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}"),  # SendGrid API key
+    re.compile(r"npm_[A-Za-z0-9]{36}"),  # npm access token
+    # JWT: two base64url JSON segments (header/payload start with eyJ) + signature
+    re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    # DB / message-queue connection URI with embedded user:password credentials
+    re.compile(r"(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s:/@]+:[^\s@/]+@"),
     re.compile(r"-----BEGIN[ A-Z0-9]*PRIVATE KEY-----"),  # PEM private key
 )
 
