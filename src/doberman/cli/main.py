@@ -42,6 +42,12 @@ app = typer.Typer(
 twofa_app = typer.Typer(help="Two-factor (TOTP) enrollment.", no_args_is_help=True)
 app.add_typer(twofa_app, name="2fa")
 
+hook_app = typer.Typer(
+    help="Host-harness integration hooks (e.g. Claude Code PreToolUse/PostToolUse).",
+    no_args_is_help=True,
+)
+app.add_typer(hook_app, name="hook")
+
 
 def _configure_stderr_logging(level: int = logging.INFO) -> None:
     """Send Doberman logs to STDERR only.
@@ -251,6 +257,30 @@ def status(
                 f"  {grant.id}  {grant.scope_glob}  "
                 f"(expires {grant.expires_at.isoformat()}; {kind})"
             )
+
+
+@hook_app.command("pre")
+def hook_pre() -> None:
+    """Claude Code PreToolUse hook — gate one tool call (allow / ask / deny).
+
+    Reads the harness hook payload as JSON on stdin and writes the hook decision
+    as JSON to stdout (nothing on a PASS — Doberman is raise-only and never
+    suppresses the harness's own prompts). Runs only the fast deterministic
+    objective floor (no numpy/scipy/river), so it adds minimal latency to every
+    tool call, and fails closed (deny) on any malformed input or engine error.
+
+    Wire it into Claude Code's settings (a later slice adds `doberman
+    install-hooks` to do this for you).
+    """
+    # Imported here, not at module scope, so the other CLI commands don't load
+    # the decision path on every `--help`/`status`/`log` invocation.
+    from doberman.hosthooks.claude_code import run_pre_hook
+
+    out = run_pre_hook(sys.stdin.read())
+    if out is not None:
+        # The harness parses stdout as JSON; write ONLY the decision there.
+        sys.stdout.write(out)
+    raise typer.Exit(0)
 
 
 @twofa_app.command("setup")
