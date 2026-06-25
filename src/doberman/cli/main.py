@@ -289,6 +289,34 @@ def hook_pre() -> None:
     raise typer.Exit(0)
 
 
+@hook_app.command("post")
+def hook_post() -> None:
+    """Claude Code PostToolUse hook — scan tool output for secrets; record history.
+
+    Reads the harness hook payload as JSON on stdin.  If the tool output
+    contains credential-like material, writes ``{"decision":"block","reason":"…"}``
+    to stdout (exit 0) so Claude never uses the tainted result.  On a clean
+    output (or a non-gated / internal tool) nothing is written to stdout.
+
+    History is best-effort: the call is always recorded in the local decision
+    log when the tool is a gated built-in or an MCP tool, but a history write
+    failure never blocks or raises.
+
+    Runs only the fast deterministic objective floor (no numpy/scipy/river),
+    fails closed on any malformed input or engine error.
+
+    Wire it into Claude Code's settings (a later slice adds `doberman
+    install-hooks` to do this for you).
+    """
+    _configure_stderr_logging()
+    from doberman.hosthooks.claude_code import run_post_hook
+
+    out = run_post_hook(sys.stdin.read())
+    if out is not None:
+        sys.stdout.write(out + "\n")
+    raise typer.Exit(0)
+
+
 @twofa_app.command("setup")
 def twofa_setup(
     force: bool = typer.Option(
