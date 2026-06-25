@@ -17,11 +17,20 @@ from mcp import StdioServerParameters
 
 from doberman import __version__
 from doberman.auth import totp
-from doberman.config import load_active_role, load_mode, load_policy, save_mode, save_policy
+from doberman.config import (
+    load_active_role,
+    load_mode,
+    load_policy,
+    load_preferences,
+    save_mode,
+    save_policy,
+    save_preferences,
+)
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import read_policy_changes
 from doberman.policy.modes import SecurityMode
+from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.proxy.serve import serve_stdio
 from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
@@ -163,6 +172,43 @@ def mode(
 
 
 @app.command()
+def prefs(
+    dimension: str = typer.Argument(
+        None, help=f"Preference dimension to set ({', '.join(DIMENSIONS)})."
+    ),
+    value: float = typer.Argument(None, help="New weight in [0, 1]."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show or set the subjective preference vector (SL5).
+
+    With no arguments, prints the active vector and which mode preset it
+    matches (if any). Weights tune SUBJECTIVE step-up propensity only — the
+    objective hard-block floor is unaffected by every weight.
+    """
+    if dimension is None:
+        vector = load_preferences(path)
+        preset = preset_name(vector)
+        typer.echo("Doberman preference vector")
+        typer.echo("=" * 32)
+        for name in DIMENSIONS:
+            typer.echo(f"{name:<23} {getattr(vector, name):.2f}")
+        typer.echo(f"preset: {preset or '(custom mix)'}")
+        return
+    if value is None:
+        typer.echo(
+            "error: provide a value in [0, 1] (e.g. `doberman prefs confidentiality 0.8`)", err=True
+        )
+        raise typer.Exit(code=2)
+    try:
+        updated = load_preferences(path).with_weight(dimension, value)
+    except (KeyError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    save_preferences(updated, path)
+    typer.echo(f"{dimension} set to {value:.2f}")
+
+
+@app.command()
 def status(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
@@ -173,6 +219,12 @@ def status(
     typer.echo("=" * 32)
     typer.echo(f"Role:   {role.name if role else '(none — role enforcement off)'}")
     typer.echo(f"Mode:   {load_mode(path)}  (of: {', '.join(m.value for m in SecurityMode)})")
+    vector = load_preferences(path)
+    typer.echo(
+        "Prefs:  "
+        + "  ".join(f"{name}={getattr(vector, name):.2f}" for name in DIMENSIONS)
+        + f"  (preset: {preset_name(vector) or 'custom'})"
+    )
     if doc is None:
         typer.echo("Policy: (none saved — run `doberman review --yes`)")
     else:

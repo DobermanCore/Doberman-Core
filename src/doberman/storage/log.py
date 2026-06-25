@@ -35,8 +35,9 @@ _PATH_ACTIONS = frozenset({ActionType.file_read, ActionType.file_write, ActionTy
 _INSERT_DECISION = (
     "INSERT INTO decisions "
     "(ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
-    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id, "
+    "entity_id) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _UPSERT_FINGERPRINT = (
@@ -82,8 +83,14 @@ def build_record(
     auth_result: str | None,
     elevation_id: str | None,
     now: datetime,
+    entity_id: str | None = None,
 ) -> dict:
-    """Build the single redacted record persisted and handed to every sink."""
+    """Build the single redacted record persisted and handed to every sink.
+
+    ``entity_id`` is a keyed HMAC fingerprint of role+workspace (SL4) — itself
+    redaction-safe — that powers the per-entity step-up budget and
+    revealed-preference learning.
+    """
     return {
         "ts": now.isoformat(),
         "action_id": decision.action_id,
@@ -98,6 +105,7 @@ def build_record(
         "auth_required": decision.final_verdict.value == "AUTH",
         "auth_result": auth_result,
         "elevation_id": elevation_id,
+        "entity_id": entity_id,
     }
 
 
@@ -109,6 +117,7 @@ async def record_decision(
     auth_result: str | None = None,
     elevation_id: str | None = None,
     now: datetime | None = None,
+    entity_id: str | None = None,
 ) -> None:
     """Persist one redacted decision row and fan it out to sinks (best-effort).
 
@@ -123,6 +132,7 @@ async def record_decision(
             auth_result=auth_result,
             elevation_id=elevation_id,
             now=now or datetime.now(timezone.utc),
+            entity_id=entity_id,
         )
     except Exception:  # noqa: BLE001 — the decision log must never break execution
         logger.warning("decision log: could not build record for action %s", decision.action_id)
@@ -146,6 +156,7 @@ async def record_decision(
                     int(record["auth_required"]),
                     record["auth_result"],
                     record["elevation_id"],
+                    record["entity_id"],
                 ),
             )
             for fp in action.payload_fingerprints:

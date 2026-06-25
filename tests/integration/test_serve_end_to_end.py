@@ -18,7 +18,11 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
 _FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "stdio_tool_server.py"
-_TIMEOUT_S = 30.0
+# Generous bound for a *real* two-subprocess (proxy + downstream) MCP/stdio
+# round-trip: process spawn + handshake is slow on Windows/CI and saturates under
+# parallel load. This guards against a genuine hang, not slowness — the behavioral
+# assertions below are what the test actually checks.
+_TIMEOUT_S = 90.0
 
 
 @asynccontextmanager

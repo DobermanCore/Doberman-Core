@@ -27,6 +27,7 @@ import yaml
 
 from doberman.policy.checklist import PolicyDoc, recommend_policy
 from doberman.policy.modes import DEFAULT_MODE, resolve_mode
+from doberman.policy.preferences import PreferenceVector, vector_for
 from doberman.roles.roles import (
     MOST_RESTRICTIVE_ROLE,
     RoleDefinition,
@@ -153,6 +154,25 @@ def load_mode(repo_root: str = ".") -> str:
     except ValueError:
         logger.warning("saved mode %r is unknown; using %s", doc.mode, DEFAULT_MODE.value)
         return DEFAULT_MODE.value
+
+
+def load_preferences(repo_root: str = ".") -> PreferenceVector:
+    """The active preference vector (SL5): declared, else the mode's preset.
+
+    Never raises — with no saved policy (or no declared vector) the active
+    mode's preset applies, and an unknown stored mode resolves to the strictest
+    preset inside :func:`vector_for`.
+    """
+    doc = load_policy(repo_root)
+    if doc is not None and doc.preferences is not None:
+        return doc.preferences
+    return vector_for(load_mode(repo_root))
+
+
+def save_preferences(vector: PreferenceVector, repo_root: str = ".") -> None:
+    """Persist the declared preference vector into the policy document."""
+    doc = load_policy(repo_root) or recommend_policy()
+    save_policy(doc.with_preferences(vector), repo_root)
 
 
 def save_mode(name: str, repo_root: str = ".") -> str:

@@ -59,6 +59,128 @@ class Reversibility(StrEnum):
     high = "high"
 
 
+class Capability(StrEnum):
+    """The abstract verb of an action (algebra dimension, closed enum)."""
+
+    read = "read"
+    mutate = "mutate"
+    delete = "delete"
+    send = "send"
+    execute = "execute"
+    grant = "grant"
+    configure = "configure"
+    other = "other"
+
+
+class TargetClass(StrEnum):
+    """Sensitivity tier of what the action touches — never a literal path/recipient."""
+
+    public = "public"
+    internal = "internal"
+    sensitive = "sensitive"
+    secret = "secret"  # noqa: S105 — sensitivity-tier constant, not a secret value
+    unknown = "unknown"
+
+
+class DestinationClass(StrEnum):
+    """Where data goes (algebra dimension, closed enum)."""
+
+    none = "none"
+    internal = "internal"
+    known_external = "known_external"
+    unknown_external = "unknown_external"
+
+
+class BlastRadius(StrEnum):
+    """How many entities the action touches (algebra dimension, closed enum)."""
+
+    single = "single"
+    few = "few"
+    many = "many"
+    mass = "mass"
+    unknown = "unknown"
+
+
+class Provenance(StrEnum):
+    """Whether the action traces to a trusted instruction or untrusted data."""
+
+    trusted_instruction = "trusted_instruction"
+    untrusted_data = "untrusted_data"
+    mixed = "mixed"
+    unknown = "unknown"
+
+
+#: Version of the action-algebra vocabulary. Adding/changing a dimension is a
+#: core schema change (bump this), never an adapter-level change.
+ALGEBRA_VERSION = 1
+
+# Severity orderings for the ordered algebra tiers. Used by the refine-only
+# adapter clamp (an adapter may move a class UP these scales, never down) and
+# by the ordinal feature encoding. ``unknown`` deliberately sits above the
+# benign tiers — unclassified is treated as elevated, never as safe.
+TARGET_CLASS_ORDER: dict[TargetClass, int] = {
+    TargetClass.public: 0,
+    TargetClass.internal: 1,
+    TargetClass.unknown: 2,
+    TargetClass.sensitive: 3,
+    TargetClass.secret: 4,
+}
+DESTINATION_CLASS_ORDER: dict[DestinationClass, int] = {
+    DestinationClass.none: 0,
+    DestinationClass.internal: 1,
+    DestinationClass.known_external: 2,
+    DestinationClass.unknown_external: 3,
+}
+BLAST_RADIUS_ORDER: dict[BlastRadius, int] = {
+    BlastRadius.single: 0,
+    BlastRadius.few: 1,
+    BlastRadius.unknown: 2,
+    BlastRadius.many: 3,
+    BlastRadius.mass: 4,
+}
+#: Higher = less trusted. An adapter may only ever move provenance toward MORE
+#: untrusted — ``trusted_instruction`` can never be reached by refinement.
+PROVENANCE_ORDER: dict[Provenance, int] = {
+    Provenance.trusted_instruction: 0,
+    Provenance.unknown: 1,
+    Provenance.mixed: 2,
+    Provenance.untrusted_data: 3,
+}
+
+if (  # pragma: no cover — same import-time guard as VERDICT_ORDER below
+    set(TARGET_CLASS_ORDER) != set(TargetClass)
+    or set(DESTINATION_CLASS_ORDER) != set(DestinationClass)
+    or set(BLAST_RADIUS_ORDER) != set(BlastRadius)
+    or set(PROVENANCE_ORDER) != set(Provenance)
+):
+    raise RuntimeError("algebra ORDER maps must cover every enum member")
+
+
+class Algebra(BaseModel):
+    """The universal action-abstraction (algebra) for one action — immutable.
+
+    Every action reduces to this small, fixed, versioned vocabulary
+    (:data:`ALGEBRA_VERSION`) so the subjective layer needs no per-application
+    branching. Defaults are the CONSERVATIVE members: an uninspected action is
+    ``unknown`` at zero confidence, which downstream layers treat as elevated
+    sensitivity — never as benign. ``reversibility`` is not duplicated here; the
+    algebra reads :attr:`SecurityObject.reversibility`.
+
+    ``classification_confidence`` is load-bearing: low confidence routes the
+    action through the conservative-default path (elevated sensitivity + a
+    bounded novelty signal), and only a verified adapter may raise it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    capability: Capability = Capability.other
+    target_class: TargetClass = TargetClass.unknown
+    destination_class: DestinationClass = DestinationClass.none
+    blast_radius: BlastRadius = BlastRadius.unknown
+    provenance: Provenance = Provenance.unknown
+    classification_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class Verdict(StrEnum):
     """The decision for an action: pass through, authenticate, or block."""
 
@@ -113,6 +235,13 @@ class ReasonCode(StrEnum):
 
     # Feature 9 — subjective guardrail & workflow baseline (+ detector seam).
     unusual_for_workflow = "unusual_for_workflow"
+
+    # Universal subjective layer (SL7) — three-axis scoring + trifecta floor.
+    unusual_for_deployment = "unusual_for_deployment"
+    confidentiality_sensitive_destination = "confidentiality_sensitive_destination"
+    irreversible_high_blast = "irreversible_high_blast"
+    lethal_trifecta = "lethal_trifecta"
+    unclassified_action = "unclassified_action"
 
     # OOD / smuggled-token channel defense (objective rule + subjective detector).
     smuggled_token_channel = "smuggled_token_channel"  # noqa: S105 — reason code, not a secret
@@ -193,6 +322,10 @@ class SecurityObject(BaseModel):
     reversibility: Reversibility = Reversibility.medium
     sensitive_asset: bool = False
     external_destination: str | None = None
+    #: The universal action-algebra classification (SL1). Populated by the
+    #: generic inference layer at normalize time; defaults to the conservative
+    #: all-unknown / zero-confidence algebra when nothing has inferred it yet.
+    algebra: Algebra = Field(default_factory=Algebra)
     payload_fingerprints: list[str] = Field(default_factory=list)
     # Values must already be redacted before entering the object; redaction is
     # enforced by normalize() and its tests, not by this type.

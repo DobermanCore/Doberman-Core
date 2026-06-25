@@ -44,6 +44,10 @@ AUTH_PROVIDER_GROUP = "doberman.auth_providers"
 AUDIT_SINK_GROUP = "doberman.audit_sinks"
 #: Drift observers (Feature 10.4) register here; resolved by the policy layer.
 DRIFT_OBSERVER_GROUP = "doberman.drift_observers"
+#: Algebra adapters (SL3.1) register here; resolved by the subjective layer.
+#: Distinct from ``doberman.detectors``: adapters REFINE the action algebra
+#: (clamped raise-only) and never score or verdict anything.
+ALGEBRA_ADAPTER_GROUP = "doberman.algebra_adapters"
 
 
 def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
@@ -244,6 +248,39 @@ def discover_audit_sinks() -> list[object]:
             continue
         sinks.append(candidate)
     return sinks
+
+
+def discover_algebra_adapters() -> list[object]:
+    """Discover registered algebra adapters (SL3.1, group ``doberman.algebra_adapters``).
+
+    Loaded defensively like every other seam: an import/constructor failure, or
+    an object that is not adapter-shaped (no callable ``refine``), is logged and
+    skipped. Returns ``[]`` when nothing is installed — the generic inference
+    layer (SL2) then stands alone, so coverage never depends on an adapter.
+    Core never imports an adapter by name; the subjective layer clamps every
+    adapter's output raise-only.
+    """
+    # Local import avoids an engine<->subjective import cycle at module load.
+    from doberman.subjective.adapters import _looks_like_algebra_adapter
+
+    adapters: list[object] = []
+    seen: set[str] = set()
+    for entry_point in _iter_entry_points(ALGEBRA_ADAPTER_GROUP):
+        key = f"{ALGEBRA_ADAPTER_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = _load_and_construct(entry_point)
+        if candidate is None:
+            continue
+        if not _looks_like_algebra_adapter(candidate):
+            logger.warning(
+                "skipping algebra adapter %r: not adapter-shaped",
+                getattr(entry_point, "name", "?"),
+            )
+            continue
+        adapters.append(candidate)
+    return adapters
 
 
 def discover_drift_observers() -> list[object]:

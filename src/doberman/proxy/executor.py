@@ -26,11 +26,10 @@ from mcp.types import CallToolResult, TextContent
 
 from doberman.auth.challenge import AuthTier, Prompter, run_auth_challenge
 from doberman.auth.elevation import find_cover, scope_for_target
-from doberman.config import load_active_role, load_mode
+from doberman.config import load_active_role, load_mode, load_preferences
 from doberman.engine.decision_engine import Guardrail, decide
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.subjective import SubjectiveGuardrail
-from doberman.learning.baseline import abnormality, observe
 from doberman.models import (
     ActionType,
     Decision,
@@ -45,6 +44,20 @@ from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
 from doberman.storage.db import active_elevations, grant_elevation, mark_used
 from doberman.storage.log import record_decision
+from doberman.subjective.baseline import (
+    budget_allows_step_up,
+    entity_id,
+    observe,
+    total_observations,
+)
+from doberman.subjective.drift import note_allowed, surprise_blended
+from doberman.subjective.martingale import MONITOR_EVERY, note_belief, run_monitor
+from doberman.subjective.revealed import (
+    grant_scope_token,
+    has_scope_token,
+    maybe_nudge,
+    record_feedback,
+)
 
 _engine_logger = logging.getLogger("doberman.proxy.engine")
 
@@ -137,15 +150,23 @@ def _engine_failure_decision(action: SecurityObject) -> Decision:
     )
 
 
-def _build_ctx(arguments: dict | None, grants: tuple, abnormality_score: float) -> EvalContext:
+def _build_ctx(
+    arguments: dict | None,
+    grants: tuple,
+    surprise_score: float,
+    *,
+    budget_ok: bool = True,
+    eid: str = "",
+    scope_token: bool = False,
+) -> EvalContext:
     """Assemble the EvalContext for one decision.
 
     The objective rules (Feature 3) inspect the UN-redacted call content via
     ``metadata['raw_arguments']`` (in-memory only, never logged/persisted). The
-    active role (F4), mode (F6), active elevations (F7), and the precomputed
-    workflow-abnormality score (F9) ride along too — the score is computed by the
-    proxy (async DB read) so the synchronous subjective guardrail never touches
-    the database.
+    active role (F4), mode (F6), preference vector (SL5), active elevations
+    (F7), the precomputed per-entity surprise (SL4), and the step-up budget
+    verdict ride along too — everything async (DB reads) happens here in the
+    proxy so the synchronous subjective guardrail never touches the database.
     """
     return EvalContext(
         role=load_active_role(REPO_ROOT),
@@ -154,19 +175,77 @@ def _build_ctx(arguments: dict | None, grants: tuple, abnormality_score: float) 
             "raw_arguments": dict(arguments or {}),
             "repo_root": REPO_ROOT,
             "elevations": grants,
-            "abnormality": abnormality_score,
+            "surprise": surprise_score,
+            "budget_ok": budget_ok,
+            "scope_token": scope_token,
+            "entity_id": eid,
+            "preferences": load_preferences(REPO_ROOT),
         },
     )
 
 
-async def _observe_allowed(action: SecurityObject) -> None:
-    """Record an allowed action in the workflow baseline (best-effort).
+async def _learn_from_auth(
+    action: SecurityObject, decision: Decision, approved: bool, eid: str
+) -> None:
+    """SL6 hook: a SUBJECTIVE step-up's outcome is a revealed-preference label.
+
+    Only fires when the subjective layer drove the ask (objective PASSed but
+    the final verdict was AUTH). On approval a TTL'd, session-only scope token
+    covers repeats of this exact algebra point (never for the trifecta), and
+    accumulated feedback may propose a bounded weight nudge — every weakening
+    still routes through the F10 gate. Best-effort, never breaks the path.
+    """
+    if decision.subjective is None or decision.objective.verdict is not Verdict.PASS:
+        return
+    try:
+        await record_feedback(action, approved, entity_id=eid, repo_root=REPO_ROOT)
+        if approved:
+            grant_scope_token(action, list(decision.reason_codes), entity_id=eid)
+            await maybe_nudge(entity_id=eid, repo_root=REPO_ROOT, prompter=AUTH_PROMPTER)
+    except Exception:  # noqa: BLE001 — learning must never break the execution path
+        _engine_logger.warning("revealed-preference hook failed (action %s); continuing", action.id)
+
+
+async def _surprise_or_caution(action: SecurityObject, eid: str) -> float:
+    """Precompute the per-entity surprise; ANY failure scores 1.0 (caution)."""
+    try:
+        return await surprise_blended(action, entity_id=eid, repo_root=REPO_ROOT)
+    except Exception:  # noqa: BLE001 — a scoring failure must bias toward step-up
+        _engine_logger.warning("surprise precompute failed (action %s); scoring 1.0", action.id)
+        return 1.0
+
+
+async def _budget_or_surface(eid: str) -> bool:
+    """Check the fatigue budget; overflow is logged for review, never hidden."""
+    try:
+        budget_ok = await budget_allows_step_up(entity_id=eid, repo_root=REPO_ROOT)
+    except Exception:  # noqa: BLE001 — on doubt the step-up surfaces (more caution)
+        return True
+    if not budget_ok:
+        _engine_logger.info(
+            "subjective step-up budget exhausted (entity %s); overflow logged for review",
+            eid[:12],
+        )
+    return budget_ok
+
+
+async def _observe_allowed(action: SecurityObject, eid: str, surprise_score: float) -> None:
+    """Record an allowed action in its entity baseline + monitors (best-effort).
 
     Only ever called after a successful forward — a blocked/denied attempt must
-    never teach the baseline that it is "normal" (raise-only learning).
+    never teach the baseline that it is "normal" (raise-only learning). The
+    drift hook (ADWIN) feeds on the same allowed-only stream and may trigger a
+    raise-safe refresh; the layer's belief (1 − surprise) feeds the SL8
+    Martingale self-monitor, which runs every MONITOR_EVERY observations and
+    can only ever refresh, hold, or surface for review — never loosen.
     """
     try:
-        await observe(action, repo_root=REPO_ROOT)
+        await observe(action, entity_id=eid, repo_root=REPO_ROOT)
+        await note_allowed(action, entity_id=eid, repo_root=REPO_ROOT)
+        await note_belief(eid, 1.0 - surprise_score, repo_root=REPO_ROOT)
+        total = await total_observations(entity_id=eid, repo_root=REPO_ROOT)
+        if total and total % MONITOR_EVERY == 0:
+            await run_monitor(eid, repo_root=REPO_ROOT)
     except Exception:  # noqa: BLE001 — learning must never break the execution path
         _engine_logger.warning("baseline observe failed (action %s); continuing", action.id)
 
@@ -215,11 +294,14 @@ async def _persist(
     *,
     auth_result: str | None = None,
     elevation_id: str | None = None,
+    eid: str | None = None,
 ) -> None:
     """Append one redacted row to the local decision log (best-effort).
 
     Wrapped so that even a catastrophic logging failure can never alter, block,
     or crash a decision that has already been enforced (logging is observational).
+    ``eid`` (the keyed entity fingerprint) powers the per-entity step-up budget
+    and revealed-preference learning.
     """
     try:
         await record_decision(
@@ -228,6 +310,7 @@ async def _persist(
             repo_root=REPO_ROOT,
             auth_result=auth_result,
             elevation_id=elevation_id,
+            entity_id=eid,
         )
     except Exception:  # noqa: BLE001 — logging must never break the execution path
         _engine_logger.warning("decision log persist failed (action %s); continuing", action.id)
@@ -240,7 +323,8 @@ async def _handle_auth(
     action: SecurityObject,
     decision: Decision,
     now: datetime,
-    abnormality_score: float,
+    surprise_score: float,
+    eid: str,
 ) -> CallToolResult:
     """Run the tiered challenge for an AUTH decision and act on the outcome."""
     # Off the event loop: the challenge blocks for a human, and an elicitation
@@ -250,8 +334,10 @@ async def _handle_auth(
         run_auth_challenge, decision, action, prompter=AUTH_PROMPTER
     )
     # Approval is bound to THIS action id — never honor a result for another call.
-    if not auth_result.approved or auth_result.action_id != action.id:
-        await _persist(decision, action, auth_result="denied")
+    approved = auth_result.approved and auth_result.action_id == action.id
+    await _learn_from_auth(action, decision, approved, eid)
+    if not approved:
+        await _persist(decision, action, auth_result="denied", eid=eid)
         return _verdict_result(decision)
 
     # A satisfied role elevation grants a narrow, temporary permission first.
@@ -260,7 +346,7 @@ async def _handle_auth(
         scope = scope_for_target(action.target, root=REPO_ROOT)
         if scope is None:
             # No narrow scope can be formed (non-path / escapes root): refuse.
-            await _persist(decision, action, auth_result="denied")
+            await _persist(decision, action, auth_result="denied", eid=eid)
             return _verdict_result(decision)
         try:
             grant = await grant_elevation(
@@ -273,23 +359,23 @@ async def _handle_auth(
             elevation_id = grant.id
         except Exception:  # noqa: BLE001 — a failed grant must fail closed
             _engine_logger.warning("elevation grant failed (action %s); denying", action.id)
-            await _persist(decision, action, auth_result="denied")
+            await _persist(decision, action, auth_result="denied", eid=eid)
             return _verdict_result(decision)
 
     # TOCTOU guard: re-decide with refreshed elevations. A change to BLOCK must
     # block even post-approval; otherwise the human-approved action is released.
     grants = tuple(await active_elevations(REPO_ROOT, now))
-    redecision = _safe_decide(action, _build_ctx(arguments, grants, abnormality_score))
+    redecision = _safe_decide(action, _build_ctx(arguments, grants, surprise_score, eid=eid))
     if redecision.final_verdict is Verdict.BLOCK:
         log_action(action, redecision.final_verdict)
-        await _persist(redecision, action, auth_result="approved")
+        await _persist(redecision, action, auth_result="approved", eid=eid)
         return _verdict_result(redecision)
 
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _consume_single_use(action, grants, now)
-        await _observe_allowed(action)
-    await _persist(decision, action, auth_result="approved", elevation_id=elevation_id)
+        await _observe_allowed(action, eid, surprise_score)
+    await _persist(decision, action, auth_result="approved", elevation_id=elevation_id, eid=eid)
     return result
 
 
@@ -305,14 +391,20 @@ async def decide_and_execute(
     """
     action: SecurityObject = normalize(tool_name, arguments)
     now = datetime.now(timezone.utc)
+    eid = entity_id(action.agent_role, REPO_ROOT)
 
     # Active elevations (F7) may satisfy a role-boundary AUTH for the exact
-    # covered target, and the workflow-abnormality score (F9) feeds the
-    # subjective guardrail — both are computed BEFORE the first decision so the
-    # synchronous engine can read them from the context.
+    # covered target; the per-entity surprise (SL4) and fatigue-budget verdict
+    # feed the subjective guardrail — all computed BEFORE the first decision so
+    # the synchronous engine can read them from the context.
     grants = tuple(await active_elevations(REPO_ROOT, now))
-    score = await abnormality(action, repo_root=REPO_ROOT, now=now)
-    decision = _safe_decide(action, _build_ctx(arguments, grants, score))
+    score = await _surprise_or_caution(action, eid)
+    budget_ok = await _budget_or_surface(eid)
+    token = has_scope_token(action, entity_id=eid)
+    decision = _safe_decide(
+        action,
+        _build_ctx(arguments, grants, score, budget_ok=budget_ok, eid=eid, scope_token=token),
+    )
 
     # Record every intercepted action with its REAL verdict. Logged before the
     # gate — safe because log_action swallows its own failures and forwards
@@ -320,17 +412,19 @@ async def decide_and_execute(
     log_action(action, decision.final_verdict)
 
     if decision.final_verdict is Verdict.BLOCK:
-        await _persist(decision, action)
+        await _persist(decision, action, eid=eid)
         return _verdict_result(decision)
 
     if decision.final_verdict is Verdict.AUTH:
-        return await _handle_auth(downstream, tool_name, arguments, action, decision, now, score)
+        return await _handle_auth(
+            downstream, tool_name, arguments, action, decision, now, score, eid
+        )
 
     # PASS — forward, then consume any single-use elevation that released it and
     # teach the baseline (allowed actions only).
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _consume_single_use(action, grants, now)
-        await _observe_allowed(action)
-    await _persist(decision, action)
+        await _observe_allowed(action, eid, score)
+    await _persist(decision, action, eid=eid)
     return result

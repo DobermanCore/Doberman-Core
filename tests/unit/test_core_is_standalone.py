@@ -13,7 +13,7 @@ def test_core_imports_with_no_enterprise_installed():
 def test_version_is_exposed():
     import doberman
 
-    assert doberman.__version__ == "0.11.0"
+    assert doberman.__version__ == "0.12.0"
 
 
 def test_policy_core_packages_import_cleanly():
@@ -22,7 +22,7 @@ def test_policy_core_packages_import_cleanly():
     # dependent — other tests legitimately import doberman.proxy.)
     code = (
         "import sys; "
-        "import doberman.engine, doberman.learning, doberman.policy, "
+        "import doberman.engine, doberman.subjective, doberman.policy, "
         "doberman.roles, doberman.storage; "
         "assert 'doberman.proxy' not in sys.modules"
     )
@@ -64,6 +64,14 @@ def test_no_detectors_registered_by_default():
     from doberman.engine.registry import discover_detectors
 
     assert discover_detectors() == []
+
+
+def test_no_algebra_adapters_registered_by_default():
+    # Slice SL3.1 standalone guarantee: with no adapter package installed, the
+    # generic inference layer stands alone — coverage never depends on adapters.
+    from doberman.engine.registry import discover_algebra_adapters
+
+    assert discover_algebra_adapters() == []
 
 
 def test_no_audit_sinks_registered_by_default():

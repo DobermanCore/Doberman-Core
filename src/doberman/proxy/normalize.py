@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from doberman.models import ActionType, ReasonCode, Risk, SecurityObject, SourceContext
+from doberman.subjective.adapters import apply_adapters
+from doberman.subjective.infer import infer_algebra, infer_reversibility
 
 REDACTED = "<redacted>"
 
@@ -128,7 +130,7 @@ def normalize(
         redacted_args = _redact_args(args)
         target, metadata = _extract_target(action_type, redacted_args)
         external_destination = target if action_type is ActionType.network_request else None
-        return SecurityObject(
+        base = SecurityObject(
             id=uuid.uuid4().hex,
             ts=datetime.now(timezone.utc),
             agent_role=str(context.get("agent_role", "unknown")),
@@ -139,6 +141,17 @@ def normalize(
             source_context=SourceContext.unknown,
             raw_args_redacted=redacted_args,
             metadata=metadata,
+        )
+        # SL9: every normalized object carries a populated algebra — generic
+        # inference first (reads the RAW args, which never enter the object),
+        # then any registered refine-only adapters (clamped raise-only). An
+        # inference failure leaves the conservative default algebra in place.
+        algebra = apply_adapters(
+            infer_algebra(base, args),
+            {"tool_name": safe_tool_name, "arguments": args},
+        )
+        return base.model_copy(
+            update={"algebra": algebra, "reversibility": infer_reversibility(base, args)}
         )
     except Exception:  # noqa: BLE001 — normalization must never break the path
         # Conservative fallback: unknown action at high risk, no argument

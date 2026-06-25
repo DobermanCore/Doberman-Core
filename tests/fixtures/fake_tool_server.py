@@ -49,6 +49,21 @@ _TOOLS: list[Tool] = [
             "required": ["url"],
         },
     ),
+    # A mail-like tool (SL9): proves the ONE subjective engine covers a second
+    # synthetic application type with zero adapters installed.
+    Tool(
+        name="send_email",
+        description="Send an email through the corporate relay.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "to": {"type": "array", "items": {"type": "string"}},
+                "body": {"type": "string"},
+            },
+            "required": ["url", "to", "body"],
+        },
+    ),
 ]
 
 KNOWN_TOOL_NAMES = {tool.name for tool in _TOOLS}

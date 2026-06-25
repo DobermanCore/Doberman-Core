@@ -1,6 +1,6 @@
 [project]
 name = "doberman-core"
-version = "0.11.0"
+version = "0.12.0"
 description = "Adaptive authorization layer for coding agents (open core)"
 readme = "README.md"
 license = "Apache-2.0"
@@ -26,7 +26,17 @@ classifiers = [
     "Topic :: Security",
     "Topic :: Software Development :: Quality Assurance",
 ]
-dependencies = ["pydantic>=2", "mcp>=1.27,<2", "aiosqlite", "pyotp", "pyyaml", "typer"]
+dependencies = [
+    "pydantic>=2",
+    "mcp>=1.27,<2",
+    "aiosqlite",
+    "pyotp",
+    "pyyaml",
+    "typer",
+    "river>=0.21",
+    "numpy",
+    "scipy",
+]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "import-linter"]
@@ -84,7 +94,7 @@ include_external_packages = true
 [[tool.importlinter.contracts]]
 name = "Policy core must not depend on the proxy adapter"
 type = "forbidden"
-source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "doberman.storage", "doberman.learning", "doberman.auth"]
+source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "doberman.storage", "doberman.auth", "doberman.subjective"]
 forbidden_modules = ["doberman.proxy"]
 
 # Cross-repo boundary: the public core must never import the private enterprise package.

@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from doberman.models import Verdict
+from doberman.policy.preferences import PreferenceVector
 from doberman.roles.roles import RoleDefinition
 
 CATEGORY_HARD_BLOCK = "hard_block"
@@ -124,10 +125,16 @@ _STEP_UPS: tuple[tuple[PolicyItem, str | None], ...] = (
 
 @dataclass(frozen=True)
 class PolicyDoc:
-    """The editable policy document (immutable; edits return new copies)."""
+    """The editable policy document (immutable; edits return new copies).
+
+    ``preferences`` (SL5) is the declared per-deployment weight vector; when
+    ``None`` the active mode's preset vector applies (the four modes are named
+    presets over the vector).
+    """
 
     items: tuple[PolicyItem, ...]
     mode: str = "balanced"
+    preferences: PreferenceVector | None = None
 
     def get(self, item_id: str) -> PolicyItem | None:
         return next((it for it in self.items if it.id == item_id), None)
@@ -154,8 +161,11 @@ class PolicyDoc:
     def with_mode(self, mode: str) -> "PolicyDoc":
         return replace(self, mode=mode)
 
+    def with_preferences(self, preferences: PreferenceVector) -> "PolicyDoc":
+        return replace(self, preferences=preferences)
+
     def to_mapping(self) -> dict[str, Any]:
-        return {
+        mapping: dict[str, Any] = {
             "mode": self.mode,
             "items": [
                 {
@@ -170,6 +180,9 @@ class PolicyDoc:
                 for it in self.items
             ],
         }
+        if self.preferences is not None:
+            mapping["preferences"] = self.preferences.to_mapping()
+        return mapping
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "PolicyDoc":
@@ -186,7 +199,16 @@ class PolicyDoc:
             for raw in data.get("items", [])
             if isinstance(raw, dict) and raw.get("id")
         )
-        return cls(items=items, mode=str(data.get("mode", "balanced")))
+        preferences: PreferenceVector | None = None
+        raw_prefs = data.get("preferences")
+        if isinstance(raw_prefs, dict):
+            try:
+                preferences = PreferenceVector.from_mapping(raw_prefs)
+            except (TypeError, ValueError, KeyError):
+                # An invalid stored vector is ignored (the mode preset applies)
+                # rather than crashing the decision path.
+                preferences = None
+        return cls(items=items, mode=str(data.get("mode", "balanced")), preferences=preferences)
 
 
 def recommend_policy(
