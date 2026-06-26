@@ -40,10 +40,11 @@ from doberman.auth.elevation import DEFAULT_TTL_SECONDS, ElevationGrant
 CONFIG_DIR = ".doberman"
 DB_FILE = "doberman.db"
 
-#: Current schema version. Bumped to 2 in Feature 8 (decision log + stores) and
-#: to 3 for the universal subjective layer (SL4/SL6/SL8: baselines re-keyed by
-#: entity, transitions, score history, preference feedback).
-SCHEMA_VERSION = 3
+#: Current schema version. Bumped to 2 in Feature 8 (decision log + stores), to 3
+#: for the universal subjective layer (SL4/SL6/SL8: baselines re-keyed by entity,
+#: transitions, score history, preference feedback), and to 4 for the host-hook
+#: sticky taint ledger (HK.5.1: decisions.session_id + the session_taint table).
+SCHEMA_VERSION = 4
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -79,7 +80,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     auth_required     INTEGER NOT NULL DEFAULT 0,
     auth_result       TEXT,
     elevation_id      TEXT,
-    entity_id         TEXT
+    entity_id         TEXT,
+    session_id        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS secret_fingerprints (
@@ -88,6 +90,20 @@ CREATE TABLE IF NOT EXISTS secret_fingerprints (
     first_seen        TEXT,
     last_seen         TEXT,
     source_path_class TEXT
+);
+
+-- Sticky, monotonic taint ledger (HK.5.1): the *ingredients* of a multi-step
+-- exfiltration (a secret was accessed, untrusted data was read) accumulated per
+-- session or per entity scope. `scope` is an opaque harness session id or a
+-- keyed-HMAC entity fingerprint; `kind` is a fixed constant; `count` only ever
+-- rises. No raw secret/path/prompt is stored. HK.5.2 consumes it to raise risk.
+CREATE TABLE IF NOT EXISTS session_taint (
+    scope      TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    first_seen TEXT,
+    last_seen  TEXT,
+    count      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, kind)
 );
 
 CREATE TABLE IF NOT EXISTS baseline_counts (
@@ -186,6 +202,12 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
     decision_cols = await _table_columns(conn, "decisions")
     if decision_cols and "entity_id" not in decision_cols:
         await conn.execute("ALTER TABLE decisions ADD COLUMN entity_id TEXT")
+    # v3 → v4: decisions gain ``session_id`` (HK.5.1) so the host-hook taint
+    # ledger can correlate calls within one agent session. Additive ALTER on an
+    # existing table; fresh DBs get it from _SCHEMA above. session_taint itself is
+    # created additively by executescript (CREATE TABLE IF NOT EXISTS).
+    if decision_cols and "session_id" not in decision_cols:
+        await conn.execute("ALTER TABLE decisions ADD COLUMN session_id TEXT")
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

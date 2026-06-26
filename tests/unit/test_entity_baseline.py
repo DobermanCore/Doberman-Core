@@ -184,7 +184,7 @@ async def test_schema_change_resets_only_that_tools_contribution(tmp_path):
 # --- migration ----------------------------------------------------------------
 
 
-async def test_v2_database_migrates_to_v3(tmp_path):
+async def test_v2_database_migrates_to_current(tmp_path):
     root = str(tmp_path)
     path = db_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,20 +228,26 @@ async def test_v2_database_migrates_to_v3(tmp_path):
 
     assert "entity_id" in count_cols  # re-keyed
     assert remaining == 0  # old global rows dropped (raise-safe: relearning is colder)
-    assert "entity_id" in decision_cols  # additive column
+    assert "entity_id" in decision_cols  # additive column (v2→v3)
+    assert "session_id" in decision_cols  # additive column (v3→v4, HK.5.1)
     assert decisions == [("a1",)]  # existing decision rows preserved
-    assert version == SCHEMA_VERSION == 3
+    assert version == SCHEMA_VERSION
 
 
-async def test_fresh_database_starts_at_v3(tmp_path):
+async def test_fresh_database_starts_at_current_version(tmp_path):
     root = str(tmp_path)
     async with open_db(root) as conn:
         async with conn.execute("SELECT version FROM schema_version") as cur:
             version = (await cur.fetchone())[0]
-        for table in ("baseline_transitions", "score_history", "preference_feedback"):
+        for table in (
+            "baseline_transitions",
+            "score_history",
+            "preference_feedback",
+            "session_taint",
+        ):
             async with conn.execute(f"SELECT COUNT(*) FROM {table}") as cur:  # noqa: S608
                 assert (await cur.fetchone())[0] == 0
-    assert version == 3
+    assert version == SCHEMA_VERSION
 
 
 async def test_observe_never_raises_on_broken_db(tmp_path, monkeypatch):
