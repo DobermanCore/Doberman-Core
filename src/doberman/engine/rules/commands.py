@@ -33,6 +33,7 @@ import re
 import shlex
 from collections.abc import Iterable
 
+from doberman.engine.rules.paths import names_control_plane
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -43,6 +44,12 @@ from doberman.models import (
     Verdict,
 )
 from doberman.policy.modes import thresholds_for
+
+# Doberman's own CLI subcommands that install/remove the host hooks or rewire the
+# control plane: an agent invoking these through a shell is tampering with the
+# cop, not doing project work (HK.5.0b). The human runs these directly (not via a
+# gated tool), so the hook only ever sees the *agent* invoking them.
+_DOBERMAN_CONTROL_SUBCOMMANDS = {"uninstall-hooks", "install-hooks", "setup"}
 
 #: Default bulk-operation threshold: deleting/touching this many paths in one
 #: command steps up to AUTH. Overridable (F6 wires this from policy/mode).
@@ -155,13 +162,56 @@ def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) ->
 _DISK_WIPE = re.compile(r"^(?:mkfs(?:\.\w+)?|shred|wipefs)$")
 
 
+def _is_doberman_control_cli(tokens: list[str]) -> bool:
+    """``doberman uninstall-hooks`` / ``install-hooks`` / ``setup`` — control-plane tamper."""
+    return (
+        bool(tokens)
+        and tokens[0] == "doberman"
+        and any(t in _DOBERMAN_CONTROL_SUBCOMMANDS for t in tokens[1:])
+    )
+
+
+def _token_path_candidates(token: str) -> list[str]:
+    """Path-like candidates from one argv token: the token itself and the value
+    after ``=`` (for ``--flag=path`` forms). Redirection targets already arrive as
+    their own tokens (``shlex`` keeps ``>``/``>>`` separate)."""
+    if "=" in token:
+        return [token, token.split("=", 1)[1]]
+    return [token]
+
+
+def _segment_targets_control_plane(tokens: list[str], root: str) -> bool:
+    """True if any argv token (operand or redirect target) names Doberman's
+    control plane. Skips a token's leading ``-`` switch but still checks a
+    ``--flag=path`` value."""
+    for token in tokens:
+        for candidate in _token_path_candidates(token):
+            if candidate and not candidate.startswith("-") and names_control_plane(candidate, root):
+                return True
+    return False
+
+
 def _segment_verdict(
-    tokens: list[str], protected_branches: Iterable[str], bulk_threshold: int
+    tokens: list[str], protected_branches: Iterable[str], bulk_threshold: int, root: str
 ) -> GuardrailResult | None:
     """Classify one parsed segment; ``None`` means this segment is benign."""
     if not tokens:
         return None
     cmd = tokens[0]
+
+    # --- Control-plane tamper → BLOCK (HK.5.0b) ---
+    # A shell command that names .doberman/ or the .claude/ hook config, or runs
+    # the Doberman hook-install CLI, is disabling the cop — block it. (A path-
+    # *target* rule misses a path hidden inside a command string.)
+    if _segment_targets_control_plane(tokens, root):
+        return _block_control_plane(
+            "Shell command targets Doberman's own control plane "
+            "(.doberman/ state or the .claude/ host-hook config)."
+        )
+    if _is_doberman_control_cli(tokens):
+        return _block_control_plane(
+            "Shell command would install/remove Doberman's host hooks (control-plane tamper)."
+        )
 
     # --- Catastrophic → BLOCK ---
     if cmd == "rm" and _rm_is_catastrophic(tokens):
@@ -239,6 +289,17 @@ def _block(explanation: str) -> GuardrailResult:
     )
 
 
+def _block_control_plane(explanation: str) -> GuardrailResult:
+    # Reuse the path rule's reason code — semantically this *is* a protected-path
+    # hit, just surfaced from inside a command string (HK.5.0b).
+    return GuardrailResult(
+        verdict=Verdict.BLOCK,
+        risk=Risk.critical,
+        reason_codes=[ReasonCode.protected_path_blocked],
+        explanation=explanation,
+    )
+
+
 def _auth(reason: ReasonCode, explanation: str) -> GuardrailResult:
     return GuardrailResult(
         verdict=Verdict.AUTH,
@@ -285,12 +346,16 @@ class DestructiveCommandRule:
         if not command or not command.strip():
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
+        root = "."
+        if isinstance(ctx.metadata, dict):
+            root = str(ctx.metadata.get("repo_root") or ".")
+
         threshold = self._bulk_threshold_override
         if threshold is None:
             threshold = thresholds_for(getattr(ctx, "mode", "balanced")).bulk_delete_threshold
-        return self._classify_line(command, threshold)
+        return self._classify_line(command, threshold, root)
 
-    def _classify_line(self, command: str, bulk_threshold: int) -> GuardrailResult:
+    def _classify_line(self, command: str, bulk_threshold: int, root: str) -> GuardrailResult:
         worst: GuardrailResult = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
         saw_unparseable = False
 
@@ -327,7 +392,7 @@ class DestructiveCommandRule:
                 pending.extend(_payload_segments(tokens))
                 continue
 
-            verdict = _segment_verdict(tokens, self._protected, bulk_threshold)
+            verdict = _segment_verdict(tokens, self._protected, bulk_threshold, root)
             if verdict is not None:
                 worst = _max_result(worst, verdict)
                 if worst.verdict is Verdict.BLOCK:
