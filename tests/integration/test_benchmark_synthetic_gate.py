@@ -17,13 +17,18 @@ import json
 
 import pytest
 
-from tests.benchmarks.runner import run_profiles
+from tests.benchmarks.runner import run_before_after, run_profiles
 from tests.benchmarks.suites.synthetic import PAYLOAD_MARKER, SyntheticAdapter
 
 
 @pytest.fixture(scope="module")
 def report() -> dict:
     return run_profiles(SyntheticAdapter())
+
+
+@pytest.fixture(scope="module")
+def before_after() -> dict:
+    return run_before_after(SyntheticAdapter())
 
 
 def test_report_structure(report):
@@ -66,3 +71,41 @@ def test_no_plugins_means_zero_uplift(report):
     # On a standalone core install nothing registers, so the two profiles match.
     assert report["uplift"] == {"delta_asr": 0.0, "delta_fpr": 0.0}
     assert report["builtins_only"] == {**report["with_plugins"], "profile": "builtins_only"}
+
+
+# --- before/after: the no-guardrail baseline vs. the real engine ------------
+def test_before_after_brackets_the_engine_effect(before_after):
+    before, after, delta = (
+        before_after["before"],
+        before_after["after"],
+        before_after["delta"],
+    )
+    assert before["profile"] == "no_guardrail"
+    assert after["profile"] == "builtins_only"
+    # Before: the unmediated path — every synthetic attack would execute, and
+    # benign work runs with zero friction (true by construction of passthrough).
+    assert before["asr"] == 1.0
+    assert before["fpr"] == 0.0
+    assert before["hard_fpr"] == 0.0
+    # After: the real engine mitigates every synthetic attack (none bypasses).
+    assert after["asr"] == 0.0
+    # Delta: Doberman stops 100% of the otherwise-executing attacks and, on this
+    # trusted-host benign set, adds no friction.
+    assert delta["attacks_stopped"] == 1.0
+    assert delta["fpr_added"] == 0.0
+    assert delta["hard_fpr_added"] == 0.0
+    # The strict delta is rule-dependent (AUTH counts as not-stopped); assert the
+    # identity against the sub-reports rather than a brittle absolute number.
+    assert delta["attacks_stopped_strict"] == round(before["asr_strict"] - after["asr_strict"], 6)
+    assert 0.0 <= delta["attacks_stopped_strict"] <= 1.0
+
+
+def test_before_after_is_deterministic():
+    assert run_before_after(SyntheticAdapter()) == run_before_after(SyntheticAdapter())
+
+
+def test_before_after_never_leaks_payload(before_after):
+    serialized = json.dumps(before_after)
+    assert PAYLOAD_MARKER not in serialized
+    assert "attacker-domain" not in serialized
+    assert "stolen-data" not in serialized

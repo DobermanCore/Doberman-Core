@@ -17,7 +17,13 @@ from doberman.models import (
 from tests.benchmarks.adapter import BenchmarkCase, CandidateAction
 from tests.benchmarks.mapping import BENCHMARK_TS
 from tests.benchmarks.metrics import ActionOutcome, build_report
-from tests.benchmarks.profiles import BUILTINS_ONLY, WITH_PLUGINS, build_pipeline
+from tests.benchmarks.profiles import (
+    BUILTINS_ONLY,
+    NO_GUARDRAIL,
+    WITH_PLUGINS,
+    PassthroughPipeline,
+    build_pipeline,
+)
 from tests.benchmarks.runner import run_suite
 
 
@@ -151,3 +157,21 @@ def test_with_plugins_profile_picks_up_a_registered_rule(monkeypatch):
     # The fake rule escalates otherwise-benign trusted traffic only in with_plugins.
     assert builtins.fpr == 0.0
     assert with_plugins.fpr > builtins.fpr
+
+
+# --- before/after baseline arm ----------------------------------------------
+def test_passthrough_pipeline_is_the_unmediated_baseline():
+    from tests.benchmarks.suites.synthetic import SyntheticAdapter
+
+    report = run_suite(SyntheticAdapter(), PassthroughPipeline())
+    assert report.profile == NO_GUARDRAIL
+    # The passthrough never consults the engine: every action is allowed,
+    # independent of which rules would otherwise fire. So on a ground-truth
+    # attack corpus every attack bypasses and benign work has zero friction.
+    assert report.asr == 1.0
+    assert report.asr_strict == 1.0
+    assert report.fpr == 0.0
+    assert report.hard_fpr == 0.0
+    assert report.verdict_histogram == {"PASS": report.n_attack + report.n_benign}
+    # A PASS carries no reason codes, so the baseline report attributes nothing.
+    assert report.reason_codes == {}

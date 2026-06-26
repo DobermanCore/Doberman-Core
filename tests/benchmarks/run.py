@@ -16,10 +16,10 @@ import json
 import sys
 
 from .profiles import build_pipeline
-from .runner import run_profiles, run_suite
+from .runner import run_before_after, run_profiles, run_suite
 from .suites import BUILTIN_ADAPTERS
 
-_PROFILES = ("both", "builtins_only", "with_plugins")
+_PROFILES = ("both", "before_after", "builtins_only", "with_plugins")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.profile == "both":
         report: dict = run_profiles(adapter)
+    elif args.profile == "before_after":
+        report = run_before_after(adapter)
     else:
         load_plugins = args.profile == "with_plugins"
         report = run_suite(adapter, build_pipeline(load_plugins=load_plugins)).to_dict()
