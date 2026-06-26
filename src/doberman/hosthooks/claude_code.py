@@ -411,8 +411,16 @@ def _record_taint(
     if has_untrusted:
         kinds.append(TAINT_UNTRUSTED_READ)
 
+    # Build the scopes defensively: a failure computing the entity scope (e.g. the
+    # HMAC key dir is unwritable on first use) must not drop the session-scoped
+    # taint too — record under whatever scopes we can resolve.
+    scopes: list[str] = [session_id] if session_id else []
     try:
-        scopes = [s for s in (session_id, entity_scope(repo_root)) if s]
+        scopes.append(entity_scope(repo_root))
+    except Exception:  # noqa: BLE001,S110 — keep the session scope even if the entity scope fails
+        pass
+
+    try:
         asyncio.run(record_taints(repo_root, scopes, kinds))
     except Exception:  # noqa: BLE001,S110 — taint recording must never break execution
         pass

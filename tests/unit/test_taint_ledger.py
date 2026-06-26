@@ -116,3 +116,14 @@ async def test_fresh_db_has_session_id_and_taint_table(tmp_path):
     async with open_db(str(tmp_path)) as conn:
         assert "session_id" in await _columns(conn, "decisions")
         assert "scope" in await _columns(conn, "session_taint")
+
+
+async def test_reopening_a_migrated_db_is_idempotent(tmp_path):
+    # Re-running _ensure_schema / _migrate_legacy on an already-v4 DB must not
+    # error, double-add session_id, or lose data.
+    root = str(tmp_path)
+    await record_taint(root, "sess-1", TAINT_SECRET_ACCESS)  # first open → v4
+    async with open_db(root) as conn:  # second open re-runs the migration guards
+        cols = await _columns(conn, "decisions")
+    assert cols.count("session_id") == 1  # not double-added
+    assert await read_taint(root, "sess-1") == {TAINT_SECRET_ACCESS: 1}  # data intact
