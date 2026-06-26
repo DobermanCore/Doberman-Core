@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "doberman-candidate-provenance-guard"
+version = "0.0.1"
+description = "Rule-lab candidate: step up consequential actions that originate from untrusted provenance."
+requires-python = ">=3.11"
+dependencies = ["doberman-core"]
+
+# This is what makes the rule visible to core's registry WITHOUT core importing
+# it by name. `discover_rules()` reads this group; the candidate runs in the
+# objective guardrail alongside the built-ins under the `with_plugins` profile.
+[project.entry-points."doberman.rules"]
+provenance_guard = "provenance_guard:ProvenanceGuardRule"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/provenance_guard"]
