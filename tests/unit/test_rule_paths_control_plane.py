@@ -118,6 +118,7 @@ def test_writing_claude_settings_is_blocked(tmp_path):
 def test_writing_claude_local_settings_is_blocked(tmp_path):
     result = RULE.evaluate(_action(".claude/settings.local.json"), _ctx(tmp_path))
     assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
 
 
 def test_deleting_claude_settings_is_blocked(tmp_path):
@@ -125,12 +126,28 @@ def test_deleting_claude_settings_is_blocked(tmp_path):
         _action(".claude/settings.json", action_type=ActionType.file_delete), _ctx(tmp_path)
     )
     assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_deleting_the_whole_claude_dir_is_blocked(tmp_path):
+    # Deleting the entire .claude/ dir removes the hooks just as effectively as
+    # editing settings.json — the bare directory target must block too.
+    result = RULE.evaluate(_action(".claude", action_type=ActionType.file_delete), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
 
 
 def test_nested_claude_settings_is_blocked(tmp_path):
     # A monorepo sub-project's own .claude/settings.json is protected too.
     result = RULE.evaluate(_action("packages/app/.claude/settings.json"), _ctx(tmp_path))
     assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_nested_claude_local_settings_is_blocked(tmp_path):
+    result = RULE.evaluate(_action("packages/app/.claude/settings.local.json"), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
 
 
 def test_traversal_into_claude_settings_is_caught(tmp_path):

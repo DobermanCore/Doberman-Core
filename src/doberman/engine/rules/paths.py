@@ -60,14 +60,22 @@ DEFAULT_BLOCKED_GLOBS: tuple[str, ...] = (
     ".doberman/**",
     "**/.doberman",
     "**/.doberman/**",
-    # Doberman's host-harness control plane (ADR 0022 / 0024): the Claude Code
-    # hook config that installs Doberman as PreToolUse/PostToolUse hooks. An
-    # agent that edits these files can remove the hooks and disable enforcement
-    # at the harness level ("fire the cop") — the same on-disk bypass `.doberman/`
-    # closes (ADR 0011), extended to the host-hook install target. Block any
-    # agent-proxied write/delete/read of the hook-install settings themselves.
+    # Doberman's host-harness control plane: the Claude Code hook config that
+    # installs Doberman as PreToolUse/PostToolUse hooks (ADR 0022 = host-hook
+    # architecture; ADR 0024 = this block). Editing the settings — or deleting
+    # the whole `.claude/` dir — removes the hooks and disables enforcement at
+    # the harness level ("fire the cop"): the same on-disk bypass `.doberman/`
+    # closes (ADR 0011), extended to the host-hook config. Hard-block the
+    # hook-install settings and the directory itself; the rest of `.claude/`
+    # (project commands/agents) is AUTH (sensitive, below).
+    # NOTE: this matches the path *target* of a file action — a Bash command that
+    # writes the file (e.g. `echo > .claude/settings.json`, `sed -i`) or runs
+    # `doberman uninstall-hooks` is NOT caught here; command-text scanning of the
+    # control plane is tracked as HK.5.0b.
+    ".claude",
     ".claude/settings.json",
     ".claude/settings.local.json",
+    "**/.claude",
     "**/.claude/settings.json",
     "**/.claude/settings.local.json",
 )
