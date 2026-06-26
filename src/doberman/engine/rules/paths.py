@@ -137,6 +137,14 @@ def names_control_plane(raw_path: str, root: str = _DEFAULT_ROOT) -> bool:
     alone misses a path hidden inside a command string. Checks the raw token
     (catches absolute / ``~`` / Windows-separator paths) and the repo-root
     canonical form (catches ``..`` traversal back into the plane).
+
+    Known limits — static shell analysis cannot resolve runtime semantics, so a
+    control-plane path produced at runtime is NOT caught here (accepted defense-
+    in-depth, tracked for HK.5.6; the OS file owner/mode and the file-target path
+    rule are the backstops): a path built from a variable
+    (``X=.doberman; rm -rf $X``), shell glob / brace expansion (``rm -rf .dober*``),
+    or a scripting-interpreter payload (``python -c "...rmtree('.doberman')..."`` —
+    ``python``/``node``/``perl`` are not shells, so the body is not scanned).
     """
     token = (raw_path or "").strip().strip("\"'").replace("\\", "/").lower()
     if not token:
