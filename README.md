@@ -329,7 +329,7 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 - ✅ One-command onboarding: `doberman setup` (alertness + guardrails + auto-wires the hooks) · `install-hooks`/`uninstall-hooks`
 - ✅ Host-harness self-protection: an agent cannot disable the hooks by editing `.claude/settings.json` — the hook-install file is a blocked control-plane path (like `.doberman/`)
 - 📋 Host-harness, continued (containment architecture): cross-call multi-step prompt-injection floor over the local history · warm-daemon adaptive layer · honeytoken tripwire + session circuit-breaker
-- 📋 Cost observability (`CostEvent` meter + raise-only loop-anomaly detection)
+- 🛠 Cost observability — **CB.1 landed**: a redaction-safe `CostEvent` + local append-only meter (`doberman.storage.cost`), advisory and strictly off the decision path. Next: `CostObserver` plugin seam (CB.2) and a raise-only loop-anomaly detector (CB.3)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC
 
 ### Known limitations

@@ -42,9 +42,10 @@ DB_FILE = "doberman.db"
 
 #: Current schema version. Bumped to 2 in Feature 8 (decision log + stores), to 3
 #: for the universal subjective layer (SL4/SL6/SL8: baselines re-keyed by entity,
-#: transitions, score history, preference feedback), and to 4 for the host-hook
-#: sticky taint ledger (HK.5.1: decisions.session_id + the session_taint table).
-SCHEMA_VERSION = 4
+#: transitions, score history, preference feedback), to 4 for the host-hook sticky
+#: taint ledger (HK.5.1: decisions.session_id + the session_taint table), and to 5
+#: for Feature CB (CB.1: the append-only ``cost_events`` meter ledger).
+SCHEMA_VERSION = 5
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -163,6 +164,17 @@ CREATE TABLE IF NOT EXISTS policy_changes (
     approved        INTEGER,
     approved_by     TEXT
 );
+
+CREATE TABLE IF NOT EXISTS cost_events (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        TEXT NOT NULL,
+    action_id TEXT NOT NULL,
+    kind      TEXT NOT NULL,
+    units     INTEGER NOT NULL DEFAULT 0,
+    model     TEXT,
+    entity_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cost_events ON cost_events (entity_id, kind, id);
 """
 
 
