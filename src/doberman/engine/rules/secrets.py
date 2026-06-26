@@ -150,8 +150,14 @@ def _weak_secret_in_text(text: str) -> bool:
         return False
     sample = text[:_SCAN_MAX_CHARS]
     for token in re.findall(r"[A-Za-z0-9+/=_\-]{%d,}" % _ENTROPY_MIN_LEN, sample):
-        if _looks_high_entropy_secret(token):
-            return True
+        # A filesystem path (``/a/b/c/file``) is not a secret, but ``/`` is a
+        # base64 value char, so a whole path otherwise reads as one long token
+        # and trips the entropy check. Judge each ``/``-delimited segment on its
+        # own: a real base64 secret's segments are still long and high-entropy,
+        # while path components (``Users``, ``project``, ``README``) are not.
+        for piece in token.split("/"):
+            if _looks_high_entropy_secret(piece):
+                return True
     return False
 
 

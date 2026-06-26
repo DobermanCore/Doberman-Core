@@ -122,6 +122,26 @@ def test_non_secret_high_entropy_local_does_not_block():
     assert result.verdict is not Verdict.BLOCK
 
 
+def test_benign_absolute_path_read_is_not_flagged_as_secret():
+    # Regression: '/' is a base64 value char, so a whole absolute path used to be
+    # read as one long high-entropy token and wrongly stepped up to AUTH
+    # (sensitive_secret_access), blocking even benign reads. Path segments must be
+    # judged individually — a normal path is not credential-like.
+    path = "/Users/dev/projects/widget-lib/src/components/Formatter.tsx"
+    action = _action(ActionType.file_read, target=path)
+    result = RULE.evaluate(action, _ctx(path=path))
+    assert result.verdict is Verdict.PASS
+
+
+def test_base64_secret_with_slashes_still_detected():
+    # The fix must not weaken real detection: a long base64 token containing '/'
+    # is still high-entropy per segment and steps up (AUTH), never PASS.
+    token = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1234567890abcdEFGH"  # noqa: S105 — synthetic
+    action = _action(ActionType.file_write, target="dump.bin")
+    result = RULE.evaluate(action, _ctx(path="dump.bin", content=token))
+    assert result.verdict is not Verdict.PASS
+
+
 def test_rule_does_not_mutate_the_frozen_action():
     action = _action(ActionType.file_write, target="x.txt")
     before = action.model_dump()
