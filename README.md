@@ -277,6 +277,12 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 - 📋 Cost observability (`CostEvent` meter + raise-only loop-anomaly detection)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC
 
+### Known limitations
+
+Doberman is **defense-in-depth, not airtight** — no single rule is a guarantee. One concrete, currently-known gap:
+
+- **Whole-script homoglyph confusables.** The deterministic check catches *intra-token* mixed-script confusables (e.g. `раypal`, which mixes Cyrillic and Latin). But a token rendered **entirely in one non-Latin script** that mimics a Latin word (e.g. an all-Cyrillic look-alike of `paypal`) is NFKC-stable and is **not** caught by the core deterministic check today. Closing it is planned via a perplexity/confusable detector. Read the `OOD/homoglyph token signals` item above as defense-in-depth, not a robustness guarantee.
+
 ---
 
 ## License
