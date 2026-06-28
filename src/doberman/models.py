@@ -420,4 +420,3 @@ class CostEvent(BaseModel):
     model: str | None = None
     #: Keyed HMAC fingerprint of the entity, never a raw role/path string.
     entity_id: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)

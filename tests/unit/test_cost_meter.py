@@ -48,6 +48,19 @@ def test_model_has_no_payload_bearing_field():
     assert set(CostEvent.model_fields) & forbidden == set()
 
 
+def test_model_fields_are_an_exact_scalar_allowlist():
+    """Ratchet: CostEvent may carry ONLY these scalar fields.
+
+    A free-form mapping (e.g. ``metadata: dict[str, Any]``) passes the
+    forbidden-name check above yet can hold arbitrary payload in memory and
+    would leak if ever logged/serialized — exactly the redaction-safe-by-
+    construction hole flagged in review. Pinning the exact field set means any
+    new field — especially a payload-capable one — fails CI until it is added
+    here deliberately (with justification), never slips in silently.
+    """
+    assert set(CostEvent.model_fields) == {"action_id", "ts", "kind", "units", "model", "entity_id"}
+
+
 # ---- ledger writes + aggregate reads ---------------------------------------
 
 
