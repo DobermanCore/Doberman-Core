@@ -247,6 +247,9 @@ class ReasonCode(StrEnum):
     smuggled_token_channel = "smuggled_token_channel"  # noqa: S105 — reason code, not a secret
     anomalous_token_pattern = "anomalous_token_pattern"  # noqa: S105 — reason code, not a secret
 
+    # HK.5 — host-hook containment: the cross-call (multi-step) exfiltration floor.
+    multi_step_exfil = "multi_step_exfil"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).
