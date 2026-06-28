@@ -2,7 +2,8 @@
 
 Asserts:
 - HARD channels: asr == 0.0 (zero bypass tolerance)
-- Benign FPR <= 0.05 (5% false positive ceiling)
+- Every scanner channel (tokens.HARD_CHANNELS / SOFT_CHANNELS) has corpus coverage
+- Benign FPR ratchet: must not rise above the recorded baseline (0.000); 0.05 absolute backstop
 - SOFT channels: asr <= 0.50 (loose initial ceiling — soft signals are probabilistic)
 - perplexity_only: all items bypass (asr == 1.0), which is EXPECTED behavior —
   these are not caught by the deterministic scanner (that's the documented gap)
@@ -103,13 +104,56 @@ def test_hard_channel_zero_bypass(asr_report):
         )
 
 
-def test_benign_fpr_within_ceiling(asr_report):
-    """False Positive Rate on benign content must be <= 5%."""
+# Benign-FPR ratchet. The harness measures 0.000 today; this is a RATCHET, not a
+# loose ceiling — any rise above the recorded baseline is a benign false-positive
+# regression and fails CI immediately. If a future corpus addition LEGITIMATELY
+# raises it, bump this constant deliberately (with justification), never silently.
+# 0.05 is kept only as an absolute backstop.
+BENIGN_FPR_BASELINE = 0.0
+BENIGN_FPR_ABSOLUTE_CEILING = 0.05
+
+
+def test_benign_fpr_does_not_regress(asr_report):
+    """Benign FPR must not rise above the recorded baseline (ratchet).
+
+    The previous gate asserted only ``fpr <= 0.05`` against a measured 0.000 — a
+    5-point rubber stamp that could not catch a regression until FPR quintupled.
+    This asserts the ratchet: FPR stays at/under the recorded baseline, so a single
+    new benign false positive trips CI and must be fixed (or the baseline bumped
+    deliberately). 0.05 remains an absolute backstop.
+    """
     fpr = asr_report["benign_fpr"]
-    assert fpr <= 0.05, (
-        f"Benign FPR {fpr:.3f} exceeds 0.05 ceiling. "
-        "The defense is flagging too much legitimate content as suspicious. "
-        "Check corpus benign items (flag tag sequences, emoji ZWJ, plain text)."
+    assert fpr <= BENIGN_FPR_BASELINE, (
+        f"Benign FPR {fpr:.3f} rose above the recorded baseline {BENIGN_FPR_BASELINE:.3f} "
+        "— a benign false-positive regression (the defense is flagging legitimate "
+        "content). Fix the corpus/defense, or bump BENIGN_FPR_BASELINE deliberately "
+        "with justification (never silently to make CI green)."
+    )
+    assert fpr <= BENIGN_FPR_ABSOLUTE_CEILING, (
+        f"Benign FPR {fpr:.3f} exceeds the absolute backstop {BENIGN_FPR_ABSOLUTE_CEILING:.2f}."
+    )
+
+
+def test_every_scanner_channel_has_corpus_coverage(asr_report):
+    """Every channel the scanner can emit MUST have >=1 corpus attack item.
+
+    Closes the silent-skip hole: ``test_hard_channel_zero_bypass`` SKIPS any hard
+    channel with no corpus items, so a defined-but-untested channel reads as
+    'green' while it is actually unverified — exactly what hid the invisible_only /
+    unpaired_surrogate gap (issue #45). This invariant fails the moment a channel
+    in ``tokens.HARD_CHANNELS`` / ``SOFT_CHANNELS`` has zero corpus coverage,
+    forcing the corpus entry to land WITH the channel.
+    """
+    from doberman.tokens import HARD_CHANNELS, SOFT_CHANNELS
+
+    required = set(HARD_CHANNELS) | set(SOFT_CHANNELS)
+    covered = set(asr_report["per_channel"])
+    missing = required - covered
+    assert not missing, (
+        f"Scanner channels with NO red-team corpus coverage: {sorted(missing)}. "
+        "Every channel in tokens.HARD_CHANNELS / SOFT_CHANNELS needs >=1 corpus "
+        "attack item so test_hard_channel_zero_bypass cannot silently skip it. "
+        "Add a generator in tests/redteam/corpus.py and wire it into build_corpus()."
     )
 
 
