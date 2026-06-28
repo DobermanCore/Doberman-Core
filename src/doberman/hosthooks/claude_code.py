@@ -228,6 +228,10 @@ _POST_REASON = (
 )
 _SECRET_REASON_CODES = frozenset({"secret_exfiltration", "sensitive_secret_access"})
 
+#: Tools that pull untrusted external content into the agent's context — the
+#: "untrusted provenance" leg of the multi-step trifecta (HK.5.1 taint ledger).
+_UNTRUSTED_READ_TOOLS: frozenset[str] = frozenset({"WebFetch", "WebSearch"})
+
 
 def _coerce_response_text(tool_response: Any) -> str:
     """Coerce ``tool_response`` (str, dict, list, …) to a single flat string.
@@ -287,6 +291,8 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
 
         cwd = payload.get("cwd")
         repo_root = cwd if isinstance(cwd, str) and cwd else "."
+        raw_session = payload.get("session_id")
+        session_id = raw_session if isinstance(raw_session, str) and raw_session else None
 
         # --- Security scan (fail closed on any exception) --------------------
         try:
@@ -313,6 +319,13 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
             scan_result = ObjectiveGuardrail().evaluate(action, ctx)
             fired_codes = {rc.value for rc in scan_result.reason_codes}
 
+            # Sticky taint ledger (HK.5.1): record the multi-step-exfil
+            # ingredients (a secret entered context, and/or untrusted data was
+            # read) BEFORE any block return, so a *blocked* secret-output still
+            # taints the session. No verdict authority here — HK.5.2 reads it to
+            # raise risk on a later egress.
+            _record_taint(tool_name, fired_codes, repo_root, session_id)
+
             if fired_codes & _SECRET_REASON_CODES:
                 reason = _POST_REASON.format(
                     reasons=", ".join(sorted(fired_codes & _SECRET_REASON_CODES)),
@@ -325,7 +338,7 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
             return _post_block(_POST_FAILSAFE_REASON)
 
         # --- History (best-effort, never raises, never blocks) ---------------
-        _record_post_history(tool_name, tool_input, repo_root)
+        _record_post_history(tool_name, tool_input, repo_root, session_id)
 
         return None  # clean output — abstain
 
@@ -333,7 +346,9 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
         return _post_block(_POST_FAILSAFE_REASON)
 
 
-def _record_post_history(tool_name: str, tool_input: dict[str, Any], repo_root: str) -> None:
+def _record_post_history(
+    tool_name: str, tool_input: dict[str, Any], repo_root: str, session_id: str | None
+) -> None:
     """Best-effort: normalize + decide + record_decision for history.
 
     Wrapped in a broad except — must never raise or affect any verdict.
@@ -351,8 +366,63 @@ def _record_post_history(tool_name: str, tool_input: dict[str, Any], repo_root: 
             metadata={"raw_arguments": args, "repo_root": repo_root},
         )
         decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
-        asyncio.run(record_decision(decision, action, repo_root=repo_root, auth_result="executed"))
+        asyncio.run(
+            record_decision(
+                decision,
+                action,
+                repo_root=repo_root,
+                auth_result="executed",
+                session_id=session_id,
+            )
+        )
     except Exception:  # noqa: BLE001,S110 — history must never break the execution path
+        pass
+
+
+def _record_taint(
+    tool_name: str, fired_codes: set[str], repo_root: str, session_id: str | None
+) -> None:
+    """Best-effort: record the multi-step-exfil ingredients into the sticky taint
+    ledger (HK.5.1) under the session + entity scope.
+
+    Records ``secret_access`` when a secret reason code fired in the output scan,
+    and ``untrusted_read`` when the tool pulls untrusted external content. No
+    verdict authority — HK.5.2 reads the ledger to raise risk on a later egress.
+    Guards the common (no-taint) path before importing storage so the hook stays
+    light; wrapped so a taint write can never break the execution path.
+    """
+    has_secret = bool(fired_codes & _SECRET_REASON_CODES)
+    has_untrusted = tool_name in _UNTRUSTED_READ_TOOLS
+    if not has_secret and not has_untrusted:
+        return  # nothing to record — avoid the storage import on the common path
+
+    import asyncio  # lazy import keeps the module scope light
+
+    from doberman.storage.taint import (  # lazy import (light: no numpy/scipy/river)
+        TAINT_SECRET_ACCESS,
+        TAINT_UNTRUSTED_READ,
+        entity_scope,
+        record_taints,
+    )
+
+    kinds: list[str] = []
+    if has_secret:
+        kinds.append(TAINT_SECRET_ACCESS)
+    if has_untrusted:
+        kinds.append(TAINT_UNTRUSTED_READ)
+
+    # Build the scopes defensively: a failure computing the entity scope (e.g. the
+    # HMAC key dir is unwritable on first use) must not drop the session-scoped
+    # taint too — record under whatever scopes we can resolve.
+    scopes: list[str] = [session_id] if session_id else []
+    try:
+        scopes.append(entity_scope(repo_root))
+    except Exception:  # noqa: BLE001,S110 — keep the session scope even if the entity scope fails
+        pass
+
+    try:
+        asyncio.run(record_taints(repo_root, scopes, kinds))
+    except Exception:  # noqa: BLE001,S110 — taint recording must never break execution
         pass
 
 
