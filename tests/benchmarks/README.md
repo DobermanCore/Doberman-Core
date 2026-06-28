@@ -44,9 +44,9 @@ it separately and feed the resulting labeled actions in.
 tests/benchmarks/
 ├── adapter.py     # CandidateAction, BenchmarkCase, SuiteAdapter  (the contract)
 ├── mapping.py     # CandidateAction -> SecurityObject / EvalContext
-├── profiles.py    # build_pipeline(load_plugins=...) -> Pipeline
+├── profiles.py    # build_pipeline(load_plugins=...) -> Pipeline; PassthroughPipeline (no-guardrail baseline)
 ├── metrics.py     # SuiteReport: ASR, asr_strict, FPR, hard_fpr
-├── runner.py      # run_suite(adapter, pipeline), run_profiles(adapter)
+├── runner.py      # run_suite, run_profiles (builtins vs plugins), run_before_after (without vs with Doberman)
 ├── run.py         # CLI: python -m tests.benchmarks.run --suite <name> --profile both
 ├── suites/
 │   ├── synthetic.py   # built-in, deterministic, dependency-free (the CI gate)
@@ -139,6 +139,34 @@ identical and uplift is 0 — install a plugin package and the delta shows what 
 adds. (The harness names no specific plugin package; it just measures whatever is
 installed.)
 
+### `no_guardrail` — the "before Doberman" baseline
+
+`run_before_after()` adds a third arm: a **`PassthroughPipeline`** that allows
+every action without consulting the engine. This models the **unmediated tool
+path** — what happens with no guardrail at all. By construction, on a ground-
+truth attack corpus it bypasses every attack (`asr 1.0`) with zero benign
+friction (`fpr 0.0`), so it is the honest *before* against which a real Doberman
+pipeline is the *after*:
+
+```bash
+python -m tests.benchmarks.run --suite synthetic --profile before_after
+```
+
+The report is `{before (no_guardrail), after (builtins_only), delta}`. The
+`delta` is the headline of what the engine changes:
+
+| field | meaning |
+|---|---|
+| `attacks_stopped` | fraction of otherwise-executing attacks now mitigated (BLOCK **or** AUTH) = `before.asr − after.asr` |
+| `attacks_stopped_strict` | same but BLOCK-only counts (AUTH is *not* counted as stopped) |
+| `fpr_added` | benign friction the engine introduces = `after.fpr − before.fpr` |
+| `hard_fpr_added` | benign hard-blocks the engine introduces = `after.hard_fpr − before.hard_fpr` |
+
+`before` is a *trivial* baseline (1.0 by definition) — it is the denominator
+that makes the *after* legible, not an independent measurement. Report it as
+"with no guardrail every one of these N attacks executes," never as a number the
+harness "discovered."
+
 ---
 
 ## Metrics (read `metrics.py` for the exact math)
@@ -168,8 +196,9 @@ serialized report — keep that guarantee for your suite too.
 
 ```bash
 # from the repo root, in the project venv
-python -m tests.benchmarks.run --suite synthetic --profile both     # JSON report
-python -m pytest tests/integration/test_benchmark_synthetic_gate.py  # the gate
+python -m tests.benchmarks.run --suite synthetic --profile both          # builtins vs plugins
+python -m tests.benchmarks.run --suite synthetic --profile before_after  # without vs with Doberman
+python -m pytest tests/integration/test_benchmark_synthetic_gate.py      # the gate
 ```
 
 ---

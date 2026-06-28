@@ -21,7 +21,7 @@ from doberman.models import Decision, EvalContext, SecurityObject
 from .adapter import BenchmarkCase, CandidateAction, SuiteAdapter
 from .mapping import to_eval_context, to_security_object
 from .metrics import ActionOutcome, Bucket, SuiteReport, build_report
-from .profiles import build_pipeline
+from .profiles import PassthroughPipeline, build_pipeline
 
 logger = logging.getLogger("doberman.benchmarks.runner")
 
@@ -115,5 +115,32 @@ def run_profiles(adapter: SuiteAdapter) -> dict:
         "uplift": {
             "delta_asr": round(builtins.asr - with_plugins.asr, 6),
             "delta_fpr": round(with_plugins.fpr - builtins.fpr, 6),
+        },
+    }
+
+
+def run_before_after(adapter: SuiteAdapter, *, load_plugins: bool = False) -> dict:
+    """Run the no-guardrail baseline (**before**) and a real Doberman pipeline
+    (**after**), reporting each plus what the engine changed.
+
+    ``before`` is the unmediated tool path — every action allowed, so on a
+    ground-truth attack corpus ASR is 1.0 and benign FPR is 0.0 by construction.
+    ``after`` is Doberman (built-ins; plus entry-point plugins when
+    ``load_plugins`` is set). The ``delta`` is the headline: ``attacks_stopped``
+    is the fraction of otherwise-executing attacks the engine now mitigates
+    (BLOCK or AUTH), ``attacks_stopped_strict`` counts BLOCK only, and the two
+    ``*_added`` fields are the benign friction the engine introduces.
+    """
+    before = run_suite(adapter, PassthroughPipeline())
+    after = run_suite(adapter, build_pipeline(load_plugins=load_plugins))
+    return {
+        "suite": adapter.suite_name,
+        "before": before.to_dict(),
+        "after": after.to_dict(),
+        "delta": {
+            "attacks_stopped": round(before.asr - after.asr, 6),
+            "attacks_stopped_strict": round(before.asr_strict - after.asr_strict, 6),
+            "fpr_added": round(after.fpr - before.fpr, 6),
+            "hard_fpr_added": round(after.hard_fpr - before.hard_fpr, 6),
         },
     }

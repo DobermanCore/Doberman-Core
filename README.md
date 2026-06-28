@@ -236,10 +236,11 @@ That last assertion is the **chokepoint property** the whole project hangs on.
 A suite-agnostic harness scores Doberman as a **filter over labeled actions** and reports **ASR** (attack bypass rate) and **FPR** (benign over-block / friction). It runs the real decision engine over each labeled tool-call — Doberman is the filter, not the agent — so the gated path is deterministic and offline.
 
 ```bash
-python -m tests.benchmarks.run --suite synthetic --profile both
+python -m tests.benchmarks.run --suite synthetic --profile both          # builtins vs plugins
+python -m tests.benchmarks.run --suite synthetic --profile before_after  # without vs with Doberman
 ```
 
-It reports two profiles — `builtins_only` and `with_plugins` (built-ins plus any installed entry-point plugins) — and their uplift. A deterministic synthetic suite gates in CI; map external task suites (**AgentDojo**, AgentDyn, AgentSentry, …) onto core's types with a small adapter — see [`tests/benchmarks/README.md`](tests/benchmarks/README.md).
+It reports two plugin profiles — `builtins_only` and `with_plugins` (built-ins plus any installed entry-point plugins) — and their uplift. The `before_after` profile adds a **no-guardrail baseline** (the unmediated tool path, where every attack executes) so you can read the engine's effect directly as `{before, after, delta}` — how many otherwise-executing attacks it stops vs. how much benign friction it adds. A deterministic synthetic suite gates in CI; map external task suites (**AgentDojo**, AgentDyn, AgentSentry, …) onto core's types with a small adapter — see [`tests/benchmarks/README.md`](tests/benchmarks/README.md).
 
 > Reports hold counts, verdicts, and reason codes only — never payload text. ASR is reported alongside a stricter `asr_strict` (where only a hard `BLOCK` counts as mitigation): honest measurement, not a single headline number.
 
