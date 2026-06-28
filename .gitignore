@@ -16,6 +16,23 @@ dist/
 build/
 *.egg-info/
 
+# Node / JS tooling (the demo video project pulls a large node_modules tree).
+node_modules/
+
+# Local-only marketing/demo material — never committed to the public repo.
+demo/
+gtm/
+marketing/
+deck/
+eval/
+
+# OS / editor / office cruft.
+.DS_Store
+~$*
+
+# Local MCP wiring: machine-specific absolute paths — never committed to the public repo.
+.mcp.json
+
 # Development plans: local-only, never published.
 # (The operating manual — CLAUDE.md / AGENTS.md — is published; these detailed plans are not.)
 doberman_core_plan.md
