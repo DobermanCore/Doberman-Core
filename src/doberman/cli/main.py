@@ -1,4 +1,4 @@
-"""The ``doberman`` CLI entry point (Features 5–7).
+"""The ``doberman`` CLI entry point (Features 5-7).
 
 Exposes ``doberman scan`` (risk map), ``review`` / ``mode`` / ``status``
 (policy), and the Feature 7 auth surface: ``doberman 2fa setup`` (TOTP
@@ -33,8 +33,31 @@ from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
 
+
+def _ensure_encode_safe_stdio() -> None:
+    """Make CLI output safe on a console that cannot encode Unicode.
+
+    Windows' default console is cp1252; printing a non-ASCII character (an arrow,
+    box-drawing rule, or emoji) there raises ``UnicodeEncodeError`` and crashes
+    onboarding (``doberman setup`` / ``install-hooks``). Reconfigure stdout/stderr
+    to UTF-8 with error-replacement so output can never crash on the console
+    encoding -- a no-op where ``reconfigure`` is unavailable. Runs at import,
+    before any command emits a character.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):  # detached / unsupported stream
+            pass
+
+
+_ensure_encode_safe_stdio()
+
 app = typer.Typer(
-    help="Doberman — adaptive authorization layer for coding agents.",
+    help="Doberman - adaptive authorization layer for coding agents.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -54,7 +77,7 @@ def _configure_stderr_logging(level: int = logging.INFO) -> None:
 
     In ``serve`` mode this process's stdout IS the agent's MCP channel, so any log written
     there would corrupt the protocol. Pin every ``doberman.*`` logger to stderr and stop
-    propagation, and — defense in depth — strip any stdout handler from the root logger so a
+    propagation, and - defense in depth - strip any stdout handler from the root logger so a
     library (mcp/asyncio) or host-configured logger cannot leak a record onto stdout either.
     """
     handler = logging.StreamHandler(sys.stderr)
@@ -97,7 +120,7 @@ def serve(
     your terminal; with no terminal attached (headless) an AUTH action is denied (fail closed).
     """
     # Imported here, not at module scope, so non-serve CLI commands (`--help`,
-    # `log`, `status`, `scan`, …) don't pay the cost of loading the subjective
+    # `log`, `status`, `scan`, ...) don't pay the cost of loading the subjective
     # layer's heavy numeric stack (river/numpy/scipy) on every invocation. These
     # imports run synchronously, before asyncio.run, so nothing loads in-loop.
     from mcp import StdioServerParameters
@@ -112,7 +135,7 @@ def serve(
     _configure_stderr_logging()
     try:
         asyncio.run(serve_stdio(params, repo_root=path))
-    except Exception as exc:  # noqa: BLE001 — surface a clean stderr error, never a raw traceback
+    except Exception as exc:  # noqa: BLE001 - surface a clean stderr error, never a raw traceback
         typer.echo(f"error: doberman serve failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
@@ -154,7 +177,7 @@ def review(
         if item.core:
             tags.append("core/non-disableable")
         if not item.applicable:
-            tags.append("N/A — capability absent")
+            tags.append("N/A - capability absent")
         suffix = f"  ({', '.join(tags)})" if tags else ""
         typer.echo(f"{box} {item.verdict.value:<5} {item.id}{suffix}")
     typer.echo(f"\nMode: {doc.mode}")
@@ -194,7 +217,7 @@ def prefs(
     """Show or set the subjective preference vector (SL5).
 
     With no arguments, prints the active vector and which mode preset it
-    matches (if any). Weights tune SUBJECTIVE step-up propensity only — the
+    matches (if any). Weights tune SUBJECTIVE step-up propensity only - the
     objective hard-block floor is unaffected by every weight.
     """
     if dimension is None:
@@ -229,7 +252,7 @@ def status(
     doc = load_policy(path)
     typer.echo("Doberman status")
     typer.echo("=" * 32)
-    typer.echo(f"Role:   {role.name if role else '(none — role enforcement off)'}")
+    typer.echo(f"Role:   {role.name if role else '(none - role enforcement off)'}")
     typer.echo(f"Mode:   {load_mode(path)}  (of: {', '.join(m.value for m in SecurityMode)})")
     vector = load_preferences(path)
     typer.echo(
@@ -238,7 +261,7 @@ def status(
         + f"  (preset: {preset_name(vector) or 'custom'})"
     )
     if doc is None:
-        typer.echo("Policy: (none saved — run `doberman review --yes`)")
+        typer.echo("Policy: (none saved - run `doberman review --yes`)")
     else:
         enabled = sum(1 for it in doc.items if it.enabled)
         typer.echo(f"Policy: {enabled}/{len(doc.items)} items enabled")
@@ -261,10 +284,10 @@ def status(
 
 @hook_app.command("pre")
 def hook_pre() -> None:
-    """Claude Code PreToolUse hook — gate one tool call (allow / ask / deny).
+    """Claude Code PreToolUse hook - gate one tool call (allow / ask / deny).
 
     Reads the harness hook payload as JSON on stdin and writes the hook decision
-    as JSON to stdout (nothing on a PASS — Doberman is raise-only and never
+    as JSON to stdout (nothing on a PASS - Doberman is raise-only and never
     suppresses the harness's own prompts). Runs only the fast deterministic
     objective floor (no numpy/scipy/river), so it adds minimal latency to every
     tool call, and fails closed (deny) on any malformed input or engine error.
@@ -273,7 +296,7 @@ def hook_pre() -> None:
     install-hooks` to do this for you).
     """
     # This process's stdout IS the harness's hook channel (it parses our JSON), so
-    # pin every doberman.* log to stderr and strip any stdout handler first — a
+    # pin every doberman.* log to stderr and strip any stdout handler first - a
     # stray log line on stdout would corrupt the decision the harness reads (and a
     # malformed hook response can fail open). Same guard the `serve` command uses.
     _configure_stderr_logging()
@@ -291,10 +314,10 @@ def hook_pre() -> None:
 
 @hook_app.command("post")
 def hook_post() -> None:
-    """Claude Code PostToolUse hook — scan tool output for secrets; record history.
+    """Claude Code PostToolUse hook - scan tool output for secrets; record history.
 
     Reads the harness hook payload as JSON on stdin.  If the tool output
-    contains credential-like material, writes ``{"decision":"block","reason":"…"}``
+    contains credential-like material, writes ``{"decision":"block","reason":"..."}``
     to stdout (exit 0) so Claude never uses the tainted result.  On a clean
     output (or a non-gated / internal tool) nothing is written to stdout.
 
@@ -355,7 +378,7 @@ def log(
 ) -> None:
     """Show the recent redacted decision log (newest first).
 
-    Every row is already redacted — a path class, reason codes, the verdict, and
+    Every row is already redacted - a path class, reason codes, the verdict, and
     the auth outcome. No raw target, argument, or secret is ever stored or shown.
     """
     rows = asyncio.run(read_decisions(path, limit=max(0, last)))
@@ -380,7 +403,7 @@ def memory(
 ) -> None:
     """Show a plain-language, redaction-safe profile of what Doberman has learned.
 
-    Reads as classifications and habits — counts, verdict mix, most-touched path
+    Reads as classifications and habits - counts, verdict mix, most-touched path
     classes, and how many distinct secrets have been *seen* (a count only). It
     never shows a fingerprint value or any raw secret.
     """
@@ -395,7 +418,7 @@ def memory(
     if summary["top_path_classes"]:
         typer.echo("Most-touched path classes:")
         for cls, count in summary["top_path_classes"]:
-            typer.echo(f"  {cls}  ×{count}")
+            typer.echo(f"  {cls}  x{count}")
     typer.echo(f"Distinct secrets seen (count only, never stored): {summary['secrets_seen']}")
 
 
@@ -406,9 +429,9 @@ def policy_history(
 ) -> None:
     """Show the append-only policy-change ledger (newest first).
 
-    Records every classified change — strengthen / weaken / neutral — **including
+    Records every classified change - strengthen / weaken / neutral - **including
     denied weakening attempts** (the poisoning signal). Each row shows the rule,
-    the before→after states, the classification, and how it was approved.
+    the before->after states, the classification, and how it was approved.
     """
     rows = asyncio.run(read_policy_changes(path, limit=max(0, last)))
     if not rows:
@@ -420,7 +443,7 @@ def policy_history(
         status = "approved" if row["approved"] else "DENIED"
         typer.echo(
             f"{row['ts']}  {row['classification']:<10} {row['rule_id']}: "
-            f"{row['from_state']} → {row['to_state']}  "
+            f"{row['from_state']} -> {row['to_state']}  "
             f"[{status} via {row['approval_method']}]"
         )
 
@@ -440,7 +463,7 @@ def install_hooks(
 ) -> None:
     """Wire Doberman's PreToolUse and PostToolUse hooks into a Claude Code settings.json.
 
-    Idempotent — safe to run more than once.  Default scope is the project-level
+    Idempotent - safe to run more than once.  Default scope is the project-level
     ``.claude/settings.json``; use ``--global`` for the user-wide file or
     ``--local`` for ``.claude/settings.local.json``.
     """
@@ -465,8 +488,8 @@ def install_hooks(
     if dry_run:
         typer.echo(f"[dry-run] target: {settings_path}")
         typer.echo("[dry-run] would add:")
-        typer.echo("  PreToolUse  → doberman hook pre")
-        typer.echo("  PostToolUse → doberman hook post")
+        typer.echo("  PreToolUse  -> doberman hook pre")
+        typer.echo("  PostToolUse -> doberman hook post")
         return
 
     write_settings(settings_path, merged)
@@ -489,7 +512,7 @@ def uninstall_hooks(
 ) -> None:
     """Remove Doberman's PreToolUse and PostToolUse hooks from a Claude Code settings.json.
 
-    Idempotent — safe to run even when hooks are not present.  Non-Doberman hooks
+    Idempotent - safe to run even when hooks are not present.  Non-Doberman hooks
     and every other setting are left untouched.
     """
     from doberman.hosthooks.install import (
@@ -519,7 +542,7 @@ def uninstall_hooks(
     )
 
     if not had_doberman:
-        typer.echo("No Doberman hooks found — nothing to remove.")
+        typer.echo("No Doberman hooks found - nothing to remove.")
         return
 
     cleaned = remove_doberman_hooks(current)
@@ -527,8 +550,8 @@ def uninstall_hooks(
     if dry_run:
         typer.echo(f"[dry-run] target: {settings_path}")
         typer.echo("[dry-run] would remove:")
-        typer.echo("  PreToolUse  → doberman hook pre")
-        typer.echo("  PostToolUse → doberman hook post")
+        typer.echo("  PreToolUse  -> doberman hook pre")
+        typer.echo("  PostToolUse -> doberman hook post")
         return
 
     write_settings(settings_path, cleaned)
@@ -587,7 +610,7 @@ def setup(
 
         chosen_mode = SecurityMode.balanced
     else:
-        typer.echo("── Security mode ───────────────────────────────────────")
+        typer.echo("-- Security mode ---------------------------------------")
         for line in mode_menu_lines():
             typer.echo(line)
         typer.echo("")
@@ -613,7 +636,7 @@ def setup(
 
     if not yes:
         typer.echo("")
-        typer.echo("── Preference tuning ───────────────────────────────────")
+        typer.echo("-- Preference tuning -----------------------------------")
         typer.echo(
             f"The {chosen_mode.value!r} preset applies these weights: "
             + "  ".join(f"{n}={getattr(preset_vector, n):.2f}" for n in DIMENSIONS)
@@ -629,19 +652,19 @@ def setup(
             try:
                 vector = vector.with_weight(dim, float(raw_w))
             except (KeyError, ValueError) as exc:
-                typer.echo(f"  warning: {exc} — keeping {current:.2f}")
+                typer.echo(f"  warning: {exc} - keeping {current:.2f}")
         save_preferences(vector, path)
     else:
         # Persist the preset so load_preferences returns the mode's preset explicitly.
         save_preferences(preset_vector, path)
 
     # ------------------------------------------------------------------
-    # d. Profile (informational only — no persistence)
+    # d. Profile (informational only - no persistence)
     # ------------------------------------------------------------------
     profile_answer: str | None = None
     if not yes:
         typer.echo("")
-        typer.echo("── Agent profile (informational) ───────────────────────")
+        typer.echo("-- Agent profile (informational) -----------------------")
         typer.echo(
             "This helps you think about your setup. "
             "Doberman infers the app type automatically at runtime."
@@ -661,7 +684,7 @@ def setup(
         scope = "project"
     else:
         typer.echo("")
-        typer.echo("── Hook installation ───────────────────────────────────")
+        typer.echo("-- Hook installation -----------------------------------")
         use_global = typer.confirm(
             "Install hooks globally (~/.claude/settings.json)?",
             default=False,
@@ -688,13 +711,13 @@ def setup(
     # f. Summary
     # ------------------------------------------------------------------
     typer.echo("")
-    typer.echo("── Setup complete ──────────────────────────────────────────")
+    typer.echo("-- Setup complete ------------------------------------------")
     typer.echo(f"Mode:       {chosen_mode.value}")
     typer.echo(
         f"Prefs:      {'custom (tuned)' if tune_prefs else 'preset defaults for ' + chosen_mode.value}"
     )
     if profile_answer is not None:
-        typer.echo(f"Profile:    {profile_answer} (noted — not persisted; inferred at runtime)")
+        typer.echo(f"Profile:    {profile_answer} (noted - not persisted; inferred at runtime)")
     typer.echo(f"Hooks:      written to {settings_path}")
     typer.echo("")
     typer.echo("Doberman is now active.")
