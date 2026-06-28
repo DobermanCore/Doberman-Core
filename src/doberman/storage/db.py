@@ -43,9 +43,10 @@ DB_FILE = "doberman.db"
 #: Current schema version. Bumped to 2 in Feature 8 (decision log + stores), to 3
 #: for the universal subjective layer (SL4/SL6/SL8: baselines re-keyed by entity,
 #: transitions, score history, preference feedback), to 4 for the host-hook sticky
-#: taint ledger (HK.5.1: decisions.session_id + the session_taint table), and to 5
-#: for Feature CB (CB.1: the append-only ``cost_events`` meter ledger).
-SCHEMA_VERSION = 5
+#: taint ledger (HK.5.1: decisions.session_id + the session_taint table), to 5 for
+#: Feature CB (CB.1: the append-only ``cost_events`` meter ledger), and to 6 for the
+#: read-vs-send exfil store (HK.5.2b: session_secret_fingerprints).
+SCHEMA_VERSION = 6
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -105,6 +106,18 @@ CREATE TABLE IF NOT EXISTS session_taint (
     last_seen  TEXT,
     count      INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (scope, kind)
+);
+
+-- Read-vs-send exfil store (HK.5.2b): keyed-HMAC fingerprints of the secrets that
+-- entered a scope's context (recorded when a tool output is found to carry a
+-- secret), so a later egress carrying the SAME value is a *confirmed* exfiltration
+-- (-> BLOCK). `scope` is an opaque session id or a keyed-HMAC entity fingerprint;
+-- `fingerprint` is a keyed HMAC of the secret token. No raw secret is ever stored.
+CREATE TABLE IF NOT EXISTS session_secret_fingerprints (
+    scope       TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    first_seen  TEXT,
+    PRIMARY KEY (scope, fingerprint)
 );
 
 CREATE TABLE IF NOT EXISTS baseline_counts (
