@@ -13,6 +13,7 @@ _EXPECTED_TABLES = {
     "secret_fingerprints",
     "baseline_counts",
     "policy_changes",
+    "cost_events",
 }
 
 #: Column names that would (or could) hold raw secret material. The decisions
@@ -58,6 +59,13 @@ async def test_decisions_table_has_no_secret_bearing_columns(tmp_path):
         cols = set(await _columns(conn, "decisions"))
     assert cols & _FORBIDDEN_COLUMNS == set()
     assert "target_path_class" in cols  # the redacted class IS present
+
+
+async def test_cost_events_table_has_no_secret_bearing_columns(tmp_path):
+    async with open_db(str(tmp_path)) as conn:
+        cols = set(await _columns(conn, "cost_events"))
+    assert cols & _FORBIDDEN_COLUMNS == set()
+    assert {"kind", "units", "entity_id"} <= cols  # counts + coarse class + keyed id only
 
 
 async def test_schema_creation_is_idempotent(tmp_path):

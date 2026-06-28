@@ -385,3 +385,38 @@ class Decision(BaseModel):
                 f"risk {self.objective.risk} — risk is never lowered"
             )
         return self
+
+
+class CostKind(StrEnum):
+    """What kind of resource consumption a :class:`CostEvent` meters."""
+
+    tokens_in = "tokens_in"
+    tokens_out = "tokens_out"
+    tool_call = "tool_call"
+    other = "other"
+
+
+class CostEvent(BaseModel):
+    """A redaction-safe record of resource consumption (token burn, tool calls).
+
+    Cost observability is **advisory**, the third boundary's raw material: a
+    ``CostEvent`` never rides the decision path and recording one can never
+    alter a PASS/AUTH/BLOCK verdict. Like every other object here it is
+    redaction-safe by construction — it holds **counts and coarse classes
+    only**, never prompt/response text. ``model`` is a coarse label (e.g.
+    ``"opus"``), and ``entity_id`` is a keyed HMAC fingerprint, never a raw
+    role or path. Immutable (``frozen=True``) so a meter can never adjust a
+    recorded cost downward after the fact.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    action_id: str = Field(min_length=1)
+    ts: AwareDatetime  # forensic timestamp — naive datetimes are rejected
+    kind: CostKind = CostKind.other
+    #: Token count or call count. Non-negative — cost only ever accrues.
+    units: int = Field(default=0, ge=0)
+    #: Coarse model label only (e.g. "opus"); never request/response payload.
+    model: str | None = None
+    #: Keyed HMAC fingerprint of the entity, never a raw role/path string.
+    entity_id: str | None = None
