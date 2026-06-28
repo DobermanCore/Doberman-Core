@@ -57,7 +57,7 @@ def test_denied_weakening_is_the_attack_signal_in_history(tmp_path):
     assert result.exit_code == 0
     assert "weaken" in result.stdout
     assert "DENIED" in result.stdout
-    assert "block → allow" in result.stdout
+    assert "block -> allow" in result.stdout  # CLI renders ASCII (encode-safe on any console)
 
 
 def test_policy_history_empty(tmp_path):
