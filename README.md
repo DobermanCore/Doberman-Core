@@ -191,6 +191,28 @@ claude mcp add doberman -- doberman serve -- npx -y @modelcontextprotocol/server
 
 **Cursor, Codex, or any MCP-compatible client** — use the same `mcpServers` format in your client's MCP config file, substituting your own tool server command after `--`.
 
+### Alternative: enforce via Claude Code hooks (no MCP reconfig)
+
+The proxy above protects the tools you route *through* Doberman. To make Doberman gate **every** tool call your Claude Code agent makes — built-ins (`Bash`, `Edit`, `Write`, …) *and* any MCP tool — without rewiring your MCP config, run it as a Claude Code [`PreToolUse` hook](https://code.claude.com/docs/en/hooks). The harness calls Doberman *before* each tool call, and Doberman answers **allow / ask / deny** — the agent can't bypass it by simply not "asking to use Doberman":
+
+```jsonc
+// .claude/settings.json (this project) or ~/.claude/settings.json (all projects)
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit|WebFetch|WebSearch|mcp__.*",
+        "hooks": [{ "type": "command", "command": "doberman hook pre" }]
+      }
+    ]
+  }
+}
+```
+
+`doberman hook pre` reads the tool call on stdin, runs Doberman's deterministic **objective floor** (path confinement, destructive commands, external-destination & secret-exfil, smuggled-token channels), and returns a decision: a routine action passes silently (Doberman is raise-only — it never strips the harness's own prompts), a sensitive one prompts you (`ask`), and a dangerous one is blocked (`deny`) with a redaction-safe reason. It **fails closed** and is import-light, so it adds minimal latency to each call. Pure reads aren't gated here — their *output* is scanned by a post-tool hook (on the roadmap).
+
+> One-command onboarding — `doberman setup`, an interactive wizard that sets your alertness/guardrails and wires these hooks for you — is the next slice; for now, paste the snippet above. The adaptive per-entity layer over the hook path arrives with the warm-daemon slice.
+
 ### 4. Scan (optional)
 
 ```bash
@@ -275,6 +297,8 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 
 - ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense · universal subjective layer (SL1–SL9) · turn gate (pre-inference prompt-injection screening)
 - ✅ Benchmark harness (suite-agnostic ASR/FPR over labeled actions; `builtins_only` vs `with_plugins`; deterministic synthetic gate; external-suite adapters via `tests/benchmarks/`)
+- ✅ Host-harness integration: Claude Code `PreToolUse` hook (`doberman hook pre`) gates every built-in *and* MCP tool call with no MCP reconfig — fail-closed, import-light
+- 📋 Host-harness, continued: `PostToolUse` output scan/redaction · one-command `doberman setup` onboarding · cross-call multi-step prompt-injection floor over a local history
 - 📋 Cost observability (`CostEvent` meter + raise-only loop-anomaly detection)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC
 
