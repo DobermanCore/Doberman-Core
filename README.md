@@ -204,12 +204,20 @@ The proxy above protects the tools you route *through* Doberman. To make Doberma
         "matcher": "Bash|Edit|Write|NotebookEdit|WebFetch|WebSearch|mcp__.*",
         "hooks": [{ "type": "command", "command": "doberman hook pre" }]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit|WebFetch|WebSearch|Read|Glob|Grep|mcp__.*",
+        "hooks": [{ "type": "command", "command": "doberman hook post" }]
+      }
     ]
   }
 }
 ```
 
-`doberman hook pre` reads the tool call on stdin, runs Doberman's deterministic **objective floor** (path confinement, destructive commands, external-destination & secret-exfil, smuggled-token channels), and returns a decision: a routine action passes silently (Doberman is raise-only — it never strips the harness's own prompts), a sensitive one prompts you (`ask`), and a dangerous one is blocked (`deny`) with a redaction-safe reason. It **fails closed** and is import-light, so it adds minimal latency to each call. Pure reads aren't gated here — their *output* is scanned by a post-tool hook (on the roadmap).
+`doberman hook pre` reads the tool call on stdin, runs Doberman's deterministic **objective floor** (path confinement, destructive commands, external-destination & secret-exfil, smuggled-token channels), and returns a decision: a routine action passes silently (Doberman is raise-only — it never strips the harness's own prompts), a sensitive one prompts you (`ask`), and a dangerous one is blocked (`deny`) with a redaction-safe reason.
+
+`doberman hook post` runs *after* a tool executes: it scans the tool's **output** for credential-like material — so a `Read`/`Bash`/MCP call that *returns* a secret is **blocked from reaching the model** (the secret is never echoed) — and records each call in a local, redacted decision history (groundwork for cross-call multi-step-injection defense). Both handlers **fail closed** and are import-light, so they add minimal latency to each call.
 
 > One-command onboarding — `doberman setup`, an interactive wizard that sets your alertness/guardrails and wires these hooks for you — is the next slice; for now, paste the snippet above. The adaptive per-entity layer over the hook path arrives with the warm-daemon slice.
 
@@ -297,8 +305,8 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 
 - ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense · universal subjective layer (SL1–SL9) · turn gate (pre-inference prompt-injection screening)
 - ✅ Benchmark harness (suite-agnostic ASR/FPR over labeled actions; `builtins_only` vs `with_plugins`; deterministic synthetic gate; external-suite adapters via `tests/benchmarks/`)
-- ✅ Host-harness integration: Claude Code `PreToolUse` hook (`doberman hook pre`) gates every built-in *and* MCP tool call with no MCP reconfig — fail-closed, import-light
-- 📋 Host-harness, continued: `PostToolUse` output scan/redaction · one-command `doberman setup` onboarding · cross-call multi-step prompt-injection floor over a local history
+- ✅ Host-harness integration: Claude Code `PreToolUse` + `PostToolUse` hooks (`doberman hook pre`/`post`) gate every built-in *and* MCP tool call — and scan tool **output** for leaked secrets — with no MCP reconfig; fail-closed, import-light, and recording a local redacted history
+- 📋 Host-harness, continued: one-command `doberman setup` onboarding · `install-hooks` · cross-call multi-step prompt-injection floor over the local history
 - 📋 Cost observability (`CostEvent` meter + raise-only loop-anomaly detection)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC
 

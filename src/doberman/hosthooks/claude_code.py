@@ -17,13 +17,22 @@ denies the call — if we cannot identify an action, we refuse it. The reason te
 is built only from ``Decision.explanation`` + ``reason_codes`` (already
 redaction-safe); no raw argument value is ever echoed back to the agent.
 
-**Speed.** A ``PreToolUse`` hook runs before *every* tool call, so this module
-imports only the light decision path (``normalize`` + the objective guardrail +
-``decide``). It must NEVER import :mod:`doberman.proxy.executor` or the subjective
-baseline — those pull ``numpy``/``scipy``/``river`` at module scope (~2s), which
-would be paid on every single tool call. The fast, deterministic floor here is
-the "objective floor"; the adaptive per-entity layer is a separate, warm-process
-slice.
+**PostToolUse hook (HK.2).** After a tool completes, Claude Code delivers the
+tool response on stdin. ``doberman hook post`` scans the output for secret
+material and records the decision in the local decision history.  If the output
+contains credential-like content it returns ``{"decision":"block","reason":"…"}``
+(exit 0) so Claude never uses that tainted result.  Non-security-relevant tools
+(internal tools such as TodoWrite) return no output (abstain).  The history write
+is best-effort and is wrapped in a broad except so it can **never** block or
+raise.
+
+**Speed.** A ``PreToolUse``/``PostToolUse`` hook runs before or after *every*
+tool call, so this module imports only the light decision path (``normalize`` +
+the objective guardrail + ``decide``). It must NEVER import
+:mod:`doberman.proxy.executor` or the subjective baseline — those pull
+``numpy``/``scipy``/``river`` at module scope (~2s), which would be paid on every
+single tool call. The fast, deterministic floor here is the "objective floor"; the
+adaptive per-entity layer is a separate, warm-process slice.
 """
 
 from __future__ import annotations
@@ -193,4 +202,171 @@ def run_pre_hook(stdin_text: str) -> str | None:
     if not isinstance(payload, dict):
         return json.dumps(_deny())
     out = evaluate_pre(payload)
+    return json.dumps(out) if out is not None else None
+
+
+# ---------------------------------------------------------------------------
+# PostToolUse hook (HK.2)
+# ---------------------------------------------------------------------------
+
+#: Tools whose *output* we scan after execution.  Pure-read built-ins (Read,
+#: Glob, Grep) are included here — their output may contain secrets even though
+#: their *invocation* is safe.  The set is GATED_BUILTINS ∪ {Read, Glob, Grep};
+#: all ``mcp__*`` tools are also gated (matched dynamically in evaluate_post).
+_POST_GATED_BUILTINS: frozenset[str] = GATED_BUILTINS | frozenset({"Read", "Glob", "Grep"})
+
+#: Internal / meta tools whose output we never scan.  Their responses are
+#: harness-internal state (todo lists, task results) — not real-resource output.
+_INTERNAL_TOOLS: frozenset[str] = frozenset(
+    {"TodoWrite", "TodoRead", "Task", "ExitPlanMode", "Artifact", "NotebookRead"}
+)
+
+_POST_FAILSAFE_REASON = "Doberman: failing closed — could not vet this tool output."
+_POST_REASON = (
+    "Doberman [post]: output contains credential-like material "
+    "({reasons}; action {action_id}).  Explanation: {explanation}"
+)
+_SECRET_REASON_CODES = frozenset({"secret_exfiltration", "sensitive_secret_access"})
+
+
+def _coerce_response_text(tool_response: Any) -> str:
+    """Coerce ``tool_response`` (str, dict, list, …) to a single flat string.
+
+    Never raises.  JSON-dumps non-string values so the secret scanner can look
+    inside nested structures without recursive logic of its own.
+    """
+    if isinstance(tool_response, str):
+        return tool_response
+    try:
+        return json.dumps(tool_response, ensure_ascii=False)
+    except Exception:  # noqa: BLE001 — best-effort coercion
+        try:
+            return str(tool_response)
+        except Exception:  # noqa: BLE001
+            return ""
+
+
+def _post_block(reason: str) -> dict[str, Any]:
+    """PostToolUse block response: ``{"decision":"block","reason":"…"}``."""
+    return {"decision": "block", "reason": reason}
+
+
+def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Decide one ``PostToolUse`` call.
+
+    Returns a block dict if the tool output contains secret material, or
+    ``None`` to abstain (non-gated tool or clean output).  NEVER raises —
+    any unhandled failure in the *security check* path returns a fail-closed
+    block; failures in the *history* path are swallowed silently.
+
+    Security check (fail-closed):
+        Build a synthetic ``SecurityObject`` whose ``metadata["raw_arguments"]``
+        contains the coerced tool output, run ``ObjectiveGuardrail``.  If a
+        secret reason code fires, return a block whose reason is built only from
+        the guardrail explanation + reason-code names (never the output text).
+
+    History (best-effort, swallowed):
+        Normalize the call, run ``decide``, and ``await record_decision``.
+        Wrapped in a broad except so it can never affect the return value.
+    """
+    try:
+        tool_name = payload.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name:
+            # No identifiable tool — fail closed.
+            return _post_block(_POST_FAILSAFE_REASON)
+
+        # Internal / meta tools produce harness-internal state, not resource
+        # output — abstain entirely (no scan, no history).
+        if tool_name in _INTERNAL_TOOLS:
+            return None
+
+        # Gate: only scan output for gated built-ins and mcp__ tools.
+        is_mcp = tool_name.startswith("mcp__")
+        if not is_mcp and tool_name not in _POST_GATED_BUILTINS:
+            return None
+
+        cwd = payload.get("cwd")
+        repo_root = cwd if isinstance(cwd, str) and cwd else "."
+
+        # --- Security scan (fail closed on any exception) --------------------
+        try:
+            tool_response = payload.get("tool_response", "")
+            output_text = _coerce_response_text(tool_response)
+
+            raw_input = payload.get("tool_input")
+            tool_input = raw_input if isinstance(raw_input, dict) else {}
+            canonical, args = to_normalize_input(tool_name, tool_input)
+            # Build a synthetic action whose raw_arguments expose the tool
+            # output so the secret rule can scan it. The output text is
+            # under "tool_output" — never under a key that normalize would
+            # publish as the action target.
+            scan_args = dict(args)
+            scan_args["tool_output"] = output_text
+
+            action = normalize(canonical, scan_args)
+            ctx = EvalContext(
+                role=None,
+                mode=load_mode(repo_root),
+                metadata={"raw_arguments": scan_args, "repo_root": repo_root},
+            )
+
+            scan_result = ObjectiveGuardrail().evaluate(action, ctx)
+            fired_codes = {rc.value for rc in scan_result.reason_codes}
+
+            if fired_codes & _SECRET_REASON_CODES:
+                reason = _POST_REASON.format(
+                    reasons=", ".join(sorted(fired_codes & _SECRET_REASON_CODES)),
+                    action_id=action.id,
+                    explanation=(scan_result.explanation or "").strip() or "no further detail",
+                )
+                return _post_block(reason)
+
+        except Exception:  # noqa: BLE001 — scan failure → fail closed
+            return _post_block(_POST_FAILSAFE_REASON)
+
+        # --- History (best-effort, never raises, never blocks) ---------------
+        _record_post_history(tool_name, tool_input, repo_root)
+
+        return None  # clean output — abstain
+
+    except Exception:  # noqa: BLE001 — outer guard: fail closed
+        return _post_block(_POST_FAILSAFE_REASON)
+
+
+def _record_post_history(tool_name: str, tool_input: dict[str, Any], repo_root: str) -> None:
+    """Best-effort: normalize + decide + record_decision for history.
+
+    Wrapped in a broad except — must never raise or affect any verdict.
+    """
+    import asyncio  # lazy import keeps the module scope light
+
+    from doberman.storage.log import record_decision  # lazy import
+
+    try:
+        canonical, args = to_normalize_input(tool_name, tool_input)
+        action = normalize(canonical, args)
+        ctx = EvalContext(
+            role=None,
+            mode=load_mode(repo_root),
+            metadata={"raw_arguments": args, "repo_root": repo_root},
+        )
+        decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
+        asyncio.run(record_decision(decision, action, repo_root=repo_root, auth_result="executed"))
+    except Exception:  # noqa: BLE001,S110 — history must never break the execution path
+        pass
+
+
+def run_post_hook(stdin_text: str) -> str | None:
+    """Parse the PostToolUse stdin, evaluate the tool output, and return the
+    JSON decision string — or ``None`` to abstain (print nothing).
+
+    An unparseable payload or a non-object payload fails closed (block).
+    """
+    try:
+        payload = json.loads(stdin_text)
+    except Exception:  # noqa: BLE001 — unparseable input fails closed
+        return json.dumps(_post_block(_POST_FAILSAFE_REASON))
+    if not isinstance(payload, dict):
+        return json.dumps(_post_block(_POST_FAILSAFE_REASON))
+    out = evaluate_post(payload)
     return json.dumps(out) if out is not None else None
