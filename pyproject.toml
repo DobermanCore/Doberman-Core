@@ -69,7 +69,7 @@ include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "tools"]   # tools/ holds rule-lab tooling + its co-located tests
 addopts = "-q"
 
 [tool.coverage.run]
@@ -85,6 +85,7 @@ extend-select = ["I", "B", "S"]   # imports, bugbear, security
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]   # pytest tests use bare asserts by design
+"tools/**/tests/**" = ["S101"]   # rule-lab tooling tests, same convention
 
 [tool.importlinter]
 root_package = "doberman"
