@@ -139,6 +139,24 @@ def _strong_secret_in_text(text: str) -> bool:
     return bool(_matches_credential_pattern(sample) or _ENV_ASSIGNMENT.search(sample))
 
 
+def _token_looks_like_weak_secret(token: str) -> bool:
+    """Judge a single candidate token for the high-entropy heuristic.
+
+    ``/`` is a base64 value char, so an *absolute* filesystem path
+    (``/Users/dev/project/src/components/Widget``) otherwise reads as one long
+    high-entropy token and trips a spurious AUTH on benign reads. Only a
+    path-shaped token (a leading ``/``) is split on ``/`` and judged segment by
+    segment — real path components are short, word-like, and low-entropy. Any
+    other token, **including a base64 secret that merely contains ``/``**, is
+    judged whole, so splitting can never fragment a secret below the length
+    floor and silently drop it. This keeps the rule raise-only: it removes a
+    false positive without ever weakening detection.
+    """
+    if token.startswith("/"):
+        return any(_looks_high_entropy_secret(segment) for segment in token.split("/"))
+    return _looks_high_entropy_secret(token)
+
+
 def _weak_secret_in_text(text: str) -> bool:
     """Low-confidence signal: a long, token-shaped, high-entropy string.
 
@@ -150,14 +168,8 @@ def _weak_secret_in_text(text: str) -> bool:
         return False
     sample = text[:_SCAN_MAX_CHARS]
     for token in re.findall(r"[A-Za-z0-9+/=_\-]{%d,}" % _ENTROPY_MIN_LEN, sample):
-        # A filesystem path (``/a/b/c/file``) is not a secret, but ``/`` is a
-        # base64 value char, so a whole path otherwise reads as one long token
-        # and trips the entropy check. Judge each ``/``-delimited segment on its
-        # own: a real base64 secret's segments are still long and high-entropy,
-        # while path components (``Users``, ``project``, ``README``) are not.
-        for piece in token.split("/"):
-            if _looks_high_entropy_secret(piece):
-                return True
+        if _token_looks_like_weak_secret(token):
+            return True
     return False
 
 

@@ -142,6 +142,20 @@ def test_base64_secret_with_slashes_still_detected():
     assert result.verdict is not Verdict.PASS
 
 
+def test_high_entropy_secret_with_short_slash_segments_is_not_missed():
+    # Raise-only guard for the path-segment fix: a real base64 secret can contain
+    # '/' (a base64 value char). This 27-char token is high-entropy as a whole but
+    # splits on '/' into two 13-char segments, BOTH below the 24-char entropy
+    # floor — so a naive per-segment split would judge every piece benign and drop
+    # it (silent weakening). The whole-token catch the old code had must survive:
+    # only absolute paths (leading '/') are split; a secret like this is judged
+    # whole and still steps up (AUTH), never PASS.
+    token = "wJalrXUtnFEMI/K7MDENGbPxRfi"  # noqa: S105 — synthetic, not a real credential
+    action = _action(ActionType.file_write, target="dump.bin")
+    result = RULE.evaluate(action, _ctx(path="dump.bin", content=token))
+    assert result.verdict is Verdict.AUTH
+
+
 def test_rule_does_not_mutate_the_frozen_action():
     action = _action(ActionType.file_write, target="x.txt")
     before = action.model_dump()
