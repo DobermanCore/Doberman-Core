@@ -425,6 +425,117 @@ def policy_history(
         )
 
 
+@app.command("install-hooks")
+def install_hooks(
+    global_: bool = typer.Option(
+        False, "--global", "-g", help="Install into ~/.claude/settings.json (user-wide)."
+    ),
+    local: bool = typer.Option(
+        False, "--local", help="Install into .claude/settings.local.json (project-local)."
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print what would change; write nothing."
+    ),
+) -> None:
+    """Wire Doberman's PreToolUse and PostToolUse hooks into a Claude Code settings.json.
+
+    Idempotent — safe to run more than once.  Default scope is the project-level
+    ``.claude/settings.json``; use ``--global`` for the user-wide file or
+    ``--local`` for ``.claude/settings.local.json``.
+    """
+    from doberman.hosthooks.install import (
+        load_settings,
+        merge_doberman_hooks,
+        resolve_settings_path,
+        write_settings,
+    )
+
+    scope = "global" if global_ else ("local" if local else "project")
+    settings_path = resolve_settings_path(scope, path)
+
+    try:
+        current = load_settings(settings_path)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    merged = merge_doberman_hooks(current)
+
+    if dry_run:
+        typer.echo(f"[dry-run] target: {settings_path}")
+        typer.echo("[dry-run] would add:")
+        typer.echo("  PreToolUse  → doberman hook pre")
+        typer.echo("  PostToolUse → doberman hook post")
+        return
+
+    write_settings(settings_path, merged)
+    typer.echo(f"wrote {settings_path}")
+    typer.echo("Doberman will now gate every tool call in this project.")
+
+
+@app.command("uninstall-hooks")
+def uninstall_hooks(
+    global_: bool = typer.Option(
+        False, "--global", "-g", help="Remove from ~/.claude/settings.json (user-wide)."
+    ),
+    local: bool = typer.Option(
+        False, "--local", help="Remove from .claude/settings.local.json (project-local)."
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print what would change; write nothing."
+    ),
+) -> None:
+    """Remove Doberman's PreToolUse and PostToolUse hooks from a Claude Code settings.json.
+
+    Idempotent — safe to run even when hooks are not present.  Non-Doberman hooks
+    and every other setting are left untouched.
+    """
+    from doberman.hosthooks.install import (
+        _is_doberman_group,
+        load_settings,
+        remove_doberman_hooks,
+        resolve_settings_path,
+        write_settings,
+    )
+
+    scope = "global" if global_ else ("local" if local else "project")
+    settings_path = resolve_settings_path(scope, path)
+
+    try:
+        current = load_settings(settings_path)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    # Detect whether any Doberman entries exist before removing.
+    hooks_section = current.get("hooks") or {}
+    had_doberman = any(
+        _is_doberman_group(g)
+        for groups in hooks_section.values()
+        if isinstance(groups, list)
+        for g in groups
+    )
+
+    if not had_doberman:
+        typer.echo("No Doberman hooks found — nothing to remove.")
+        return
+
+    cleaned = remove_doberman_hooks(current)
+
+    if dry_run:
+        typer.echo(f"[dry-run] target: {settings_path}")
+        typer.echo("[dry-run] would remove:")
+        typer.echo("  PreToolUse  → doberman hook pre")
+        typer.echo("  PostToolUse → doberman hook post")
+        return
+
+    write_settings(settings_path, cleaned)
+    typer.echo(f"wrote {settings_path}")
+    typer.echo("Doberman hooks removed.")
+
+
 @app.command()
 def version() -> None:
     """Print the installed Doberman version."""

@@ -219,7 +219,18 @@ The proxy above protects the tools you route *through* Doberman. To make Doberma
 
 `doberman hook post` runs *after* a tool executes: it scans the tool's **output** for credential-like material — so a `Read`/`Bash`/MCP call that *returns* a secret is **blocked from reaching the model** (the secret is never echoed) — and records each call in a local, redacted decision history (groundwork for cross-call multi-step-injection defense). Both handlers **fail closed** and are import-light, so they add minimal latency to each call.
 
-> One-command onboarding — `doberman setup`, an interactive wizard that sets your alertness/guardrails and wires these hooks for you — is the next slice; for now, paste the snippet above. The adaptive per-entity layer over the hook path arrives with the warm-daemon slice.
+**Or let Doberman write it for you** — no hand-editing JSON:
+
+```bash
+doberman install-hooks            # writes the snippet above into .claude/settings.json (this project)
+doberman install-hooks --global   # ~/.claude/settings.json (every project)
+doberman install-hooks --dry-run  # show what would change, write nothing
+doberman uninstall-hooks          # remove only Doberman's entries (leaves your other hooks intact)
+```
+
+`install-hooks` is idempotent (safe to re-run), backs up an existing `settings.json` before writing, and never touches your other settings or hooks.
+
+> One-command onboarding — `doberman setup`, an interactive wizard that sets your alertness/guardrails and then runs `install-hooks` for you — is the next slice. The adaptive per-entity layer over the hook path arrives with the warm-daemon slice.
 
 ### 4. Scan (optional)
 
