@@ -36,9 +36,34 @@ from doberman.models import (
     Verdict,
 )
 
+#: Doberman's own control plane: its state dir (``.doberman/`` — policy doc,
+#: active role, and the DB holding the append-only policy_changes ledger /
+#: decision log / baselines / elevations; ADR 0011) and the Claude Code
+#: host-hook install config (``.claude/settings*.json`` + the ``.claude`` dir
+#: itself; ADR 0022 host-hook architecture / ADR 0024 this block). Editing or
+#: deleting either disables Doberman at the engine or harness level ("fire the
+#: cop") and bypasses the Feature 10 apply_change gate; Doberman writes these via
+#: direct I/O, never through the proxy, so any agent-proxied write/delete/read is
+#: hard-blocked. **Shared with the command rule (HK.5.0b)** via
+#: :func:`names_control_plane`, so a shell command that names one of these
+#: (``echo > .claude/settings.json``, ``rm -rf .doberman``) is caught too — a
+#: path-*target* rule alone misses a path hidden inside a command string.
+CONTROL_PLANE_GLOBS: tuple[str, ...] = (
+    ".doberman",
+    ".doberman/**",
+    "**/.doberman",
+    "**/.doberman/**",
+    ".claude",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    "**/.claude",
+    "**/.claude/settings.json",
+    "**/.claude/settings.local.json",
+)
+
 #: Paths that are NEVER allowed without going through the human-approved path.
 #: Overridable (F6 will load these from policy); kept as a module constant so
-#: tests and callers can supply their own.
+#: tests and callers can supply their own. Includes the control plane above.
 DEFAULT_BLOCKED_GLOBS: tuple[str, ...] = (
     ".env",
     ".env.*",
@@ -50,34 +75,7 @@ DEFAULT_BLOCKED_GLOBS: tuple[str, ...] = (
     "**/secrets/**",
     "**/id_rsa*",
     "**/id_ed25519*",
-    # Doberman's own control plane: the policy doc, the active role, and the DB
-    # holding the append-only policy_changes ledger / decision log / baselines /
-    # elevations. A proxied agent has no legitimate path here — Doberman writes
-    # it via direct I/O, never through the proxy — and reaching it would bypass
-    # the Feature 10 apply_change gate (policy rewrite, role expansion, ledger
-    # wipe). Block any agent-proxied read/write/delete of it.
-    ".doberman",
-    ".doberman/**",
-    "**/.doberman",
-    "**/.doberman/**",
-    # Doberman's host-harness control plane: the Claude Code hook config that
-    # installs Doberman as PreToolUse/PostToolUse hooks (ADR 0022 = host-hook
-    # architecture; ADR 0024 = this block). Editing the settings — or deleting
-    # the whole `.claude/` dir — removes the hooks and disables enforcement at
-    # the harness level ("fire the cop"): the same on-disk bypass `.doberman/`
-    # closes (ADR 0011), extended to the host-hook config. Hard-block the
-    # hook-install settings and the directory itself; the rest of `.claude/`
-    # (project commands/agents) is AUTH (sensitive, below).
-    # NOTE: this matches the path *target* of a file action — a Bash command that
-    # writes the file (e.g. `echo > .claude/settings.json`, `sed -i`) or runs
-    # `doberman uninstall-hooks` is NOT caught here; command-text scanning of the
-    # control plane is tracked as HK.5.0b.
-    ".claude",
-    ".claude/settings.json",
-    ".claude/settings.local.json",
-    "**/.claude",
-    "**/.claude/settings.json",
-    "**/.claude/settings.local.json",
+    *CONTROL_PLANE_GLOBS,
 )
 
 #: Paths that are sensitive: allowed, but only after authentication.
@@ -125,6 +123,38 @@ def _matches_any(relposix: str, globs: Sequence[str]) -> bool:
     if not relposix:
         return False
     return any(fnmatch.fnmatch(relposix, pattern) for pattern in globs)
+
+
+_CONTROL_PLANE = _sanitize_globs(CONTROL_PLANE_GLOBS)
+
+
+def names_control_plane(raw_path: str, root: str = _DEFAULT_ROOT) -> bool:
+    """True if a raw path token lands on Doberman's control plane.
+
+    Used by the command rule (HK.5.0b) so a shell command that writes/deletes the
+    control plane (``echo > .claude/settings.json``, ``rm -rf .doberman``,
+    ``sed -i ... .doberman/policies.yaml``) is blocked — a path-*target* rule
+    alone misses a path hidden inside a command string. Checks the raw token
+    (catches absolute / ``~`` / Windows-separator paths) and the repo-root
+    canonical form (catches ``..`` traversal back into the plane).
+
+    Known limits — static shell analysis cannot resolve runtime semantics, so a
+    control-plane path produced at runtime is NOT caught here (accepted defense-
+    in-depth, tracked for HK.5.6; the OS file owner/mode and the file-target path
+    rule are the backstops): a path built from a variable
+    (``X=.doberman; rm -rf $X``), shell glob / brace expansion (``rm -rf .dober*``),
+    or a scripting-interpreter payload (``python -c "...rmtree('.doberman')..."`` —
+    ``python``/``node``/``perl`` are not shells, so the body is not scanned).
+    """
+    token = (raw_path or "").strip().strip("\"'").replace("\\", "/").lower()
+    if not token:
+        return False
+    if _matches_any(token, _CONTROL_PLANE):
+        return True
+    canonical = canonicalize(raw_path, root=root)
+    if canonical.escapes_root:
+        return False
+    return _matches_any(canonical.relposix, _CONTROL_PLANE)
 
 
 def _candidate_paths(action: SecurityObject) -> list[str]:

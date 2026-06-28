@@ -230,7 +230,7 @@ doberman uninstall-hooks          # remove only Doberman's entries (leaves your 
 
 `install-hooks` is idempotent (safe to re-run), backs up an existing `settings.json` before writing, and never touches your other settings or hooks.
 
-**Doberman protects its own hooks.** Once installed, the agent can't quietly remove them: a write/edit to `.claude/settings.json` (the hook-install file) is **blocked**, and other `.claude/` changes require authentication — so the agent can't disable enforcement by editing the harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own `.doberman/` control plane.
+**Doberman protects its own hooks.** Once installed, the agent can't quietly remove them: a write/edit to `.claude/settings.json` (the hook-install file) is **blocked**, and other `.claude/` changes require authentication — so the agent can't disable enforcement by editing the harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own `.doberman/` control plane. The protection holds **through the shell** too — a Bash command that writes/deletes the config (`echo > .claude/settings.json`, `rm -rf .doberman`) or runs `doberman uninstall-hooks` is blocked, not just the `Write`/`Edit` tools.
 
 **Easiest of all — `doberman setup`:** an interactive wizard that picks your alertness mode, tunes your guardrails, and wires the hooks in one step:
 
