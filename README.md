@@ -230,6 +230,8 @@ doberman uninstall-hooks          # remove only Doberman's entries (leaves your 
 
 `install-hooks` is idempotent (safe to re-run), backs up an existing `settings.json` before writing, and never touches your other settings or hooks.
 
+**Doberman protects its own hooks.** Once installed, the agent can't quietly remove them: a write/edit to `.claude/settings.json` (the hook-install file) is **blocked**, and other `.claude/` changes require authentication — so the agent can't disable enforcement by editing the harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own `.doberman/` control plane.
+
 **Easiest of all — `doberman setup`:** an interactive wizard that picks your alertness mode, tunes your guardrails, and wires the hooks in one step:
 
 ```bash
@@ -325,7 +327,8 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 - ✅ Benchmark harness (suite-agnostic ASR/FPR over labeled actions; `builtins_only` vs `with_plugins`; deterministic synthetic gate; external-suite adapters via `tests/benchmarks/`)
 - ✅ Host-harness integration: Claude Code `PreToolUse` + `PostToolUse` hooks (`doberman hook pre`/`post`) gate every built-in *and* MCP tool call — and scan tool **output** for leaked secrets — with no MCP reconfig; fail-closed, import-light, and recording a local redacted history
 - ✅ One-command onboarding: `doberman setup` (alertness + guardrails + auto-wires the hooks) · `install-hooks`/`uninstall-hooks`
-- 📋 Host-harness, continued: cross-call multi-step prompt-injection floor over the local history · warm-daemon adaptive layer
+- ✅ Host-harness self-protection: an agent cannot disable the hooks by editing `.claude/settings.json` — the hook-install file is a blocked control-plane path (like `.doberman/`)
+- 📋 Host-harness, continued (containment architecture): cross-call multi-step prompt-injection floor over the local history · warm-daemon adaptive layer · honeytoken tripwire + session circuit-breaker
 - 📋 Cost observability (`CostEvent` meter + raise-only loop-anomaly detection)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC
 

@@ -101,3 +101,88 @@ def test_objective_guardrail_blocks_a_control_plane_write(tmp_path):
     result = guardrail.evaluate(_action(".doberman/policies.yaml"), _ctx(tmp_path))
     assert result.verdict is Verdict.BLOCK
     assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+# --- HK.5.0: the host-harness control plane (.claude/) is protected too (ADR 0024) ---
+# Editing .claude/settings.json is how an agent would remove the Doberman hooks
+# and disable enforcement at the harness level ("fire the cop"). Hard-block the
+# hook-install settings; AUTH the rest of .claude/.
+
+
+def test_writing_claude_settings_is_blocked(tmp_path):
+    result = RULE.evaluate(_action(".claude/settings.json"), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_writing_claude_local_settings_is_blocked(tmp_path):
+    result = RULE.evaluate(_action(".claude/settings.local.json"), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_deleting_claude_settings_is_blocked(tmp_path):
+    result = RULE.evaluate(
+        _action(".claude/settings.json", action_type=ActionType.file_delete), _ctx(tmp_path)
+    )
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_deleting_the_whole_claude_dir_is_blocked(tmp_path):
+    # Deleting the entire .claude/ dir removes the hooks just as effectively as
+    # editing settings.json — the bare directory target must block too.
+    result = RULE.evaluate(_action(".claude", action_type=ActionType.file_delete), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_nested_claude_settings_is_blocked(tmp_path):
+    # A monorepo sub-project's own .claude/settings.json is protected too.
+    result = RULE.evaluate(_action("packages/app/.claude/settings.json"), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_nested_claude_local_settings_is_blocked(tmp_path):
+    result = RULE.evaluate(_action("packages/app/.claude/settings.local.json"), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_traversal_into_claude_settings_is_caught(tmp_path):
+    # a/b/../../.claude/settings.json canonicalizes back into .claude → BLOCK.
+    result = RULE.evaluate(_action("a/b/../../.claude/settings.json"), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK
+
+
+def test_other_claude_files_require_auth(tmp_path):
+    # Non-install files under .claude/ (commands, agents, …) are sensitive: AUTH,
+    # not a silent allow — and not a hard block either.
+    result = RULE.evaluate(_action(".claude/commands/build.md"), _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_path_access in result.reason_codes
+
+
+def test_ordinary_file_still_passes(tmp_path):
+    # No over-blocking: a normal source edit is unaffected by the new globs.
+    result = RULE.evaluate(_action("src/app/main.py"), _ctx(tmp_path))
+    assert result.verdict is Verdict.PASS
+
+
+def test_default_blocked_globs_include_claude_settings():
+    assert any(".claude/settings.json" in glob for glob in DEFAULT_BLOCKED_GLOBS)
+
+
+def test_claude_settings_block_does_not_leak_the_raw_path(tmp_path):
+    # Redaction: the explanation names only the path class, never the raw path.
+    result = RULE.evaluate(_action(".claude/settings.json"), _ctx(tmp_path))
+    assert ".claude/settings.json" not in (result.explanation or "")
+
+
+def test_objective_guardrail_blocks_a_claude_settings_write(tmp_path):
+    # Prove the wired guardrail (not just the rule in isolation) hard-blocks it.
+    guardrail = ObjectiveGuardrail(load_plugins=False)
+    result = guardrail.evaluate(_action(".claude/settings.json"), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
