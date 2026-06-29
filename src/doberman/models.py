@@ -249,6 +249,9 @@ class ReasonCode(StrEnum):
 
     # HK.5 — host-hook containment: the cross-call (multi-step) exfiltration floor.
     multi_step_exfil = "multi_step_exfil"
+    # HK.5.2b — a secret read earlier this session reappeared (by keyed-HMAC
+    # fingerprint) in an outbound payload: a confirmed read-then-send exfiltration.
+    confirmed_exfil = "confirmed_exfil"
 
 
 class GuardrailResult(BaseModel):

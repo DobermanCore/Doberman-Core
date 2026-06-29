@@ -103,6 +103,10 @@ _FLOOR_EXPLANATION = (
     "A secret entered this session's context earlier; this egress is a potential "
     "multi-step exfiltration."
 )
+_CONFIRMED_EXFIL_EXPLANATION = (
+    "An outbound value matches a secret that entered this session's context earlier "
+    "— a confirmed read-then-send exfiltration."
+)
 
 
 def to_normalize_input(
@@ -192,9 +196,10 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             metadata={"raw_arguments": args, "repo_root": repo_root},
         )
         decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
-        # HK.5.2: taint-primary multi-step floor — raise an egress the per-call
-        # floor judged clean when the session already accessed a secret.
-        decision = _apply_taint_floor(action, decision, ctx.mode, repo_root, session_id)
+        # HK.5.2 / 5.2b: taint-primary multi-step floor — raise an egress the
+        # per-call floor judged clean when the session already accessed a secret,
+        # and hard-BLOCK when an outbound value is a CONFIRMED read secret.
+        decision = _apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)
         if decision.final_verdict is Verdict.PASS:
             return None  # raise-only: abstain, leaving the harness's native flow intact
         return _decision_payload(decision)
@@ -208,8 +213,9 @@ def _apply_taint_floor(
     mode: str,
     repo_root: str,
     session_id: str | None,
+    args: dict[str, Any],
 ) -> Decision:
-    """HK.5.2 — the taint-primary multi-step exfiltration floor (raise-only).
+    """HK.5.2 / 5.2b — the taint-primary multi-step exfiltration floor (raise-only).
 
     The objective floor judges each call in isolation, so a cross-call exfil —
     read a secret in call N (HK.5.1 records ``secret_access`` taint), then send it
@@ -228,7 +234,26 @@ def _apply_taint_floor(
     if action.external_destination is None:
         return decision  # not an egress — nothing can leave through this action
     if decision.final_verdict is Verdict.BLOCK:
-        return decision  # already maximally raised; skip the taint read
+        return decision  # already maximally raised; skip the reads
+
+    # HK.5.2b — confirmatory read-vs-send match: an outbound token whose keyed-HMAC
+    # fingerprint was recorded when a secret entered this session is the SAME secret
+    # leaving. A CONFIRMED exfil → hard BLOCK in EVERY mode (highest confidence; not
+    # mode-gated like the taint floor below).
+    if _outbound_matches_recorded_secret(args, action.external_destination, repo_root, session_id):
+        reasons = list(dict.fromkeys([*decision.reason_codes, ReasonCode.confirmed_exfil]))
+        explanation = " ".join(
+            part for part in (decision.explanation.strip(), _CONFIRMED_EXFIL_EXPLANATION) if part
+        )
+        return decision.model_copy(
+            update={
+                "final_verdict": Verdict.BLOCK,
+                "final_risk": Risk.critical,
+                "reason_codes": reasons,
+                "explanation": explanation,
+            }
+        )
+
     if not _session_holds_secret(repo_root, session_id):
         return decision
 
@@ -283,6 +308,67 @@ def _session_holds_secret(repo_root: str, session_id: str | None) -> bool:
     try:
         return asyncio.run(_any_secret())
     except Exception:  # noqa: BLE001 — a failed taint read never fabricates a verdict
+        return False
+
+
+def _outbound_secret_fingerprints(args: dict[str, Any], dest: str | None) -> set[str]:
+    """Keyed-HMAC fingerprints of secret-candidate tokens anywhere in the outbound
+    payload (the call's arguments + its external destination). Light + best-effort;
+    the plaintext is never stored or logged."""
+    from doberman.engine.rules.secrets import candidate_secret_fingerprints
+
+    fps: set[str] = set()
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, str):
+            fps.update(candidate_secret_fingerprints(value))
+        elif isinstance(value, dict):
+            for item in value.values():
+                _walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                _walk(item)
+
+    _walk(args)
+    if dest:
+        fps.update(candidate_secret_fingerprints(dest))
+    return fps
+
+
+def _outbound_matches_recorded_secret(
+    args: dict[str, Any], dest: str | None, repo_root: str, session_id: str | None
+) -> bool:
+    """True iff an outbound token matches a secret fingerprint recorded earlier in
+    this session/entity scope (a confirmed read-then-send). One light SQLite read on
+    the egress path only — and only when something secret-shaped is actually going
+    out. Fails closed to False (never fabricates a match)."""
+    fps = _outbound_secret_fingerprints(args, dest)
+    if not fps:
+        return False  # nothing secret-shaped outbound — skip the DB read
+
+    import asyncio
+
+    from doberman.storage.taint import entity_scope, match_secret_fingerprint
+
+    scopes: list[str] = [session_id] if session_id else []
+    try:
+        scopes.append(entity_scope(repo_root))
+    except Exception:  # noqa: BLE001,S110 — keep the session scope even if entity scope fails
+        pass
+    if not scopes:
+        return False
+
+    fp_list = list(fps)
+
+    async def _any_match() -> bool:
+        for scope in scopes:
+            if await match_secret_fingerprint(repo_root, scope, fp_list):
+                return True
+        return False
+
+    try:
+        return asyncio.run(_any_match())
+    except Exception:  # noqa: BLE001 — a failed match read never fabricates a verdict
         return False
 
 
@@ -423,6 +509,9 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
             # taints the session. No verdict authority here — HK.5.2 reads it to
             # raise risk on a later egress.
             _record_taint(tool_name, fired_codes, repo_root, session_id)
+            # HK.5.2b: fingerprint the secret(s) in this output so a later egress
+            # carrying the same value is a confirmed exfil — before any block return.
+            _record_secret_fingerprints(output_text, fired_codes, repo_root, session_id)
 
             if fired_codes & _SECRET_REASON_CODES:
                 reason = _POST_REASON.format(
@@ -521,6 +610,42 @@ def _record_taint(
     try:
         asyncio.run(record_taints(repo_root, scopes, kinds))
     except Exception:  # noqa: BLE001,S110 — taint recording must never break execution
+        pass
+
+
+def _record_secret_fingerprints(
+    output_text: str, fired_codes: set[str], repo_root: str, session_id: str | None
+) -> None:
+    """Best-effort: record keyed-HMAC fingerprints of the secret(s) in a tool output
+    into the read-vs-send store (HK.5.2b), under the session + entity scope, so a
+    later egress carrying the same value is a confirmed exfil (→ BLOCK).
+
+    Only acts when a secret reason code fired (a secret actually entered context).
+    Light (the storage import is on the secret path only) and wrapped so a write can
+    never break the execution path. The plaintext is fingerprinted, never stored.
+    """
+    if not (fired_codes & _SECRET_REASON_CODES):
+        return  # no secret entered context — nothing to fingerprint
+
+    from doberman.engine.rules.secrets import candidate_secret_fingerprints
+
+    fps = candidate_secret_fingerprints(output_text)
+    if not fps:
+        return
+
+    import asyncio
+
+    from doberman.storage.taint import entity_scope, record_secret_fingerprints
+
+    scopes: list[str] = [session_id] if session_id else []
+    try:
+        scopes.append(entity_scope(repo_root))
+    except Exception:  # noqa: BLE001,S110 — keep the session scope even if entity scope fails
+        pass
+
+    try:
+        asyncio.run(record_secret_fingerprints(repo_root, scopes, list(fps)))
+    except Exception:  # noqa: BLE001,S110 — fingerprint recording must never break execution
         pass
 
 

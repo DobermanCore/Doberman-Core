@@ -106,3 +106,65 @@ async def read_taint(repo_root: str, scope: str) -> dict[str, int]:
     except Exception:  # noqa: BLE001 — a read failure must never crash a decision
         return {}
     return {row[0]: int(row[1]) for row in rows}
+
+
+# ---------------------------------------------------------------------------
+# Read-vs-send exfil store (HK.5.2b) — keyed-HMAC fingerprints of secrets that
+# entered a scope's context, matched against a later egress for a *confirmed*
+# read-then-send exfiltration. Same scope keying + best-effort discipline as the
+# taint ledger above; no raw secret is ever stored (fingerprints only).
+# ---------------------------------------------------------------------------
+
+_INSERT_FINGERPRINT = (
+    "INSERT INTO session_secret_fingerprints (scope, fingerprint, first_seen) "
+    "VALUES (?, ?, ?) ON CONFLICT(scope, fingerprint) DO NOTHING"
+)
+
+
+async def record_secret_fingerprints(
+    repo_root: str,
+    scopes: list[str],
+    fingerprints: list[str],
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Store keyed-HMAC ``fingerprints`` of secrets that entered each scope's
+    context (best-effort). Empty/falsy scopes and fingerprints are dropped; never
+    raises — a write failure must never affect a verdict (the action is decided).
+    """
+    scopes = [s for s in scopes if s]
+    fps = [f for f in fingerprints if f]
+    if not scopes or not fps:
+        return
+    ts = (now or datetime.now(timezone.utc)).isoformat()
+    try:
+        async with open_db(repo_root) as conn:
+            for scope in scopes:
+                for fp in fps:
+                    await conn.execute(_INSERT_FINGERPRINT, (scope, fp, ts))
+            await conn.commit()
+    except Exception:  # noqa: BLE001 — fingerprint recording must never break execution
+        return
+
+
+async def match_secret_fingerprint(repo_root: str, scope: str, fingerprints: list[str]) -> bool:
+    """True iff any of ``fingerprints`` was previously recorded under ``scope`` — a
+    confirmed read-then-send. Fails closed to ``False``: a missing/locked DB or a
+    read error never *fabricates* a match (the taint floor still governs).
+    """
+    fps = [f for f in fingerprints if f]
+    if not scope or not fps or not db_path(repo_root).exists():
+        return False
+    placeholders = ",".join("?" for _ in fps)
+    # `placeholders` is only bound '?' params; the values go through execute(), never
+    # string-interpolated into the SQL.
+    sql = (
+        "SELECT 1 FROM session_secret_fingerprints "  # noqa: S608 — bound '?' params, not interpolated
+        f"WHERE scope = ? AND fingerprint IN ({placeholders}) LIMIT 1"
+    )
+    try:
+        async with open_db(repo_root) as conn:
+            async with conn.execute(sql, (scope, *fps)) as cur:
+                return await cur.fetchone() is not None
+    except Exception:  # noqa: BLE001 — a read failure must never crash a decision
+        return False

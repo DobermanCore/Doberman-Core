@@ -362,6 +362,57 @@ def _fingerprint_detected(strings: Iterable[str]) -> list[str]:
     return fingerprints
 
 
+def _candidate_secret_tokens(strings: Iterable[str]) -> list[str]:
+    """Secret-candidate substrings to fingerprint for the read-vs-send exfil store
+    (HK.5.2b): every STRONG credential match plus any high-entropy token — the same
+    token shapes the rule treats as secret-bearing. Bounded by ``_MAX_FINGERPRINTS``
+    so a giant payload cannot produce unbounded work.
+    """
+    string_list = list(strings)
+    tokens: list[str] = list(_detected_secret_tokens(string_list))
+    for text in string_list:
+        if len(tokens) >= _MAX_FINGERPRINTS:
+            break
+        sample = text[:_SCAN_MAX_CHARS]
+        for token in re.findall(r"[A-Za-z0-9+/=_\-]{%d,}" % _ENTROPY_MIN_LEN, sample):
+            if _looks_high_entropy_secret(token):
+                tokens.append(token)
+                if len(tokens) >= _MAX_FINGERPRINTS:
+                    break
+    return tokens
+
+
+def candidate_secret_fingerprints(text: str) -> set[str]:
+    """Keyed-HMAC fingerprints of the secret-candidate tokens in ``text``.
+
+    The read-vs-send exfil store (HK.5.2b) records these when a secret enters a
+    session's context and matches them on a later egress: an outbound token whose
+    fingerprint was recorded earlier is the SAME secret leaving (a confirmed
+    exfil). The plaintext never leaves this module; the return is a set of
+    ``hmac:<hex>`` strings. Best-effort — a fingerprinting failure drops that
+    token (it must never alter a verdict).
+    """
+    if not text:
+        return set()
+    texts = [text]
+    # Exfil often hides the value in a URL query parameter (``?k=<secret>``); scan
+    # those values individually too, so a secret read as a bare token still matches
+    # when it later leaves embedded in a query string.
+    try:
+        query = urlsplit(text).query
+    except ValueError:
+        query = ""
+    if query:
+        texts.extend(val for _, val in parse_qsl(query, keep_blank_values=False))
+    out: set[str] = set()
+    for token in _candidate_secret_tokens(texts):
+        try:
+            out.add(fingerprint(token))
+        except Exception:  # noqa: BLE001,S112 — fingerprinting must not alter a verdict
+            continue
+    return out
+
+
 class SecretLeakageRule:
     """Detect secret material and block clear exfiltration of it.
 
