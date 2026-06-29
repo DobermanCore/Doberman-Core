@@ -41,9 +41,9 @@ import json
 from typing import Any
 
 from doberman.config import load_mode
-from doberman.engine.decision_engine import PASS_STUB, decide
+from doberman.engine.decision_engine import PASS_STUB, decide, max_risk, max_verdict
 from doberman.engine.objective import ObjectiveGuardrail
-from doberman.models import Decision, EvalContext, Verdict
+from doberman.models import Decision, EvalContext, ReasonCode, Risk, SecurityObject, Verdict
 from doberman.proxy.normalize import normalize
 
 #: Claude Code built-in tools whose *action* we gate before execution. Pure reads
@@ -94,6 +94,15 @@ _REQUIRED_FIELD: dict[str, str] = {
 _HOOK_EVENT = "PreToolUse"
 _REASON = "Doberman [{verdict}]: {explanation} (reasons: {reasons}; action {action_id})"
 _FAILSAFE_REASON = "Doberman: failing closed — could not evaluate this action safely."
+
+#: HK.5.2 taint floor: modes where a tainted-session egress is BLOCKed outright
+#: rather than AUTH'd. Mirrors the lethal-trifecta hard block (ADR 0021): raise-only,
+#: strictest modes only — light/balanced keep the human in the loop.
+_STRICT_MODES: frozenset[str] = frozenset({"strict", "paranoid"})
+_FLOOR_EXPLANATION = (
+    "A secret entered this session's context earlier; this egress is a potential "
+    "multi-step exfiltration."
+)
 
 
 def to_normalize_input(
@@ -168,6 +177,8 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
 
         cwd = payload.get("cwd")
         repo_root = cwd if isinstance(cwd, str) and cwd else "."
+        raw_session = payload.get("session_id")
+        session_id = raw_session if isinstance(raw_session, str) and raw_session else None
 
         canonical, args = to_normalize_input(tool_name, tool_input)
         action = normalize(canonical, args)
@@ -181,11 +192,98 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             metadata={"raw_arguments": args, "repo_root": repo_root},
         )
         decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
+        # HK.5.2: taint-primary multi-step floor — raise an egress the per-call
+        # floor judged clean when the session already accessed a secret.
+        decision = _apply_taint_floor(action, decision, ctx.mode, repo_root, session_id)
         if decision.final_verdict is Verdict.PASS:
             return None  # raise-only: abstain, leaving the harness's native flow intact
         return _decision_payload(decision)
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
         return _deny()
+
+
+def _apply_taint_floor(
+    action: SecurityObject,
+    decision: Decision,
+    mode: str,
+    repo_root: str,
+    session_id: str | None,
+) -> Decision:
+    """HK.5.2 — the taint-primary multi-step exfiltration floor (raise-only).
+
+    The objective floor judges each call in isolation, so a cross-call exfil —
+    read a secret in call N (HK.5.1 records ``secret_access`` taint), then send it
+    in call M whose own payload looks clean — slips through. When THIS action is an
+    egress and the session already holds ``secret_access`` taint, raise the verdict:
+    ``AUTH`` in light/balanced (human-in-the-loop) or ``BLOCK`` in strict/paranoid,
+    mirroring the single-call lethal-trifecta floor (ADR 0021/0024). **Raise-only** —
+    it never lowers a verdict or risk. Best-effort and light: one SQLite taint read,
+    only on the egress path, and any failure leaves the objective decision untouched.
+
+    Scope note: the egress signal is ``action.external_destination`` (what
+    ``normalize`` recognises — WebFetch, network requests, domain/MCP egress tools).
+    Deep Bash-command egress parsing is HK.5.6; entropy-on-egress and the read-vs-send
+    fingerprint match (→ confirmatory BLOCK) are HK.5.2b.
+    """
+    if action.external_destination is None:
+        return decision  # not an egress — nothing can leave through this action
+    if decision.final_verdict is Verdict.BLOCK:
+        return decision  # already maximally raised; skip the taint read
+    if not _session_holds_secret(repo_root, session_id):
+        return decision
+
+    floor_verdict = Verdict.BLOCK if mode in _STRICT_MODES else Verdict.AUTH
+    floor_risk = Risk.critical if floor_verdict is Verdict.BLOCK else Risk.high
+    reasons = list(dict.fromkeys([*decision.reason_codes, ReasonCode.multi_step_exfil]))
+    explanation = " ".join(
+        part for part in (decision.explanation.strip(), _FLOOR_EXPLANATION) if part
+    )
+    return decision.model_copy(
+        update={
+            "final_verdict": max_verdict(decision.final_verdict, floor_verdict),
+            "final_risk": max_risk(decision.final_risk, floor_risk),
+            "reason_codes": reasons,
+            "explanation": explanation,
+        }
+    )
+
+
+def _session_holds_secret(repo_root: str, session_id: str | None) -> bool:
+    """True iff this session has accumulated ``secret_access`` taint (a secret
+    entered its context) under the session or entity scope.
+
+    A light SQLite read on the egress path only. On any error it returns ``False`` —
+    it never *fabricates* taint (which would AUTH/BLOCK every egress). A degraded
+    taint store is the alarm-not-downgrade concern of HK.5.0c, not a place to
+    silently escalate here.
+    """
+    import asyncio  # lazy: keep the hook's module import light
+
+    from doberman.storage.taint import (  # lazy: light (no numpy/scipy/river)
+        TAINT_SECRET_ACCESS,
+        entity_scope,
+        read_taint,
+    )
+
+    scopes: list[str] = [session_id] if session_id else []
+    try:
+        scopes.append(entity_scope(repo_root))
+    except Exception:  # noqa: BLE001,S110 — keep the session scope even if entity scope fails
+        pass
+    if not scopes:
+        return False
+
+    async def _any_secret() -> bool:
+        for scope in scopes:
+            counts = await read_taint(repo_root, scope)
+            if counts.get(TAINT_SECRET_ACCESS, 0) > 0:
+                return True
+        return False
+
+    try:
+        return asyncio.run(_any_secret())
+    except Exception:  # noqa: BLE001 — a failed taint read never fabricates a verdict
+        return False
 
 
 def run_pre_hook(stdin_text: str) -> str | None:
