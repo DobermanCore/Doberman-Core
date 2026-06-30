@@ -1,0 +1,270 @@
+"""Gated enforcement-state toggle + strictness-mode ranking (Feature 10).
+
+Covers the `feat/policy/soften-toggle` slice:
+
+* `classify_change` now ranks strictness **modes** (light<balanced<strict<paranoid)
+  and **enforcement** states (off<monitor<enforce), so a `mode` or `enforcement`
+  downgrade classifies as a **weaken** rather than silently neutral.
+* `apply_enforcement_change` is the chokepoint for enforce/monitor/off: softening is
+  gated (confirm + TOTP-**if-enrolled**, fail-closed); re-arming is a strengthen and
+  applies automatically. Every attempt — including denials — hits the append-only ledger.
+* `log_change` is the audited-but-not-gated path for the mode dial.
+* `PolicyDoc` carries the orthogonal `enforcement` state + optional timed revert and
+  round-trips through its mapping.
+
+Security invariants asserted here: a weakening is never silently approved (raise-only);
+re-arming is never gated; the disable stays reachable without 2FA (confirm-only) but is
+always confirmed + recorded; every gate fails closed.
+"""
+
+from datetime import datetime, timezone
+
+import pytest
+
+from doberman.policy import drift
+from doberman.policy.checklist import PolicyDoc
+from doberman.policy.drift import (
+    Classification,
+    apply_enforcement_change,
+    classify_change,
+    log_change,
+    read_policy_changes,
+)
+
+_NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+# --- fake prompters --------------------------------------------------------
+
+
+class _Approve:
+    """Present human who confirms and supplies a code."""
+
+    def confirm(self, message):
+        return True
+
+    def read_code(self, message):
+        return "999999"
+
+
+class _Decline:
+    def confirm(self, message):
+        return False
+
+    def read_code(self, message):  # pragma: no cover — never reached after a decline
+        raise AssertionError("read_code must not be reached after a declined confirm")
+
+
+class _Boom:
+    """Any interaction is a test failure (used to prove a strengthen is NOT gated)."""
+
+    def confirm(self, message):
+        raise AssertionError("a strengthen/re-arm must not prompt")
+
+    def read_code(self, message):
+        raise AssertionError("a strengthen/re-arm must not prompt")
+
+
+class _RaisesOnConfirm:
+    def confirm(self, message):
+        raise EOFError("input timeout")
+
+    def read_code(self, message):  # pragma: no cover
+        raise AssertionError("not reached")
+
+
+@pytest.fixture
+def _enrolled(monkeypatch):
+    """2FA enrolled; only the code '999999' verifies."""
+    monkeypatch.setattr(drift.totp, "is_enrolled", lambda: True)
+    monkeypatch.setattr(drift.totp, "verify", lambda code, **kw: code == "999999")
+
+
+# --- classify_change: mode + enforcement ranking ---------------------------
+
+
+def test_mode_downgrade_is_a_weaken():
+    assert classify_change({"mode": "strict"}, {"mode": "light"}) is Classification.weaken
+    assert classify_change({"mode": "paranoid"}, {"mode": "balanced"}) is Classification.weaken
+
+
+def test_mode_upgrade_is_a_strengthen():
+    assert classify_change({"mode": "light"}, {"mode": "strict"}) is Classification.strengthen
+
+
+def test_same_mode_is_neutral():
+    assert classify_change({"mode": "balanced"}, {"mode": "balanced"}) is Classification.neutral
+
+
+def test_disabling_enforcement_is_a_weaken():
+    assert (
+        classify_change({"enforcement": "enforce"}, {"enforcement": "off"}) is Classification.weaken
+    )
+    assert (
+        classify_change({"enforcement": "enforce"}, {"enforcement": "monitor"})
+        is Classification.weaken
+    )
+    assert (
+        classify_change({"enforcement": "monitor"}, {"enforcement": "off"}) is Classification.weaken
+    )
+
+
+def test_re_arming_enforcement_is_a_strengthen():
+    assert (
+        classify_change({"enforcement": "off"}, {"enforcement": "enforce"})
+        is Classification.strengthen
+    )
+    assert (
+        classify_change({"enforcement": "monitor"}, {"enforcement": "enforce"})
+        is Classification.strengthen
+    )
+
+
+# --- apply_enforcement_change: the gate ------------------------------------
+
+_SOFTEN = ({"enforcement": "enforce"}, {"enforcement": "monitor"})
+_REARM = ({"enforcement": "off"}, {"enforcement": "enforce"})
+
+
+async def test_soften_with_2fa_enrolled_and_valid_code_is_approved(tmp_path, _enrolled):
+    out = await apply_enforcement_change(
+        *_SOFTEN, "quiet hours", repo_root=str(tmp_path), prompter=_Approve(), now=_NOW
+    )
+    assert out.approved is True
+    assert out.method == "two_factor"
+    assert out.classification is Classification.weaken
+
+
+async def test_soften_without_2fa_falls_back_to_confirm_only(tmp_path):
+    # conftest isolates the TOTP secret to an empty temp path → not enrolled. The
+    # disable must stay reachable (safety valve) via an explicit confirmation.
+    out = await apply_enforcement_change(
+        *_SOFTEN, "no 2fa here", repo_root=str(tmp_path), prompter=_Approve(), now=_NOW
+    )
+    assert out.approved is True
+    assert out.method == "confirmed"
+
+
+async def test_soften_declined_is_denied(tmp_path):
+    out = await apply_enforcement_change(
+        *_SOFTEN, "changed my mind", repo_root=str(tmp_path), prompter=_Decline(), now=_NOW
+    )
+    assert out.approved is False
+    assert out.method == "denied"
+
+
+async def test_soften_with_wrong_2fa_code_is_denied(tmp_path, monkeypatch):
+    monkeypatch.setattr(drift.totp, "is_enrolled", lambda: True)
+    monkeypatch.setattr(drift.totp, "verify", lambda code, **kw: False)
+    out = await apply_enforcement_change(
+        *_SOFTEN, "bad code", repo_root=str(tmp_path), prompter=_Approve(), now=_NOW
+    )
+    assert out.approved is False
+    assert out.method == "denied"
+
+
+async def test_soften_gate_fails_closed_on_prompter_error(tmp_path):
+    out = await apply_enforcement_change(
+        *_SOFTEN, "timeout", repo_root=str(tmp_path), prompter=_RaisesOnConfirm(), now=_NOW
+    )
+    assert out.approved is False
+    assert out.method == "denied"
+
+
+async def test_re_arm_is_auto_approved_and_never_prompts(tmp_path):
+    # Strengthen → applies automatically; the _Boom prompter proves no gate ran.
+    out = await apply_enforcement_change(
+        *_REARM, "back on", repo_root=str(tmp_path), prompter=_Boom(), now=_NOW
+    )
+    assert out.approved is True
+    assert out.method == "auto"
+    assert out.classification is Classification.strengthen
+
+
+# --- ledger: every attempt recorded, denials included ----------------------
+
+
+async def test_approved_soften_is_recorded_in_the_ledger(tmp_path):
+    await apply_enforcement_change(
+        *_SOFTEN, "reason A", repo_root=str(tmp_path), prompter=_Approve(), now=_NOW
+    )
+    rows = await read_policy_changes(str(tmp_path))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["rule_id"] == "enforcement"
+    assert row["from_state"] == "enforce" and row["to_state"] == "monitor"
+    assert row["classification"] == "weaken"
+    assert row["approved"] == 1
+
+
+async def test_denied_soften_is_still_recorded(tmp_path):
+    # The denial is the attack signal — it must be in the append-only ledger.
+    await apply_enforcement_change(
+        *_SOFTEN, "reason B", repo_root=str(tmp_path), prompter=_Decline(), now=_NOW
+    )
+    rows = await read_policy_changes(str(tmp_path))
+    assert len(rows) == 1
+    assert rows[0]["approved"] == 0
+    assert rows[0]["classification"] == "weaken"
+
+
+# --- log_change: audited but not gated -------------------------------------
+
+
+async def test_log_change_records_without_gating(tmp_path):
+    # The mode dial: classified + recorded (method="logged"), no prompter interaction.
+    out = await log_change(
+        {"mode": "strict"}, {"mode": "light"}, "relax for exploration", repo_root=str(tmp_path)
+    )
+    assert out.approved is True
+    assert out.method == "logged"
+    assert out.classification is Classification.weaken
+    rows = await read_policy_changes(str(tmp_path))
+    assert rows[0]["approval_method"] == "logged"
+    assert rows[0]["to_state"] == "light"
+
+
+# --- PolicyDoc enforcement fields ------------------------------------------
+
+
+def _doc(**kw) -> PolicyDoc:
+    return PolicyDoc(items=(), **kw)
+
+
+def test_policydoc_defaults_to_enforce():
+    assert _doc().enforcement == "enforce"
+
+
+def test_with_enforcement_sets_state_and_timer():
+    doc = _doc().with_enforcement("monitor", expires_at=1_700_000_000.0, revert="enforce")
+    assert doc.enforcement == "monitor"
+    assert doc.enforcement_expires_at == 1_700_000_000.0
+    assert doc.enforcement_revert == "enforce"
+
+
+def test_enforcing_policy_mapping_omits_timer_fields():
+    mapping = _doc().to_mapping()
+    assert mapping["enforcement"] == "enforce"
+    assert "enforcement_expires_at" not in mapping
+    assert "enforcement_revert" not in mapping
+
+
+def test_softened_policy_mapping_round_trips(tmp_path):
+    doc = _doc(mode="light").with_enforcement("off", expires_at=1_700_000_000.0, revert="enforce")
+    mapping = doc.to_mapping()
+    assert mapping["enforcement"] == "off"
+    assert mapping["enforcement_expires_at"] == 1_700_000_000.0
+    assert mapping["enforcement_revert"] == "enforce"
+
+    restored = PolicyDoc.from_mapping(mapping)
+    assert restored.enforcement == "off"
+    assert restored.enforcement_expires_at == 1_700_000_000.0
+    assert restored.enforcement_revert == "enforce"
+
+
+def test_from_mapping_ignores_a_non_numeric_expiry():
+    restored = PolicyDoc.from_mapping(
+        {"items": [], "enforcement": "monitor", "enforcement_expires_at": "soon"}
+    )
+    assert restored.enforcement == "monitor"
+    assert restored.enforcement_expires_at is None

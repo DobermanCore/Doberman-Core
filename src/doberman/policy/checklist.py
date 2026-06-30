@@ -135,6 +135,15 @@ class PolicyDoc:
     items: tuple[PolicyItem, ...]
     mode: str = "balanced"
     preferences: PreferenceVector | None = None
+    #: Orthogonal enforcement state (independent of the strictness ``mode``):
+    #: ``"enforce"`` (act on verdicts), ``"monitor"`` (evaluate + record but never
+    #: block), or ``"off"`` (do not evaluate). Softening it is gated + audited.
+    enforcement: str = "enforce"
+    #: Epoch seconds at which a monitor/off state auto-reverts to
+    #: ``enforcement_revert`` (None = no expiry). Lets a soften be temporary.
+    enforcement_expires_at: float | None = None
+    #: Enforcement state a timed monitor/off reverts to when it expires.
+    enforcement_revert: str = "enforce"
 
     def get(self, item_id: str) -> PolicyItem | None:
         return next((it for it in self.items if it.id == item_id), None)
@@ -161,12 +170,24 @@ class PolicyDoc:
     def with_mode(self, mode: str) -> "PolicyDoc":
         return replace(self, mode=mode)
 
+    def with_enforcement(
+        self, state: str, *, expires_at: float | None = None, revert: str = "enforce"
+    ) -> "PolicyDoc":
+        """Return a copy with the enforcement state (and optional timed revert) set."""
+        return replace(
+            self,
+            enforcement=state,
+            enforcement_expires_at=expires_at,
+            enforcement_revert=revert,
+        )
+
     def with_preferences(self, preferences: PreferenceVector) -> "PolicyDoc":
         return replace(self, preferences=preferences)
 
     def to_mapping(self) -> dict[str, Any]:
         mapping: dict[str, Any] = {
             "mode": self.mode,
+            "enforcement": self.enforcement,
             "items": [
                 {
                     "id": it.id,
@@ -182,6 +203,12 @@ class PolicyDoc:
         }
         if self.preferences is not None:
             mapping["preferences"] = self.preferences.to_mapping()
+        # Only emit the timer fields when enforcement is actually softened, to keep
+        # a normal (enforcing) policy file clean.
+        if self.enforcement != "enforce":
+            if self.enforcement_expires_at is not None:
+                mapping["enforcement_expires_at"] = self.enforcement_expires_at
+            mapping["enforcement_revert"] = self.enforcement_revert
         return mapping
 
     @classmethod
@@ -208,7 +235,17 @@ class PolicyDoc:
                 # An invalid stored vector is ignored (the mode preset applies)
                 # rather than crashing the decision path.
                 preferences = None
-        return cls(items=items, mode=str(data.get("mode", "balanced")), preferences=preferences)
+        raw_expires = data.get("enforcement_expires_at")
+        return cls(
+            items=items,
+            mode=str(data.get("mode", "balanced")),
+            preferences=preferences,
+            enforcement=str(data.get("enforcement", "enforce")),
+            enforcement_expires_at=(
+                float(raw_expires) if isinstance(raw_expires, (int, float)) else None
+            ),
+            enforcement_revert=str(data.get("enforcement_revert", "enforce")),
+        )
 
 
 def recommend_policy(
