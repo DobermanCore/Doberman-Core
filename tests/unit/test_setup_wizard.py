@@ -180,7 +180,9 @@ def test_interactive_tune_prefs(tmp_path: Path) -> None:
     assert prefs.confidentiality == pytest.approx(0.9)
 
 
-def test_interactive_global_flag_overrides_prompt(tmp_path: Path) -> None:
+def test_interactive_global_flag_overrides_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """With ``--global``, no scope prompt is asked; hooks go to ~/.claude but we
     redirect via monkeypatching ``resolve_settings_path`` to write under tmp_path."""
     from doberman.hosthooks import install as install_mod
@@ -193,15 +195,17 @@ def test_interactive_global_flag_overrides_prompt(tmp_path: Path) -> None:
             return tmp_path / ".claude" / "settings.json"
         return original(scope, project_root)
 
-    # We can't easily patch the inner import, so use --global + --yes together
+    monkeypatch.setattr(install_mod, "resolve_settings_path", _patched_resolve)
+
     result = runner.invoke(
         app,
         ["setup", "--yes", "--global", "--path", str(tmp_path)],
         catch_exceptions=False,
     )
-    # This will write to ~/.claude/settings.json; we just check exit 0 and no crash.
-    # We don't assert on file location here since ~/.claude is real. Just confirm success.
     assert result.exit_code == 0, result.output
+    s = _settings(tmp_path)
+    assert PRE_COMMAND in _doberman_commands(s, "PreToolUse")
+    assert POST_COMMAND in _doberman_commands(s, "PostToolUse")
 
 
 # ---------------------------------------------------------------------------
