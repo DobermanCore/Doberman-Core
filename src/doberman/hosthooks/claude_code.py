@@ -44,6 +44,7 @@ from doberman.config import load_mode
 from doberman.engine.decision_engine import PASS_STUB, decide, max_risk, max_verdict
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.models import Decision, EvalContext, ReasonCode, Risk, SecurityObject, Verdict
+from doberman.policy.modes import DEFAULT_MODE
 from doberman.proxy.normalize import normalize
 
 #: Claude Code built-in tools whose *action* we gate before execution. Pure reads
@@ -154,6 +155,22 @@ def _deny(reason: str = _FAILSAFE_REASON) -> dict[str, Any]:
     return _hook_output("deny", reason)
 
 
+def _resolve_root_and_mode(cwd: object) -> tuple[str, str]:
+    """Resolve ``(repo_root, strictness_mode)`` from a hook payload's ``cwd``.
+
+    #51: with a valid ``cwd`` we read the project's saved mode. With a
+    missing/empty/invalid ``cwd`` we must NOT fall back to ``load_mode(".")`` —
+    that reads whatever ``.doberman/policies.yaml`` happens to sit in the hook
+    process's working directory (a *different* project's policy, or none), which
+    can silently apply a **weaker** mode than the real project's (e.g. Light when
+    the project is Strict). Fail safe: use the recommended default mode instead.
+    ``repo_root`` keeps the ``"."`` fallback for storage scoping (unchanged).
+    """
+    if isinstance(cwd, str) and cwd:
+        return cwd, load_mode(cwd)
+    return ".", DEFAULT_MODE.value
+
+
 def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Decide one ``PreToolUse`` call.
 
@@ -180,7 +197,7 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
                 return _deny()
 
         cwd = payload.get("cwd")
-        repo_root = cwd if isinstance(cwd, str) and cwd else "."
+        repo_root, mode = _resolve_root_and_mode(cwd)
         raw_session = payload.get("session_id")
         session_id = raw_session if isinstance(raw_session, str) and raw_session else None
 
@@ -192,7 +209,7 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
         # token channels) is what fires here.
         ctx = EvalContext(
             role=None,
-            mode=load_mode(repo_root),
+            mode=mode,
             metadata={"raw_arguments": args, "repo_root": repo_root},
         )
         decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
@@ -474,7 +491,7 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
             return None
 
         cwd = payload.get("cwd")
-        repo_root = cwd if isinstance(cwd, str) and cwd else "."
+        repo_root, mode = _resolve_root_and_mode(cwd)
         raw_session = payload.get("session_id")
         session_id = raw_session if isinstance(raw_session, str) and raw_session else None
 
@@ -496,7 +513,7 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
             action = normalize(canonical, scan_args)
             ctx = EvalContext(
                 role=None,
-                mode=load_mode(repo_root),
+                mode=mode,
                 metadata={"raw_arguments": scan_args, "repo_root": repo_root},
             )
 
@@ -525,7 +542,7 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
             return _post_block(_POST_FAILSAFE_REASON)
 
         # --- History (best-effort, never raises, never blocks) ---------------
-        _record_post_history(tool_name, tool_input, repo_root, session_id)
+        _record_post_history(tool_name, tool_input, repo_root, mode, session_id)
 
         return None  # clean output — abstain
 
@@ -534,11 +551,17 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _record_post_history(
-    tool_name: str, tool_input: dict[str, Any], repo_root: str, session_id: str | None
+    tool_name: str,
+    tool_input: dict[str, Any],
+    repo_root: str,
+    mode: str,
+    session_id: str | None,
 ) -> None:
     """Best-effort: normalize + decide + record_decision for history.
 
-    Wrapped in a broad except — must never raise or affect any verdict.
+    Wrapped in a broad except — must never raise or affect any verdict. ``mode`` is
+    the strictness mode already resolved by the caller (#51) so the history row uses
+    the same safe mode as the live decision, never a re-derived ``load_mode(".")``.
     """
     import asyncio  # lazy import keeps the module scope light
 
@@ -549,7 +572,7 @@ def _record_post_history(
         action = normalize(canonical, args)
         ctx = EvalContext(
             role=None,
-            mode=load_mode(repo_root),
+            mode=mode,
             metadata={"raw_arguments": args, "repo_root": repo_root},
         )
         decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
