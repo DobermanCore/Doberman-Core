@@ -69,6 +69,23 @@ def test_benign_tool_records_no_taint(tmp_path):
     assert _taint(tmp_path, "s4") == {}
 
 
+def test_hash_in_output_does_not_taint_or_block(tmp_path):
+    # #56 (end-to-end): a tool output containing a git-SHA / content-hash hex is
+    # benign. It must NOT block AND must NOT write a false ``secret_access`` taint —
+    # a false taint is sticky, entity-scoped, and cross-session, so it would later
+    # spuriously AUTH/BLOCK a legitimate egress (the taint-ledger poisoning).
+    manifest = (
+        '{"commit": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", '
+        '"node": "316d28fa2542938cc69aeef1188fa340fd69b94080dc7745d06dcd1dd1932738"}'
+    )
+    out = _post(
+        "Read", manifest, tmp_path, tool_input={"file_path": "manifest.json"}, session_id="s56"
+    )
+    assert out is None  # benign hashes → abstain
+    assert _taint(tmp_path, "s56") == {}
+    assert _taint(tmp_path, entity_scope(str(tmp_path))) == {}
+
+
 def test_post_history_persists_the_session_id(tmp_path):
     _post("Write", "wrote ok", tmp_path, tool_input={"file_path": "a.py"}, session_id="s5")
 

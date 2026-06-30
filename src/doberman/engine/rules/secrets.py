@@ -97,12 +97,24 @@ _SECRET_PATH = re.compile(
     """
 )
 
-# Entropy thresholds for the generic high-entropy heuristic. Lockfile hashes
-# and asset digests are long but we require BOTH length and high Shannon
-# entropy AND a charset that looks like a token to reduce false positives.
+# Entropy thresholds for the generic high-entropy heuristic. We require BOTH
+# length and high Shannon entropy AND a charset that looks like a token to
+# reduce false positives.
 _ENTROPY_MIN_LEN = 24
 _ENTROPY_BITS_PER_CHAR = 3.6  # ~ base64 randomness; below this is likely text
 _ENTROPY_TOKEN = re.compile(r"^[A-Za-z0-9+/=_\-]+$")
+
+# A git SHA-1 (40 hex) / SHA-256 (64 hex), content digest, or AST hash is long,
+# pure hex, and high-entropy — but it is NOT a credential. These are a common
+# false positive in tool output (manifests, lockfiles, git output), and a
+# spurious ``sensitive_secret_access`` here also poisons the host-hook taint
+# ledger. A token that is *entirely* hex of hash length (>= 40) is excluded from
+# the WEAK-entropy verdict path. Scope is deliberately narrow: a real base64
+# secret is virtually never all-hex; a hex value carrying a credential KEY name
+# is still caught by the strong env-assignment path; and the read-vs-send
+# fingerprint path (``_candidate_secret_tokens``) is unchanged, so a hex secret
+# that does fire is still fingerprinted.
+_HASH_LIKE_HEX = re.compile(r"[0-9a-fA-F]{40,}")
 
 # Bounds for the encoded-exfil decoder: avoid decode bombs / runaway recursion.
 # One decode layer only (no recursive base64 peeling), bounded token count/size.
@@ -161,7 +173,12 @@ def _token_looks_like_weak_secret(token: str) -> bool:
     judged whole, so splitting can never fragment a secret below the length
     floor and silently drop it. This keeps the rule raise-only: it removes a
     false positive without ever weakening detection.
+
+    A token that is entirely hash-shaped hex (a git SHA / content digest) is not
+    a credential and is excluded up front (#56) — see ``_HASH_LIKE_HEX``.
     """
+    if _HASH_LIKE_HEX.fullmatch(token):
+        return False
     if token.startswith("/"):
         return any(_looks_high_entropy_secret(segment) for segment in token.split("/"))
     return _looks_high_entropy_secret(token)
@@ -377,6 +394,12 @@ def _candidate_secret_tokens(strings: Iterable[str]) -> list[str]:
     (HK.5.2b): every STRONG credential match plus any high-entropy token — the same
     token shapes the rule treats as secret-bearing. Bounded by ``_MAX_FINGERPRINTS``
     so a giant payload cannot produce unbounded work.
+
+    Pure hash-shaped hex (git SHA / content digest, ``_HASH_LIKE_HEX``) is excluded
+    here too (#56), consistently with the detection path: a hash is not a secret, so
+    fingerprinting one as a candidate would let a benign hash later trip a false
+    ``confirmed_exfil`` match. No recall cost — a bare hash never reaches this path
+    alone (fingerprinting only runs once a real secret reason code has fired).
     """
     string_list = list(strings)
     tokens: list[str] = list(_detected_secret_tokens(string_list))
@@ -385,6 +408,8 @@ def _candidate_secret_tokens(strings: Iterable[str]) -> list[str]:
             break
         sample = text[:_SCAN_MAX_CHARS]
         for token in re.findall(r"[A-Za-z0-9+/=_\-]{%d,}" % _ENTROPY_MIN_LEN, sample):
+            if _HASH_LIKE_HEX.fullmatch(token):
+                continue
             if _looks_high_entropy_secret(token):
                 tokens.append(token)
                 if len(tokens) >= _MAX_FINGERPRINTS:

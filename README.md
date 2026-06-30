@@ -338,6 +338,7 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 Doberman is **defense-in-depth, not airtight** — no single rule is a guarantee. One concrete, currently-known gap:
 
 - **Whole-script homoglyph confusables.** The deterministic check catches *intra-token* mixed-script confusables (e.g. `раypal`, which mixes Cyrillic and Latin). But a token rendered **entirely in one non-Latin script** that mimics a Latin word (e.g. an all-Cyrillic look-alike of `paypal`) is NFKC-stable and is **not** caught by the core deterministic check today. Closing it is planned via a perplexity/confusable detector. Read the `OOD/homoglyph token signals` item above as defense-in-depth, not a robustness guarantee.
+- **Bare high-entropy hex.** To avoid flagging git SHAs, content/AST digests, and lockfile hashes as secrets — a noisy false positive that also poisoned the multi-step taint ledger — the generic high-entropy heuristic ignores tokens that are *entirely* hash-shaped hex (≥ 40 chars). A real secret that is bare hex with **no** surrounding credential name is therefore not stepped up by this heuristic alone; it is still caught when it carries a credential key-name (e.g. `API_KEY=…`), matches a known credential shape, or is later matched by the read-vs-send fingerprint. Defense-in-depth, not a guarantee.
 
 ---
 
