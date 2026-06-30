@@ -289,6 +289,17 @@ def _block(explanation: str) -> GuardrailResult:
     )
 
 
+# Surfaced on every control-plane block so a legitimate user isn't dead-ended:
+# the agent is intentionally blocked from touching its own guard (anti-tamper),
+# so the recovery path is out-of-band — a regular terminal where the hooks don't
+# intercept. No user path is echoed here, so redaction holds.
+_CONTROL_PLANE_RECOVERY_HINT = (
+    " To change Doberman's own hooks/config, do it in a regular terminal outside the"
+    " agent session (e.g. `doberman uninstall-hooks`) — the agent is intentionally"
+    " blocked from tampering with its own guard."
+)
+
+
 def _block_control_plane(explanation: str) -> GuardrailResult:
     # Reuse the path rule's reason code — semantically this *is* a protected-path
     # hit, just surfaced from inside a command string (HK.5.0b).
@@ -296,7 +307,7 @@ def _block_control_plane(explanation: str) -> GuardrailResult:
         verdict=Verdict.BLOCK,
         risk=Risk.critical,
         reason_codes=[ReasonCode.protected_path_blocked],
-        explanation=explanation,
+        explanation=explanation + _CONTROL_PLANE_RECOVERY_HINT,
     )
 
 
