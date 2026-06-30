@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from doberman.branding import DOG
 from doberman.config import load_mode
 from doberman.engine.decision_engine import PASS_STUB, decide, max_risk, max_verdict
 from doberman.engine.objective import ObjectiveGuardrail
@@ -93,8 +94,8 @@ _REQUIRED_FIELD: dict[str, str] = {
 }
 
 _HOOK_EVENT = "PreToolUse"
-_REASON = "Doberman [{verdict}]: {explanation} (reasons: {reasons}; action {action_id})"
-_FAILSAFE_REASON = "Doberman: failing closed — could not evaluate this action safely."
+_REASON = DOG + " Doberman [{verdict}]: {explanation} (reasons: {reasons}; action {action_id})"
+_FAILSAFE_REASON = DOG + " Doberman: failing closed — could not evaluate this action safely."
 
 #: HK.5.2 taint floor: modes where a tainted-session egress is BLOCKed outright
 #: rather than AUTH'd. Mirrors the lethal-trifecta hard block (ADR 0021): raise-only,
@@ -422,9 +423,9 @@ _INTERNAL_TOOLS: frozenset[str] = frozenset(
     {"TodoWrite", "TodoRead", "Task", "ExitPlanMode", "Artifact", "NotebookRead"}
 )
 
-_POST_FAILSAFE_REASON = "Doberman: failing closed — could not vet this tool output."
+_POST_FAILSAFE_REASON = DOG + " Doberman: failing closed — could not vet this tool output."
 _POST_REASON = (
-    "Doberman [post]: output contains credential-like material "
+    DOG + " Doberman [post]: output contains credential-like material "
     "({reasons}; action {action_id}).  Explanation: {explanation}"
 )
 _SECRET_REASON_CODES = frozenset({"secret_exfiltration", "sensitive_secret_access"})
