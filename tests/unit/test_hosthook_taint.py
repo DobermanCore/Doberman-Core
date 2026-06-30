@@ -86,6 +86,18 @@ def test_hash_in_output_does_not_taint_or_block(tmp_path):
     assert _taint(tmp_path, entity_scope(str(tmp_path))) == {}
 
 
+def test_benign_env_placeholder_output_does_not_taint_or_block(tmp_path):
+    # #56 (end-to-end): a README/config line like ``API_KEY=your_key_here`` or a
+    # lowercase ``configure_token_path=/usr/local/bin`` is benign. It must NOT block
+    # AND must NOT write a false ``secret_access`` taint (which would poison the
+    # cross-session multi-step-exfil floor).
+    output = "Setup:\n    API_KEY=your_key_here\n    configure_token_path=/usr/local/bin\n"
+    out = _post("Read", output, tmp_path, tool_input={"file_path": "README.md"}, session_id="s56b")
+    assert out is None
+    assert _taint(tmp_path, "s56b") == {}
+    assert _taint(tmp_path, entity_scope(str(tmp_path))) == {}
+
+
 def test_post_history_persists_the_session_id(tmp_path):
     _post("Write", "wrote ok", tmp_path, tool_input={"file_path": "a.py"}, session_id="s5")
 

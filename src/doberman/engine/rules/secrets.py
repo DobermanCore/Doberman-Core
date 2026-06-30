@@ -70,10 +70,27 @@ _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 # ``.env``-style assignment of a secret-looking key to a non-trivial value.
+# Case-INSENSITIVE on purpose (#56): a lowercase ``private_key=…`` is still a real
+# secret assignment, so keeping ``(?i)`` preserves recall. Benign lowercase config
+# like ``configure_token_path=/usr/local/bin`` is excluded by the VALUE check
+# (``_value_looks_secretish``), not by key case — precision without a recall hit.
 _ENV_ASSIGNMENT = re.compile(
     r"(?im)^\s*(?:export\s+)?"
     r"[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASS(?:WORD)?|CREDENTIAL|PRIVATE)[A-Z0-9_]*"
     r"\s*=\s*['\"]?(?P<value>[^\s'\"]{8,})"
+)
+
+# Assignment VALUES that are obviously not secrets — placeholders, paths, URLs.
+# A secret-named key only counts as secret material when its value is plausibly a
+# real secret (#56): a README's ``API_KEY=your_key_here`` or a config's
+# ``..._path=/usr/local/bin`` must not be flagged. Anchored to the whole value so a
+# real secret that merely *contains* one of these substrings is not dropped.
+_PLACEHOLDER_VALUE = re.compile(
+    r"(?i)^(?:"
+    r"your[_\-].*|.*[_\-]here|change[_\-]?me|placeholder.*|redacted.*|dummy.*|"
+    r"example[_\-].*|sample[_\-].*|test[_\-]?(?:key|token|secret).*|"
+    r"<.*>|\$\{.*\}|\*{3,}|x{4,}"
+    r")$"
 )
 
 # A run of base64/base64url characters long enough to plausibly carry a secret.
@@ -147,18 +164,37 @@ def _matches_credential_pattern(text: str) -> bool:
     return any(pattern.search(text) for pattern in _CREDENTIAL_PATTERNS)
 
 
+def _value_looks_secretish(value: str) -> bool:
+    """Does an env-assignment *value* plausibly carry a real secret? (#56)
+
+    Rejects the benign value shapes that made the rule over-block — filesystem
+    paths, URLs, and obvious placeholders (``your_key_here``, ``changeme``,
+    ``${VAR}``, ``<token>``). Everything else is treated as secret-shaped, so a
+    real ``API_TOKEN=supersecretvalue123`` (or a hex / base64 value) is still
+    caught — this only removes false positives, never weakens real detection.
+    """
+    if value.startswith(("/", "./", "../", "~/")):  # filesystem path
+        return False
+    if re.match(r"(?i)^[a-z][a-z0-9+.\-]*://", value):  # URL scheme
+        return False
+    return not _PLACEHOLDER_VALUE.search(value)
+
+
 def _strong_secret_in_text(text: str) -> bool:
     """High-confidence secret material: a known credential shape, PEM, or a
-    ``.env``-style ``SECRET=value`` assignment.
+    ``.env``-style ``SECRET=value`` assignment whose value is secret-shaped.
 
     "Strong" evidence is what is allowed to drive a *hard BLOCK* on exfil. It is
     deliberately specific so that a high-entropy-but-benign blob (a base64 asset,
-    a lockfile hash) is NOT treated as a blockable secret on its own.
+    a lockfile hash) is NOT treated as a blockable secret on its own, and so that a
+    secret-named key assigned a placeholder/path/URL value is not flagged (#56).
     """
     if not text:
         return False
     sample = text[:_SCAN_MAX_CHARS]
-    return bool(_matches_credential_pattern(sample) or _ENV_ASSIGNMENT.search(sample))
+    if _matches_credential_pattern(sample):
+        return True
+    return any(_value_looks_secretish(m.group("value")) for m in _ENV_ASSIGNMENT.finditer(sample))
 
 
 def _token_looks_like_weak_secret(token: str) -> bool:
@@ -179,6 +215,12 @@ def _token_looks_like_weak_secret(token: str) -> bool:
     """
     if _HASH_LIKE_HEX.fullmatch(token):
         return False
+    if "=" in token.rstrip("="):
+        # An assignment-shaped token ("name=value", interior '='; base64 padding is
+        # trailing-only) is not a single secret — the name part inflates entropy and
+        # over-flags benign config like ``cfg_path=/usr/local/bin`` (#56). Judge the
+        # value (after the last '='), so a high-entropy RHS is still caught.
+        return _token_looks_like_weak_secret(token.rsplit("=", 1)[-1])
     if token.startswith("/"):
         return any(_looks_high_entropy_secret(segment) for segment in token.split("/"))
     return _looks_high_entropy_secret(token)

