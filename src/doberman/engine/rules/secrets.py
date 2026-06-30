@@ -394,6 +394,12 @@ def _candidate_secret_tokens(strings: Iterable[str]) -> list[str]:
     (HK.5.2b): every STRONG credential match plus any high-entropy token — the same
     token shapes the rule treats as secret-bearing. Bounded by ``_MAX_FINGERPRINTS``
     so a giant payload cannot produce unbounded work.
+
+    Pure hash-shaped hex (git SHA / content digest, ``_HASH_LIKE_HEX``) is excluded
+    here too (#56), consistently with the detection path: a hash is not a secret, so
+    fingerprinting one as a candidate would let a benign hash later trip a false
+    ``confirmed_exfil`` match. No recall cost — a bare hash never reaches this path
+    alone (fingerprinting only runs once a real secret reason code has fired).
     """
     string_list = list(strings)
     tokens: list[str] = list(_detected_secret_tokens(string_list))
@@ -402,6 +408,8 @@ def _candidate_secret_tokens(strings: Iterable[str]) -> list[str]:
             break
         sample = text[:_SCAN_MAX_CHARS]
         for token in re.findall(r"[A-Za-z0-9+/=_\-]{%d,}" % _ENTROPY_MIN_LEN, sample):
+            if _HASH_LIKE_HEX.fullmatch(token):
+                continue
             if _looks_high_entropy_secret(token):
                 tokens.append(token)
                 if len(tokens) >= _MAX_FINGERPRINTS:

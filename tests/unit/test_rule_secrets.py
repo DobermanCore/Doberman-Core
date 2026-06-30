@@ -331,3 +331,33 @@ def test_hex_value_with_credential_key_name_to_external_still_blocks():
     )
     assert result.verdict is Verdict.BLOCK
     assert ReasonCode.secret_exfiltration in result.reason_codes
+
+
+def test_hash_is_not_a_fingerprint_candidate():
+    # #56 (review finding #1): a pure hash must not be fingerprinted as a read-vs-send
+    # candidate — consistently with the detection path. Otherwise a benign git SHA
+    # co-located with a real secret would be stored and later trip a false
+    # confirmed_exfil BLOCK when that same SHA is sent.
+    from doberman.engine.rules.secrets import candidate_secret_fingerprints
+
+    assert candidate_secret_fingerprints(f"commit {GIT_SHA1} tree {SHA256_HEX}") == set()
+
+
+def test_real_secret_is_still_a_fingerprint_candidate():
+    # Control for the above: a genuine credential is still fingerprinted (recall
+    # of the read-vs-send exfil store is preserved).
+    from doberman.engine.rules.secrets import candidate_secret_fingerprints
+
+    assert candidate_secret_fingerprints(f"AWS={FAKE_AWS}") != set()
+
+
+def test_bare_bearer_hex_token_is_an_accepted_gap_pass():
+    # Documented #56 tradeoff (README "Known limitations"): a bare hash-shaped hex
+    # token with NO credential key-name is not stepped up by the entropy heuristic
+    # alone. Pinned so the gap is an intentional, reviewed decision — not a silent
+    # regression. Name the token (API_KEY=) or use a known shape to catch it.
+    action = _action(ActionType.network_request, target="https://api.x/y", dest="https://api.x/y")
+    result = RULE.evaluate(
+        action, _ctx(url="https://api.x/y", body=f"Authorization: Bearer {SHA256_HEX}")
+    )
+    assert result.verdict is Verdict.PASS
