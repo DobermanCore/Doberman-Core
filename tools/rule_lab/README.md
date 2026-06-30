@@ -33,6 +33,7 @@ builtins_only report ─▶ proposer (proposer.md) ─▶ candidate spec
 | `worker.py` | Thin driver: runs the unmodified benchmark CLI, applies the gate, validates held-out. Never merges. |
 | `proposer.md` | System prompt + JSON spec the proposer agent emits. |
 | `tests/test_scorer.py` | The safety contract for the gate. |
+| `tests/test_worker.py` | Input safeguards for worker CLI and suite splitting. |
 
 ## Run it
 
@@ -44,6 +45,12 @@ pytest tools/rule_lab/tests
 # the candidate is the ONLY installed plugin, so --profile both isolates it)
 python tools/rule_lab/worker.py --tune agentdojo --holdout synthetic
 ```
+
+`--eps-fpr` is deliberately bounded to `0.0 <= eps_fpr <= 0.05`; larger
+tolerance values fail before scoring so the loop cannot silently approve a
+high-friction candidate. Tune and holdout suites must also be disjoint. Reusing
+the same suite on both sides fails fast because it would turn held-out
+validation into train-on-test.
 
 Exit code is `0` only on `ACCEPT -> human review`, so CI / the Slice Loop can
 branch on it.
@@ -61,5 +68,7 @@ branch on it.
   suite (e.g. `synthetic`) via the non-regression predicate. Improvement must
   survive the held-out suite. A candidate tuned and measured on the *same* suite
   is train-on-test — the held-out check, not the tune ΔASR, is the real signal.
+  The worker rejects overlapping tune/holdout lists before spending benchmark
+  budget.
 - **Human in the loop**: the worker stops at `ACCEPT -> human review`. Merging —
   and any 2FA-gated loosening — is never autonomous.

@@ -40,7 +40,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from scorer import SuiteVerdict, aggregate, non_regression_both, score_both  # noqa: E402
+from scorer import (  # noqa: E402
+    SuiteVerdict,
+    aggregate,
+    non_regression_both,
+    score_both,
+    validate_eps_fpr,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -61,8 +67,29 @@ def run_suite_both(suite: str) -> dict:
     return json.loads(proc.stdout)
 
 
+def _eps_fpr_arg(value: str) -> float:
+    try:
+        eps_fpr = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid eps_fpr {value!r}") from exc
+    try:
+        return validate_eps_fpr(eps_fpr)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def validate_suite_split(tune: list[str], holdout: list[str]) -> None:
+    """Fail fast when held-out validation would reuse a tune suite."""
+    overlap = sorted(set(tune) & set(holdout))
+    if overlap:
+        joined = ", ".join(overlap)
+        raise ValueError(f"tune and holdout suites must be disjoint; overlap: {joined}")
+
+
 def evaluate(tune: list[str], holdout: list[str], eps_fpr: float) -> dict:
     """Run the tune set, apply the gate, then validate on the held-out set."""
+    validate_eps_fpr(eps_fpr)
+    validate_suite_split(tune, holdout)
     verdicts: list[SuiteVerdict] = []
     reports: dict[str, dict] = {}
     for suite in tune:
@@ -128,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--eps-fpr",
-        type=float,
+        type=_eps_fpr_arg,
         default=0.0,
         help="benign-friction tolerance (human-set; keep small)",
     )

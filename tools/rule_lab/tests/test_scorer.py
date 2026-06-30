@@ -9,9 +9,18 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scorer import SuiteVerdict, accept, aggregate, non_regression, score_both  # noqa: E402
+from scorer import (  # noqa: E402
+    SuiteVerdict,
+    accept,
+    aggregate,
+    non_regression,
+    score_both,
+    validate_eps_fpr,
+)
 
 
 def _report(asr: float, fpr: float, hard_fpr: float, fatigue: float | None = None) -> dict:
@@ -50,9 +59,17 @@ def test_new_hard_block_on_benign_is_rejected():
 
 def test_extra_friction_beyond_tolerance_is_rejected():
     base = _report(asr=0.40, fpr=0.10, hard_fpr=0.02)
-    cand = _report(asr=0.20, fpr=0.18, hard_fpr=0.02)
-    assert not accept(base, cand, eps_fpr=0.05).accepted
-    assert accept(base, cand, eps_fpr=0.10).accepted  # within a human-set tolerance
+    cand = _report(asr=0.20, fpr=0.14, hard_fpr=0.02)
+    assert not accept(base, cand, eps_fpr=0.03).accepted
+    assert accept(base, cand, eps_fpr=0.05).accepted  # within the bounded tolerance
+
+
+def test_eps_fpr_must_stay_inside_safe_range():
+    assert validate_eps_fpr(0.05) == 0.05
+    with pytest.raises(ValueError, match=r"outside safe range"):
+        validate_eps_fpr(0.050001)
+    with pytest.raises(ValueError, match=r"outside safe range"):
+        accept(_report(0.4, 0.1, 0.02), _report(0.2, 0.1, 0.02), eps_fpr=-0.001)
 
 
 def test_fatigue_breaks_ties_when_asr_unchanged():
