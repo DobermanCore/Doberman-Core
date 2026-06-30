@@ -408,3 +408,16 @@ def test_secret_assignment_with_real_value_to_external_still_blocks():
     )
     assert result.verdict is Verdict.BLOCK
     assert ReasonCode.secret_exfiltration in result.reason_codes
+
+
+def test_lowercase_key_secret_assignment_is_still_detected():
+    # Recall guard: `_ENV_ASSIGNMENT` is case-INSENSITIVE on purpose — a lowercase
+    # secret assignment (`private_key=<value>`) is still a real secret and must step
+    # up (AUTH). Pins the `(?i)` flag so it can't be silently dropped: doing so would
+    # let lowercase-key secrets slip to PASS (a raise-only violation).
+    action = _action(ActionType.file_write, target="scratch.txt")
+    result = RULE.evaluate(
+        action, _ctx(path="scratch.txt", content="private_key=supersecretvalue123")
+    )
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_secret_access in result.reason_codes

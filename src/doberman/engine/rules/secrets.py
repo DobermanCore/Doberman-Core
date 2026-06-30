@@ -70,10 +70,12 @@ _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 # ``.env``-style assignment of a secret-looking key to a non-trivial value.
-# Case-SENSITIVE (#56): real ``.env`` secrets are UPPER_SNAKE (``API_KEY=``), so a
-# lowercase ``configure_token_path=…`` in prose/config no longer matches the keyword.
+# Case-INSENSITIVE on purpose (#56): a lowercase ``private_key=…`` is still a real
+# secret assignment, so keeping ``(?i)`` preserves recall. Benign lowercase config
+# like ``configure_token_path=/usr/local/bin`` is excluded by the VALUE check
+# (``_value_looks_secretish``), not by key case — precision without a recall hit.
 _ENV_ASSIGNMENT = re.compile(
-    r"(?m)^\s*(?:export\s+)?"
+    r"(?im)^\s*(?:export\s+)?"
     r"[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASS(?:WORD)?|CREDENTIAL|PRIVATE)[A-Z0-9_]*"
     r"\s*=\s*['\"]?(?P<value>[^\s'\"]{8,})"
 )
