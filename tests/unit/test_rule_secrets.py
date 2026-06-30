@@ -42,6 +42,13 @@ FAKE_SLACK_HOOK = (  # noqa: S105
 FAKE_SENDGRID = "SG" + ".EXAMPLEabcdef0123456789" + ".EXAMPLE_ABCDEFGHIJ0123456789klmnop"  # noqa: S105
 FAKE_NPM = "npm" + "_" + "EXAMPLE" + "0123456789abcdefABCDEF0123456"  # noqa: S105
 FAKE_DB_URI = "postgres://" + "dbuser:" + "EXAMPLEpass123" + "@db.internal:5432/app"  # noqa: S105
+# Modern provider key shapes the original _CREDENTIAL_PATTERNS missed (so they only
+# got AUTH-via-entropy, not BLOCK, on exfil). Built via `+` so push-protection/gitleaks
+# does not flag the literals; the runtime value still matches the rule's regex.
+FAKE_ANTHROPIC = "sk-ant-" + "api03-" + "EXAMPLE0123456789abcdefABCDEF0123456789"  # noqa: S105
+FAKE_OPENAI_PROJ = "sk-proj-" + "EXAMPLE0123456789abcdefABCDEF0123456789"  # noqa: S105
+FAKE_GITLAB = "glpat-" + "EXAMPLE0123456789abcdefABCDE"  # noqa: S105
+FAKE_STRIPE_TEST = "sk" + "_test_" + "EXAMPLE0123456789abcdef99"  # noqa: S105
 
 NEW_CREDENTIALS = [
     FAKE_JWT,
@@ -51,6 +58,10 @@ NEW_CREDENTIALS = [
     FAKE_SENDGRID,
     FAKE_NPM,
     FAKE_DB_URI,
+    FAKE_ANTHROPIC,
+    FAKE_OPENAI_PROJ,
+    FAKE_GITLAB,
+    FAKE_STRIPE_TEST,
 ]
 # Strings that RESEMBLE but are NOT strong credentials — must never strong-block.
 BENIGN_LOOKALIKES = [
