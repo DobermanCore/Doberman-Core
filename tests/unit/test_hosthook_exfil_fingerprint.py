@@ -76,7 +76,8 @@ def test_sending_a_different_value_falls_back_to_taint_floor(tmp_path):
     # multi_step_exfil, NOT a confirmed_exfil block.
     _read_secret(tmp_path, _SECRET, session_id="s3")
     out = _egress(tmp_path, _OTHER, session_id="s3")
-    assert _hso(out)["permissionDecision"] == "ask"
+    assert _hso(out)["permissionDecision"] == "deny"  # AUTH floor (headless challenge denies)
+    assert "[AUTH]" in _hso(out)["permissionDecisionReason"]  # AUTH, not a confirmed-exfil BLOCK
     assert "confirmed_exfil" not in _hso(out)["permissionDecisionReason"]
     assert "multi_step_exfil" in _hso(out)["permissionDecisionReason"]
 
@@ -94,7 +95,8 @@ def test_no_recorded_secret_does_not_fabricate_a_match(tmp_path):
     # Fresh session, no prior read: sending a high-entropy token is at most the
     # objective's weak AUTH (and no taint) — never a confirmed BLOCK.
     out = _egress(tmp_path, _SECRET, session_id="fresh")
-    assert _hso(out)["permissionDecision"] != "deny"
+    # A weak AUTH (no prior read) — an AUTH challenge, never a confirmed-exfil BLOCK.
+    assert "[AUTH]" in _hso(out)["permissionDecisionReason"]
     assert "confirmed_exfil" not in _hso(out)["permissionDecisionReason"]
 
 

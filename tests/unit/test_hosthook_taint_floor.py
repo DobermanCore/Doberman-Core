@@ -51,7 +51,8 @@ def test_tainted_session_egress_is_authed_in_balanced(tmp_path):
     _seed_secret_taint(tmp_path, "sess-1")
     out = _pre("WebFetch", {"url": _EGRESS_URL}, tmp_path, session_id="sess-1")
     assert out is not None
-    assert _decision(out) == "ask"  # AUTH
+    assert _decision(out) == "deny"  # AUTH → Doberman challenge; headless test = fail-closed deny
+    assert "[AUTH]" in _reason(out)  # ...surfaced as an AUTH challenge, not a hard BLOCK
     assert "multi_step_exfil" in _reason(out)
 
 
@@ -71,7 +72,8 @@ def test_clean_session_egress_not_escalated_by_floor(tmp_path):
     # stays AUTH, proving the BLOCK in the strict test came from the taint floor.
     save_mode("strict", str(tmp_path))
     out = _pre("WebFetch", {"url": _EGRESS_URL}, tmp_path, session_id="clean")
-    assert _decision(out) == "ask"  # objective AUTH, not a floor BLOCK
+    assert _decision(out) == "deny"  # objective AUTH (headless challenge denies), not a floor BLOCK
+    assert "[AUTH]" in _reason(out)  # AUTH challenge — the strict BLOCK below comes from the floor
     assert "multi_step_exfil" not in _reason(out)
 
 
@@ -128,5 +130,6 @@ def test_no_taint_db_does_not_crash_or_fabricate(tmp_path):
     # A fresh repo with no taint store at all: read returns empty, the floor
     # abstains (no fabricated taint) and the hook does not crash.
     out = _pre("WebFetch", {"url": _EGRESS_URL}, tmp_path, session_id="fresh")
-    assert _decision(out) == "ask"  # objective AUTH only
+    assert _decision(out) == "deny"  # objective AUTH only (headless challenge denies)
+    assert "[AUTH]" in _reason(out)
     assert "multi_step_exfil" not in _reason(out)
