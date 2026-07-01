@@ -537,6 +537,7 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
                     action_id=action.id,
                     explanation=(scan_result.explanation or "").strip() or "no further detail",
                 )
+                _record_blocked_post_history(scan_result, action, repo_root, session_id)
                 return _post_block(reason)
 
         except Exception:  # noqa: BLE001 — scan failure → fail closed
@@ -564,10 +565,6 @@ def _record_post_history(
     the strictness mode already resolved by the caller (#51) so the history row uses
     the same safe mode as the live decision, never a re-derived ``load_mode(".")``.
     """
-    import asyncio  # lazy import keeps the module scope light
-
-    from doberman.storage.log import record_decision  # lazy import
-
     try:
         canonical, args = to_normalize_input(tool_name, tool_input)
         action = normalize(canonical, args)
@@ -577,12 +574,63 @@ def _record_post_history(
             metadata={"raw_arguments": args, "repo_root": repo_root},
         )
         decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
+        _record_post_history_decision(
+            decision, action, repo_root, session_id, auth_result="executed"
+        )
+    except Exception:  # noqa: BLE001,S110 — history must never break the execution path
+        pass
+
+
+def _record_blocked_post_history(
+    scan_result: Any,
+    action: SecurityObject,
+    repo_root: str,
+    session_id: str | None,
+) -> None:
+    """Best-effort: record a PostToolUse output-scan block in ``doberman log``.
+
+    The objective scan may return AUTH for "secret entered context", but the
+    PostToolUse hook's enforcement decision is to block that output from reaching
+    the model. The decision log should therefore show the hook-enforced BLOCK.
+    """
+    try:
+        decision = Decision(
+            action_id=action.id,
+            final_verdict=Verdict.BLOCK,
+            final_risk=max_risk(scan_result.risk, Risk.high),
+            objective=scan_result,
+            subjective=None,
+            reason_codes=list(scan_result.reason_codes),
+            explanation=scan_result.explanation,
+            decided_at=action.ts,
+        )
+        _record_post_history_decision(
+            decision, action, repo_root, session_id, auth_result="blocked"
+        )
+    except Exception:  # noqa: BLE001,S110 — history must never break the block path
+        pass
+
+
+def _record_post_history_decision(
+    decision: Decision,
+    action: SecurityObject,
+    repo_root: str,
+    session_id: str | None,
+    *,
+    auth_result: str,
+) -> None:
+    """Best-effort: persist one PostToolUse decision row."""
+    import asyncio  # lazy import keeps the module scope light
+
+    from doberman.storage.log import record_decision  # lazy import
+
+    try:
         asyncio.run(
             record_decision(
                 decision,
                 action,
                 repo_root=repo_root,
-                auth_result="executed",
+                auth_result=auth_result,
                 session_id=session_id,
             )
         )
