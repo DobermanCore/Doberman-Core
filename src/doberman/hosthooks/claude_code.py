@@ -9,7 +9,9 @@ objective floor**, and answer in Claude Code's hook protocol:
 
 * ``PASS``  -> abstain (no output). Doberman is **raise-only**: it never removes
   the harness's own permission prompts, it only *adds* friction.
-* ``AUTH``  -> ``permissionDecision: "ask"`` — the harness asks the human.
+* ``AUTH``  -> run Doberman's own action-bound challenge (a topmost GUI dialog, else
+  the controlling terminal); approved -> ``"allow"`` this one call, otherwise
+  ``"deny"`` (fail closed). See :func:`_resolve_auth`.
 * ``BLOCK`` -> ``permissionDecision: "deny"`` with a redaction-safe reason.
 
 **Fail closed.** A malformed payload, an engine error, or any unhandled case
@@ -38,7 +40,7 @@ adaptive per-entity layer is a separate, warm-process slice.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
 from doberman.config import load_mode
@@ -47,6 +49,9 @@ from doberman.engine.objective import ObjectiveGuardrail
 from doberman.models import Decision, EvalContext, ReasonCode, Risk, SecurityObject, Verdict
 from doberman.policy.modes import DEFAULT_MODE
 from doberman.proxy.normalize import normalize
+
+if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth stack
+    from doberman.auth.challenge import Prompter
 
 #: Claude Code built-in tools whose *action* we gate before execution. Pure reads
 #: (Read / Glob / Grep) are deliberately NOT gated here — a read cannot destroy or
@@ -96,6 +101,35 @@ _REQUIRED_FIELD: dict[str, str] = {
 _HOOK_EVENT = "PreToolUse"
 _REASON = DOG + " Doberman [{verdict}]: {explanation} (reasons: {reasons}; action {action_id})"
 _FAILSAFE_REASON = DOG + " Doberman: failing closed — could not evaluate this action safely."
+#: Default next step on a BLOCK (leemeo3's #70 wording, kept verbatim). Reused as the
+#: fallback for any reason without a more specific hint below.
+_BLOCK_NEXT_STEP = (
+    "Next step: this BLOCK has no in-session override. If this is trusted "
+    "administrative recovery work, run it outside the hooked Claude Code session."
+)
+#: Reason-specific BLOCK next steps (issues #65/#67: adapt the guidance to the actual
+#: block). An exfiltration block is not "recovery work to run elsewhere" — it stays
+#: blocked in every channel — so it says so. Reasons not listed here use the default.
+_BLOCK_NEXT_STEP_BY_REASON: dict[str, str] = {
+    ReasonCode.secret_exfiltration.value: (
+        "Next step: blocked to stop a credential from leaving — there is no in-session "
+        "override; do not route this value to an external destination."
+    ),
+    ReasonCode.confirmed_exfil.value: (
+        "Next step: blocked — an outbound value matches a secret seen earlier this "
+        "session. There is no in-session override."
+    ),
+    ReasonCode.multi_step_exfil.value: (
+        "Next step: blocked — a secret entered this session and this call would send it "
+        "out. There is no in-session override."
+    ),
+}
+
+#: Prompter for the PreToolUse AUTH challenge. ``None`` ⇒ build the default GUI→TTY
+#: fallback lazily (keeps the hot path light; lets tests inject a headless fake, like
+#: ``proxy.executor.AUTH_PROMPTER``). Never the MCP elicitation channel — a host hook
+#: has no agent session to elicit over.
+AUTH_PROMPTER: Prompter | None = None
 
 #: HK.5.2 taint floor: modes where a tainted-session egress is BLOCKed outright
 #: rather than AUTH'd. Mirrors the lethal-trifecta hard block (ADR 0021): raise-only,
@@ -130,16 +164,121 @@ def to_normalize_input(
     return canonical, args
 
 
-def _decision_payload(decision: Decision) -> dict[str, Any]:
-    """Build the PreToolUse hook output for an AUTH (ask) / BLOCK (deny) verdict."""
-    permission = "deny" if decision.final_verdict is Verdict.BLOCK else "ask"
-    reason = _REASON.format(
-        verdict=decision.final_verdict.name,
+def _format_reason(decision: Decision, verdict_label: str) -> str:
+    """The redaction-safe reason line (verdict + explanation + reason codes + action
+    id). Built only from already-safe decision fields — never a raw argument value."""
+    return _REASON.format(
+        verdict=verdict_label,
         explanation=(decision.explanation or "").strip() or "no further detail",
         reasons=", ".join(str(rc) for rc in decision.reason_codes) or "unspecified",
         action_id=decision.action_id,
     )
-    return _hook_output(permission, reason)
+
+
+def _decision_payload(decision: Decision) -> dict[str, Any]:
+    """Build the PreToolUse hook output for a BLOCK (deny) verdict.
+
+    AUTH is handled by :func:`_resolve_auth` (it runs Doberman's own challenge);
+    only a hard BLOCK reaches here, and it always denies.
+    """
+    reason = _format_reason(decision, decision.final_verdict.name)
+    return _hook_output("deny", f"{reason} {_block_next_step(decision.reason_codes)}")
+
+
+def _block_next_step(reason_codes: list[ReasonCode]) -> str:
+    """The BLOCK next-step for the first reason code with a specific override, else default."""
+    for reason in reason_codes:
+        specific = _BLOCK_NEXT_STEP_BY_REASON.get(str(reason))
+        if specific is not None:
+            return specific
+    return _BLOCK_NEXT_STEP
+
+
+def _resolve_auth(decision: Decision, action: SecurityObject) -> dict[str, Any]:
+    """Run Doberman's tiered challenge for an AUTH and answer the host hook.
+
+    The proxy path (``proxy.executor._handle_auth``) already does this for MCP tools;
+    the host hook had no equivalent, so an AUTH here used to defer to the harness's own
+    yes/no prompt — which cannot satisfy a 2FA-tier action and left the user with no
+    real approve path (issues #65/#67). We now present the action-bound challenge over
+    a GUI→TTY fallback (the dialog is a channel the human can actually see even when the
+    agent's TUI owns the terminal).
+
+    Approved *and* bound to THIS action id → ``allow`` the one call. A denial, an
+    unavailable channel, or any error → ``deny`` (fail closed). The auth stack is
+    imported lazily so the common PASS/BLOCK hot path never pays for it.
+    """
+    # ponytail: no TOCTOU re-decide like the proxy — the hook grants no elevations and
+    # holds no state between calls, so there is nothing to re-check; each call is
+    # challenged independently.
+    try:
+        # Imported + built here (not at module scope) so the PASS/BLOCK hot path stays
+        # light, and inside the try so a construction failure (e.g. no tkinter) also
+        # fails closed with the actionable channel-error message.
+        from doberman.auth.challenge import run_auth_challenge
+
+        prompter = AUTH_PROMPTER if AUTH_PROMPTER is not None else _default_auth_prompter()
+        result = run_auth_challenge(decision, action, prompter=prompter)
+    except Exception:  # noqa: BLE001 — any challenge/prompter error is a denial (fail closed)
+        return _hook_output("deny", _auth_denied_reason(decision, channel_error=True))
+
+    # Approval is bound to THIS action id — never honor a result meant for another call.
+    if result.approved and result.action_id == action.id:
+        reason = _format_reason(decision, "AUTH")
+        return _hook_output(
+            "allow",
+            f"{reason} Approved via Doberman's action-bound authentication ({result.method}).",
+        )
+    return _hook_output(
+        "deny", _auth_denied_reason(decision, channel_error=result.method == "error")
+    )
+
+
+def _default_auth_prompter() -> Prompter:
+    """The host-hook challenge channel: a topmost GUI dialog, then the controlling
+    terminal (no MCP elicitation — a hook has no agent session). Built lazily so the
+    common PASS/BLOCK hot path never imports the auth stack."""
+    from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
+    from doberman.auth.tty_prompter import TtyPrompter
+
+    return FallbackPrompter([GuiPrompter(), TtyPrompter()])
+
+
+def _auth_denied_reason(decision: Decision, *, channel_error: bool) -> str:
+    """A denied-AUTH message that names how to actually complete the approval
+    (issues #65/#67). Redaction-safe; adds the exact 2FA-enrollment command when an
+    un-enrolled 2FA tier is why the action can't be authenticated."""
+    reason = _format_reason(decision, "AUTH")
+    if channel_error:
+        tail = (
+            "Next step: Doberman's approval dialog could not be shown (no GUI or "
+            "terminal channel). Approve from an interactive session, or run the action "
+            "yourself outside the hooked Claude Code session."
+        )
+    else:
+        tail = (
+            "Next step: authentication was not completed — retry the action to reopen "
+            "Doberman's approval dialog."
+        )
+        if _needs_unenrolled_2fa(decision):
+            tail += (
+                " This action needs 2FA, which isn't set up yet — run "
+                "`doberman 2fa setup`, then retry."
+            )
+    return f"{reason} {tail}"
+
+
+def _needs_unenrolled_2fa(decision: Decision) -> bool:
+    """True when the challenge tier requires a TOTP code but none is enrolled — the
+    usual reason a high-risk AUTH dead-ends. Best-effort; never raises into the hook."""
+    try:
+        from doberman.auth import totp
+        from doberman.auth.challenge import AuthTier, select_tier
+
+        tier = select_tier(decision)
+        return tier in (AuthTier.two_factor, AuthTier.role_elevation) and not totp.is_enrolled()
+    except Exception:  # noqa: BLE001 — a messaging aid must never affect the decision
+        return False
 
 
 def _hook_output(permission: str, reason: str) -> dict[str, Any]:
@@ -220,7 +359,11 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
         decision = _apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)
         if decision.final_verdict is Verdict.PASS:
             return None  # raise-only: abstain, leaving the harness's native flow intact
-        return _decision_payload(decision)
+        if decision.final_verdict is Verdict.AUTH:
+            # Run Doberman's own action-bound challenge so the human can actually
+            # approve in-session (issues #65/#67) — not just be told to.
+            return _resolve_auth(decision, action)
+        return _decision_payload(decision)  # BLOCK → deny
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
         return _deny()
 

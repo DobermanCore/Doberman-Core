@@ -57,3 +57,23 @@ def isolated_executor_repo_root(tmp_path, monkeypatch):
     repo_root.mkdir()
     monkeypatch.setattr(executor, "REPO_ROOT", str(repo_root))
     return repo_root
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_hosthook_auth_prompter(monkeypatch):
+    """Issues #65/#67: the PreToolUse hook now runs Doberman's own auth challenge on an
+    AUTH verdict. Force the injected prompter to an unavailable channel so no test ever
+    pops a real GUI dialog or blocks on a terminal — an AUTH then fails closed to deny
+    unless a test injects its own approving/declining fake.
+    """
+    from doberman.auth.gui_prompter import PrompterUnavailableError
+    from doberman.hosthooks import claude_code
+
+    class _NoChannel:
+        def confirm(self, message):
+            raise PrompterUnavailableError("headless test: no auth channel")
+
+        def read_code(self, message):
+            raise PrompterUnavailableError("headless test: no auth channel")
+
+    monkeypatch.setattr(claude_code, "AUTH_PROMPTER", _NoChannel())
