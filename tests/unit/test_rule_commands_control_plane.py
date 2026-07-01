@@ -112,6 +112,22 @@ def test_explanation_does_not_echo_the_command_or_path():
     assert "supersecret" not in explanation
 
 
+def test_control_plane_block_explains_the_recovery_path():
+    # A legitimate user who wants to change/uninstall the hooks needs to know the
+    # recovery path is out-of-band (a plain terminal) — the agent itself is blocked
+    # from doing it (anti-tamper). The block message must point there so the user
+    # isn't dead-ended.
+    explanation = (_cmd("doberman uninstall-hooks").explanation or "").lower()
+    assert "uninstall-hooks" in explanation
+    assert "terminal" in explanation
+
+
+def test_recovery_hint_does_not_echo_a_user_control_plane_path():
+    # The appended hint must not leak the user's targeted path (redaction holds).
+    explanation = _cmd("echo x > .claude/settings.json").explanation or ""
+    assert ".claude/settings.json" not in explanation
+
+
 def test_benign_command_passes():
     assert _cmd("echo hello world").verdict is Verdict.PASS
 
