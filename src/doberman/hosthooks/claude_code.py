@@ -96,6 +96,14 @@ _REQUIRED_FIELD: dict[str, str] = {
 _HOOK_EVENT = "PreToolUse"
 _REASON = DOG + " Doberman [{verdict}]: {explanation} (reasons: {reasons}; action {action_id})"
 _FAILSAFE_REASON = DOG + " Doberman: failing closed — could not evaluate this action safely."
+_AUTH_NEXT_STEP = (
+    "Next step: approve or deny this action in the Claude Code permission prompt; "
+    "the tool call has not run yet."
+)
+_BLOCK_NEXT_STEP = (
+    "Next step: this BLOCK has no in-session override. If this is trusted "
+    "administrative recovery work, run it outside the hooked Claude Code session."
+)
 
 #: HK.5.2 taint floor: modes where a tainted-session egress is BLOCKed outright
 #: rather than AUTH'd. Mirrors the lethal-trifecta hard block (ADR 0021): raise-only,
@@ -133,12 +141,14 @@ def to_normalize_input(
 def _decision_payload(decision: Decision) -> dict[str, Any]:
     """Build the PreToolUse hook output for an AUTH (ask) / BLOCK (deny) verdict."""
     permission = "deny" if decision.final_verdict is Verdict.BLOCK else "ask"
+    next_step = _BLOCK_NEXT_STEP if decision.final_verdict is Verdict.BLOCK else _AUTH_NEXT_STEP
     reason = _REASON.format(
         verdict=decision.final_verdict.name,
         explanation=(decision.explanation or "").strip() or "no further detail",
         reasons=", ".join(str(rc) for rc in decision.reason_codes) or "unspecified",
         action_id=decision.action_id,
     )
+    reason = f"{reason} {next_step}"
     return _hook_output(permission, reason)
 
 
