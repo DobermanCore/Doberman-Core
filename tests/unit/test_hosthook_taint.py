@@ -63,7 +63,9 @@ def test_weak_high_entropy_output_passes_but_still_taints(tmp_path):
     # it STILL records the session taint, so the multi-step read-then-send floor is
     # unaffected. (Contrast: the STRONG AKIA key above is still blocked.)
     token = "Xk9mQ2pL7vN4wR8tY3zA6bC1dE5fG0hJwZ7vB3nM"  # noqa: S105 — shapeless, high-entropy
-    out = _post("Read", f"id: {token}", tmp_path, tool_input={"file_path": "cache.txt"}, session_id="sw")
+    out = _post(
+        "Read", f"id: {token}", tmp_path, tool_input={"file_path": "cache.txt"}, session_id="sw"
+    )
     assert out is None  # weak-only → NOT blocked (the benign-reads fix)
     assert _taint(tmp_path, "sw").get(TAINT_SECRET_ACCESS) == 1
     assert _taint(tmp_path, entity_scope(str(tmp_path))).get(TAINT_SECRET_ACCESS) == 1
