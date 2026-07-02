@@ -1,11 +1,14 @@
 """External-destination rule (Feature 3, slice 3.5).
 
 Steps up authentication when an action sends data to a destination Doberman
-does not recognize as trusted. On its own an unknown destination is ``AUTH``;
-combined with secret material (the secrets rule) the engine's raise-only
-``combine`` turns the pair into a ``BLOCK`` — that is how "upload the repo to an
-unknown endpoint" becomes a hard block without this rule needing to know about
-secrets.
+does not recognize as trusted. On its own an unknown destination is ``AUTH`` in
+Strict/Paranoid and ``PASS`` in Light/Balanced (mode flag
+``escalate_unknown_destination``); combined with secret material (the secrets
+rule) the engine's raise-only ``combine`` turns the pair into a ``BLOCK`` in
+every mode — that is how "upload the repo to an unknown endpoint" becomes a hard
+block without this rule needing to know about secrets. The sharper destination
+smells below (embedded URL credentials, raw IPs, unresolvable hosts) stay
+``AUTH`` regardless of mode.
 
 Host classification is treated as adversarial. We extract the host from a
 properly parsed URL (never substring-match the raw string) and:
@@ -36,6 +39,7 @@ from doberman.models import (
     SecurityObject,
     Verdict,
 )
+from doberman.policy.modes import thresholds_for
 
 #: Destinations Doberman ships trusting. Overridable (F6 loads from policy).
 #: Registered domains only — subdomains are matched structurally.
@@ -169,6 +173,17 @@ class ExternalDestinationRule:
             )
 
         if _registered_match(host, self._trusted):
+            return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
+
+        # A plain unknown host steps up only when the mode says so. Light and
+        # Balanced treat "not on the trusted list" as PASS — this AUTH fired on
+        # every fetch to any host off the small registry allowlist and was the
+        # top source of benign prompts. This is raise-only-safe: it only relaxes
+        # the *destination-alone* signal in lighter modes; the sharper smells
+        # above (embedded credentials, raw IPs, unresolvable hosts) still AUTH in
+        # every mode, and a secret leaving to any host is still a hard block via
+        # the secrets rule + raise-only combine. Strict/Paranoid still AUTH here.
+        if not thresholds_for(getattr(ctx, "mode", "balanced")).escalate_unknown_destination:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
         return self._auth_unknown(

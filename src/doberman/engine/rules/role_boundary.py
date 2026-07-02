@@ -10,8 +10,10 @@ Verdicts (raise-only; the objective guardrail combines this with the other
 rules):
 
 * target classifies as ``blocked`` for the role → ``BLOCK (role_blocked_target)``
+  (a hard floor — never mode-gated)
 * target classifies as ``suspicious`` (incl. out-of-scope-by-default) →
-  ``AUTH (role_out_of_scope)``
+  ``AUTH (role_out_of_scope)`` in Balanced/Strict/Paranoid; ``PASS`` in Light
+  (mode flag ``escalate_out_of_scope``)
 * ``allowed`` / non-path action / no active role → abstain (``PASS``)
 
 SECURITY: the explanation names the role and the boundary class only — never
@@ -36,6 +38,7 @@ from doberman.models import (
     SecurityObject,
     Verdict,
 )
+from doberman.policy.modes import thresholds_for
 from doberman.roles.roles import RoleBoundary, classify
 
 #: Only path-shaped actions are classified against role path globs. A shell or
@@ -115,11 +118,15 @@ class RoleBoundaryRule:
             if worst is RoleBoundary.blocked:
                 break
 
-        return self._verdict_for(worst, role.name)
+        escalate_oos = thresholds_for(getattr(ctx, "mode", "balanced")).escalate_out_of_scope
+        return self._verdict_for(worst, role.name, escalate_out_of_scope=escalate_oos)
 
     @staticmethod
-    def _verdict_for(boundary: RoleBoundary, role_name: str) -> GuardrailResult:
+    def _verdict_for(
+        boundary: RoleBoundary, role_name: str, *, escalate_out_of_scope: bool = True
+    ) -> GuardrailResult:
         if boundary is RoleBoundary.blocked:
+            # A blocked target is a hard floor — never mode-gated.
             return GuardrailResult(
                 verdict=Verdict.BLOCK,
                 risk=Risk.high,
@@ -128,7 +135,10 @@ class RoleBoundaryRule:
                     f"Target is forbidden for the active '{role_name}' role; blocked by role policy."
                 ),
             )
-        if boundary is RoleBoundary.suspicious:
+        if boundary is RoleBoundary.suspicious and escalate_out_of_scope:
+            # An out-of-scope (but not blocked) target only steps up when the
+            # mode escalates it — Light relaxes this to abstain; Balanced and
+            # stricter still AUTH. A blocked target is unaffected (above).
             return GuardrailResult(
                 verdict=Verdict.AUTH,
                 risk=Risk.medium,

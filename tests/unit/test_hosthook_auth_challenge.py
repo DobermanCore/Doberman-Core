@@ -67,9 +67,12 @@ class _NoChannel:
         raise PrompterUnavailableError("no channel in test")
 
 
-# WebFetch to an unknown external host -> AUTH (unknown_external_destination), a
-# local_auth tier: confirm only, so an approving prompter reaches "allow" with no TOTP.
-_AUTH_CALL = ("WebFetch", {"url": "https://example.com", "prompt": "x"})
+# WebFetch to a raw-IP host -> AUTH (unknown_external_destination), a local_auth
+# tier: confirm only, so an approving prompter reaches "allow" with no TOTP. A raw
+# IP is used (not a bare hostname) so this AUTH fires in every mode — a plain
+# unknown *hostname* is relaxed to PASS in Light/Balanced, but the sharper smells
+# (raw IPs, embedded credentials) stay AUTH regardless of mode.
+_AUTH_CALL = ("WebFetch", {"url": "https://93.184.216.34/", "prompt": "x"})
 
 
 def test_approved_auth_allows_the_one_call(cwd, monkeypatch):
