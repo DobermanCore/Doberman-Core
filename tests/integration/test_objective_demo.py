@@ -71,8 +71,11 @@ async def test_catastrophic_command_is_blocked_and_nothing_recorded():
 
 
 async def test_unknown_destination_requires_auth():
+    # A raw-IP destination is unrecognized in every mode (a plain unknown
+    # *hostname* is relaxed to PASS in the default Balanced mode — see
+    # test_rule_destinations.py's mode-gating cases).
     async with proxied_session() as (fake, agent):
-        result = await agent.call_tool("net_get", {"url": "https://unknown.example/x"})
+        result = await agent.call_tool("net_get", {"url": "https://93.184.216.34/x"})
         assert result.isError
         assert "authentication required" in result.content[0].text
         assert fake.calls == []

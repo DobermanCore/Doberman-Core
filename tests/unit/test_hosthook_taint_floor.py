@@ -128,8 +128,11 @@ def test_missing_session_id_uses_entity_scope_taint(tmp_path):
 
 def test_no_taint_db_does_not_crash_or_fabricate(tmp_path):
     # A fresh repo with no taint store at all: read returns empty, the floor
-    # abstains (no fabricated taint) and the hook does not crash.
-    out = _pre("WebFetch", {"url": _EGRESS_URL}, tmp_path, session_id="fresh")
+    # abstains (no fabricated taint) and the hook does not crash. A raw-IP egress
+    # is used so the objective AUTHs in the default Balanced mode (a plain unknown
+    # host is relaxed to PASS there); the point of this test is the *floor*, not
+    # the destination classification.
+    out = _pre("WebFetch", {"url": "https://93.184.216.34/collect"}, tmp_path, session_id="fresh")
     assert _decision(out) == "deny"  # objective AUTH only (headless challenge denies)
     assert "[AUTH]" in _reason(out)
     assert "multi_step_exfil" not in _reason(out)

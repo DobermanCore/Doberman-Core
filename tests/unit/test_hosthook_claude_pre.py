@@ -113,7 +113,7 @@ def test_secret_access_bash_triggers_auth_challenge(cwd):
 def test_auth_denied_reason_points_at_the_dialog(cwd):
     # Built on leemeo3's #70 next-step guidance: an AUTH now invokes Doberman's approval
     # dialog rather than deferring to the harness prompt, so the message points there.
-    reason = _reason(_pre("WebFetch", {"url": "https://example.com", "prompt": "x"}, cwd))
+    reason = _reason(_pre("WebFetch", {"url": "https://93.184.216.34/", "prompt": "x"}, cwd))
     assert "[AUTH]" in reason
     assert "Doberman" in reason and "dialog" in reason
 
@@ -130,8 +130,10 @@ def test_secret_exfil_via_mcp_tool_is_denied(cwd):
 
 
 def test_webfetch_to_external_url_triggers_auth(cwd):
-    # Unknown external destination → AUTH → Doberman challenge (headless: fail-closed deny).
-    out = _pre("WebFetch", {"url": "https://example.com", "prompt": "x"}, cwd)
+    # A raw-IP destination → AUTH → Doberman challenge (headless: fail-closed deny).
+    # (A raw IP AUTHs in every mode; a plain unknown *hostname* is relaxed to PASS
+    # in Light/Balanced — see test_rule_destinations.py's mode-gating cases.)
+    out = _pre("WebFetch", {"url": "https://93.184.216.34/", "prompt": "x"}, cwd)
     assert _permission(out) == "deny"
     assert "[AUTH]" in _reason(out)
 

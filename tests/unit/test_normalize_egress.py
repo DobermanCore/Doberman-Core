@@ -98,9 +98,14 @@ def test_external_destination_rule_passes_benign_domain_tool():
 
 
 def test_external_destination_rule_auths_unknown_network_host():
-    """An unknown network-request host must still require AUTH."""
+    """An unknown network-request host requires AUTH in Strict/Paranoid.
+
+    (Light/Balanced relax a plain unknown host to PASS — the destination-alone
+    step-up is mode-gated; see test_rule_destinations.py. Secret-exfil to any
+    host is still a hard block regardless of mode.)
+    """
     obj = normalize("net_get", {"url": "https://evil.example/x"})
-    result = ExternalDestinationRule().evaluate(obj, EvalContext())
+    result = ExternalDestinationRule().evaluate(obj, EvalContext(mode="strict"))
     assert result.verdict is Verdict.AUTH, (
         f"Expected AUTH for unknown network host but got {result.verdict}"
     )

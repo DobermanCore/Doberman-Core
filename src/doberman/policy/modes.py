@@ -69,11 +69,23 @@ class ModeThresholds:
 MODES: dict[SecurityMode, ModeThresholds] = {
     SecurityMode.light: ModeThresholds(
         bulk_delete_threshold=100,
+        escalate_out_of_scope=False,
+        escalate_unknown_destination=False,
         escalate_unusual=False,
         abnormality_threshold=1.1,  # unreachable: Light never steps up on abnormality
     ),
     SecurityMode.balanced: ModeThresholds(
         bulk_delete_threshold=25,
+        # A plain unknown network destination on its own no longer steps up in
+        # Balanced (the default) — that AUTH fired on every WebFetch to any host
+        # off the small package-registry allowlist (docs sites, APIs, etc.) and
+        # was the single largest source of benign auth prompts. Secret material
+        # leaving to *any* host is still a hard block via the secrets rule +
+        # raise-only combine, and the sharper destination smells (embedded URL
+        # credentials, raw IPs, unresolvable hosts) still AUTH in every mode.
+        escalate_unknown_destination=False,
+        # Role scope is a deliberate, opt-in constraint, so Balanced still steps
+        # up on an out-of-scope role target (only Light relaxes that).
         abnormality_threshold=0.7,
     ),
     SecurityMode.strict: ModeThresholds(

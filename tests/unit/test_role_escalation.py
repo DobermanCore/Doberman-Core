@@ -37,14 +37,31 @@ def _action(target, action_type=ActionType.file_write, source=SourceContext.unkn
     )
 
 
-def _ctx(role, tmp_path):
-    return EvalContext(role=role, metadata={"repo_root": str(tmp_path)})
+def _ctx(role, tmp_path, mode="balanced"):
+    return EvalContext(role=role, mode=mode, metadata={"repo_root": str(tmp_path)})
 
 
 def test_out_of_scope_path_requires_auth(tmp_path):
     result = RULE.evaluate(_action("src/utils/helper.ts"), _ctx(FRONTEND, tmp_path))
     assert result.verdict is Verdict.AUTH
     assert ReasonCode.role_out_of_scope in result.reason_codes
+
+
+def test_out_of_scope_path_passes_in_light_mode(tmp_path):
+    # Light relaxes the out-of-scope *step-up* (escalate_out_of_scope=False)...
+    result = RULE.evaluate(_action("src/utils/helper.ts"), _ctx(FRONTEND, tmp_path, mode="light"))
+    assert result.verdict is Verdict.PASS
+
+
+def test_role_blocked_path_still_blocks_in_light_mode(tmp_path):
+    # ...but a *blocked* role target is a hard floor — Light must not relax it.
+    role = RoleDefinition(name="scoped", allowed=["app/**"], blocked=["app/secret/**"])
+    result = RULE.evaluate(
+        _action("app/secret/key.txt", action_type=ActionType.file_delete),
+        _ctx(role, tmp_path, mode="light"),
+    )
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.role_blocked_target in result.reason_codes
 
 
 def test_in_scope_path_passes(tmp_path):
