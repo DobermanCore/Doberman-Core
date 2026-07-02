@@ -98,6 +98,85 @@ _PLACEHOLDER_VALUE = re.compile(
     r")$"
 )
 
+# --- Bare-token fixture / pattern-source suppression (#73) -------------------
+# ``_PLACEHOLDER_VALUE`` above only ever runs against an assignment RHS
+# (``KEY = <value>``). A BARE token — a credential-shaped substring in prose, a
+# diff, or a markdown table, with no ``KEY =`` to anchor an allowlist check
+# against — never reached it, so a hand-written test fixture (built by string
+# concatenation so it still exercises the rule at runtime, e.g.
+# ``"sk-ant-" + "api03-" + "EXAMPLE0123456789..."``) read as secret-shaped.
+#
+# Two suppression signals, reusing (not duplicating) ``_PLACEHOLDER_VALUE``'s
+# marker vocabulary — EXAMPLE / SAMPLE / DUMMY, plus FAKE (needed for bare
+# tokens, not previously listed):
+#
+# 1. A fixture marker word ANYWHERE in the token (not anchored to the start,
+#    unlike ``_PLACEHOLDER_VALUE``): a bare token's marker usually follows a
+#    real credential-shaped prefix baked into the match itself
+#    (``sk-ant-api03-EXAMPLE...``), so anchoring to the very start would miss it.
+# 2. A monotonic ascending digit run of 8+ (``...0123456789...``) — the filler
+#    shape hand-written fixtures commonly reach for; a real random secret
+#    essentially never contains one this long.
+#
+# Regex-pattern SOURCE evidence (a literal ``[``, ``]``, ``{``, ``}``, or
+# ``\``) is checked separately below (``_has_pattern_evidence``): no character
+# class in ``_CREDENTIAL_PATTERNS`` / ``_ENTROPY_TOKEN`` ever admits those
+# characters, so their presence in an extracted token means the text IS a
+# regex pattern being quoted (e.g. the literal ``sk-ant-[A-Za-z0-9_-]{20,}``),
+# not a secret. ``+``/``*`` are deliberately excluded — ``+`` is a legitimate
+# base64 value character in real keys (see ``_B64_TOKEN``), and brackets alone
+# already cover every reported case, so adding quantifiers would only risk a
+# false negative on a real base64 secret for no benefit.
+_FIXTURE_MARKER_WORDS = ("EXAMPLE", "SAMPLE", "FAKE", "DUMMY")
+_FIXTURE_MARKER_ANYWHERE = re.compile("(?i)(?:" + "|".join(_FIXTURE_MARKER_WORDS) + ")")
+_PATTERN_EVIDENCE_CHARS = frozenset("[]{}\\")
+_ASCENDING_DIGIT_RUN_MIN = 8
+
+
+def _has_pattern_evidence(token: str) -> bool:
+    """Criterion 1 (#73): literal regex-pattern syntax inside ``token``."""
+    return any(ch in _PATTERN_EVIDENCE_CHARS for ch in token)
+
+
+def _has_ascending_digit_run(token: str, min_len: int = _ASCENDING_DIGIT_RUN_MIN) -> bool:
+    """Criterion 2b (#73): a run of digits each one greater than the last
+    (e.g. ``01234567890``), at least ``min_len`` long. Does not wrap past 9
+    (``9`` -> ``0`` is not "ascending").
+    """
+    run = 1
+    for prev, cur in zip(token, token[1:], strict=False):
+        if prev.isdigit() and cur.isdigit() and int(cur) - int(prev) == 1:
+            run += 1
+            if run >= min_len:
+                return True
+        else:
+            run = 1
+    return False
+
+
+def _is_benign_fixture_token(token: str) -> bool:
+    """Bare-token suppression (#73): ``token`` is regex-pattern source text or
+    an obvious hand-written fixture, not a real secret.
+
+    Scope: wired only into the WEAK/high-entropy path below
+    (``_token_looks_like_weak_secret``) — which can only ever step up to AUTH,
+    never drive a BLOCK (see its docstring). It is deliberately NOT wired into
+    ``_matches_credential_pattern`` (the STRONG path that can drive
+    ``secret_exfiltration``): at that confidence tier the rule cannot tell "a
+    test fixture" apart from "a real secret an attacker padded with the word
+    EXAMPLE to dodge a marker filter", and raise-only forbids weakening a
+    BLOCK-driving check. The existing regression suite in
+    ``test_rule_secrets.py`` (``NEW_CREDENTIALS``) deliberately sends
+    EXAMPLE/digit-run-marked synthetic credentials to an external destination
+    and requires a BLOCK — that recall guard is preserved by this scoping.
+    """
+    return (
+        _has_pattern_evidence(token)
+        or _FIXTURE_MARKER_ANYWHERE.search(token) is not None
+        or _has_ascending_digit_run(token)
+    )
+
+
 # A run of base64/base64url characters long enough to plausibly carry a secret.
 # Used by the encoded-exfil decoder (3.6); matching this alone is NOT a secret —
 # only a *decode* that yields a secret pattern escalates.
@@ -217,8 +296,14 @@ def _token_looks_like_weak_secret(token: str) -> bool:
 
     A token that is entirely hash-shaped hex (a git SHA / content digest) is not
     a credential and is excluded up front (#56) — see ``_HASH_LIKE_HEX``.
+
+    A token that is regex-pattern source text or an obvious hand-written
+    fixture (an EXAMPLE/SAMPLE/FAKE/DUMMY marker, or a long ascending digit
+    run) is excluded next (#73) — see ``_is_benign_fixture_token``.
     """
     if _HASH_LIKE_HEX.fullmatch(token):
+        return False
+    if _is_benign_fixture_token(token):
         return False
     if "=" in token.rstrip("="):
         # An assignment-shaped token ("name=value", interior '='; base64 padding is
