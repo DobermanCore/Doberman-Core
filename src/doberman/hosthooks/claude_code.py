@@ -571,7 +571,17 @@ _POST_REASON = (
     DOG + " Doberman [post]: output contains credential-like material "
     "({reasons}; action {action_id}).  Explanation: {explanation}"
 )
-_SECRET_REASON_CODES = frozenset({"secret_exfiltration", "sensitive_secret_access"})
+#: Secret-related reason codes that RECORD a session taint + fingerprint (so the
+#: multi-step floor and ``doberman log`` see the material). Includes the
+#: lower-confidence ``possible_high_entropy_secret`` — a weak hit still taints.
+_SECRET_REASON_CODES = frozenset(
+    {"secret_exfiltration", "sensitive_secret_access", "possible_high_entropy_secret"}
+)
+#: The subset that HARD-BLOCKS a tool's output (a real secret must not reach the
+#: model). The weak high-entropy code is deliberately NOT here — it false-positives
+#: on hashes / UUIDs / base64 fragments, so it passes through (still recorded above)
+#: rather than nuking a benign read. Only high-confidence grades block.
+_POST_BLOCK_REASON_CODES = frozenset({"secret_exfiltration", "sensitive_secret_access"})
 
 #: Tools that pull untrusted external content into the agent's context — the
 #: "untrusted provenance" leg of the multi-step trifecta (HK.5.1 taint ledger).
@@ -674,9 +684,9 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
             # carrying the same value is a confirmed exfil — before any block return.
             _record_secret_fingerprints(output_text, fired_codes, repo_root, session_id)
 
-            if fired_codes & _SECRET_REASON_CODES:
+            if fired_codes & _POST_BLOCK_REASON_CODES:
                 reason = _POST_REASON.format(
-                    reasons=", ".join(sorted(fired_codes & _SECRET_REASON_CODES)),
+                    reasons=", ".join(sorted(fired_codes & _POST_BLOCK_REASON_CODES)),
                     action_id=action.id,
                     explanation=(scan_result.explanation or "").strip() or "no further detail",
                 )

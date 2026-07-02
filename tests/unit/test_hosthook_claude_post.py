@@ -60,6 +60,24 @@ def test_benign_grep_output_abstains(cwd):
     assert out is None
 
 
+def test_weak_high_entropy_output_passes_through(cwd):
+    # Slice B (benign reads): a shapeless high-entropy token is only WEAK evidence
+    # (possible_high_entropy_secret) — the heuristic false-positives on hashes /
+    # UUIDs / base64 fragments, so the output scan lets the read through instead of
+    # nuking it. (A real credential shape still blocks — see below.)
+    token = "Xk9mQ2pL7vN4wR8tY3zA6bC1dE5fG0hJwZ7vB3nM"  # noqa: S105 — shapeless, high-entropy
+    out = _post("Read", {"file_path": "cache.bin"}, f"cache id: {token}", cwd)
+    assert out is None
+
+
+def test_strong_credential_output_still_blocked(cwd):
+    # Recall guard: a known credential shape (sensitive_secret_access) in output is
+    # still hard-blocked — the severity split only relaxes the weak tier.
+    out = _post("Read", {"file_path": "cfg"}, f"key = {_SYNTHETIC_SECRET}", cwd)
+    assert out is not None
+    assert json.loads(out)["decision"] == "block"
+
+
 # ---------------------------------------------------------------------------
 # Secret in tool_response (string) → block; secret never in reason
 # ---------------------------------------------------------------------------

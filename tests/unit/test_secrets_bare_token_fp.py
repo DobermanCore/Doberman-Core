@@ -139,13 +139,16 @@ SHAPELESS_SECRET = "Xk9mQ2pL7vN4wR8tY3zA6bC1dE5fG0hJwZ7vB3nM"  # noqa: S105 — 
 def test_shapeless_secret_with_appended_example_marker_still_fires():
     result = _read(f"token: {SHAPELESS_SECRET}EXAMPLE")
     assert result.verdict is Verdict.AUTH
-    assert ReasonCode.sensitive_secret_access in result.reason_codes
+    # A shapeless (no known credential shape) token is weak-entropy evidence, so it
+    # steps up under possible_high_entropy_secret — the point is it still FIRES
+    # (the marker doesn't suppress it), not which secret tier it lands in.
+    assert ReasonCode.possible_high_entropy_secret in result.reason_codes
 
 
 def test_shapeless_secret_with_appended_digit_run_still_fires():
     result = _read(f"token: {SHAPELESS_SECRET}01234567")
     assert result.verdict is Verdict.AUTH
-    assert ReasonCode.sensitive_secret_access in result.reason_codes
+    assert ReasonCode.possible_high_entropy_secret in result.reason_codes
 
 
 def test_marker_in_key_name_does_not_suppress_a_real_value():
@@ -153,7 +156,7 @@ def test_marker_in_key_name_does_not_suppress_a_real_value():
     # a variable merely NAMED with a marker must not hide a real secret RHS.
     result = _read(f"DUMMY_AUTH_VALUE={SHAPELESS_SECRET}")
     assert result.verdict is Verdict.AUTH
-    assert ReasonCode.sensitive_secret_access in result.reason_codes
+    assert ReasonCode.possible_high_entropy_secret in result.reason_codes
 
 
 # --- Existing assignment-RHS benign suppression still works -----------------
