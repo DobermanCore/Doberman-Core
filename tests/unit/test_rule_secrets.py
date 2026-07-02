@@ -206,7 +206,9 @@ def test_benign_absolute_path_read_is_not_flagged_as_secret():
 def test_base64_secret_with_slashes_still_detected():
     # The fix must not weaken real detection: a long base64 token containing '/'
     # is still high-entropy per segment and steps up (AUTH), never PASS.
-    token = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1234567890abcdEFGH"  # noqa: S105 — synthetic
+    # (No "EXAMPLE"/ascending-digit-run filler — #73's bare-token fixture
+    # suppression must not swallow this recall guard; see test_secrets_bare_token_fp.py.)
+    token = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYQzNmTpLk9051836274abcdEFGH"  # noqa: S105 — synthetic
     action = _action(ActionType.file_write, target="dump.bin")
     result = RULE.evaluate(action, _ctx(path="dump.bin", content=token))
     assert result.verdict is not Verdict.PASS
@@ -316,7 +318,9 @@ def test_hash_exclusion_is_scoped_to_pure_hex_only():
     # Recall guard: the exclusion only fires on *entirely* hex tokens. A 40-char
     # high-entropy token with a single non-hex char is still judged by entropy and
     # steps up — the carve-out must not become a blanket high-entropy bypass.
-    not_pure_hex = "g1b2c3d4e5f60718293a4b5c6d7e8f9012345678"  # noqa: S105 — leading 'g' (not hex)
+    # (No 8+ ascending-digit run — #73's bare-token fixture suppression must not
+    # swallow this recall guard; see test_secrets_bare_token_fp.py.)
+    not_pure_hex = "g1b2c3d4e5f60718293a4b5c6d7e8f9051739246"  # noqa: S105 — leading 'g' (not hex)
     action = _action(ActionType.file_write, target="dump.bin")
     result = RULE.evaluate(action, _ctx(path="dump.bin", content=not_pure_hex))
     assert result.verdict is Verdict.AUTH
