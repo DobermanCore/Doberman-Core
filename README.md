@@ -210,6 +210,11 @@ The proxy above protects the tools you route *through* Doberman. To make Doberma
         "matcher": "Bash|Edit|Write|NotebookEdit|WebFetch|WebSearch|Read|Glob|Grep|mcp__.*",
         "hooks": [{ "type": "command", "command": "doberman hook post" }]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [{ "type": "command", "command": "doberman dashboard" }]
+      }
     ]
   }
 }
@@ -229,6 +234,22 @@ doberman uninstall-hooks          # remove only Doberman's entries (leaves your 
 ```
 
 `install-hooks` is idempotent (safe to re-run), backs up an existing `settings.json` before writing, and never touches your other settings or hooks.
+
+**Session dashboard.** `install-hooks` also wires a `SessionStart` hook that runs `doberman dashboard` — a print-and-exit (never interactive, never blocking) summary of a **device-global, lifetime rollup**: every decision Doberman makes, across every repo and session on this machine, increments a tiny counter at `~/.doberman/metrics.db` (verdict class + count only — no path, no reason code, no per-action detail). It shows total interceptions and the PASS/AUTH/BLOCK split:
+
+```
++------------------------------------------+
+| Doberman - session guard summary          |
+| Tracking since 2026-06-14 - this device   |
+|                                            |
+| Interceptions   1,204                     |
+| Auto-passed      1,131  ( 93.9%)          |
+| Authed              58  (  4.8%)          |
+| Blocked             15  (  1.2%)          |
++------------------------------------------+
+```
+
+Run it any time with `doberman dashboard`. Output is plain ASCII (no box-drawing runes or emoji) so it always renders on a legacy Windows console, and the command always exits `0` and never raises — a dashboard must never break a session start.
 
 **Doberman protects its own hooks.** Once installed, the agent can't quietly remove them: a write/edit to `.claude/settings.json` (the hook-install file) is **blocked**, and other `.claude/` changes require authentication — so the agent can't disable enforcement by editing the harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own `.doberman/` control plane. The protection holds **through the shell** too — a Bash command that writes/deletes the config (`echo > .claude/settings.json`, `rm -rf .doberman`) or runs `doberman uninstall-hooks` is blocked, not just the `Write`/`Edit` tools.
 
@@ -331,6 +352,7 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 - ✅ One-command onboarding: `doberman setup` (alertness + guardrails + auto-wires the hooks) · `install-hooks`/`uninstall-hooks`
 - ✅ Host-harness self-protection: an agent cannot disable the hooks by editing `.claude/settings.json` — the hook-install file is a blocked control-plane path (like `.doberman/`)
 - ✅ Host-harness containment (taint-primary): a sticky per-session taint ledger + a **multi-step exfiltration floor** — an egress in a session that already accessed a secret is raised (`ask`, or a hard `deny` in strict/paranoid); and a **read-vs-send fingerprint match** hard-blocks a confirmed exfil (an outbound value equal to a secret read earlier) in every mode — catching read-then-send exfil a single-call rule can't see
+- ✅ Session dashboard: `doberman dashboard` (print-and-exit, wired as a `SessionStart` hook by `install-hooks`) shows a device-global, lifetime PASS/AUTH/BLOCK rollup — verdict class + count only, redaction-safe, best-effort so it can never slow down or break a decision
 - 📋 Host-harness, continued (containment architecture): deeper Bash-command egress parsing · entropy-on-egress escalation · warm-daemon adaptive layer · honeytoken tripwire + session circuit-breaker
 - 🛠 Cost observability — **CB.1 landed**: a redaction-safe `CostEvent` + local append-only meter (`doberman.storage.cost`), advisory and strictly off the decision path. Next: `CostObserver` plugin seam (CB.2) and a raise-only loop-anomaly detector (CB.3)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC

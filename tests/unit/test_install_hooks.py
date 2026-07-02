@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 import doberman.cli.main as cli_module
 from doberman.hosthooks.install import (
+    DASHBOARD_COMMAND,
     POST_COMMAND,
     POST_MATCHER,
     PRE_COMMAND,
@@ -58,6 +59,14 @@ def _post_commands(settings: dict) -> list[str]:
     ]
 
 
+def _session_start_commands(settings: dict) -> list[str]:
+    return [
+        h["command"]
+        for g in settings.get("hooks", {}).get("SessionStart", [])
+        for h in g.get("hooks", [])
+    ]
+
+
 # ---------------------------------------------------------------------------
 # merge_doberman_hooks
 # ---------------------------------------------------------------------------
@@ -69,6 +78,16 @@ class TestMergeDobermanHooks:
         assert "hooks" in result
         assert PRE_COMMAND in _pre_commands(result)
         assert POST_COMMAND in _post_commands(result)
+
+    def test_session_start_dashboard_entry_added(self):
+        result = merge_doberman_hooks({})
+        assert DASHBOARD_COMMAND in _session_start_commands(result)
+
+    def test_session_start_idempotent_no_duplicates(self):
+        once = merge_doberman_hooks({})
+        twice = merge_doberman_hooks(once)
+        assert _count_doberman(twice, "SessionStart") == 1
+        assert _session_start_commands(twice) == [DASHBOARD_COMMAND]
 
     def test_pre_matcher_is_correct(self):
         result = merge_doberman_hooks({})
@@ -153,6 +172,7 @@ class TestRemoveDobermanHooks:
         # Doberman entries are gone.
         assert _count_doberman(result, "PreToolUse") == 0
         assert _count_doberman(result, "PostToolUse") == 0
+        assert _count_doberman(result, "SessionStart") == 0
 
     def test_preserves_model_key(self):
         settings = self._settings_with_both_and_other()
@@ -304,6 +324,16 @@ class TestInstallHooksCLI:
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         assert _count_doberman(data, "PreToolUse") == 1
         assert _count_doberman(data, "PostToolUse") == 1
+        assert _count_doberman(data, "SessionStart") == 1
+
+    def test_writes_exactly_one_session_start_dashboard_entry(self, tmp_path):
+        result = runner.invoke(cli_module.app, ["install-hooks", "--path", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        settings_path = tmp_path / ".claude" / "settings.json"
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert data["hooks"]["SessionStart"] == [
+            {"hooks": [{"type": "command", "command": DASHBOARD_COMMAND}]}
+        ]
 
     def test_invalid_existing_json_exits_2(self, tmp_path):
         dot_claude = tmp_path / ".claude"

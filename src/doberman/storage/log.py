@@ -26,6 +26,7 @@ from pathlib import PurePosixPath
 
 from doberman.models import ActionType, Decision, SecurityObject
 from doberman.storage.db import open_db
+from doberman.storage.device_metrics import record_decision_metric
 from doberman.storage.sinks import emit_to_sinks
 
 logger = logging.getLogger("doberman.storage.log")
@@ -180,6 +181,13 @@ async def record_decision(
         emit_to_sinks(record)
     except Exception:  # noqa: BLE001 — defense in depth (emit_to_sinks already isolates)
         logger.warning("audit sink fan-out failed for action %s; continuing", decision.action_id)
+
+    # Device-global rollup for `doberman dashboard` (best-effort, defense in
+    # depth — record_decision_metric already swallows its own failures).
+    try:
+        record_decision_metric(record["final_verdict"])
+    except Exception:  # noqa: BLE001 — the device rollup must never break execution
+        logger.warning("device metrics rollup failed for action %s; continuing", decision.action_id)
 
 
 async def read_decisions(repo_root: str, *, limit: int | None = None) -> list[dict]:

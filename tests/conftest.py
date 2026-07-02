@@ -11,6 +11,7 @@ need to exercise key generation/rotation override this with their own
 import pytest
 
 from doberman.auth.totp import TOTP_FILE_ENV
+from doberman.storage.device_metrics import HOME_ENV
 from doberman.storage.fingerprint import KEY_FILE_ENV
 
 
@@ -40,6 +41,22 @@ def isolated_totp_secret(tmp_path, monkeypatch):
     secret_path = tmp_path / "doberman-totp.secret"
     monkeypatch.setenv(TOTP_FILE_ENV, str(secret_path))
     return secret_path
+
+
+@pytest.fixture(autouse=True)
+def isolated_device_metrics_home(tmp_path, monkeypatch):
+    """Point the device-global metrics rollup (dashboard) at a per-test temp dir.
+
+    ``storage.device_metrics`` writes a lifetime rollup to
+    ``~/.doberman/metrics.db`` on every decision (:mod:`doberman.storage.log`);
+    tests must never touch the real per-user rollup, so point ``DOBERMAN_HOME``
+    at a throwaway dir for the whole suite. Returns the isolated home dir for
+    tests that read/seed the rollup directly.
+    """
+    home = tmp_path / "device-home"
+    home.mkdir()
+    monkeypatch.setenv(HOME_ENV, str(home))
+    return home
 
 
 @pytest.fixture(autouse=True)
