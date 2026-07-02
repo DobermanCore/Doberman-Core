@@ -127,6 +127,35 @@ def test_realistic_akia_key_without_marker_still_fires_as_assignment_rhs():
     assert ReasonCode.sensitive_secret_access in result.reason_codes
 
 
+# --- Raise-only guards: a marker must not be an attacker's evasion (#73) -----
+# A shapeless (no known prefix) secret is judged ONLY by the WEAK path, so if a
+# bare fixture marker could suppress it, appending "EXAMPLE" would be a one-line
+# bypass of the whole control. Suppression is gated on the *residual* (token
+# minus markers/ordered runs) being non-secret-shaped, so these still fire.
+
+SHAPELESS_SECRET = "Xk9mQ2pL7vN4wR8tY3zA6bC1dE5fG0hJwZ7vB3nM"  # noqa: S105 — 40-char random-ish
+
+
+def test_shapeless_secret_with_appended_example_marker_still_fires():
+    result = _read(f"token: {SHAPELESS_SECRET}EXAMPLE")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_secret_access in result.reason_codes
+
+
+def test_shapeless_secret_with_appended_digit_run_still_fires():
+    result = _read(f"token: {SHAPELESS_SECRET}01234567")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_secret_access in result.reason_codes
+
+
+def test_marker_in_key_name_does_not_suppress_a_real_value():
+    # The fixture check runs on the value after the '=' split, never the name —
+    # a variable merely NAMED with a marker must not hide a real secret RHS.
+    result = _read(f"DUMMY_AUTH_VALUE={SHAPELESS_SECRET}")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_secret_access in result.reason_codes
+
+
 # --- Existing assignment-RHS benign suppression still works -----------------
 
 

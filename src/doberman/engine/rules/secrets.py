@@ -106,75 +106,101 @@ _PLACEHOLDER_VALUE = re.compile(
 # concatenation so it still exercises the rule at runtime, e.g.
 # ``"sk-ant-" + "api03-" + "EXAMPLE0123456789..."``) read as secret-shaped.
 #
-# Two suppression signals, reusing (not duplicating) ``_PLACEHOLDER_VALUE``'s
-# marker vocabulary — EXAMPLE / SAMPLE / DUMMY, plus FAKE (needed for bare
-# tokens, not previously listed):
+# The judge below is WEAK-path only and must stay RAISE-ONLY. The hard part is
+# that a fixture marker (``EXAMPLE``) or ordered filler (``0123456789``) is
+# ATTACKER-CONTROLLABLE: an agent exfiltrating a real secret could simply append
+# ``EXAMPLE`` to dodge a naive marker filter — and for a shapeless (no known
+# prefix) secret the WEAK entropy heuristic is the ONLY thing standing in the
+# way, so a naive filter would be a one-line bypass of the whole control. We
+# therefore do NOT trust a marker on its own. The real discriminator is that a
+# hand-written fixture is built from *ordered scaffolding* (marker words plus
+# ascending ``0-9``/``a-z`` runs) and, once that scaffolding is stripped, has
+# little left; a real secret is *random* and keeps a high-entropy residual after
+# the same stripping. So: strip the markers and the ascending runs, and suppress
+# only when what remains is too short / low-entropy to be a secret on its own
+# (``_looks_high_entropy_secret``). A real key wearing an ``EXAMPLE`` costume
+# still fires.
 #
-# 1. A fixture marker word ANYWHERE in the token (not anchored to the start,
-#    unlike ``_PLACEHOLDER_VALUE``): a bare token's marker usually follows a
-#    real credential-shaped prefix baked into the match itself
-#    (``sk-ant-api03-EXAMPLE...``), so anchoring to the very start would miss it.
-# 2. A monotonic ascending digit run of 8+ (``...0123456789...``) — the filler
-#    shape hand-written fixtures commonly reach for; a real random secret
-#    essentially never contains one this long.
-#
-# Regex-pattern SOURCE evidence (a literal ``[``, ``]``, ``{``, ``}``, or
-# ``\``) is checked separately below (``_has_pattern_evidence``): no character
-# class in ``_CREDENTIAL_PATTERNS`` / ``_ENTROPY_TOKEN`` ever admits those
-# characters, so their presence in an extracted token means the text IS a
-# regex pattern being quoted (e.g. the literal ``sk-ant-[A-Za-z0-9_-]{20,}``),
-# not a secret. ``+``/``*`` are deliberately excluded — ``+`` is a legitimate
-# base64 value character in real keys (see ``_B64_TOKEN``), and brackets alone
-# already cover every reported case, so adding quantifiers would only risk a
-# false negative on a real base64 secret for no benefit.
+# Regex-pattern SOURCE evidence (a literal ``[``, ``]``, ``{``, ``}``, or ``\``)
+# is a separate, unconditional signal: no character class in
+# ``_CREDENTIAL_PATTERNS`` / ``_ENTROPY_TOKEN`` — nor the weak-path tokenizer
+# charset — ever admits those characters, so their presence in a token proves it
+# is a quoted pattern (``sk-ant-[A-Za-z0-9_-]{20,}``), never a live secret; it
+# can never cause a false negative on a real token.
 _FIXTURE_MARKER_WORDS = ("EXAMPLE", "SAMPLE", "FAKE", "DUMMY")
 _FIXTURE_MARKER_ANYWHERE = re.compile("(?i)(?:" + "|".join(_FIXTURE_MARKER_WORDS) + ")")
 _PATTERN_EVIDENCE_CHARS = frozenset("[]{}\\")
-_ASCENDING_DIGIT_RUN_MIN = 8
+_SEQUENTIAL_RUN_MIN = 8
 
 
 def _has_pattern_evidence(token: str) -> bool:
-    """Criterion 1 (#73): literal regex-pattern syntax inside ``token``."""
+    """Regex-pattern syntax (``[]{}\\``) inside ``token`` (#73) — proves the
+    token is quoted pattern source, not a live secret. Safe unconditionally: the
+    weak-path tokenizer charset never yields these characters in a real token."""
     return any(ch in _PATTERN_EVIDENCE_CHARS for ch in token)
 
 
-def _has_ascending_digit_run(token: str, min_len: int = _ASCENDING_DIGIT_RUN_MIN) -> bool:
-    """Criterion 2b (#73): a run of digits each one greater than the last
-    (e.g. ``01234567890``), at least ``min_len`` long. Does not wrap past 9
-    (``9`` -> ``0`` is not "ascending").
+def _char_rank(ch: str) -> int | None:
+    """Ordinal of ``ch`` on the fixture-filler ladder, or ``None`` if off-ladder.
+
+    Digits and lowercase form ONE continuous ladder (``0``..``9`` -> ``a``..``z``,
+    so ``9``->``a`` counts as +1) since fixtures pad with ``0123456789abcdef``;
+    uppercase is a separate ladder (``z``->``A`` is not a run).
     """
-    run = 1
-    for prev, cur in zip(token, token[1:], strict=False):
-        if prev.isdigit() and cur.isdigit() and int(cur) - int(prev) == 1:
-            run += 1
-            if run >= min_len:
-                return True
+    if ch.isdigit():
+        return ord(ch) - ord("0")  # 0..9
+    if "a" <= ch <= "z":
+        return 10 + ord(ch) - ord("a")  # 10..35  (contiguous with digits)
+    if "A" <= ch <= "Z":
+        return 40 + ord(ch) - ord("A")  # 40..65  (separate ladder)
+    return None
+
+
+def _strip_sequential_runs(token: str, min_len: int = _SEQUENTIAL_RUN_MIN) -> str:
+    """Remove every maximal ascending alphanumeric run (each char one rank above
+    the last, e.g. ``0123456789``, ``abcdefgh``) of length >= ``min_len`` (#73).
+
+    Ordered filler is what hand-written fixtures pad with; a random secret does
+    not contain long ascending runs, so stripping cannot meaningfully shrink a
+    real secret (and an attacker can only *append* filler, never remove the real
+    high-entropy body that survives this).
+    """
+    out: list[str] = []
+    run: list[str] = []
+    prev: int | None = None
+    for ch in token:
+        rank = _char_rank(ch)
+        if run and rank is not None and prev is not None and rank - prev == 1:
+            run.append(ch)
         else:
-            run = 1
-    return False
+            out.append("" if len(run) >= min_len else "".join(run))
+            run = [ch]
+        prev = rank
+    out.append("" if len(run) >= min_len else "".join(run))
+    return "".join(out)
 
 
 def _is_benign_fixture_token(token: str) -> bool:
-    """Bare-token suppression (#73): ``token`` is regex-pattern source text or
-    an obvious hand-written fixture, not a real secret.
+    """Bare-token suppression (#73): ``token`` is regex-pattern source text or an
+    obvious hand-written fixture, not a real secret.
 
     Scope: wired only into the WEAK/high-entropy path below
-    (``_token_looks_like_weak_secret``) — which can only ever step up to AUTH,
-    never drive a BLOCK (see its docstring). It is deliberately NOT wired into
-    ``_matches_credential_pattern`` (the STRONG path that can drive
-    ``secret_exfiltration``): at that confidence tier the rule cannot tell "a
-    test fixture" apart from "a real secret an attacker padded with the word
-    EXAMPLE to dodge a marker filter", and raise-only forbids weakening a
-    BLOCK-driving check. The existing regression suite in
-    ``test_rule_secrets.py`` (``NEW_CREDENTIALS``) deliberately sends
-    EXAMPLE/digit-run-marked synthetic credentials to an external destination
-    and requires a BLOCK — that recall guard is preserved by this scoping.
+    (``_token_looks_like_weak_secret``, on the *value* after any ``=`` split) —
+    which can only ever step up to AUTH, never drive a BLOCK. It is deliberately
+    NOT wired into ``_matches_credential_pattern`` (the STRONG path that can
+    drive ``secret_exfiltration``): raise-only forbids weakening a BLOCK-driving
+    check, and the ``NEW_CREDENTIALS`` recall suite in ``test_rule_secrets.py``
+    (EXAMPLE/digit-marked synthetic credentials sent externally must BLOCK) pins
+    that. Marker/ordered-filler suppression is gated on the *residual* being
+    non-secret-shaped so a real key padded with a marker (an attacker dodge, and
+    the only control for a shapeless secret) still fires.
     """
-    return (
-        _has_pattern_evidence(token)
-        or _FIXTURE_MARKER_ANYWHERE.search(token) is not None
-        or _has_ascending_digit_run(token)
-    )
+    if _has_pattern_evidence(token):
+        return True
+    residual = _strip_sequential_runs(_FIXTURE_MARKER_ANYWHERE.sub("", token))
+    if residual == token:
+        return False  # no marker word and no ordered run — nothing benign here
+    return not _looks_high_entropy_secret(residual)
 
 
 # A run of base64/base64url characters long enough to plausibly carry a secret.
@@ -297,13 +323,13 @@ def _token_looks_like_weak_secret(token: str) -> bool:
     A token that is entirely hash-shaped hex (a git SHA / content digest) is not
     a credential and is excluded up front (#56) — see ``_HASH_LIKE_HEX``.
 
-    A token that is regex-pattern source text or an obvious hand-written
-    fixture (an EXAMPLE/SAMPLE/FAKE/DUMMY marker, or a long ascending digit
-    run) is excluded next (#73) — see ``_is_benign_fixture_token``.
+    A value that is regex-pattern source text or an obvious hand-written fixture
+    (an EXAMPLE/SAMPLE/FAKE/DUMMY marker, or ordered ``0-9``/``a-z`` filler) is
+    excluded via ``_is_benign_fixture_token`` — but only AFTER the ``=`` split
+    below, so it judges the *value*, never a ``KEY=`` name: a variable merely
+    *named* ``DUMMY_...`` must not suppress a real secret on its right-hand side.
     """
     if _HASH_LIKE_HEX.fullmatch(token):
-        return False
-    if _is_benign_fixture_token(token):
         return False
     if "=" in token.rstrip("="):
         # An assignment-shaped token ("name=value", interior '='; base64 padding is
@@ -311,6 +337,8 @@ def _token_looks_like_weak_secret(token: str) -> bool:
         # over-flags benign config like ``cfg_path=/usr/local/bin`` (#56). Judge the
         # value (after the last '='), so a high-entropy RHS is still caught.
         return _token_looks_like_weak_secret(token.rsplit("=", 1)[-1])
+    if _is_benign_fixture_token(token):
+        return False
     if token.startswith("/"):
         return any(_looks_high_entropy_secret(segment) for segment in token.split("/"))
     return _looks_high_entropy_secret(token)
