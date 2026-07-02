@@ -242,7 +242,11 @@ class PolicyDoc:
             preferences=preferences,
             enforcement=str(data.get("enforcement", "enforce")),
             enforcement_expires_at=(
-                float(raw_expires) if isinstance(raw_expires, (int, float)) else None
+                # bool is an int subclass — `enforcement_expires_at: true` is a typo,
+                # not an epoch; treat it like any other non-numeric value.
+                float(raw_expires)
+                if isinstance(raw_expires, (int, float)) and not isinstance(raw_expires, bool)
+                else None
             ),
             enforcement_revert=str(data.get("enforcement_revert", "enforce")),
         )

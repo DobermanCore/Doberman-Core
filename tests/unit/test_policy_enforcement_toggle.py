@@ -109,6 +109,16 @@ def test_disabling_enforcement_is_a_weaken():
     )
 
 
+def test_unrecognized_enforcement_token_is_a_weaken():
+    # A typo/corrupt target must never slip past the gate as "neutral":
+    # "enforce" (3) outranks the unknown-token rank (2), fail safe.
+    assert (
+        classify_change({"enforcement": "enforce"}, {"enforcement": "monitr"})
+        is Classification.weaken
+    )
+    assert classify_change({"enforcement": "enforce"}, {"enforcement": ""}) is Classification.weaken
+
+
 def test_re_arming_enforcement_is_a_strengthen():
     assert (
         classify_change({"enforcement": "off"}, {"enforcement": "enforce"})
@@ -133,6 +143,9 @@ async def test_soften_with_2fa_enrolled_and_valid_code_is_approved(tmp_path, _en
     assert out.approved is True
     assert out.method == "two_factor"
     assert out.classification is Classification.weaken
+    # The 2FA code must never end up in the ledger.
+    rows = await read_policy_changes(str(tmp_path))
+    assert rows and "999999" not in str(rows)
 
 
 async def test_soften_without_2fa_falls_back_to_confirm_only(tmp_path):
@@ -179,6 +192,58 @@ async def test_re_arm_is_auto_approved_and_never_prompts(tmp_path):
     assert out.approved is True
     assert out.method == "auto"
     assert out.classification is Classification.strengthen
+    # The auto path is still an attempt — it must land in the ledger too.
+    rows = await read_policy_changes(str(tmp_path))
+    assert len(rows) == 1
+    assert rows[0]["classification"] == "strengthen"
+    assert rows[0]["approved"] == 1
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ({"enforcement": "enforce"}, {"enforcement": "monitor"}),
+        ({"enforcement": "enforce"}, {"enforcement": "off"}),
+        ({"enforcement": "monitor"}, {"enforcement": "off"}),
+    ],
+)
+async def test_every_softening_pair_is_gated_end_to_end(tmp_path, before, after):
+    out = await apply_enforcement_change(
+        before, after, "pair", repo_root=str(tmp_path), prompter=_Decline(), now=_NOW
+    )
+    assert out.approved is False
+    assert out.classification is Classification.weaken
+    rows = await read_policy_changes(str(tmp_path))
+    assert rows[0]["approved"] == 0
+
+
+async def test_soften_to_an_unrecognized_state_is_gated(tmp_path):
+    # enforce → typo/garbage goes through the full gate, never auto-approves.
+    out = await apply_enforcement_change(
+        {"enforcement": "enforce"},
+        {"enforcement": "banana"},
+        "typo",
+        repo_root=str(tmp_path),
+        prompter=_Decline(),
+        now=_NOW,
+    )
+    assert out.approved is False
+    assert out.classification is Classification.weaken
+
+
+async def test_extending_a_soften_expiry_is_gated(tmp_path):
+    # Pushing the auto-revert deadline later keeps protection down longer — that is
+    # a weaken even though rank comparison sees two unknown floats as neutral.
+    out = await apply_enforcement_change(
+        {"enforcement": "monitor", "enforcement_expires_at": 100.0},
+        {"enforcement": "monitor", "enforcement_expires_at": 999.0},
+        "just a bit longer",
+        repo_root=str(tmp_path),
+        prompter=_Decline(),
+        now=_NOW,
+    )
+    assert out.classification is Classification.weaken
+    assert out.approved is False
 
 
 # --- ledger: every attempt recorded, denials included ----------------------
@@ -224,6 +289,23 @@ async def test_log_change_records_without_gating(tmp_path):
     assert rows[0]["to_state"] == "light"
 
 
+async def test_log_change_refuses_non_mode_keys(tmp_path):
+    # The scope is enforced, not just documented: log_change can never be miswired
+    # into rubber-stamping a rule/role/enforcement weakening.
+    with pytest.raises(ValueError, match="scoped to the strictness-mode dial"):
+        await log_change(
+            {"hard_block.secret_exfiltration": "block"},
+            {"hard_block.secret_exfiltration": "allow"},
+            "oops",
+            repo_root=str(tmp_path),
+        )
+    with pytest.raises(ValueError, match="scoped to the strictness-mode dial"):
+        await log_change(
+            {"enforcement": "enforce"}, {"enforcement": "off"}, "oops", repo_root=str(tmp_path)
+        )
+    assert await read_policy_changes(str(tmp_path)) == []
+
+
 # --- PolicyDoc enforcement fields ------------------------------------------
 
 
@@ -263,8 +345,22 @@ def test_softened_policy_mapping_round_trips(tmp_path):
 
 
 def test_from_mapping_ignores_a_non_numeric_expiry():
-    restored = PolicyDoc.from_mapping(
-        {"items": [], "enforcement": "monitor", "enforcement_expires_at": "soon"}
-    )
+    # str is not an epoch; neither is bool (an int subclass — YAML `true` is a typo).
+    for bad in ("soon", True):
+        restored = PolicyDoc.from_mapping(
+            {"items": [], "enforcement": "monitor", "enforcement_expires_at": bad}
+        )
+        assert restored.enforcement == "monitor"
+        assert restored.enforcement_expires_at is None
+
+
+def test_indefinite_soften_round_trips_without_expiry():
+    # No timer set: the revert target must still survive the round trip.
+    doc = _doc().with_enforcement("monitor")
+    mapping = doc.to_mapping()
+    assert "enforcement_expires_at" not in mapping
+    assert mapping["enforcement_revert"] == "enforce"
+    restored = PolicyDoc.from_mapping(mapping)
     assert restored.enforcement == "monitor"
     assert restored.enforcement_expires_at is None
+    assert restored.enforcement_revert == "enforce"

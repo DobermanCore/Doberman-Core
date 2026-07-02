@@ -13,6 +13,11 @@ mechanism (a core safety invariant):
   only on approval; strengthening/neutral changes apply (still logged). Every
   attempt — including denials (the attack signal) — is written to the ledger and
   fanned out to registered :class:`DriftObserver` s.
+* :func:`apply_enforcement_change` — the same chokepoint for the orthogonal
+  enforcement dial (enforce / monitor / off): softening is gated (confirm +
+  TOTP-if-enrolled), re-arming applies automatically.
+* :func:`log_change` — the audited-but-not-gated path, scope-enforced to the
+  strictness ``mode`` dial only.
 * :class:`DriftObserver` — the enterprise seam (org-wide drift monitoring /
   compliance). Observers receive **redacted** events and can **never** approve or
   suppress a weakening — the 2FA gate is core and authoritative.
@@ -69,7 +74,10 @@ _RANK: dict[str, int] = {
     "balanced": 2,
     "light": 1,
     # Orthogonal enforcement states: enforce > monitor > off (off shares the 0 below).
-    "enforce": 2,
+    # "enforce" outranks _UNKNOWN_TOKEN_RANK (2) so enforce → <unrecognized/typo state>
+    # classifies as a weaken (gated), never neutral. Consumers must treat an
+    # unrecognized enforcement value as "enforce" (fail closed).
+    "enforce": 3,
     "monitor": 1,
     "off": 0,
     "disabled": 0,
@@ -265,7 +273,17 @@ async def log_change(
     separate, explicitly-chosen audit-only path and does NOT relax the general
     :func:`apply_change` weaken-gate (policy/role weakenings still require 2FA).
     The dramatic enforcement-disable uses :func:`apply_enforcement_change`.
+
+    Scope is enforced, not just documented: any changed key other than ``mode``
+    raises ``ValueError`` (fail closed — nothing recorded, nothing approved), so
+    this path can never be miswired into rubber-stamping a rule/role weakening.
     """
+    extra = set(_changed_keys(before, after)) - {"mode"}
+    if extra:
+        raise ValueError(
+            "log_change is scoped to the strictness-mode dial; route "
+            f"{sorted(extra)} through apply_change/apply_enforcement_change instead"
+        )
     when = now or datetime.now(timezone.utc)
     classification = classify_change(before, after)
     await _record_change(
@@ -316,6 +334,13 @@ def _run_enforcement_gate(
         return False, "denied"
 
 
+def _expiry_extended(before: dict, after: dict) -> bool:
+    """True when the auto-revert deadline moved later (both sides numeric)."""
+    b = before.get("enforcement_expires_at")
+    a = after.get("enforcement_expires_at")
+    return isinstance(b, (int, float)) and isinstance(a, (int, float)) and float(a) > float(b)
+
+
 async def apply_enforcement_change(
     before: dict,
     after: dict,
@@ -335,6 +360,15 @@ async def apply_enforcement_change(
     """
     when = now or datetime.now(timezone.utc)
     classification = classify_change(before, after)
+    # Extending a softened state's auto-revert deadline keeps protection down for
+    # longer — but rank comparison sees two unknown floats as neutral. Upgrade it
+    # to a weaken explicitly so the timer can't be pushed out ungated (fail safe).
+    if (
+        classification is not Classification.weaken
+        and str(after.get("enforcement", "enforce")).strip().lower() != "enforce"
+        and _expiry_extended(before, after)
+    ):
+        classification = Classification.weaken
     if classification is Classification.weaken:
         from doberman.auth.provider import CliPrompter
 
