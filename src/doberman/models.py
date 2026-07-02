@@ -352,6 +352,12 @@ class Decision(BaseModel):
     It MAY be weaker than ``subjective.verdict`` — the execution rule clamps
     a non-allowlisted subjective BLOCK to AUTH by design.
 
+    ``shadow`` is a NON-AUTHORITATIVE, shadow-only annotation (Phase 0 of the
+    adaptive-precision seam): what a second-opinion adjudicator WOULD have
+    recommended. It is deliberately tied to nothing — no validator relates it
+    to ``final_verdict``/``final_risk`` — so it is structurally incapable of
+    changing the live decision. It exists only for observation/audit.
+
     ``action_id`` must equal the ``SecurityObject.id`` of the action being
     decided (chain of custody for audit).
     """
@@ -366,6 +372,8 @@ class Decision(BaseModel):
     reason_codes: list[ReasonCode] = Field(default_factory=list)
     explanation: str = ""
     decided_at: AwareDatetime
+    #: Shadow-only second opinion; never affects final_verdict/final_risk.
+    shadow: GuardrailResult | None = None
 
     @model_validator(mode="after")
     def _non_pass_must_be_explained(self) -> "Decision":
