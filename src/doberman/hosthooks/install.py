@@ -28,8 +28,15 @@ POST_MATCHER = "Bash|Edit|Write|NotebookEdit|WebFetch|WebSearch|Read|Glob|Grep|m
 #: Command registered as the PostToolUse hook.
 POST_COMMAND = "doberman hook post"
 
+#: Command registered as the SessionStart hook (prints the session dashboard).
+DASHBOARD_COMMAND = "doberman dashboard"
+
 #: Sentinel substring used to detect Doberman-owned hook entries.
 _DOBERMAN_MARKER = "doberman hook "
+
+#: SessionStart entries use a different command shape (`doberman hook `
+#: doesn't match `doberman dashboard`), so they need their own marker.
+_DASHBOARD_MARKER = "doberman dashboard"
 
 _PRE_ENTRY: dict[str, Any] = {
     "matcher": PRE_MATCHER,
@@ -39,6 +46,12 @@ _PRE_ENTRY: dict[str, Any] = {
 _POST_ENTRY: dict[str, Any] = {
     "matcher": POST_MATCHER,
     "hooks": [{"type": "command", "command": POST_COMMAND}],
+}
+
+# SessionStart isn't scoped to a tool, so - unlike Pre/PostToolUse - this entry
+# has no `matcher` key; it runs on every session start regardless of source.
+_SESSION_START_ENTRY: dict[str, Any] = {
+    "hooks": [{"type": "command", "command": DASHBOARD_COMMAND}],
 }
 
 
@@ -51,7 +64,7 @@ def _is_doberman_group(group: dict[str, Any]) -> bool:
     """Return True if *any* hook command in this matcher group belongs to Doberman."""
     for h in group.get("hooks", []):
         cmd = h.get("command", "")
-        if isinstance(cmd, str) and _DOBERMAN_MARKER in cmd:
+        if isinstance(cmd, str) and (_DOBERMAN_MARKER in cmd or _DASHBOARD_MARKER in cmd):
             return True
     return False
 
@@ -74,6 +87,7 @@ def merge_doberman_hooks(settings: dict[str, Any]) -> dict[str, Any]:
     for event_key, doberman_entry in (
         ("PreToolUse", _PRE_ENTRY),
         ("PostToolUse", _POST_ENTRY),
+        ("SessionStart", _SESSION_START_ENTRY),
     ):
         existing: list[dict[str, Any]] = list(hooks.get(event_key) or [])
         # Remove any pre-existing Doberman group (idempotency: replace, never duplicate).

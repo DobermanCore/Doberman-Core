@@ -488,13 +488,15 @@ def install_hooks(
     if dry_run:
         typer.echo(f"[dry-run] target: {settings_path}")
         typer.echo("[dry-run] would add:")
-        typer.echo("  PreToolUse  -> doberman hook pre")
-        typer.echo("  PostToolUse -> doberman hook post")
+        typer.echo("  PreToolUse   -> doberman hook pre")
+        typer.echo("  PostToolUse  -> doberman hook post")
+        typer.echo("  SessionStart -> doberman dashboard")
         return
 
     write_settings(settings_path, merged)
     typer.echo(f"wrote {settings_path}")
     typer.echo("Doberman will now gate every tool call in this project.")
+    typer.echo("The session dashboard will print at the start of every session.")
 
 
 @app.command("uninstall-hooks")
@@ -550,8 +552,9 @@ def uninstall_hooks(
     if dry_run:
         typer.echo(f"[dry-run] target: {settings_path}")
         typer.echo("[dry-run] would remove:")
-        typer.echo("  PreToolUse  -> doberman hook pre")
-        typer.echo("  PostToolUse -> doberman hook post")
+        typer.echo("  PreToolUse   -> doberman hook pre")
+        typer.echo("  PostToolUse  -> doberman hook post")
+        typer.echo("  SessionStart -> doberman dashboard")
         return
 
     write_settings(settings_path, cleaned)
@@ -723,6 +726,26 @@ def setup(
     typer.echo("Doberman is now active.")
     typer.echo("Restart your Claude Code session to pick up the hooks.")
     typer.echo("Next steps: `doberman 2fa setup`  |  `doberman status`")
+
+
+@app.command()
+def dashboard() -> None:
+    """Print the device-global session-guard summary and exit.
+
+    Reads the lifetime rollup at ``~/.doberman/metrics.db`` (every decision on
+    this device, across all repos/sessions, increments it - see
+    ``doberman.storage.device_metrics``) and prints a compact panel. This is a
+    print-and-exit command, not an interactive dashboard: it is wired as a
+    Claude Code SessionStart hook (``doberman install-hooks``), so it must
+    never block or crash a session - it always exits 0 and never raises.
+    """
+    try:
+        from doberman.storage.device_metrics import read_metrics, render_dashboard
+
+        typer.echo(render_dashboard(read_metrics()))
+    except Exception:  # noqa: BLE001, S110 — a dashboard must never break session start
+        pass
+    raise typer.Exit(0)
 
 
 @app.command()
