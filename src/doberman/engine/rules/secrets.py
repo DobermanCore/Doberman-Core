@@ -651,9 +651,10 @@ class SecretLeakageRule:
                 ),
             )
 
-        # 2) Secret material present but staying local, OR only weak/high-entropy
-        #    evidence, OR a secret file touched: step up to AUTH — never PASS.
-        if strong or secret_path or _weak_secret_present(strings):
+        # 2) STRONG secret material (a known credential shape) or a secret file
+        #    touched, staying local → AUTH. High-confidence: in the host-hook
+        #    output scan this hard-blocks the tool output.
+        if strong or secret_path:
             return GuardrailResult(
                 verdict=Verdict.AUTH,
                 risk=Risk.high,
@@ -664,5 +665,22 @@ class SecretLeakageRule:
                 ),
             )
 
-        # 3) Nothing secret-shaped detected — this rule abstains (PASS/low).
+        # 3) Only WEAK/high-entropy evidence (no known credential shape, no secret
+        #    file): still step up to AUTH, but under a distinct, lower-confidence
+        #    code. The high-entropy heuristic false-positives on hashes / UUIDs /
+        #    base64 fragments, so the host-hook output scan treats this code as
+        #    pass-through (still recorded + tainted), never a hard block of a read.
+        #    The engine step-up (proxy / pre-hook egress) is unchanged.
+        if _weak_secret_present(strings):
+            return GuardrailResult(
+                verdict=Verdict.AUTH,
+                risk=Risk.high,
+                reason_codes=[ReasonCode.possible_high_entropy_secret],
+                explanation=(
+                    "Action touches a high-entropy token that may be a secret; "
+                    "authentication required before proceeding."
+                ),
+            )
+
+        # 4) Nothing secret-shaped detected — this rule abstains (PASS/low).
         return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)

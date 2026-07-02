@@ -218,6 +218,12 @@ class ReasonCode(StrEnum):
     # Feature 3 — objective guardrail (basic rules + plugin seam).
     secret_exfiltration = "secret_exfiltration"  # noqa: S105 — reason-code constant, not a secret
     sensitive_secret_access = "sensitive_secret_access"  # noqa: S105 — reason code, not a secret
+    # Lower-confidence sibling of ``sensitive_secret_access``: only the WEAK
+    # high-entropy heuristic fired (no known credential shape, no secret file).
+    # Same AUTH step-up in the engine, but a distinct code so the host-hook output
+    # scan can treat it as pass-through (the heuristic false-positives on hashes /
+    # UUIDs / base64 fragments) instead of hard-blocking a benign read.
+    possible_high_entropy_secret = "possible_high_entropy_secret"  # noqa: S105 — reason code
     protected_path_blocked = "protected_path_blocked"
     sensitive_path_access = "sensitive_path_access"
     destructive_command = "destructive_command"
