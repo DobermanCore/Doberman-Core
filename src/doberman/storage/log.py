@@ -40,6 +40,12 @@ _INSERT_DECISION = (
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
+_INSERT_SHADOW = (
+    "INSERT INTO shadow_adjudications "
+    "(ts, action_id, live_verdict, shadow_verdict, shadow_reason_codes, entity_id) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
+)
+
 _UPSERT_FINGERPRINT = (
     "INSERT INTO secret_fingerprints (fingerprint, label, first_seen, last_seen, source_path_class) "
     "VALUES (?, ?, ?, ?, ?) "
@@ -180,6 +186,46 @@ async def record_decision(
         emit_to_sinks(record)
     except Exception:  # noqa: BLE001 — defense in depth (emit_to_sinks already isolates)
         logger.warning("audit sink fan-out failed for action %s; continuing", decision.action_id)
+
+
+async def record_shadow(
+    decision: Decision,
+    action: SecurityObject,
+    *,
+    repo_root: str,
+    entity_id: str | None = None,
+) -> None:
+    """Persist one redacted shadow-adjudication row (best-effort, shadow-only).
+
+    Writes a row ONLY when ``decision.shadow`` is set. Stores the live verdict and
+    the shadow verdict/reason-code **classes** — never a raw value — so this
+    ledger is redaction-safe by construction. Like :func:`record_decision` it is
+    outside the decision path: any failure is logged and swallowed, so it can
+    never raise into execution or alter a verdict (the decision is already made).
+
+    Not yet wired into the executor persist path — this slice provides + unit-tests
+    the writer; wiring is a follow-up.
+    """
+    if decision.shadow is None:
+        return
+    try:
+        shadow = decision.shadow
+        ts = datetime.now(timezone.utc).isoformat()
+        async with open_db(repo_root) as conn:
+            await conn.execute(
+                _INSERT_SHADOW,
+                (
+                    ts,
+                    decision.action_id,
+                    decision.final_verdict.value,
+                    shadow.verdict.value,
+                    json.dumps([rc.value for rc in shadow.reason_codes]),
+                    entity_id,
+                ),
+            )
+            await conn.commit()
+    except Exception:  # noqa: BLE001 — the shadow log must never break execution
+        logger.warning("shadow log write failed for action %s; continuing", decision.action_id)
 
 
 async def read_decisions(repo_root: str, *, limit: int | None = None) -> list[dict]:

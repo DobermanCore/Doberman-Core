@@ -5,9 +5,12 @@ This module is part of the policy core — it must never import
 ``doberman.proxy`` (enforced by import-linter).
 """
 
+import logging
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
+from doberman.engine.adjudicator import Adjudicator, run_shadow_adjudication
 from doberman.models import (
     RISK_ORDER,
     VERDICT_ORDER,
@@ -19,6 +22,8 @@ from doberman.models import (
     SecurityObject,
     Verdict,
 )
+
+logger = logging.getLogger("doberman.engine.decision_engine")
 
 # Reason codes for which a SUBJECTIVE BLOCK is honored as a hard block (rather
 # than clamped to AUTH). The subjective guardrail is otherwise AUTH-only
@@ -141,11 +146,35 @@ def _safe_evaluate(
     return result
 
 
+def _shadow_for(
+    adjudicators: Sequence[Adjudicator] | None,
+    action: SecurityObject,
+    final: GuardrailResult,
+) -> GuardrailResult | None:
+    """The shadow annotation for a FINAL result — shadow-only and fail-closed.
+
+    Consulted ONLY in the ambiguous AUTH step-up band: a floor/BLOCK or a PASS
+    decision is never shown to an adjudicator (floor-untouchable). The return
+    value is attached to ``Decision.shadow`` and is NEVER used to build
+    ``final_verdict``/``final_risk``. Any failure leaves ``shadow=None`` and the
+    decision proceeds unchanged.
+    """
+    if not adjudicators or final.verdict is not Verdict.AUTH:
+        return None
+    try:
+        return run_shadow_adjudication(adjudicators, action, final)
+    except Exception:  # noqa: BLE001 — shadow must never affect the live decision
+        logger.debug("shadow adjudication failed; ignoring", exc_info=True)
+        return None
+
+
 def decide(
     action: SecurityObject,
     objective: Guardrail,
     subjective: Guardrail,
     ctx: EvalContext,
+    *,
+    adjudicators: Sequence[Adjudicator] | None = None,
 ) -> Decision:
     """The execution rule (thesis §4/§8) — objective first, raise-only.
 
@@ -159,6 +188,12 @@ def decide(
        on ``SUBJECTIVE_HARD_BLOCK_ALLOWLIST``; otherwise it is clamped to
        ``AUTH`` (the original subjective result is preserved on the
        Decision for audit).
+
+    ``adjudicators`` (default ``None`` → zero behavior change) enables the
+    shadow-only seam: when the FINAL verdict is ``AUTH``, a second-opinion
+    recommendation is computed on REDACTED features and attached to
+    ``Decision.shadow`` for observation. It never touches ``final_verdict``/
+    ``final_risk`` and is never consulted for a floor/BLOCK or PASS decision.
     """
     objective_result = _safe_evaluate(
         objective,
@@ -181,6 +216,8 @@ def decide(
             reason_codes=list(objective_result.reason_codes),
             explanation=objective_result.explanation,
             decided_at=datetime.now(timezone.utc),
+            # Shadow-only annotation; never part of final_verdict/final_risk above.
+            shadow=_shadow_for(adjudicators, action, objective_result),
         )
 
     # Step 4: objective PASS → consult the subjective guardrail.
@@ -218,4 +255,6 @@ def decide(
         reason_codes=list(combined.reason_codes),
         explanation=combined.explanation,
         decided_at=datetime.now(timezone.utc),
+        # Shadow-only annotation; never part of final_verdict/final_risk above.
+        shadow=_shadow_for(adjudicators, action, combined),
     )

@@ -48,6 +48,10 @@ DRIFT_OBSERVER_GROUP = "doberman.drift_observers"
 #: Distinct from ``doberman.detectors``: adapters REFINE the action algebra
 #: (clamped raise-only) and never score or verdict anything.
 ALGEBRA_ADAPTER_GROUP = "doberman.algebra_adapters"
+#: Shadow adjudicators (adaptive-precision Phase 0) register here; resolved by
+#: the decision engine. Shadow-only: they observe a decision on REDACTED features
+#: and can never change the live verdict.
+ADJUDICATOR_GROUP = "doberman.adjudicators"
 
 
 def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
@@ -281,6 +285,42 @@ def discover_algebra_adapters() -> list[object]:
             continue
         adapters.append(candidate)
     return adapters
+
+
+def discover_adjudicators() -> list[object]:
+    """Discover registered shadow adjudicators (group ``doberman.adjudicators``).
+
+    Loaded defensively like every other seam: an import/constructor failure, or
+    an object that is not adjudicator-shaped (no ``adjudicate`` attribute), is
+    logged and skipped. Returns ``[]`` when nothing is installed — the engine
+    then simply records no shadow annotation. Core never imports an adjudicator
+    by name, and the seam is shadow-only: a discovered adjudicator can never
+    change the live verdict (:mod:`doberman.engine.adjudicator`).
+    """
+    # Local import mirrors the other seams and keeps discovery self-contained.
+    from doberman.engine.adjudicator import Adjudicator
+
+    adjudicators: list[object] = []
+    seen: set[str] = set()
+    for entry_point in _iter_entry_points(ADJUDICATOR_GROUP):
+        key = f"{ADJUDICATOR_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = _load_and_construct(entry_point)
+        if candidate is None:
+            continue
+        # Structural check only (runtime_checkable verifies the ``adjudicate``
+        # attribute, not its signature) — the real gate is that the engine
+        # validates every return value and isolates exceptions.
+        if not isinstance(candidate, Adjudicator):
+            logger.warning(
+                "skipping adjudicator %r: does not implement the Adjudicator protocol",
+                getattr(entry_point, "name", "?"),
+            )
+            continue
+        adjudicators.append(candidate)
+    return adjudicators
 
 
 def discover_drift_observers() -> list[object]:

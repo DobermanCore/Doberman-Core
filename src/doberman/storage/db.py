@@ -44,9 +44,11 @@ DB_FILE = "doberman.db"
 #: for the universal subjective layer (SL4/SL6/SL8: baselines re-keyed by entity,
 #: transitions, score history, preference feedback), to 4 for the host-hook sticky
 #: taint ledger (HK.5.1: decisions.session_id + the session_taint table), to 5 for
-#: Feature CB (CB.1: the append-only ``cost_events`` meter ledger), and to 6 for the
-#: read-vs-send exfil store (HK.5.2b: session_secret_fingerprints).
-SCHEMA_VERSION = 6
+#: Feature CB (CB.1: the append-only ``cost_events`` meter ledger), to 6 for the
+#: read-vs-send exfil store (HK.5.2b: session_secret_fingerprints), and to 7 for the
+#: shadow-only adjudication ledger (adaptive-precision Phase 0: shadow_adjudications;
+#: additive CREATE TABLE — no legacy migration needed).
+SCHEMA_VERSION = 7
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -188,6 +190,22 @@ CREATE TABLE IF NOT EXISTS cost_events (
     entity_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cost_events ON cost_events (entity_id, kind, id);
+
+-- Shadow-only adjudication ledger (adaptive-precision Phase 0): what a
+-- second-opinion adjudicator WOULD have recommended for an AUTH decision. It is
+-- observability, never the decision path — a row here can never alter a verdict.
+-- Redaction-safe by construction: verdict/reason-code CLASSES only, plus the
+-- action id, the live verdict, and a keyed-HMAC entity_id. No raw secret/path/
+-- prompt is ever stored.
+CREATE TABLE IF NOT EXISTS shadow_adjudications (
+    id                  INTEGER PRIMARY KEY,
+    ts                  TEXT,
+    action_id           TEXT,
+    live_verdict        TEXT,
+    shadow_verdict      TEXT,
+    shadow_reason_codes TEXT,
+    entity_id           TEXT
+);
 """
 
 
