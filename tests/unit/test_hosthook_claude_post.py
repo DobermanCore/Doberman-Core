@@ -75,6 +75,23 @@ def test_secret_string_response_is_blocked(cwd):
     assert data["decision"] == "block"
 
 
+def test_secret_string_block_is_recorded_in_decision_log(cwd):
+    secret = _SYNTHETIC_SECRET
+    out = _post(
+        "Bash", {"command": "cat ~/.aws/credentials"}, f"[default]\naws_access_key_id={secret}", cwd
+    )
+    assert out is not None
+
+    rows = asyncio.run(read_decisions(cwd))
+    assert rows
+    latest = rows[0]
+    assert latest["final_verdict"] == "BLOCK"
+    assert latest["auth_result"] == "blocked"
+    reasons = json.loads(latest["reason_codes_json"] or "[]")
+    assert set(reasons) & {"secret_exfiltration", "sensitive_secret_access"}
+    assert secret not in repr(latest)
+
+
 def test_secret_string_not_in_block_reason(cwd):
     secret = _SYNTHETIC_SECRET
     out = _post("Bash", {"command": "cat ~/.aws/credentials"}, f"found key: {secret}", cwd)
