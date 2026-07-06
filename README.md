@@ -319,7 +319,7 @@ It reports two plugin profiles — `builtins_only` and `with_plugins` (built-ins
 
 ## Tune to your risk tolerance
 
-Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`:
+Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`. Every mode change made this way — the CLI dial or the setup wizard — is recorded in the append-only policy-change ledger (view it with `doberman policy-history`), so a strictness downgrade is always auditable even though it isn't 2FA-gated (F10):
 
 | Mode | Best for | Bulk-delete threshold | Step-up for unknown destinations | Step-up for behavioral anomalies | Lethal-trifecta exfil |
 |---|---|---|---|---|---|

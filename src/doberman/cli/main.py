@@ -27,8 +27,8 @@ from doberman.config import (
 )
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
-from doberman.policy.drift import read_policy_changes
-from doberman.policy.modes import SecurityMode
+from doberman.policy.drift import log_change, read_policy_changes
+from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
@@ -189,6 +189,29 @@ def review(
         typer.echo("\n(read-only; re-run with --yes to save)")
 
 
+def _apply_mode_change(name: str, path: str, reason: str) -> str:
+    """Resolve ``name``, best-effort audit-log the change, then persist it (F10).
+
+    The mode dial is deliberately frictionless, but every user-initiated change
+    still lands in the append-only policy-change ledger via
+    :func:`doberman.policy.drift.log_change` (``method="logged"``). A ledger
+    problem must never block the mode change itself, so logging is attempted
+    *before* saving and any unexpected failure is swallowed with a printed
+    warning; the save always proceeds. A no-op (unchanged mode) skips the
+    ledger call entirely rather than writing a confusing neutral entry.
+    """
+    old = load_mode(path)
+    new = resolve_mode(name).value  # raises ValueError for an unknown mode
+    if old != new:
+        try:
+            asyncio.run(log_change({"mode": old}, {"mode": new}, reason, repo_root=path))
+        except Exception as exc:  # noqa: BLE001 -- ledger issues must never block the mode change
+            typer.echo(
+                f"warning: could not record mode change in the policy ledger: {exc}", err=True
+            )
+    return save_mode(name, path)
+
+
 @app.command()
 def mode(
     name: str = typer.Argument(None, help="Mode to set (light/balanced/strict/paranoid)."),
@@ -199,7 +222,7 @@ def mode(
         typer.echo(load_mode(path))
         return
     try:
-        saved = save_mode(name, path)
+        saved = _apply_mode_change(name, path, "doberman mode CLI")
     except ValueError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -626,7 +649,7 @@ def setup(
 
     # Save the chosen mode.
     try:
-        save_mode(chosen_mode.value, path)
+        _apply_mode_change(chosen_mode.value, path, "doberman setup wizard")
     except ValueError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
