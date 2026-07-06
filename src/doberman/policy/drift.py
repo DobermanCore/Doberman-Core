@@ -13,6 +13,11 @@ mechanism (a core safety invariant):
   only on approval; strengthening/neutral changes apply (still logged). Every
   attempt — including denials (the attack signal) — is written to the ledger and
   fanned out to registered :class:`DriftObserver` s.
+* :func:`apply_enforcement_change` — the same chokepoint for the orthogonal
+  enforcement dial (enforce / monitor / off): softening is gated (confirm +
+  TOTP-if-enrolled), re-arming applies automatically.
+* :func:`log_change` — the audited-but-not-gated path, scope-enforced to the
+  strictness ``mode`` dial only.
 * :class:`DriftObserver` — the enterprise seam (org-wide drift monitoring /
   compliance). Observers receive **redacted** events and can **never** approve or
   suppress a weakening — the 2FA gate is core and authoritative.
@@ -62,6 +67,18 @@ _RANK: dict[str, int] = {
     "normal": 1,
     "trusted": 1,
     "pass": 1,
+    # Strictness modes — so a `mode` downgrade (e.g. strict→light) classifies as a
+    # weaken rather than silently as neutral. Stricter = higher.
+    "paranoid": 4,
+    "strict": 3,
+    "balanced": 2,
+    "light": 1,
+    # Orthogonal enforcement states: enforce > monitor > off (off shares the 0 below).
+    # "enforce" outranks _UNKNOWN_TOKEN_RANK (2) so enforce → <unrecognized/typo state>
+    # classifies as a weaken (gated), never neutral. Consumers must treat an
+    # unrecognized enforcement value as "enforce" (fail closed).
+    "enforce": 3,
+    "monitor": 1,
     "off": 0,
     "disabled": 0,
     "false": 0,
@@ -216,6 +233,148 @@ async def apply_change(
     else:
         approved, method = True, "auto"
 
+    await _record_change(
+        repo_root,
+        before,
+        after,
+        classification,
+        reason,
+        approved=approved,
+        method=method,
+        now=when,
+    )
+    notify_observers(
+        {
+            "ts": when.isoformat(),
+            "classification": classification.value,
+            "changed_rules": _changed_keys(before, after),
+            "reason": reason,
+            "approved": approved,
+            "method": method,
+        }
+    )
+    return ChangeOutcome(classification=classification, approved=approved, method=method)
+
+
+async def log_change(
+    before: dict,
+    after: dict,
+    reason: str,
+    *,
+    repo_root: str,
+    now: datetime | None = None,
+) -> ChangeOutcome:
+    """Record a user-initiated, **audited but not 2FA-gated** policy change.
+
+    For changes the operator has chosen to make frictionless yet auditable — the
+    strictness-mode dial (light↔paranoid). The change is classified and written to
+    the append-only ledger (``method="logged"``) and applied by the caller; a
+    weakening is recorded as such (never hidden) but is not gated. This is a
+    separate, explicitly-chosen audit-only path and does NOT relax the general
+    :func:`apply_change` weaken-gate (policy/role weakenings still require 2FA).
+    The dramatic enforcement-disable uses :func:`apply_enforcement_change`.
+
+    Scope is enforced, not just documented: any changed key other than ``mode``
+    raises ``ValueError`` (fail closed — nothing recorded, nothing approved), so
+    this path can never be miswired into rubber-stamping a rule/role weakening.
+    """
+    extra = set(_changed_keys(before, after)) - {"mode"}
+    if extra:
+        raise ValueError(
+            "log_change is scoped to the strictness-mode dial; route "
+            f"{sorted(extra)} through apply_change/apply_enforcement_change instead"
+        )
+    when = now or datetime.now(timezone.utc)
+    classification = classify_change(before, after)
+    await _record_change(
+        repo_root,
+        before,
+        after,
+        classification,
+        reason,
+        approved=True,
+        method="logged",
+        now=when,
+    )
+    notify_observers(
+        {
+            "ts": when.isoformat(),
+            "classification": classification.value,
+            "changed_rules": _changed_keys(before, after),
+            "reason": reason,
+            "approved": True,
+            "method": "logged",
+        }
+    )
+    return ChangeOutcome(classification=classification, approved=True, method="logged")
+
+
+def _run_enforcement_gate(
+    before: dict, after: dict, reason: str, prompter: Prompter
+) -> tuple[bool, str]:
+    """Gate softening/disabling enforcement: confirm, plus TOTP **only if enrolled**.
+
+    Disabling Doberman is a deliberate operator action that must be confirmed and
+    audited — but, unlike a policy-rule weakening, must not be made *impossible* for
+    a user who never set up 2FA (that would put the safety valve out of reach). So
+    we require a 2FA code when one is enrolled and fall back to an explicit
+    confirmation when it is not. Scoped to the enforcement toggle: it does NOT relax
+    :func:`_run_weaken_gate` (policy/role weakenings still require 2FA). Fails closed.
+    """
+    try:
+        if not prompter.confirm(_render_diff(before, after, reason)):
+            return False, "denied"
+        if totp.is_enrolled():
+            code = prompter.read_code("Enter your 2FA code to authorize softening enforcement")
+            if not totp.verify(code):
+                return False, "denied"
+            return True, "two_factor"
+        return True, "confirmed"
+    except Exception:  # noqa: BLE001 — any input/timeout error denies the change
+        return False, "denied"
+
+
+def _expiry_extended(before: dict, after: dict) -> bool:
+    """True when the auto-revert deadline moved later (both sides numeric)."""
+    b = before.get("enforcement_expires_at")
+    a = after.get("enforcement_expires_at")
+    return isinstance(b, (int, float)) and isinstance(a, (int, float)) and float(a) > float(b)
+
+
+async def apply_enforcement_change(
+    before: dict,
+    after: dict,
+    reason: str,
+    *,
+    repo_root: str,
+    prompter: Prompter | None = None,
+    now: datetime | None = None,
+) -> ChangeOutcome:
+    """Chokepoint for an enforcement-state change (enforce / monitor / off).
+
+    Softening (enforce→monitor/off) is gated by :func:`_run_enforcement_gate`
+    (confirm + 2FA-if-enrolled); re-arming (→enforce) is a strengthen and applies
+    automatically. Every attempt — including denials — is recorded to the
+    append-only ledger and fanned out to observers; the caller persists only when
+    ``approved`` is True.
+    """
+    when = now or datetime.now(timezone.utc)
+    classification = classify_change(before, after)
+    # Extending a softened state's auto-revert deadline keeps protection down for
+    # longer — but rank comparison sees two unknown floats as neutral. Upgrade it
+    # to a weaken explicitly so the timer can't be pushed out ungated (fail safe).
+    if (
+        classification is not Classification.weaken
+        and str(after.get("enforcement", "enforce")).strip().lower() != "enforce"
+        and _expiry_extended(before, after)
+    ):
+        classification = Classification.weaken
+    if classification is Classification.weaken:
+        from doberman.auth.provider import CliPrompter
+
+        approved, method = _run_enforcement_gate(before, after, reason, prompter or CliPrompter())
+    else:
+        approved, method = True, "auto"
     await _record_change(
         repo_root,
         before,
