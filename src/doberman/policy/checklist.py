@@ -138,6 +138,8 @@ class PolicyDoc:
     #: Orthogonal enforcement state (independent of the strictness ``mode``):
     #: ``"enforce"`` (act on verdicts), ``"monitor"`` (evaluate + record but never
     #: block), or ``"off"`` (do not evaluate). Softening it is gated + audited.
+    #: Consumers MUST resolve the state to act on via ``drift.effective_enforcement``
+    #: (ledger-verified, tamper-clamped) — never read this field directly.
     enforcement: str = "enforce"
     #: Epoch seconds at which a monitor/off state auto-reverts to
     #: ``enforcement_revert`` (None = no expiry). Lets a soften be temporary.
