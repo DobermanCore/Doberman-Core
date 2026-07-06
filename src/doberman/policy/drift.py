@@ -20,13 +20,18 @@ mechanism (a core safety invariant):
   strictness ``mode`` dial only.
 * :class:`DriftObserver` — the enterprise seam (org-wide drift monitoring /
   compliance). Observers receive **redacted** events and can **never** approve or
-  suppress a weakening — the 2FA gate is core and authoritative.
+  suppress a weakening — the 2FA gate is core and authoritative. The free-text
+  ``reason`` on every event (and every ledger row) is scrubbed of secret-shaped
+  substrings and length-capped by :func:`_redact_reason` before it is ever
+  recorded or fanned out — a pasted token in a reason must never reach the
+  ledger or an observer.
 
 This module is policy core: it may import ``doberman.auth`` / ``doberman.storage``
-but never ``doberman.proxy``.
+/ ``doberman.engine`` (secret-detection reuse only) but never ``doberman.proxy``.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -98,6 +103,46 @@ def _rank(value: object) -> int:
     if isinstance(value, bool):
         return 2 if value else 0
     return _RANK.get(str(value).strip().lower(), _UNKNOWN_TOKEN_RANK)
+
+
+#: A `reason` is free text supplied by whatever triggered the policy change — it
+#: is never trusted and must never carry a secret into the ledger. Cap length so
+#: the ledger (a decision record, not a payload store) can't be used to smuggle a
+#: huge blob either.
+_REASON_MAX_CHARS = 300
+_HIGH_ENTROPY_CANDIDATE = re.compile(r"[A-Za-z0-9+/=_\-]{24,}")
+
+
+def _redact_reason(reason: str) -> str:
+    """Scrub a free-text ``reason`` before it reaches the ledger or an observer.
+
+    Reuses the credential-pattern and high-entropy-token detectors from
+    :mod:`doberman.engine.rules.secrets` (imported lazily to avoid a module-load
+    cycle, matching the pattern already used by :func:`notify_observers`):
+    every known credential shape is replaced outright, and every long
+    high-entropy token is replaced if it looks secret-shaped. The result is then
+    capped at ``_REASON_MAX_CHARS``. Fails safe: any internal error returns a
+    fixed placeholder — never the raw ``reason`` — and never raises.
+    """
+    if not reason:
+        return reason
+    try:
+        from doberman.engine.rules.secrets import _CREDENTIAL_PATTERNS, _looks_high_entropy_secret
+
+        scrubbed = reason
+        for pattern in _CREDENTIAL_PATTERNS:
+            scrubbed = pattern.sub("[redacted]", scrubbed)
+
+        def _scrub_candidate(match: re.Match[str]) -> str:
+            token = match.group(0)
+            return "[redacted]" if _looks_high_entropy_secret(token) else token
+
+        scrubbed = _HIGH_ENTROPY_CANDIDATE.sub(_scrub_candidate, scrubbed)
+        if len(scrubbed) > _REASON_MAX_CHARS:
+            scrubbed = scrubbed[:_REASON_MAX_CHARS] + "…"
+        return scrubbed
+    except Exception:  # noqa: BLE001 — never leak the raw reason on any failure
+        return "[reason redaction failed]"
 
 
 def classify_change(before: dict, after: dict) -> Classification:
@@ -223,6 +268,7 @@ async def apply_change(
     when** ``outcome.approved`` is True — this function decides, records, and
     notifies; it never weakens silently.
     """
+    reason = _redact_reason(reason)
     when = now or datetime.now(timezone.utc)
     classification = classify_change(before, after)
 
@@ -278,6 +324,7 @@ async def log_change(
     raises ``ValueError`` (fail closed — nothing recorded, nothing approved), so
     this path can never be miswired into rubber-stamping a rule/role weakening.
     """
+    reason = _redact_reason(reason)
     extra = set(_changed_keys(before, after)) - {"mode"}
     if extra:
         raise ValueError(
@@ -358,6 +405,7 @@ async def apply_enforcement_change(
     append-only ledger and fanned out to observers; the caller persists only when
     ``approved`` is True.
     """
+    reason = _redact_reason(reason)
     when = now or datetime.now(timezone.utc)
     classification = classify_change(before, after)
     # Extending a softened state's auto-revert deadline keeps protection down for
