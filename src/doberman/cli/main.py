@@ -243,15 +243,47 @@ def prefs(
     typer.echo(f"{dimension} set to {value:.2f}")
 
 
+def _hook_install_states(path: str) -> list[tuple[str, str, bool]]:
+    """Best-effort: for every Claude Code settings.json candidate (project / global /
+    local — the same scopes ``install-hooks`` writes to), report whether Doberman's
+    hooks are installed there.
+
+    Never raises: an unreadable or unparseable settings file is reported as "not
+    installed" rather than crashing ``status`` (mirrors ``install-hooks``'s own
+    ``load_settings`` error handling, but status must not error out over it).
+    """
+    from doberman.hosthooks.install import _is_doberman_group, load_settings, resolve_settings_path
+
+    states: list[tuple[str, str, bool]] = []
+    for scope in ("project", "global", "local"):
+        settings_path = resolve_settings_path(scope, path)
+        installed = False
+        try:
+            settings = load_settings(settings_path)
+            hooks_section = settings.get("hooks") or {}
+            installed = any(
+                _is_doberman_group(group)
+                for groups in hooks_section.values()
+                if isinstance(groups, list)
+                for group in groups
+            )
+        except Exception:  # noqa: BLE001,S110 — a bad settings file must not crash status
+            pass
+        states.append((scope, str(settings_path), installed))
+    return states
+
+
 @app.command()
 def status(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
-    """Show the active role, security mode, and policy summary."""
+    """Show the active role, security mode, policy summary, hook install state,
+    and the most recent decisions."""
     role = load_active_role(path)
     doc = load_policy(path)
     typer.echo("Doberman status")
     typer.echo("=" * 32)
+    typer.echo(f"Version: {__version__}")
     typer.echo(f"Role:   {role.name if role else '(none - role enforcement off)'}")
     typer.echo(f"Mode:   {load_mode(path)}  (of: {', '.join(m.value for m in SecurityMode)})")
     vector = load_preferences(path)
@@ -280,6 +312,20 @@ def status(
                 f"  {grant.id}  {grant.scope_glob}  "
                 f"(expires {grant.expires_at.isoformat()}; {kind})"
             )
+
+    typer.echo("Hooks:")
+    for scope, settings_path, installed in _hook_install_states(path):
+        state = "installed" if installed else "not installed"
+        typer.echo(f"  {scope:<8} {settings_path}  [{state}]")
+
+    typer.echo("Recent decisions:")
+    rows = asyncio.run(read_decisions(path, limit=5))
+    if not rows:
+        typer.echo("  (no decisions recorded yet)")
+    else:
+        for row in rows:
+            reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
+            typer.echo(f"  {row['ts']}  {row['final_verdict']:<5}  {reasons}")
 
 
 @hook_app.command("pre")
