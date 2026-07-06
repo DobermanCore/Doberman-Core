@@ -16,6 +16,11 @@ mechanism (a core safety invariant):
 * :func:`apply_enforcement_change` — the same chokepoint for the orthogonal
   enforcement dial (enforce / monitor / off): softening is gated (confirm +
   TOTP-if-enrolled), re-arming applies automatically.
+* :func:`effective_enforcement` — the **read-side** clamp: turns the on-disk
+  enforcement fields into the state to act on, verifying them against the ledger
+  so a hand-edit of ``policies.yaml`` (e.g. ``enforcement: off``) that bypassed the
+  gate is caught and clamped back to ``enforce`` (fail closed). Consumers MUST use
+  this instead of reading ``PolicyDoc.enforcement`` directly.
 * :func:`log_change` — the audited-but-not-gated path, scope-enforced to the
   strictness ``mode`` dial only.
 * :class:`DriftObserver` — the enterprise seam (org-wide drift monitoring /
@@ -474,6 +479,138 @@ async def read_policy_changes(repo_root: str, *, limit: int | None = None) -> li
     except Exception:  # noqa: BLE001 — a read failure must never crash the CLI
         return []
     return [dict(zip(cols, row, strict=True)) for row in rows]
+
+
+# --- Read-side tamper clamp (#81) ----------------------------------------
+
+
+def _last_approved_to_state(rows: list[dict], rule_id: str) -> str | None:
+    """The ``to_state`` of the most recent APPROVED ledger row for ``rule_id``.
+
+    ``rows`` are newest-first (as :func:`read_policy_changes` returns them), so the
+    first approved match is the most recent. ``None`` when no approved row exists.
+    ``approved`` is stored as ``int(bool)`` — an approved row is ``1``.
+    """
+    for row in rows:
+        if row.get("rule_id") == rule_id and row.get("approved") == 1:
+            return row.get("to_state")
+    return None
+
+
+def _ledger_confirms(rows: list[dict], state: str, expires_at: float | None, revert: str) -> bool:
+    """True iff the on-disk enforcement fields match the last ledger-APPROVED values.
+
+    The on-disk soften is legitimate only if the gate approved *this* exact state:
+    the most recent approved ``enforcement`` row's ``to_state`` must equal the
+    on-disk ``state``, the expiry must match in **both** directions (hand-deleting
+    ``enforcement_expires_at`` from the yaml would turn an approved *temporary*
+    soften into a permanent one — a weaken), and a non-default ``enforcement_revert``
+    must match its approved row. Absent-from-ledger while present-on-disk = mismatch
+    (a soften that never went through the gate).
+
+    Comparisons use the exact strings :func:`_record_change` stored: it writes
+    ``str(after[key])``, so a float epoch lands as ``str(float)`` (e.g.
+    ``"1700000000.0"``) — hence ``str(expires_at)`` here. A cleared / never-set
+    expiry appears in the ledger as no row, ``"None"`` (``str(None)``), or
+    ``"(absent)"`` (the absent-key sentinel) — all three mean "no expiry approved".
+    """
+    if _last_approved_to_state(rows, "enforcement") != state:
+        return False
+    ledger_expiry = _last_approved_to_state(rows, "enforcement_expires_at")
+    if ledger_expiry in ("None", "(absent)"):
+        ledger_expiry = None
+    if ledger_expiry != (None if expires_at is None else str(expires_at)):
+        return False
+    # revert defaults to "enforce" (the strongest target); only a non-default revert
+    # needs a matching approved row — a default one can never weaken the outcome.
+    if revert != "enforce" and _last_approved_to_state(rows, "enforcement_revert") != revert:
+        return False
+    return True
+
+
+def _emit_tamper_anomaly(on_disk_state: str, now: datetime | None) -> None:
+    """Best-effort anomaly for a suspected on-disk enforcement tamper.
+
+    Emits a redacted observer event + a ``logger.warning``. It writes **no ledger
+    row**: the ledger records *changes the gate approved*, and this is a read-side
+    clamp — recording it would forge a "change" that never happened and pollute the
+    append-only history. Must never raise and never influence the caller's return.
+    """
+    logger.warning(
+        "enforcement tamper suspected: on-disk state %r has no matching ledger-approved "
+        "row; clamped to enforce",
+        on_disk_state,
+    )
+    try:
+        notify_observers(
+            {
+                "ts": (now or datetime.now(timezone.utc)).isoformat(),
+                "event": "enforcement_tamper_suspected",
+                "on_disk": on_disk_state,
+                "reason": "on-disk enforcement does not match the last ledger-approved "
+                "state; clamped to enforce",
+            }
+        )
+    except Exception:  # noqa: BLE001, S110 — anomaly emission can never break the clamp
+        pass
+
+
+async def effective_enforcement(
+    repo_root: str,
+    *,
+    enforcement: str,
+    expires_at: float | None = None,
+    revert: str = "enforce",
+    now: datetime | None = None,
+) -> str:
+    """The single sanctioned way to turn on-disk enforcement fields into the state to act on.
+
+    This clamp protects the mediated path's gate from **on-disk tampering**: once the
+    engine honors ``enforcement``, hand-editing ``.doberman/policies.yaml`` to
+    ``enforcement: off`` would silently bypass the whole :func:`apply_enforcement_change`
+    gate. So a soften (``monitor``/``off``) is honored **only** when the append-only
+    ledger holds a matching APPROVED change for it; anything else is clamped back to
+    ``enforce``. It is **raise-only** — it can only ever return a state at least as
+    strong (in protection terms) as the on-disk claim, never weaker — so consumers
+    MUST call this instead of reading :attr:`PolicyDoc.enforcement` directly.
+
+    Order:
+      1. ``enforce`` returns immediately with no I/O (the common case stays free); an
+         unrecognized value returns ``enforce`` (consumer contract: unrecognized ⇒
+         enforce) plus an anomaly.
+      2. Ledger cross-check: the on-disk state (and any expiry/revert) must equal the
+         most recent approved ledger values, else it is treated as tampering.
+      3. Timer: a verified soften past ``expires_at`` reverts to the verified
+         ``revert`` target (clamped to ``enforce`` if that would be weaker).
+      4. Any mismatch / missing ledger / unexpected error ⇒ ``enforce`` (fail closed)
+         + a best-effort anomaly.
+    """
+    state = str(enforcement).strip().lower()
+    # Common path: on-disk claims full enforcement — nothing to soften, nothing to
+    # verify. Return with zero I/O (this runs on every mediated action).
+    if state == "enforce":
+        return "enforce"
+    # Unrecognized/garbage on disk ⇒ enforce (consumer contract from #72) — and a
+    # corrupt enforcement value is itself suspicious, so raise an anomaly.
+    if state not in {"monitor", "off"}:
+        _emit_tamper_anomaly(state, now)
+        return "enforce"
+    try:
+        rows = await read_policy_changes(repo_root)
+        if not _ledger_confirms(rows, state, expires_at, revert):
+            _emit_tamper_anomaly(state, now)
+            return "enforce"
+        # The soften is ledger-legitimate. Honor its timer: once past the deadline it
+        # has expired and reverts. A revert target weaker than the current state (e.g.
+        # "off") would *lower* protection on expiry — clamp any non-{enforce,monitor}
+        # revert up to enforce (raise-only).
+        when = now or datetime.now(timezone.utc)
+        if expires_at is not None and when.timestamp() >= expires_at:
+            return revert if revert in {"enforce", "monitor"} else "enforce"
+        return state
+    except Exception:  # noqa: BLE001 — any unexpected error fails closed to enforce
+        _emit_tamper_anomaly(state, now)
+        return "enforce"
 
 
 # --- DriftObserver seam (slice 10.4) -------------------------------------
