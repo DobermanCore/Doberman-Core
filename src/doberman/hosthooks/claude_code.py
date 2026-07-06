@@ -358,14 +358,61 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
         # and hard-BLOCK when an outbound value is a CONFIRMED read secret.
         decision = _apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)
         if decision.final_verdict is Verdict.PASS:
+            # PreToolUse fires on EVERY tool call, so a PASS is deliberately NOT
+            # recorded here — logging every pass would flood the decision log with
+            # a DB write on the hot path for no security value. Only the raised
+            # (AUTH/BLOCK) outcomes below are history-worthy.
             return None  # raise-only: abstain, leaving the harness's native flow intact
         if decision.final_verdict is Verdict.AUTH:
             # Run Doberman's own action-bound challenge so the human can actually
             # approve in-session (issues #65/#67) — not just be told to.
-            return _resolve_auth(decision, action)
-        return _decision_payload(decision)  # BLOCK → deny
+            result = _resolve_auth(decision, action)
+        else:
+            result = _decision_payload(decision)  # BLOCK → deny
+        _record_pre_history(decision, action, repo_root, session_id, result)
+        return result
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
         return _deny()
+
+
+def _pre_auth_result(hook_payload: dict[str, Any]) -> str:
+    """``"executed"`` if *hook_payload* allows the call (an approved AUTH), else
+    ``"blocked"`` (a denied AUTH, or the BLOCK payload itself — always a deny)."""
+    permission = (hook_payload.get("hookSpecificOutput") or {}).get("permissionDecision")
+    return "executed" if permission == "allow" else "blocked"
+
+
+def _record_pre_history(
+    decision: Decision,
+    action: SecurityObject,
+    repo_root: str,
+    session_id: str | None,
+    hook_result: dict[str, Any],
+) -> None:
+    """Best-effort: record a PreToolUse AUTH/BLOCK decision in ``doberman log``.
+
+    Only called for the AUTH/BLOCK branches of ``evaluate_pre`` — a PASS is
+    deliberately not recorded there (PreToolUse fires on every call; logging every
+    pass would flood the log with a DB write on the hot path). ``hook_result`` is
+    the payload actually being returned to the harness (after an AUTH challenge
+    resolves), so the recorded outcome matches what really happened: ``"executed"``
+    if the call was allowed, ``"blocked"`` if it was denied.
+
+    Wrapped in its own broad except — a recording failure (including a lazy-import
+    failure) must never raise into ``evaluate_pre``'s outer guard, which would
+    otherwise turn an approved AUTH into a fail-closed deny for a purely
+    observability-side reason.
+    """
+    try:
+        _record_history_decision(
+            decision,
+            action,
+            repo_root,
+            session_id,
+            auth_result=_pre_auth_result(hook_result),
+        )
+    except Exception:  # noqa: BLE001,S110 — history must never alter the hook's return value
+        pass
 
 
 def _apply_taint_floor(
@@ -727,9 +774,7 @@ def _record_post_history(
             metadata={"raw_arguments": args, "repo_root": repo_root},
         )
         decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
-        _record_post_history_decision(
-            decision, action, repo_root, session_id, auth_result="executed"
-        )
+        _record_history_decision(decision, action, repo_root, session_id, auth_result="executed")
     except Exception:  # noqa: BLE001,S110 — history must never break the execution path
         pass
 
@@ -757,14 +802,12 @@ def _record_blocked_post_history(
             explanation=scan_result.explanation,
             decided_at=action.ts,
         )
-        _record_post_history_decision(
-            decision, action, repo_root, session_id, auth_result="blocked"
-        )
+        _record_history_decision(decision, action, repo_root, session_id, auth_result="blocked")
     except Exception:  # noqa: BLE001,S110 — history must never break the block path
         pass
 
 
-def _record_post_history_decision(
+def _record_history_decision(
     decision: Decision,
     action: SecurityObject,
     repo_root: str,
@@ -772,7 +815,13 @@ def _record_post_history_decision(
     *,
     auth_result: str,
 ) -> None:
-    """Best-effort: persist one PostToolUse decision row."""
+    """Best-effort: persist one decision row to the local decision log.
+
+    Shared by both hooks: the PostToolUse output-scan path (clean pass-through and
+    a block) and the PreToolUse gate (an AUTH's resolved outcome, or a BLOCK).
+    Wrapped so a storage failure can never raise into — or alter — either hook's
+    return value (strictly best-effort; see module docstring).
+    """
     import asyncio  # lazy import keeps the module scope light
 
     from doberman.storage.log import record_decision  # lazy import
