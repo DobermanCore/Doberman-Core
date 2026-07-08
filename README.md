@@ -253,6 +253,24 @@ doberman uninstall-hooks          # remove only Doberman's entries (leaves your 
 
 Run it any time with `doberman dashboard`. Output is plain ASCII (no box-drawing runes or emoji) so it always renders on a legacy Windows console, and the command always exits `0` and never raises — a dashboard must never break a session start.
 
+**Decision-transparency TUI.** `doberman log` prints the raw redacted rows; `doberman tui` browses the same rows interactively and adds a plain-language "why" for whichever row is highlighted — the verdict, the decided layer, and its reason codes turned into a sentence, using only that row's already-redacted data (never a raw path, argument, or secret). Arrow keys navigate, `r` reloads, `q` quits:
+
+```bash
+pip install "doberman-core[tui]"   # optional extra (textual)
+doberman tui
+```
+
+By default the "why" is a deterministic, offline template — no network call, always available. You can optionally enrich it with a short Claude-Haiku rewrite in plainer language:
+
+```bash
+pip install "doberman-core[explain]"     # optional extra (anthropic)
+export ANTHROPIC_API_KEY=...
+export DOBERMAN_EXPLAIN_LLM=1            # opt-in; off by default
+doberman tui
+```
+
+The LLM is a **narrator, never a judge** — it only rewords a verdict Doberman already made from the redacted metadata above; it can never change a decision. It's strictly opt-in (installed *and* keyed *and* flagged, all three), and any failure — missing key, no network, timeout, bad response — silently falls back to the offline template, so the TUI never blocks on it or crashes because of it. There is no `doberman explain` command; the TUI and `doberman log` are the only surfaces for this.
+
 **Doberman protects its own hooks.** Once installed, the agent can't quietly remove them: a write/edit to `.claude/settings.json` (the hook-install file) is **blocked**, and other `.claude/` changes require authentication — so the agent can't disable enforcement by editing the harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own `.doberman/` control plane. The protection holds **through the shell** too — a Bash command that writes/deletes the config (`echo > .claude/settings.json`, `rm -rf .doberman`) or runs `doberman uninstall-hooks` is blocked, not just the `Write`/`Edit` tools.
 
 **Easiest of all — `doberman setup`:** an interactive wizard that picks your alertness mode, tunes your guardrails, and wires the hooks in one step:
@@ -355,6 +373,7 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 - ✅ Host-harness self-protection: an agent cannot disable the hooks by editing `.claude/settings.json` — the hook-install file is a blocked control-plane path (like `.doberman/`)
 - ✅ Host-harness containment (taint-primary): a sticky per-session taint ledger + a **multi-step exfiltration floor** — an egress in a session that already accessed a secret is raised (`ask`, or a hard `deny` in strict/paranoid); and a **read-vs-send fingerprint match** hard-blocks a confirmed exfil (an outbound value equal to a secret read earlier) in every mode — catching read-then-send exfil a single-call rule can't see
 - ✅ Session dashboard: `doberman dashboard` (print-and-exit, wired as a `SessionStart` hook by `install-hooks`) shows a device-global, lifetime PASS/AUTH/BLOCK rollup — verdict class + count only, redaction-safe, best-effort so it can never slow down or break a decision
+- ✅ Decision-transparency TUI: `doberman tui` (optional `textual` extra) browses the redacted decision log and turns each row's verdict + reason codes into a plain-language "why" — a deterministic offline template by default, with an optional, opt-in Claude-Haiku narrator (`[explain]` extra, `ANTHROPIC_API_KEY` + `DOBERMAN_EXPLAIN_LLM=1`) that only rewords the already-made verdict and fails safe to the template
 - 🚧 Turn gate (pre-inference prompt-injection screening) — in development, not yet merged
 - 📋 Host-harness, continued (containment architecture): deeper Bash-command egress parsing · entropy-on-egress escalation · warm-daemon adaptive layer · honeytoken tripwire + session circuit-breaker
 - 🛠 Cost observability — **CB.1 landed**: a redaction-safe `CostEvent` + local append-only meter (`doberman.storage.cost`), advisory and strictly off the decision path. Next: `CostObserver` plugin seam (CB.2) and a raise-only loop-anomaly detector (CB.3)

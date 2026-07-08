@@ -7,6 +7,7 @@ lists currently-active elevations.
 """
 
 import asyncio
+import importlib.util
 import json
 import logging
 import sys
@@ -464,6 +465,28 @@ def log(
             f"{row['ts']}  {row['final_verdict']:<5} {row['action_type']:<13} "
             f"{target}  [{reasons}]{auth}"
         )
+
+
+@app.command()
+def tui(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Browse the redacted decision log interactively, with a plain-language "why" panel.
+
+    Every row shown is already redacted - a path class, reason codes, the verdict,
+    and the auth outcome - the same data `doberman log` prints. Requires the
+    optional 'textual' extra; `doberman log` remains the plain, dependency-free
+    fallback.
+    """
+    if importlib.util.find_spec("textual") is None:
+        typer.echo(
+            "The TUI requires the optional 'textual' extra: pip install \"doberman-core[tui]\"",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    from doberman.tui import run_tui
+
+    run_tui(path)
 
 
 @app.command()

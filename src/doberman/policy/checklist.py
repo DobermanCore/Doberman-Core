@@ -137,7 +137,9 @@ class PolicyDoc:
     preferences: PreferenceVector | None = None
     #: Orthogonal enforcement state (independent of the strictness ``mode``):
     #: ``"enforce"`` (act on verdicts), ``"monitor"`` (evaluate + record but never
-    #: block), or ``"off"`` (do not evaluate). Softening it is gated + audited.
+    #: block the discretionary layer — the objective floor stays live in every
+    #: state), or ``"off"`` (do not evaluate the discretionary layer). Softening
+    #: it is gated + audited.
     #: Consumers MUST resolve the state to act on via ``drift.effective_enforcement``
     #: (ledger-verified, tamper-clamped) — never read this field directly.
     enforcement: str = "enforce"
