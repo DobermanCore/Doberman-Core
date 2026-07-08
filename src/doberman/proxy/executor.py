@@ -26,7 +26,7 @@ from mcp.types import CallToolResult, TextContent
 
 from doberman.auth.challenge import AuthTier, Prompter, run_auth_challenge
 from doberman.auth.elevation import find_cover, scope_for_target
-from doberman.config import load_active_role, load_mode, load_preferences
+from doberman.config import load_active_role, load_enforcement, load_mode, load_preferences
 from doberman.engine.decision_engine import Guardrail, decide
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.subjective import SubjectiveGuardrail
@@ -40,6 +40,7 @@ from doberman.models import (
     SecurityObject,
     Verdict,
 )
+from doberman.policy.drift import acted_verdict, effective_enforcement
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
 from doberman.storage.db import active_elevations, grant_elevation, mark_used
@@ -411,20 +412,44 @@ async def decide_and_execute(
     # nothing.
     log_action(action, decision.final_verdict)
 
-    if decision.final_verdict is Verdict.BLOCK:
+    # F10: honor the enforcement dial (Option A). monitor/off soften a
+    # DISCRETIONARY AUTH/BLOCK to observe-only (forward); the objective floor
+    # (secrets / exfil / taint / destructive / role / policy / trifecta) stays live
+    # in every state. Resolve through the ledger-verified clamp — a hand-edited
+    # `enforcement: off` with no matching approved ledger row is clamped back to
+    # enforce. The post-approval TOCTOU re-decision inside _handle_auth is left
+    # fully live on purpose (a released action must still re-check the floor).
+    enforcement, expires_at, revert = load_enforcement(REPO_ROOT)
+    state = await effective_enforcement(
+        REPO_ROOT, enforcement=enforcement, expires_at=expires_at, revert=revert
+    )
+    acted = acted_verdict(decision, state)
+
+    if acted is Verdict.BLOCK:
         await _persist(decision, action, eid=eid)
         return _verdict_result(decision)
 
-    if decision.final_verdict is Verdict.AUTH:
+    if acted is Verdict.AUTH:
         return await _handle_auth(
             downstream, tool_name, arguments, action, decision, now, score, eid
         )
 
-    # PASS — forward, then consume any single-use elevation that released it and
-    # teach the baseline (allowed actions only).
+    # PASS — real, or a discretionary verdict softened by monitor/off — forward,
+    # then consume any single-use elevation that released it.
+    softened = decision.final_verdict is not Verdict.PASS
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _consume_single_use(action, grants, now)
-        await _observe_allowed(action, eid, score)
-    await _persist(decision, action, eid=eid)
+        if not softened:
+            # Teach the baseline only on a GENUINE pass. A softened would-have
+            # (monitor/off suppressed a step-up) is NOT confirmed-benign — feeding
+            # it to the allowed-only baseline would desensitize the subjective layer
+            # during monitor and quietly loosen it before a flip to enforce
+            # (raise-only / poisoning-resistance).
+            await _observe_allowed(action, eid, score)
+    # Persist the REAL verdict. A genuine pass and a MONITOR would-have are recorded
+    # (monitor's whole value is showing what would have happened); `off` is the
+    # silent, non-recording state — matching the host-hook pre path.
+    if not softened or state == "monitor":
+        await _persist(decision, action, eid=eid)
     return result
