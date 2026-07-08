@@ -43,10 +43,11 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
-from doberman.config import load_mode
+from doberman.config import load_mode, resolve_enforcement_sync
 from doberman.engine.decision_engine import PASS_STUB, decide, max_risk, max_verdict
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.models import Decision, EvalContext, ReasonCode, Risk, SecurityObject, Verdict
+from doberman.policy.drift import acted_verdict
 from doberman.policy.modes import DEFAULT_MODE
 from doberman.proxy.normalize import normalize
 
@@ -357,13 +358,31 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
         # per-call floor judged clean when the session already accessed a secret,
         # and hard-BLOCK when an outbound value is a CONFIRMED read secret.
         decision = _apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)
-        if decision.final_verdict is Verdict.PASS:
-            # PreToolUse fires on EVERY tool call, so a PASS is deliberately NOT
-            # recorded here — logging every pass would flood the decision log with
-            # a DB write on the hot path for no security value. Only the raised
-            # (AUTH/BLOCK) outcomes below are history-worthy.
+        # F10: honor the enforcement dial (Option A). monitor/off soften a
+        # DISCRETIONARY AUTH/BLOCK to observe-only; the objective floor
+        # (secrets / exfil / taint / destructive / role / policy / trifecta) stays
+        # live in every state. Resolve through the ledger-verified clamp — never
+        # read PolicyDoc.enforcement directly (a hand-edit is caught + clamped).
+        enforcement = resolve_enforcement_sync(repo_root)
+        acted = acted_verdict(decision, enforcement)
+        if acted is Verdict.PASS:
+            # A would-be AUTH/BLOCK softened by MONITOR is history-worthy: record
+            # the ORIGINAL (truthful) decision — real verdict, outcome "executed"
+            # (a synthetic allow) — so `doberman log` / the TUI shows what would
+            # have happened but was let through. `off` softens the same way but is
+            # the silent, non-recording state (evaluated, not acted on, not logged).
+            # A genuine PASS is never recorded here either (PreToolUse fires on
+            # every call — a DB write per pass would flood the log for no value).
+            if enforcement == "monitor" and decision.final_verdict is not Verdict.PASS:
+                _record_pre_history(
+                    decision,
+                    action,
+                    repo_root,
+                    session_id,
+                    {"hookSpecificOutput": {"permissionDecision": "allow"}},
+                )
             return None  # raise-only: abstain, leaving the harness's native flow intact
-        if decision.final_verdict is Verdict.AUTH:
+        if acted is Verdict.AUTH:
             # Run Doberman's own action-bound challenge so the human can actually
             # approve in-session (issues #65/#67) — not just be told to.
             result = _resolve_auth(decision, action)

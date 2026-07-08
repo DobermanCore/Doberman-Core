@@ -354,6 +354,16 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 >
 > One escalation is mode-gated: the **lethal trifecta** — sensitive data **and** untrusted-content provenance **and** an external destination — steps up to authentication in Light/Balanced, and is a hard **BLOCK** in Strict/Paranoid. Those high-security modes refuse this serious-exfil pattern outright rather than leaving it to a confirmation prompt that alert fatigue could rubber-stamp.
 
+### Enforce / monitor / off — the enforcement dial
+
+Orthogonal to the strictness *mode* is an **enforcement dial** (`enforce` *(default)* / `monitor` / `off`) that decides whether Doberman **acts** on a verdict or just observes:
+
+- **`enforce`** — the normal behavior: AUTH prompts, BLOCK denies.
+- **`monitor`** — a deliberate **observe mode**. The *discretionary* layer (behavioral anomalies, soft step-ups) is evaluated and **recorded** — `doberman log` / `doberman tui` show what *would* have happened — but it never blocks or prompts. Use it to try Doberman on a repo without friction, or to tune before turning it on.
+- **`off`** — the discretionary layer is not evaluated.
+
+**In every state the objective floor stays live.** Secret exfiltration, multi-step/confirmed exfil, destructive commands, protected-path writes, role/policy blocks, and the lethal trifecta always block — `monitor`/`off` can only soften the *discretionary* verdicts, never a catastrophic action. Softening the dial is **2FA-gated** and the on-disk value is **ledger-verified** on every call, so a hand-edited `enforcement: off` in `policies.yaml` with no matching approved change is caught and clamped back to `enforce` (fail-closed).
+
 ---
 
 ## Who is this for?
@@ -366,7 +376,7 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 
 ## Roadmap <a name="roadmap"></a>
 
-- ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense (classify strengthen/weaken, 2FA-gated weakening, append-only ledger, **gated enforce/monitor/off change primitives** + on-disk tamper clamp (`effective_enforcement`)) · universal subjective layer (SL1–SL9)
+- ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense (classify strengthen/weaken, 2FA-gated weakening, append-only ledger, **enforce/monitor/off enforcement dial — now consumed by the decision path (discretionary verdicts soften; the objective floor stays live), gated + ledger-verified tamper clamp**) · universal subjective layer (SL1–SL9)
 - ✅ Benchmark harness (suite-agnostic ASR/FPR over labeled actions; `builtins_only` vs `with_plugins`; deterministic synthetic gate; external-suite adapters via `tests/benchmarks/`)
 - ✅ Host-harness integration: Claude Code `PreToolUse` + `PostToolUse` hooks (`doberman hook pre`/`post`) gate every built-in *and* MCP tool call — and scan tool **output** for leaked secrets — with no MCP reconfig; fail-closed, import-light, surfacing an in-session approval dialog (confirm / TOTP 2FA) on a sensitive action, and recording a local redacted history
 - ✅ One-command onboarding: `doberman setup` (alertness + guardrails + auto-wires the hooks) · `install-hooks`/`uninstall-hooks`

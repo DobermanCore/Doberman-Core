@@ -20,6 +20,7 @@ Resolution rules for the active role (fail toward restriction):
 This module is policy core: it must never import ``doberman.proxy``.
 """
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -154,6 +155,50 @@ def load_mode(repo_root: str = ".") -> str:
     except ValueError:
         logger.warning("saved mode %r is unknown; using %s", doc.mode, DEFAULT_MODE.value)
         return DEFAULT_MODE.value
+
+
+def load_enforcement(repo_root: str = ".") -> tuple[str, float | None, str]:
+    """The on-disk enforcement fields: ``(state, expires_at, revert_target)``.
+
+    Defaults to full ``enforce`` when no policy is saved. This is the RAW on-disk
+    claim — a caller on the decision path MUST pass it through
+    :func:`doberman.policy.drift.effective_enforcement` (ledger-verified,
+    tamper-clamped) before acting on it, never trust the field directly.
+    """
+    doc = load_policy(repo_root)
+    if doc is None:
+        return "enforce", None, "enforce"
+    return doc.enforcement, doc.enforcement_expires_at, doc.enforcement_revert
+
+
+def resolve_enforcement_sync(repo_root: str = ".") -> str:
+    """Synchronous resolution of the effective enforcement state for sync callers.
+
+    The host-hook decision path (``evaluate_pre``) runs synchronously in a
+    one-shot hook process (no running event loop), but the ledger cross-check in
+    :func:`doberman.policy.drift.effective_enforcement` is async. The common
+    ``enforce`` case short-circuits with zero I/O (matching that clamp), so the
+    hot path is untouched; only a softened deployment pays one ``asyncio.run``.
+    Any failure — including being called while an event loop is already running —
+    fails closed to ``enforce``.
+    """
+    from doberman.policy.drift import effective_enforcement
+
+    enforcement, expires_at, revert = load_enforcement(repo_root)
+    if str(enforcement).strip().lower() == "enforce":
+        return "enforce"
+    try:
+        return asyncio.run(
+            effective_enforcement(
+                repo_root,
+                enforcement=enforcement,
+                expires_at=expires_at,
+                revert=revert,
+            )
+        )
+    except Exception:  # noqa: BLE001 — the sync bridge fails closed to enforce
+        logger.warning("sync enforcement resolution failed; defaulting to enforce")
+        return "enforce"
 
 
 def load_preferences(repo_root: str = ".") -> PreferenceVector:

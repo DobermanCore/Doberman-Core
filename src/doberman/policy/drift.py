@@ -44,6 +44,7 @@ from typing import Protocol, runtime_checkable
 
 from doberman.auth import totp
 from doberman.auth.challenge import Prompter
+from doberman.models import Decision, ReasonCode, Verdict
 from doberman.storage.db import db_path, open_db
 
 logger = logging.getLogger("doberman.policy.drift")
@@ -611,6 +612,68 @@ async def effective_enforcement(
     except Exception:  # noqa: BLE001 — any unexpected error fails closed to enforce
         _emit_tamper_anomaly(state, now)
         return "enforce"
+
+
+# --- Enforcement consumption: the read-side Option-A softening (F10) ------
+
+
+#: The ONLY reason codes an ``monitor``/``off`` enforcement state may soften from
+#: an AUTH/BLOCK down to observe-only (act as PASS). This is an explicit
+#: **allowlist** of discretionary, behavioural / soft-step-up signals — kept
+#: deliberately small. :func:`acted_verdict` softens a verdict only when EVERY one
+#: of its reason codes is in this set, so a verdict carrying even one code that is
+#: NOT here (a secret / exfil / taint floor, a destructive command, a role/policy
+#: block, the lethal trifecta, or any fail-closed error) stays fully live in every
+#: enforcement state. Consequence: a reason code that is not listed is treated as
+#: floor **by default** — a code added in a future feature is safe-by-default
+#: (still enforced), never silently softened. Grow this set deliberately; adding a
+#: code here is a *weakening* of what monitor mode will still block, so treat an
+#: addition with the same care as any raise-only exception.
+_DISCRETIONARY_SOFT: frozenset[ReasonCode] = frozenset(
+    {
+        ReasonCode.unusual_for_workflow,
+        ReasonCode.unusual_for_deployment,
+        ReasonCode.unclassified_action,
+        ReasonCode.subjective_block_clamped,
+        ReasonCode.sensitive_path_access,
+        ReasonCode.bulk_operation,
+        ReasonCode.role_out_of_scope,
+    }
+)
+
+
+def acted_verdict(decision: Decision, state: str) -> Verdict:
+    """The verdict to ACT on under an enforcement ``state`` (F10, Option A).
+
+    The enforcement dial governs the **discretionary** guardrail layer only. In
+    ``monitor``/``off`` a *discretionary* AUTH/BLOCK is softened to ``PASS`` (the
+    action proceeds, observed) — but the **objective floor stays live in every
+    state**: a verdict carrying any non-:data:`_DISCRETIONARY_SOFT` reason code
+    (secret / exfil / taint floor, destructive command, role/policy block, the
+    lethal trifecta, or any fail-closed error) is returned unchanged and still
+    blocks. This is the "suppress the noisy discretionary blocks but never let a
+    live catastrophic action through" guarantee (ADR 0029).
+
+    Fail-closed by construction:
+      * ``enforce`` (or any unrecognised state) → the real ``final_verdict``. The
+        :func:`effective_enforcement` clamp already maps unknown ⇒ enforce, so
+        this is defence in depth; callers MUST resolve ``state`` through it first.
+      * softening happens ONLY when the verdict's reason codes are a **non-empty
+        subset** of the soft allowlist — one unlisted code keeps the verdict live.
+
+    It never mutates the :class:`~doberman.models.Decision`: ``final_verdict``
+    stays the real, would-have verdict (the audit truth — and the model's
+    never-weaker-than-objective validator forbids lowering it anyway). Callers
+    dispatch on the returned verdict and still record the original ``decision``.
+    """
+    if state not in ("monitor", "off"):
+        return decision.final_verdict
+    if decision.final_verdict is Verdict.PASS:
+        return Verdict.PASS
+    codes = set(decision.reason_codes)
+    if codes and codes <= _DISCRETIONARY_SOFT:
+        return Verdict.PASS
+    return decision.final_verdict
 
 
 # --- DriftObserver seam (slice 10.4) -------------------------------------
