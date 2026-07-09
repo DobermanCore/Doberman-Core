@@ -172,6 +172,38 @@ def _candidate_paths(action: SecurityObject) -> list[str]:
     return []
 
 
+#: Argument keys likely to carry a raw (un-redacted) path, checked in priority
+#: order. Kept local rather than imported from ``doberman.proxy`` — the
+#: policy core must not depend on the proxy adapter (import-linter contract).
+_RAW_PATH_KEYS: tuple[str, ...] = ("path", "file", "filename", "target")
+
+
+def _raw_path_candidates(raw_arguments: dict) -> list[str]:
+    """Extract path candidate(s) from raw (un-redacted) call arguments.
+
+    SECURITY: ``normalize`` redacts any string argument over 256 chars (or
+    secret-shaped) to ``"<redacted>"`` before it becomes ``action.target`` —
+    so a >256-char traversal or a padded path that still resolves to a
+    protected glob would canonicalize the harmless redaction marker instead
+    of the real path. Matching against the raw value here closes that gap;
+    the raw value is used ONLY for matching and must never be written back to
+    the action, its metadata, or a log.
+
+    Returns the first path-shaped key's value: a single string yields one
+    candidate, a non-empty list/tuple of strings yields all of them (the
+    batch case, e.g. a multi-file delete).
+    """
+    for key in _RAW_PATH_KEYS:
+        value = raw_arguments.get(key)
+        if isinstance(value, str) and value:
+            return [value]
+        if isinstance(value, (list, tuple)) and value:
+            candidates = [str(v) for v in value if isinstance(v, str) and v]
+            if candidates:
+                return candidates
+    return []
+
+
 class ProtectedPathRule:
     """Enforce blocked/sensitive path policy on canonicalized targets."""
 
@@ -185,10 +217,17 @@ class ProtectedPathRule:
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         root = _DEFAULT_ROOT
+        raw_arguments = None
         if isinstance(ctx.metadata, dict):
             root = str(ctx.metadata.get("repo_root") or _DEFAULT_ROOT)
+            raw_arguments = ctx.metadata.get("raw_arguments")
 
-        paths = _candidate_paths(action)
+        # Prefer the RAW (un-redacted) path for matching so a length-redacted
+        # action.target ("<redacted>") cannot bypass confinement; fall back to
+        # the (possibly redacted) action target when no raw path is available.
+        paths = _raw_path_candidates(raw_arguments) if isinstance(raw_arguments, dict) else []
+        if not paths:
+            paths = _candidate_paths(action)
         if not paths:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
