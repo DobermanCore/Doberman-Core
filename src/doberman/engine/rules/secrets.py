@@ -72,6 +72,16 @@ _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     # DB / message-queue connection URI with embedded user:password credentials
     re.compile(r"(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s:/@]+:[^\s@/]+@"),
     re.compile(r"-----BEGIN[ A-Z0-9]*PRIVATE KEY-----"),  # PEM private key
+    # --- Azure ---------------------------------------------------------------
+    # Azure Storage account key (connection-string `AccountKey=…`, 44-char base64).
+    re.compile(r"AccountKey=[A-Za-z0-9+/]{40,}={0,2}"),
+    # Azure Service Bus / Event Hubs / IoT Hub shared access key (`SharedAccessKey=…`).
+    re.compile(r"SharedAccessKey=[A-Za-z0-9+/]{40,}={0,2}"),
+    # --- GCP ----------------------------------------------------------------
+    # GCP service-account key JSON marker (`"type": "service_account"`).
+    re.compile(r'"type"\s*:\s*"service_account"'),
+    # GCP service-account client email (`…@….iam.gserviceaccount.com`).
+    re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.iam\.gserviceaccount\.com"),
 )
 
 # ``.env``-style assignment of a secret-looking key to a non-trivial value.
