@@ -21,8 +21,8 @@ Verdicts (mirrors the secret-leakage rule's posture):
 
 * a hard channel **+ an external destination** → ``BLOCK (smuggled_token_channel)``
   — hidden instructions or data on their way out of the boundary,
-* a hard channel staying **local** → ``AUTH (smuggled_token_channel)`` — step up,
-  never PASS-on-doubt,
+* a hard channel staying **local** → ``AUTH (smuggled_token_channel)`` by default,
+  or ``BLOCK`` in strict/paranoid — raise-only, never PASS-on-doubt,
 * nothing hard detected → abstain (``PASS``).
 
 SECURITY / redaction: the decoded smuggled payload, the matched substring, and
@@ -43,6 +43,7 @@ from doberman.models import (
     SecurityObject,
     Verdict,
 )
+from doberman.policy.modes import thresholds_for
 from doberman.tokens import SCAN_MAX_CHARS, collect_scan_strings, scan_text
 
 logger = logging.getLogger("doberman.engine.rules.token_channels")
@@ -90,6 +91,16 @@ class TokenChannelRule:
                     "Action carries hidden/invisible token-smuggling channels and "
                     "targets an external destination; blocked to prevent smuggled "
                     "instructions or data from leaving the boundary."
+                ),
+            )
+        if thresholds_for(getattr(ctx, "mode", "balanced")).token_channel_hard_block:
+            return GuardrailResult(
+                verdict=Verdict.BLOCK,
+                risk=Risk.critical,
+                reason_codes=[ReasonCode.smuggled_token_channel],
+                explanation=(
+                    "Action carries hidden/invisible token-smuggling channels; "
+                    "blocked under the current strict security mode."
                 ),
             )
         return GuardrailResult(
