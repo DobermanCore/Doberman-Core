@@ -52,8 +52,12 @@ FAKE_STRIPE_TEST = "sk" + "_test_" + "EXAMPLE0123456789abcdef99"  # noqa: S105
 # Azure / GCP service-account key shapes (issue #93). Built via `+` so
 # push-protection / gitleaks does not flag a contiguous secret-shaped literal;
 # the runtime value still matches the new regexes, the source stays clean.
-FAKE_AZURE_STORAGE_KEY = "AccountKey=" + "EXAMPLE" + "0123456789abcdefghijABCDEFGHIJklmnopqrstuvwxyz"  # noqa: S105
-FAKE_AZURE_SB_KEY = "SharedAccessKey=" + "EXAMPLE" + "0123456789abcdefghijABCDEFGHIJklmnopqrstuvwxyz"  # noqa: S105
+FAKE_AZURE_STORAGE_KEY = (
+    "AccountKey=" + "EXAMPLE" + "0123456789abcdefghijABCDEFGHIJklmnopqrstuvwxyz"
+)  # noqa: S105
+FAKE_AZURE_SB_KEY = (
+    "SharedAccessKey=" + "EXAMPLE" + "0123456789abcdefghijABCDEFGHIJklmnopqrstuvwxyz"
+)  # noqa: S105
 FAKE_GCP_SA_JSON = '"type": ' + '"service_account"'  # noqa: S105 — GCP SA key JSON marker
 FAKE_GCP_SA_EMAIL = "example" + "@my" + "-project" + ".iam.gserviceaccount.com"  # noqa: S105
 
