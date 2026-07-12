@@ -131,6 +131,34 @@ def remove_doberman_hooks(settings: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def hook_install_states(project_root: str) -> list[tuple[str, str, bool]]:
+    """Report, for every Claude Code settings scope, whether Doberman's hooks are wired in.
+
+    Returns one ``(scope, settings_path, installed)`` tuple per scope
+    (``project`` / ``global`` / ``local`` — the same scopes ``install-hooks``
+    writes to). **Never raises:** an unreadable or unparseable settings file is
+    reported as *not installed* rather than crashing the caller (``status`` /
+    ``doctor`` must stay read-only and never error out over a bad settings file).
+    """
+    states: list[tuple[str, str, bool]] = []
+    for scope in ("project", "global", "local"):
+        settings_path = resolve_settings_path(scope, project_root)
+        installed = False
+        try:
+            settings = load_settings(settings_path)
+            hooks_section = settings.get("hooks") or {}
+            installed = any(
+                _is_doberman_group(group)
+                for groups in hooks_section.values()
+                if isinstance(groups, list)
+                for group in groups
+            )
+        except Exception:  # noqa: BLE001,S110 — a bad settings file must not crash the caller
+            pass
+        states.append((scope, str(settings_path), installed))
+    return states
+
+
 def resolve_settings_path(scope: str, project_root: str) -> Path:
     """Resolve the target ``settings.json`` path for the given *scope*.
 

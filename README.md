@@ -282,7 +282,17 @@ doberman setup --yes    # accept sensible defaults (balanced mode), non-interact
 
 > The adaptive per-entity layer over the hook path arrives with the warm-daemon slice.
 
-### 4. Scan (optional)
+### 4. Check it's healthy — `doberman doctor`
+
+One read-only self-check that answers *"is Doberman actually wired up and healthy?"* — host hooks, config, the decision DB, 2FA, the enforcement dial + strictness mode, and the fingerprint key:
+
+```bash
+doberman doctor          # prints a green/red checklist; exits non-zero if a critical check fails
+```
+
+It only diagnoses (never changes state) and exits non-zero when a critical check — hooks, config, or the decision DB — isn't healthy, so it's safe to gate a script on `doberman doctor && ...`.
+
+### 5. Scan (optional)
 
 ```bash
 doberman scan   # discover local MCP capabilities and build a risk map
@@ -379,7 +389,7 @@ Orthogonal to the strictness *mode* is an **enforcement dial** (`enforce` *(defa
 - ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense (classify strengthen/weaken, 2FA-gated weakening, append-only ledger, **enforce/monitor/off enforcement dial — now consumed by the decision path (discretionary verdicts soften; the objective floor stays live), gated + ledger-verified tamper clamp**) · universal subjective layer (SL1–SL9)
 - ✅ Benchmark harness (suite-agnostic ASR/FPR over labeled actions; `builtins_only` vs `with_plugins`; deterministic synthetic gate; external-suite adapters via `tests/benchmarks/`)
 - ✅ Host-harness integration: Claude Code `PreToolUse` + `PostToolUse` hooks (`doberman hook pre`/`post`) gate every built-in *and* MCP tool call — and scan tool **output** for leaked secrets — with no MCP reconfig; fail-closed, import-light, surfacing an in-session approval dialog (confirm / TOTP 2FA) on a sensitive action, and recording a local redacted history
-- ✅ One-command onboarding: `doberman setup` (alertness + guardrails + auto-wires the hooks) · `install-hooks`/`uninstall-hooks`
+- ✅ One-command onboarding: `doberman setup` (alertness + guardrails + auto-wires the hooks) · `install-hooks`/`uninstall-hooks` · `doberman doctor` (read-only health self-check: hooks / config / DB / 2FA / enforcement dial / fingerprint key; non-zero exit on any critical failure)
 - ✅ Host-harness self-protection: an agent cannot disable the hooks by editing `.claude/settings.json` — the hook-install file is a blocked control-plane path (like `.doberman/`)
 - ✅ Host-harness containment (taint-primary): a sticky per-session taint ledger + a **multi-step exfiltration floor** — an egress in a session that already accessed a secret is raised (`ask`, or a hard `deny` in strict/paranoid); and a **read-vs-send fingerprint match** hard-blocks a confirmed exfil (an outbound value equal to a secret read earlier) in every mode — catching read-then-send exfil a single-call rule can't see
 - ✅ Session dashboard: `doberman dashboard` (print-and-exit, wired as a `SessionStart` hook by `install-hooks`) shows a device-global, lifetime PASS/AUTH/BLOCK rollup — verdict class + count only, redaction-safe, best-effort so it can never slow down or break a decision

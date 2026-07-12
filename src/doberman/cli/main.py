@@ -268,33 +268,15 @@ def prefs(
 
 
 def _hook_install_states(path: str) -> list[tuple[str, str, bool]]:
-    """Best-effort: for every Claude Code settings.json candidate (project / global /
-    local — the same scopes ``install-hooks`` writes to), report whether Doberman's
-    hooks are installed there.
+    """Per-scope Doberman hook install state (delegates to the shared helper).
 
-    Never raises: an unreadable or unparseable settings file is reported as "not
-    installed" rather than crashing ``status`` (mirrors ``install-hooks``'s own
-    ``load_settings`` error handling, but status must not error out over it).
+    Kept as a thin wrapper so ``status`` (and its tests) keep a stable name; the
+    logic lives in :func:`doberman.hosthooks.install.hook_install_states` so
+    ``doctor`` can reuse it without importing the CLI module.
     """
-    from doberman.hosthooks.install import _is_doberman_group, load_settings, resolve_settings_path
+    from doberman.hosthooks.install import hook_install_states
 
-    states: list[tuple[str, str, bool]] = []
-    for scope in ("project", "global", "local"):
-        settings_path = resolve_settings_path(scope, path)
-        installed = False
-        try:
-            settings = load_settings(settings_path)
-            hooks_section = settings.get("hooks") or {}
-            installed = any(
-                _is_doberman_group(group)
-                for groups in hooks_section.values()
-                if isinstance(groups, list)
-                for group in groups
-            )
-        except Exception:  # noqa: BLE001,S110 — a bad settings file must not crash status
-            pass
-        states.append((scope, str(settings_path), installed))
-    return states
+    return hook_install_states(path)
 
 
 @app.command()
@@ -350,6 +332,39 @@ def status(
         for row in rows:
             reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
             typer.echo(f"  {row['ts']}  {row['final_verdict']:<5}  {reasons}")
+
+
+@app.command()
+def doctor(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Run a read-only health self-check and print a green/red checklist.
+
+    Answers "is Doberman actually wired up and healthy?" in one shot: host hooks,
+    config, the decision DB, 2FA, the enforcement dial + strictness mode, and the
+    fingerprint key. It only *diagnoses* - it never changes state. Exits non-zero
+    if any critical check (hooks / config / DB) is not healthy, so it is
+    script-friendly (`doberman doctor && ...`).
+    """
+    from doberman.cli.doctor import CheckStatus, critical_failures, run_checks
+
+    # ASCII marks only: CLI output must survive a cp1252 console (see setup wizard).
+    marks = {CheckStatus.OK: "[ ok ]", CheckStatus.WARN: "[warn]", CheckStatus.FAIL: "[FAIL]"}
+
+    results = run_checks(path)
+    typer.echo("Doberman doctor")
+    typer.echo("=" * 32)
+    for result in results:
+        typer.echo(f"{marks[result.status]} {result.name}: {result.detail}")
+
+    failures = critical_failures(results)
+    typer.echo("")
+    if failures:
+        typer.echo(
+            f"{len(failures)} critical check(s) not healthy - Doberman may not be protecting you."
+        )
+        raise typer.Exit(code=1)
+    typer.echo("All critical checks passed.")
 
 
 @hook_app.command("pre")
