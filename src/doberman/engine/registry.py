@@ -44,6 +44,8 @@ AUTH_PROVIDER_GROUP = "doberman.auth_providers"
 AUDIT_SINK_GROUP = "doberman.audit_sinks"
 #: Drift observers (Feature 10.4) register here; resolved by the policy layer.
 DRIFT_OBSERVER_GROUP = "doberman.drift_observers"
+#: Cost observers (CB.2) register here; resolved by the storage layer.
+COST_OBSERVER_GROUP = "doberman.cost_observers"
 #: Algebra adapters (SL3.1) register here; resolved by the subjective layer.
 #: Distinct from ``doberman.detectors``: adapters REFINE the action algebra
 #: (clamped raise-only) and never score or verdict anything.
@@ -347,6 +349,37 @@ def discover_drift_observers() -> list[object]:
         if not _looks_like_drift_observer(candidate):
             logger.warning(
                 "skipping drift observer %r: not observer-shaped",
+                getattr(entry_point, "name", "?"),
+            )
+            continue
+        observers.append(candidate)
+    return observers
+
+
+def discover_cost_observers() -> list[object]:
+    """Discover registered cost observers (CB.2, group ``doberman.cost_observers``).
+
+    Loaded defensively like every other seam: an import/constructor failure, or
+    an object that is not observer-shaped (no callable ``on_cost``), is logged
+    and skipped. Returns ``[]`` when nothing is installed — the local ledger
+    write is unaffected. Core never imports an observer by name.
+    """
+    # Local import avoids an engine<->storage import cycle at module load.
+    from doberman.storage.cost import _looks_like_cost_observer
+
+    observers: list[object] = []
+    seen: set[str] = set()
+    for entry_point in _iter_entry_points(COST_OBSERVER_GROUP):
+        key = f"{COST_OBSERVER_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = _load_and_construct(entry_point)
+        if candidate is None:
+            continue
+        if not _looks_like_cost_observer(candidate):
+            logger.warning(
+                "skipping cost observer %r: not observer-shaped",
                 getattr(entry_point, "name", "?"),
             )
             continue
