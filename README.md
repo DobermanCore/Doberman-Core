@@ -353,6 +353,8 @@ Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`
 > **Unknown network destinations** step up to authentication only in Strict/Paranoid. Light and Balanced treat a plain unknown host (e.g. fetching a docs site or an API) as allowed — that AUTH fired on almost every web fetch and was the top source of benign prompts. This relaxes the *destination-alone* signal only: a secret leaving to **any** host is still a hard block (secrets rule + raise-only combine, every mode), and the sharper destination smells (credentials embedded in the URL, raw IP addresses, unresolvable hosts) still step up in every mode. An **out-of-scope role target** likewise steps up in Balanced/Strict/Paranoid but is relaxed in Light; a role-**blocked** target is a hard block in every mode.
 >
 > One escalation is mode-gated: the **lethal trifecta** — sensitive data **and** untrusted-content provenance **and** an external destination — steps up to authentication in Light/Balanced, and is a hard **BLOCK** in Strict/Paranoid. Those high-security modes refuse this serious-exfil pattern outright rather than leaving it to a confirmation prompt that alert fatigue could rubber-stamp.
+>
+> Strict/Paranoid now hard-**BLOCK** a **LOCAL hard smuggled-token channel** (previously AUTH); this is raise-only, and Light/Balanced remain unchanged at AUTH.
 
 ### Enforce / monitor / off — the enforcement dial
 

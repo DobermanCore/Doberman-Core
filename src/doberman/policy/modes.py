@@ -6,9 +6,9 @@ toggles. Stricter modes lower step-up thresholds (→ *more* AUTH); they never
 touch the **floor** of core hard blocks, which are identical across every mode.
 
 SECURITY: modes tune **step-ups** (AUTH thresholds) and may *escalate* the
-deterministic lethal-trifecta step-up to a hard **BLOCK** in the strictest modes
-(``trifecta_hard_block``, strict/paranoid) — this is **raise-only** (ADR 0021). A
-mode can never **remove or weaken** a core hard **BLOCK**: the floor
+deterministic lethal-trifecta and local hard smuggled-token-channel step-ups to a
+hard **BLOCK** in the strictest modes — this is **raise-only** (ADR 0021). A mode
+can never **remove or weaken** a core hard **BLOCK**: the floor
 (:data:`FLOOR_HARD_BLOCKS`) is mode-independent, and even Light keeps every one
 of them. Loosening a hard block is not a mode change; it is a policy weakening
 that must go through the Feature 10 human-approved path.
@@ -62,6 +62,10 @@ class ModeThresholds:
     #: AUTH. True only in the strictest modes (strict/paranoid). Raise-only: it
     #: escalates an existing AUTH step-up to a BLOCK, never weakens a block (ADR 0021).
     trifecta_hard_block: bool = False
+    #: Whether a hard smuggled-token channel that stays LOCAL hard-BLOCKs instead
+    #: of stepping up to AUTH. True only in strict/paranoid. Raise-only: it escalates
+    #: an existing AUTH to a BLOCK and never touches Light/Balanced (ADR 0021).
+    token_channel_hard_block: bool = False
 
 
 #: Per-mode thresholds. Stricter modes lower the bulk threshold (more AUTH);
@@ -92,11 +96,13 @@ MODES: dict[SecurityMode, ModeThresholds] = {
         bulk_delete_threshold=10,
         abnormality_threshold=0.5,
         trifecta_hard_block=True,
+        token_channel_hard_block=True,
     ),
     SecurityMode.paranoid: ModeThresholds(
         bulk_delete_threshold=3,
         abnormality_threshold=0.3,
         trifecta_hard_block=True,
+        token_channel_hard_block=True,
     ),
 }
 
