@@ -29,6 +29,7 @@ SECURITY: the explanation names the *category* of danger, never echoes the
 command string or its arguments.
 """
 
+import posixpath
 import re
 import shlex
 from collections.abc import Iterable
@@ -113,7 +114,9 @@ def _argv(segment: str) -> list[str] | None:
 
 def _is_root_or_home_target(arg: str) -> bool:
     """True if an argument denotes ``/``, ``~``, or a whole-tree wildcard."""
-    normalized = arg.strip().strip("'\"")
+    normalized = posixpath.normpath(arg.strip().strip("'\""))
+    if normalized.startswith("//"):
+        normalized = "/" + normalized.lstrip("/")
     return normalized in {"/", "~", "~/", "/*", "/.", "~/*", "*"} or normalized.startswith("/*")
 
 
@@ -147,15 +150,18 @@ def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) ->
             return False
         has_force = True
     protected_set = {b.lower() for b in protected}
+    push_args = tokens[tokens.index("push") + 1 :]
+    positional = [t for t in push_args if not t.startswith("-")]
+    explicit_refs = positional[1:]  # the first positional is the remote
     # Any token that names (or pushes to) a protected branch.
-    for token in tokens[2:]:
+    for token in explicit_refs:
         ref = token.lstrip("+").split(":")[-1].lower()
+        ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
         if ref in protected_set:
             return True
     # A bare ``git push --force`` (no explicit ref) defaults to the current
     # branch — unknown here, so treat it as protected (fail safe).
-    explicit_refs = [t for t in tokens[2:] if not t.startswith("-")]
-    return len(explicit_refs) <= 1
+    return not explicit_refs
 
 
 # Catastrophic non-rm commands (whole-disk wipes, fork bombs).
@@ -169,6 +175,31 @@ def _is_doberman_control_cli(tokens: list[str]) -> bool:
         and tokens[0] == "doberman"
         and any(t in _DOBERMAN_CONTROL_SUBCOMMANDS for t in tokens[1:])
     )
+
+
+def _package_manager_removes_doberman(tokens: list[str]) -> bool:
+    """True for package-manager commands that uninstall Doberman itself."""
+    if (
+        len(tokens) >= 3
+        and tokens[0] in {"python", "python3", "py"}
+        and tokens[1] == "-m"
+        and tokens[2] == "pip"
+    ):
+        manager_args = tokens[2:]
+    elif tokens[:2] == ["uv", "pip"]:
+        manager_args = tokens[1:]
+    else:
+        manager_args = tokens
+    if (
+        len(manager_args) < 3
+        or manager_args[0] not in {"pip", "pip3", "pipx", "uv"}
+        or manager_args[1] not in {"uninstall", "remove"}
+    ):
+        return False
+    packages = {
+        token.lower().replace("-", "_") for token in manager_args[2:] if not token.startswith("-")
+    }
+    return bool(packages & {"doberman", "doberman_core", "doberman_enterprise"})
 
 
 def _token_path_candidates(token: str) -> list[str]:
@@ -211,6 +242,10 @@ def _segment_verdict(
     if _is_doberman_control_cli(tokens):
         return _block_control_plane(
             "Shell command would install/remove Doberman's host hooks (control-plane tamper)."
+        )
+    if _package_manager_removes_doberman(tokens):
+        return _block_control_plane(
+            "Package-manager command would uninstall Doberman's guard (control-plane tamper)."
         )
 
     # --- Catastrophic → BLOCK ---

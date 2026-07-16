@@ -54,6 +54,18 @@ def test_catastrophic_commands_block(command):
     assert ReasonCode.destructive_command in result.reason_codes
 
 
+@pytest.mark.parametrize("command", ["rm -rf //", "rm -rf ///"])
+def test_repeated_slash_root_delete_blocks(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+
+
+@pytest.mark.parametrize("command", ["rm -rf ./build", "rm -rf node_modules"])
+def test_recursive_force_delete_of_non_root_target_is_not_blocked(command):
+    result = _cmd(command)
+    assert result.verdict is not Verdict.BLOCK
+
+
 def test_chained_destructive_segment_blocks():
     # A benign first command followed by a catastrophic one must still BLOCK.
     assert _cmd("echo hi && rm -rf /").verdict is Verdict.BLOCK
@@ -79,8 +91,26 @@ def test_force_push_to_protected_branch_blocks(command):
     assert result.verdict is Verdict.BLOCK
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --force origin refs/heads/main",
+        "git push --force origin feature:refs/heads/main",
+        "git push --force origin refs/heads/develop",
+    ],
+)
+def test_force_push_long_refspec_to_protected_branch_blocks(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+
+
 def test_force_push_to_feature_branch_is_not_blocked():
-    result = _cmd("git push --force origin my-feature-branch", action_type=ActionType.git_op)
+    result = _cmd("git push --force origin my-feature", action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_non_force_push_to_feature_branch_is_not_blocked():
+    result = _cmd("git push origin my-feature", action_type=ActionType.git_op)
     assert result.verdict is not Verdict.BLOCK
 
 

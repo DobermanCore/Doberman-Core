@@ -9,6 +9,8 @@ hook-install CLI, and BLOCKs them with `protected_path_blocked`.
 
 from datetime import datetime, timezone
 
+import pytest
+
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.rules.commands import DestructiveCommandRule
 from doberman.models import ActionType, EvalContext, ReasonCode, SecurityObject, Verdict
@@ -100,6 +102,32 @@ def test_doberman_install_hooks_is_blocked():
 
 def test_doberman_setup_is_blocked():
     assert _cmd("doberman setup --yes").verdict is Verdict.BLOCK
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip uninstall doberman -y",
+        "pip3 uninstall doberman",
+        "pipx uninstall doberman",
+        "python -m pip uninstall doberman",
+        "python3 -m pip uninstall doberman",
+        "py -m pip uninstall doberman",
+        "uv pip uninstall doberman",
+        "pip uninstall doberman_enterprise -y",
+        "pip uninstall doberman-core",
+    ],
+)
+def test_package_manager_doberman_uninstall_is_blocked(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+    assert "terminal" in (result.explanation or "").lower()
+
+
+@pytest.mark.parametrize("command", ["pip install requests", "pip uninstall requests"])
+def test_package_manager_commands_for_other_packages_are_not_blocked(command):
+    assert _cmd(command).verdict is not Verdict.BLOCK
 
 
 # --- redaction + no over-block ---
