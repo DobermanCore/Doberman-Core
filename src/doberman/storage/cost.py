@@ -45,8 +45,9 @@ class CostObserver(Protocol):
     Implementations live in installed packages registered via the
     ``doberman.cost_observers`` entry-point group. ``on_cost`` is purely
     observational: it can never alter, block, or prevent a cost record, and must
-    not raise into the caller. Each observer receives its own copy of the event
-    so it cannot mutate the original (``CostEvent`` is frozen regardless).
+    not raise into the caller. Observers receive the same frozen
+    ``CostEvent`` instance — immutability is the redaction guarantee, not a
+    defensive copy.
     """
 
     def on_cost(self, event: CostEvent) -> None: ...
