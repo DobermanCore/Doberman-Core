@@ -19,6 +19,7 @@ from doberman import __version__
 from doberman.auth import totp
 from doberman.config import (
     load_active_role,
+    load_enforcement,
     load_mode,
     load_policy,
     load_preferences,
@@ -28,7 +29,7 @@ from doberman.config import (
 )
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
-from doberman.policy.drift import log_change, read_policy_changes
+from doberman.policy.drift import apply_enforcement_change, log_change, read_policy_changes
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.storage.db import active_elevations, revoke_elevation
@@ -228,6 +229,64 @@ def mode(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(f"mode set to {saved}")
+
+
+_ENFORCEMENT_STATES = ("enforce", "monitor", "off")
+
+
+@app.command()
+def enforcement(
+    state: str = typer.Argument(None, help="Enforcement state to set (enforce/monitor/off)."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show or set the enforcement dial (enforce / monitor / off).
+
+    Orthogonal to the strictness ``mode``: this decides whether Doberman *acts*
+    on a discretionary verdict (``enforce``, the default) or only observes
+    (``monitor`` records what would have happened; ``off`` skips the discretionary
+    layer). The objective floor (secret exfil, destructive commands, ...) stays
+    live in every state.
+
+    Turning the dial DOWN is a weaken: it is confirmed -- plus a 2FA code when one
+    is enrolled, and confirm-only otherwise so the safety valve is never out of
+    reach -- and recorded in the append-only policy-change ledger. Re-arming
+    (``-> enforce``) is a strengthen and applies automatically. A softened state is
+    honored only while the ledger confirms it; hand-editing ``policies.yaml`` is
+    clamped back to ``enforce`` (fail closed). With no argument, prints the current
+    on-disk state.
+    """
+    current, _expires, _revert = load_enforcement(path)
+    if state is None:
+        typer.echo(current)
+        return
+    new = state.strip().lower()
+    if new not in _ENFORCEMENT_STATES:
+        typer.echo(
+            f"error: unknown enforcement state {state!r}; "
+            f"choose one of {', '.join(_ENFORCEMENT_STATES)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if new == current:
+        typer.echo(f"enforcement already {current}")
+        return
+    # Route through the gated chokepoint: it confirms a soften (2FA-if-enrolled),
+    # auto-approves a re-arm, and records every attempt to the ledger. Persist the
+    # new state ONLY when it approved, and persist the exact fields the ledger just
+    # recorded so the read-side effective_enforcement clamp confirms the soften.
+    outcome = asyncio.run(
+        apply_enforcement_change(
+            {"enforcement": current},
+            {"enforcement": new},
+            "doberman enforcement CLI",
+            repo_root=path,
+        )
+    )
+    if not outcome.approved:
+        typer.echo("enforcement change denied; unchanged", err=True)
+        raise typer.Exit(code=1)
+    save_policy((load_policy(path) or recommend_policy()).with_enforcement(new), path)
+    typer.echo(f"enforcement set to {new}")
 
 
 @app.command()

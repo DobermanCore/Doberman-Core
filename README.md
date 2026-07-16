@@ -374,6 +374,8 @@ Orthogonal to the strictness *mode* is an **enforcement dial** (`enforce` *(defa
 - **`monitor`** — a deliberate **observe mode**. The *discretionary* layer (behavioral anomalies, soft step-ups) is evaluated and **recorded** — `doberman log` / `doberman tui` show what *would* have happened — but it never blocks or prompts. Use it to try Doberman on a repo without friction, or to tune before turning it on.
 - **`off`** — the discretionary layer is not evaluated.
 
+Set it with **`doberman enforcement <enforce|monitor|off>`** (no argument prints the current state). Turning the dial *down* is confirmed — plus a 2FA code when one is enrolled, and confirm-only otherwise so the safety valve is never out of reach — and recorded in the ledger (view it with `doberman policy-history`); turning it back *up* re-arms automatically.
+
 **In every state the objective floor stays live.** Secret exfiltration, multi-step/confirmed exfil, destructive commands, protected-path writes, role/policy blocks, and the lethal trifecta always block — `monitor`/`off` can only soften the *discretionary* verdicts, never a catastrophic action. Softening the dial is **2FA-gated** and the on-disk value is **ledger-verified** on every call, so a hand-edited `enforcement: off` in `policies.yaml` with no matching approved change is caught and clamped back to `enforce` (fail-closed).
 
 ---
