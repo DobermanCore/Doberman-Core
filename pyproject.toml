@@ -39,7 +39,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "import-linter", "textual"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "import-linter", "textual", "hypothesis"]
 explain = ["anthropic"]
 tui = ["textual"]
 
