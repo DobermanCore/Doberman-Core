@@ -57,8 +57,39 @@ def test_enroll_refuses_silent_overwrite():
     with pytest.raises(RuntimeError):
         totp.enroll()
     assert totp._read_secret() == first  # unchanged
-    totp.enroll(force=True)
-    assert totp._read_secret() != first  # rotated only with force
+
+
+def test_enroll_rotation_requires_current_code():
+    totp.enroll()
+    first = totp._read_secret()
+    with pytest.raises(RuntimeError, match="current 2FA code"):
+        totp.enroll(force=True)
+    assert totp._read_secret() == first
+
+
+def test_enroll_rotation_rejects_wrong_current_code():
+    totp.enroll()
+    first = totp._read_secret()
+    with pytest.raises(RuntimeError, match="current 2FA code"):
+        totp.enroll(force=True, current_code="not-a-code")
+    assert totp._read_secret() == first
+
+
+def test_enroll_rotation_accepts_current_code_without_logging_credentials(caplog):
+    caplog.set_level("DEBUG")
+    first_uri = totp.enroll()
+    first = totp._read_secret()
+    assert first is not None
+    current_code = pyotp.TOTP(first).now()
+
+    rotated_uri = totp.enroll(force=True, current_code=current_code)
+    rotated = totp._read_secret()
+
+    assert rotated_uri.startswith("otpauth://")
+    assert rotated_uri != first_uri
+    assert rotated is not None and rotated != first
+    for sensitive_value in (first, rotated, current_code, first_uri, rotated_uri):
+        assert sensitive_value not in caplog.text
 
 
 def test_secret_file_is_owner_only(isolated_totp_secret):

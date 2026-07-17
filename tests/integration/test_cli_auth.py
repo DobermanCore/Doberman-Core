@@ -8,6 +8,7 @@ which cannot nest inside a running event loop. Seeding async state uses
 import asyncio
 from datetime import datetime, timezone
 
+import pyotp
 from typer.testing import CliRunner
 
 from doberman.auth import totp
@@ -27,8 +28,24 @@ def test_2fa_setup_enrolls_and_guards_overwrite():
     again = runner.invoke(app, ["2fa", "setup"])
     assert again.exit_code == 1  # refuses to silently overwrite
 
-    forced = runner.invoke(app, ["2fa", "setup", "--force"])
+    first = totp._read_secret()
+    assert first is not None
+    current_code = pyotp.TOTP(first).now()
+    forced = runner.invoke(app, ["2fa", "setup", "--force"], input=f"{current_code}\n")
     assert forced.exit_code == 0
+    assert "Current 2FA code" in forced.stdout
+    assert totp._read_secret() != first
+
+
+def test_2fa_setup_force_rejects_wrong_current_code():
+    totp.enroll()
+    first = totp._read_secret()
+
+    result = runner.invoke(app, ["2fa", "setup", "--force"], input="not-a-code\n")
+
+    assert result.exit_code == 1
+    assert "current 2FA code" in result.stderr
+    assert totp._read_secret() == first
 
 
 def test_status_reports_2fa_and_no_elevations(tmp_path):

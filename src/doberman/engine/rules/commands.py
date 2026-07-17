@@ -59,9 +59,6 @@ DEFAULT_BULK_THRESHOLD = 25
 #: Branch names whose history is protected — a force-push here is catastrophic.
 DEFAULT_PROTECTED_BRANCHES: tuple[str, ...] = ("main", "master", "release", "develop")
 
-# Shell operators that separate independent commands within one line.
-_SEGMENT_SPLIT = re.compile(r"(?:\|\||&&|\||;|\n)")
-
 # Command-substitution bodies: $(...) and `...`. We recurse into these so a
 # destructive command hidden inside a substitution is still evaluated.
 _SUBSTITUTION = re.compile(r"\$\((?P<paren>[^()]*)\)|`(?P<backtick>[^`]*)`")
@@ -72,6 +69,15 @@ _TRANSPARENT_WRAPPERS = {"sudo", "nice", "ionice", "nohup", "time", "env", "comm
 
 # Shells that take an opaque "-c <payload>" we cannot statically vet.
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
+
+# Non-shell interpreters whose inline payloads can directly mutate files.
+_INTERPRETERS = {"python", "python3", "py", "node", "nodejs", "deno", "bun", "perl", "ruby"}
+_INLINE_CODE_FLAGS = {"-c", "-e", "--eval", "-p", "--print"}
+_DESTRUCTIVE_INTERPRETER_OP = re.compile(
+    r"\b(?:shutil\.)?rmtree\b|\bos\.(?:remove|unlink)\b|\brmSync\b|"
+    r"\bunlinkSync\b|\bfs\.rm\b|\bRemove-Item\b|\brm\s+-rf\b|\bunlink\b",
+    re.IGNORECASE,
+)
 
 
 def _strip_substitutions(segment: str) -> tuple[str, list[str]]:
@@ -92,7 +98,50 @@ def _strip_substitutions(segment: str) -> tuple[str, list[str]]:
 
 def _split_segments(command: str) -> list[str]:
     """Split a command line into top-level segments on shell operators."""
-    return [seg.strip() for seg in _SEGMENT_SPLIT.split(command) if seg.strip()]
+    segments: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            current.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            current.append(char)
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+
+        operator_width = 2 if command[index : index + 2] in {"&&", "||"} else 0
+        if operator_width or char in {"|", ";", "\n"}:
+            segment = "".join(current).strip()
+            if segment:
+                segments.append(segment)
+            current = []
+            index += operator_width or 1
+            continue
+        current.append(char)
+        index += 1
+
+    segment = "".join(current).strip()
+    if segment:
+        segments.append(segment)
+    return segments
 
 
 def _argv(segment: str) -> list[str] | None:
@@ -222,6 +271,31 @@ def _segment_targets_control_plane(tokens: list[str], root: str) -> bool:
     return False
 
 
+def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResult | None:
+    """BLOCK obvious control-plane or destructive interpreter one-liners."""
+    if not tokens or tokens[0] not in _INTERPRETERS:
+        return None
+    payloads = [
+        tokens[index + 1]
+        for index in range(1, len(tokens) - 1)
+        if tokens[index] in _INLINE_CODE_FLAGS
+    ]
+    if not payloads:
+        return None
+
+    for payload in payloads:
+        candidates = [
+            candidate for candidate in re.split(r"[\s'\"`(){}\[\],;]+", payload) if candidate
+        ]
+        if _segment_targets_control_plane(candidates, root):
+            return _block_control_plane(
+                "Interpreter inline payload references Doberman's own control plane."
+            )
+    if any(_DESTRUCTIVE_INTERPRETER_OP.search(payload) for payload in payloads):
+        return _block("Interpreter inline payload contains a destructive filesystem operation.")
+    return None
+
+
 def _segment_verdict(
     tokens: list[str], protected_branches: Iterable[str], bulk_threshold: int, root: str
 ) -> GuardrailResult | None:
@@ -247,6 +321,9 @@ def _segment_verdict(
         return _block_control_plane(
             "Package-manager command would uninstall Doberman's guard (control-plane tamper)."
         )
+    interpreter_payload = _interpreter_payload_verdict(tokens, root)
+    if interpreter_payload is not None:
+        return interpreter_payload
 
     # --- Catastrophic → BLOCK ---
     if cmd == "rm" and _rm_is_catastrophic(tokens):
