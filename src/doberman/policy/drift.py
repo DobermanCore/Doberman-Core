@@ -16,6 +16,11 @@ mechanism (a core safety invariant):
 * :func:`apply_enforcement_change` — the same chokepoint for the orthogonal
   enforcement dial (enforce / monitor / off): softening is gated (confirm +
   TOTP-if-enrolled), re-arming applies automatically.
+* :func:`apply_preferences_change` — the sibling chokepoint for the SL5
+  preference vector (numeric weights, so classified directly rather than via
+  the token-rank table): lowering any weight is a weaken and requires the
+  same **mandatory** 2FA as a policy-rule weakening; raising applies
+  automatically.
 * :func:`effective_enforcement` — the **read-side** clamp: turns the on-disk
   enforcement fields into the state to act on, verifying them against the ledger
   so a hand-edit of ``policies.yaml`` (e.g. ``enforcement: off``) that bypassed the
@@ -429,6 +434,97 @@ async def apply_enforcement_change(
         approved, method = _run_enforcement_gate(before, after, reason, prompter or CliPrompter())
     else:
         approved, method = True, "auto"
+    await _record_change(
+        repo_root,
+        before,
+        after,
+        classification,
+        reason,
+        approved=approved,
+        method=method,
+        now=when,
+    )
+    notify_observers(
+        {
+            "ts": when.isoformat(),
+            "classification": classification.value,
+            "changed_rules": _changed_keys(before, after),
+            "reason": reason,
+            "approved": approved,
+            "method": method,
+        }
+    )
+    return ChangeOutcome(classification=classification, approved=approved, method=method)
+
+
+def _prefs_classify(before: dict, after: dict) -> Classification:
+    """Classify a preference-vector change directly (weights are numeric).
+
+    :func:`classify_change`'s token-rank table cannot distinguish two floats —
+    both land on ``_UNKNOWN_TOKEN_RANK`` and read as neutral — so preference
+    weights need this numeric sibling. **Any** dimension whose weight
+    decreased, or that was present in ``before`` but dropped from ``after``
+    (a removed weight is no protection from that dimension), makes the whole
+    change a ``weaken`` — mixed with a raise elsewhere still weakens (fail
+    safe, matching :func:`classify_change`'s policy). A value that cannot be
+    coerced to ``float`` is treated as a weaken rather than raising (fail
+    safe). Only increases/additions with nothing decreased/removed →
+    ``strengthen``; identical → ``neutral``.
+    """
+    weakened = bool(set(before) - set(after))  # a dropped dimension
+    strengthened = bool(set(after) - set(before))  # an added dimension
+    junk = False
+    for key in set(before) & set(after):
+        try:
+            before_val, after_val = float(before[key]), float(after[key])
+        except (TypeError, ValueError):
+            junk = True
+            continue
+        if after_val < before_val:
+            weakened = True
+        elif after_val > before_val:
+            strengthened = True
+    if weakened or junk:
+        return Classification.weaken
+    if strengthened:
+        return Classification.strengthen
+    return Classification.neutral
+
+
+async def apply_preferences_change(
+    before: dict,
+    after: dict,
+    reason: str,
+    *,
+    repo_root: str,
+    prompter: Prompter | None = None,
+    now: datetime | None = None,
+) -> ChangeOutcome:
+    """Chokepoint for a subjective-preference-vector change (SL5 weights).
+
+    Structural sibling of :func:`apply_change` (same record/notify/return
+    shape), but classification is numeric via :func:`_prefs_classify` instead
+    of the token-rank table. Lowering ANY weight is a weaken — it lowers
+    subjective step-up propensity, i.e. protection — so it must clear the
+    same **mandatory** 2FA gate as a policy-rule weakening
+    (:func:`_run_weaken_gate`); unlike the enforcement dial there is no
+    confirm-only escape hatch, because prefs are not the safety valve.
+    Raising a weight is a strengthen and applies automatically — raise-only is
+    preserved, and the prompter is never invoked on that path. Every attempt
+    (incl. denials) is recorded to the append-only ledger and fanned out to
+    observers; the caller persists only when ``outcome.approved``.
+    """
+    reason = _redact_reason(reason)
+    when = now or datetime.now(timezone.utc)
+    classification = _prefs_classify(before, after)
+
+    if classification is Classification.weaken:
+        from doberman.auth.provider import CliPrompter
+
+        approved, method = _run_weaken_gate(before, after, reason, prompter or CliPrompter())
+    else:
+        approved, method = True, "auto"
+
     await _record_change(
         repo_root,
         before,

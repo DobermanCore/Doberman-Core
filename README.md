@@ -349,7 +349,7 @@ It reports two plugin profiles — `builtins_only` and `with_plugins` (built-ins
 
 ## Tune to your risk tolerance
 
-Set a mode in `.doberman/policies.yaml` or via `doberman policy set-mode <mode>`. Every mode change made this way — the CLI dial or the setup wizard — is recorded in the append-only policy-change ledger (view it with `doberman policy-history`), so a strictness downgrade is always auditable even though it isn't 2FA-gated (F10):
+Set a mode in `.doberman/policies.yaml` or via `doberman mode <mode>`. Every mode change made this way — the CLI dial or the setup wizard — is recorded in the append-only policy-change ledger (view it with `doberman policy-history`). Lowering strictness (paranoid → strict → balanced → light) is a **weaken** and now requires a **mandatory 2FA code** — an unenrolled user cannot lower it, there is no confirm-only fallback; raising stays frictionless and auto-applies:
 
 | Mode | Best for | Bulk-delete threshold | Step-up for unknown destinations | Step-up for behavioral anomalies | Lethal-trifecta exfil |
 |---|---|---|---|---|---|
@@ -378,6 +378,10 @@ Set it with **`doberman enforcement <enforce|monitor|off>`** (no argument prints
 
 **In every state the objective floor stays live.** Secret exfiltration, multi-step/confirmed exfil, destructive commands, protected-path writes, role/policy blocks, and the lethal trifecta always block — `monitor`/`off` can only soften the *discretionary* verdicts, never a catastrophic action. Softening the dial is **2FA-gated** and the on-disk value is **ledger-verified** on every call, so a hand-edited `enforcement: off` in `policies.yaml` with no matching approved change is caught and clamped back to `enforce` (fail-closed).
 
+### Subjective preference weights — `doberman prefs`
+
+The adaptive layer's four SL5 "care" weights (`confidentiality`, `reversibility`, `interruption_tolerance`, `blast_radius`, each in `[0, 1]`) tune how readily *discretionary* behavioral signals step up — the objective hard-block floor never moves. Show the active vector with `doberman prefs`, set one weight with `doberman prefs <dimension> <value>`. Same possession-factor rule as `mode` and `enforcement`: **lowering** a weight is a weaken and is denied without a valid 2FA code (no confirm-only escape hatch); **raising** a weight is a strengthen and always applies immediately. Every attempt, approved or denied, is recorded in the append-only ledger.
+
 ---
 
 ## Who is this for?
@@ -390,7 +394,7 @@ Set it with **`doberman enforcement <enforce|monitor|off>`** (no argument prints
 
 ## Roadmap <a name="roadmap"></a>
 
-- ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense (classify strengthen/weaken, 2FA-gated weakening, append-only ledger, **enforce/monitor/off enforcement dial — now consumed by the decision path (discretionary verdicts soften; the objective floor stays live), gated + ledger-verified tamper clamp**) · universal subjective layer (SL1–SL9)
+- ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense (classify strengthen/weaken, 2FA-gated weakening, append-only ledger, **enforce/monitor/off enforcement dial — now consumed by the decision path (discretionary verdicts soften; the objective floor stays live), gated + ledger-verified tamper clamp**, **strictness `mode` and SL5 `prefs` weights now route through the same mandatory-2FA weaken gate — lowering either is denied without a possession-factor code, raising stays frictionless**) · universal subjective layer (SL1–SL9)
 - ✅ Benchmark harness (suite-agnostic ASR/FPR over labeled actions; `builtins_only` vs `with_plugins`; deterministic synthetic gate; external-suite adapters via `tests/benchmarks/`)
 - ✅ Host-harness integration: Claude Code `PreToolUse` + `PostToolUse` hooks (`doberman hook pre`/`post`) gate every built-in *and* MCP tool call — and scan tool **output** for leaked secrets — with no MCP reconfig; fail-closed, import-light, surfacing an in-session approval dialog (confirm / TOTP 2FA) on a sensitive action, and recording a local redacted history
 - ✅ One-command onboarding: `doberman setup` (alertness + guardrails + auto-wires the hooks) · `install-hooks`/`uninstall-hooks` · `doberman doctor` (read-only health self-check: hooks / config / DB / 2FA / enforcement dial / fingerprint key; non-zero exit on any critical failure)
