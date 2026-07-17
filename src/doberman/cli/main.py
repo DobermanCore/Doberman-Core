@@ -17,6 +17,7 @@ import typer
 
 from doberman import __version__
 from doberman.auth import totp
+from doberman.auth.provider import CliPrompter
 from doberman.config import (
     load_active_role,
     load_enforcement,
@@ -491,8 +492,11 @@ def twofa_setup(
     ),
 ) -> None:
     """Enroll TOTP two-factor and print the provisioning URI for your authenticator."""
+    current_code = None
+    if force and totp.is_enrolled():
+        current_code = CliPrompter().read_code("Current 2FA code")
     try:
-        uri = totp.enroll(force=force)
+        uri = totp.enroll(force=force, current_code=current_code)
     except RuntimeError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc

@@ -78,19 +78,40 @@ def is_enrolled() -> bool:
     return _read_secret() is not None
 
 
-def enroll(*, issuer: str = "Doberman", account: str = "local", force: bool = False) -> str:
+def enroll(
+    *,
+    issuer: str = "Doberman",
+    account: str = "local",
+    force: bool = False,
+    current_code: str | None = None,
+) -> str:
     """Generate and store a new TOTP secret; return its provisioning URI.
 
     Refuses to overwrite an existing enrollment unless ``force=True`` (so a
     second ``2fa setup`` cannot silently rotate the secret out from under an
-    authenticator app). The returned URI embeds the secret for QR/manual entry
-    and MUST NOT be logged by the caller.
+    authenticator app). Rotation also requires a valid ``current_code`` proved
+    against the existing secret. The returned URI embeds the secret for
+    QR/manual entry and MUST NOT be logged by the caller.
     """
     path = _secret_path()
-    if path.exists() and not force:
-        raise RuntimeError(
-            "TOTP is already enrolled; pass force=True to deliberately rotate the secret"
-        )
+    if path.exists():
+        if not force:
+            raise RuntimeError(
+                "TOTP is already enrolled; pass force=True to deliberately rotate the secret"
+            )
+        existing_secret = _read_secret()
+        try:
+            verified = (
+                existing_secret is not None
+                and current_code is not None
+                and pyotp.TOTP(existing_secret).verify(
+                    str(current_code), valid_window=_VALID_WINDOW
+                )
+            )
+        except Exception:  # noqa: BLE001 — any proof error refuses rotation
+            verified = False
+        if not verified:
+            raise RuntimeError("a valid current 2FA code is required to rotate TOTP")
 
     secret = pyotp.random_base32()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

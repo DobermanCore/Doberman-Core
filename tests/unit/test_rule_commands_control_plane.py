@@ -83,6 +83,78 @@ def test_nested_bash_c_payload_is_blocked():
     assert _cmd('bash -c "rm -rf .doberman"').verdict is Verdict.BLOCK
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"import shutil; shutil.rmtree('.doberman')\"",
+        "python3 -c \"shutil.rmtree('.doberman')\"",
+        "py -c \"print('.doberman')\"",
+        "node -e \"require('fs').rmSync('.claude',{recursive:true})\"",
+        "nodejs --eval \"console.log('.doberman')\"",
+        "node -p \"'.claude'\"",
+        "node --print \"'.doberman'\"",
+        "deno -e \"console.log('.doberman')\"",
+        "bun -e \"console.log('.claude')\"",
+        "perl -e \"unlink '.doberman/policies.yaml'\"",
+        "ruby -e \"puts '.claude'\"",
+    ],
+)
+def test_interpreter_payload_targeting_control_plane_is_blocked(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"import shutil; shutil.rmtree('build')\"",
+        "python -c \"import os; os.remove('scratch.txt')\"",
+        "python -c \"import os; os.unlink('scratch.txt')\"",
+        "node -e \"require('fs').rmSync('build',{recursive:true})\"",
+        "node -e \"require('fs').unlinkSync('scratch.txt')\"",
+        "node -e \"fs.rm('build',()=>{})\"",
+        "perl -e \"unlink '.scratch'\"",
+        "ruby -e \"system('Remove-Item scratch.txt')\"",
+        "ruby -e \"system('rm -rf build')\"",
+    ],
+)
+def test_interpreter_payload_with_destructive_filesystem_op_is_blocked(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['python -c "print(1)"', 'node -e "console.log(1)"', "python script.py"],
+)
+def test_benign_interpreter_command_passes(command):
+    assert _cmd(command).verdict is Verdict.PASS
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c\"import shutil; shutil.rmtree('.doberman')\"",
+        "node -e\"require('fs').rmSync('.claude',{recursive:true})\"",
+        "python --eval=\"shutil.rmtree('.doberman')\"",
+    ],
+)
+def test_interpreter_attached_inline_payload_targeting_control_plane_is_blocked(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['python -c"print(1)"', 'node -e"console.log(1)"'],
+)
+def test_benign_attached_inline_payload_passes(command):
+    assert _cmd(command).verdict is Verdict.PASS
+
+
 def test_traversal_into_control_plane_is_blocked():
     assert _cmd("rm a/../.doberman/policies.yaml").verdict is Verdict.BLOCK
 
