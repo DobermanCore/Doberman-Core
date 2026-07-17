@@ -9,8 +9,8 @@ mechanism (a core safety invariant):
 * :func:`classify_change` — labels a proposed change ``strengthen`` /
   ``weaken`` / ``neutral``. **Ambiguous or mixed → weaken** (fail safe).
 * :func:`apply_change` — the **single chokepoint**: a weakening requires a
-  ``two_factor`` confirmation against a rendered Before/After diff and is applied
-  only on approval; strengthening/neutral changes apply (still logged). Every
+  possession factor (TOTP if enrolled, else password) against a rendered
+  Before/After diff and is applied only on approval; strengthening/neutral changes apply. Every
   attempt — including denials (the attack signal) — is written to the ledger and
   fanned out to registered :class:`DriftObserver` s.
 * :func:`apply_enforcement_change` — the same chokepoint for the orthogonal
@@ -19,8 +19,7 @@ mechanism (a core safety invariant):
 * :func:`apply_preferences_change` — the sibling chokepoint for the SL5
   preference vector (numeric weights, so classified directly rather than via
   the token-rank table): lowering any weight is a weaken and requires the
-  same **mandatory** 2FA as a policy-rule weakening; raising applies
-  automatically.
+  same mandatory possession factor as a policy-rule weakening; raising applies automatically.
 * :func:`effective_enforcement` — the **read-side** clamp: turns the on-disk
   enforcement fields into the state to act on, verifying them against the ledger
   so a hand-edit of ``policies.yaml`` (e.g. ``enforcement: off``) that bypassed the
@@ -30,7 +29,7 @@ mechanism (a core safety invariant):
   strictness ``mode`` dial only.
 * :class:`DriftObserver` — the enterprise seam (org-wide drift monitoring /
   compliance). Observers receive **redacted** events and can **never** approve or
-  suppress a weakening — the 2FA gate is core and authoritative. The free-text
+  suppress a weakening — the possession-factor gate is core and authoritative. The free-text
   ``reason`` on every event (and every ledger row) is scrubbed of secret-shaped
   substrings and length-capped by :func:`_redact_reason` before it is ever
   recorded or fanned out — a pasted token in a reason must never reach the
@@ -47,7 +46,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-from doberman.auth import totp
+from doberman.auth import password, totp
 from doberman.auth.challenge import Prompter
 from doberman.models import Decision, ReasonCode, Verdict
 from doberman.storage.db import db_path, open_db
@@ -203,17 +202,29 @@ def _render_diff(before: dict, after: dict, reason: str) -> str:
     return "\n".join(lines)
 
 
+def _verify_possession_factor(prompter: Prompter) -> tuple[bool, str]:
+    """Verify the strongest enrolled factor; never fall back after a failure."""
+    if totp.is_enrolled():
+        code = prompter.read_code("Enter your 2FA code to authorize this policy weakening")
+        return (True, "two_factor") if totp.verify(code) else (False, "denied")
+    if password.is_enrolled():
+        pw = prompter.read_code("Enter your Doberman password to authorize this policy weakening")
+        return (True, "password") if password.verify(pw) else (False, "denied")
+    return False, "no_factor_enrolled"
+
+
 def _run_weaken_gate(
     before: dict, after: dict, reason: str, prompter: Prompter
 ) -> tuple[bool, str]:
-    """Require presence + a valid TOTP code to approve a weakening. Fails closed."""
+    """Require presence + the strongest ENROLLED possession factor.
+
+    TOTP is required if enrolled, otherwise the password is required. Fails
+    closed if neither is enrolled. Never confirm-only.
+    """
     try:
         if not prompter.confirm(_render_diff(before, after, reason)):
             return False, "denied"
-        code = prompter.read_code("Enter your 2FA code to authorize this policy weakening")
-        if totp.verify(code):
-            return True, "two_factor"
-        return False, "denied"
+        return _verify_possession_factor(prompter)
     except Exception:  # noqa: BLE001 — any input/timeout error denies the weakening
         return False, "denied"
 
@@ -272,8 +283,9 @@ async def apply_change(
 ) -> ChangeOutcome:
     """The single chokepoint for a policy change. Returns the outcome.
 
-    A **weaken** is gated behind a 2FA confirmation of a rendered diff and is
-    approved only on success; a **strengthen**/**neutral** applies automatically.
+    A **weaken** is gated behind confirmation of a rendered diff plus a possession
+    factor (TOTP if enrolled, else password), and is approved only on success; a
+    **strengthen**/**neutral** applies automatically.
     Every attempt (incl. denials) is written to the append-only ledger and fanned
     out to registered drift observers. The caller persists the new policy **only
     when** ``outcome.approved`` is True — this function decides, records, and
@@ -321,14 +333,15 @@ async def log_change(
     repo_root: str,
     now: datetime | None = None,
 ) -> ChangeOutcome:
-    """Record a user-initiated, **audited but not 2FA-gated** policy change.
+    """Record an audited, not-possession-factor-gated mode establishment.
 
     For changes the operator has chosen to make frictionless yet auditable — the
     strictness-mode dial (light↔paranoid). The change is classified and written to
     the append-only ledger (``method="logged"``) and applied by the caller; a
     weakening is recorded as such (never hidden) but is not gated. This is a
     separate, explicitly-chosen audit-only path and does NOT relax the general
-    :func:`apply_change` weaken-gate (policy/role weakenings still require 2FA).
+    :func:`apply_change` weaken-gate (policy/role weakenings still require the
+    strongest enrolled possession factor).
     The dramatic enforcement-disable uses :func:`apply_enforcement_change`.
 
     Scope is enforced, not just documented: any changed key other than ``mode``
@@ -506,9 +519,9 @@ async def apply_preferences_change(
     shape), but classification is numeric via :func:`_prefs_classify` instead
     of the token-rank table. Lowering ANY weight is a weaken — it lowers
     subjective step-up propensity, i.e. protection — so it must clear the
-    same **mandatory** 2FA gate as a policy-rule weakening
-    (:func:`_run_weaken_gate`); unlike the enforcement dial there is no
-    confirm-only escape hatch, because prefs are not the safety valve.
+    same mandatory possession-factor gate (TOTP if enrolled, else password) as
+    a policy-rule weakening (:func:`_run_weaken_gate`); unlike the enforcement
+    dial there is no confirm-only escape hatch, because prefs are not the safety valve.
     Raising a weight is a strengthen and applies automatically — raise-only is
     preserved, and the prompter is never invoked on that path. Every attempt
     (incl. denials) is recorded to the append-only ledger and fanned out to
@@ -781,8 +794,8 @@ class DriftObserver(Protocol):
 
     Implementations live in installed packages registered via the
     ``doberman.drift_observers`` entry-point group. ``on_change`` is purely
-    observational: it can never approve, suppress, or alter a weakening (the 2FA
-    gate is core and authoritative) and must not raise into the caller.
+    observational: it can never approve, suppress, or alter a weakening (the
+    possession-factor gate is core and authoritative) and must not raise into the caller.
     """
 
     def on_change(self, event: dict) -> None: ...

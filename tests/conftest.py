@@ -10,6 +10,7 @@ need to exercise key generation/rotation override this with their own
 
 import pytest
 
+from doberman.auth.password import PASSWORD_FILE_ENV
 from doberman.auth.totp import TOTP_FILE_ENV
 from doberman.storage.device_metrics import HOME_ENV
 from doberman.storage.fingerprint import KEY_FILE_ENV
@@ -41,6 +42,18 @@ def isolated_totp_secret(tmp_path, monkeypatch):
     secret_path = tmp_path / "doberman-totp.secret"
     monkeypatch.setenv(TOTP_FILE_ENV, str(secret_path))
     return secret_path
+
+
+@pytest.fixture(autouse=True)
+def isolated_password_hash(tmp_path, monkeypatch):
+    """Point the local password hash at a per-test temp file (C1 slice 2).
+
+    Tests must never touch a real per-user possession factor. The failure
+    counter is keyed by this path, so a fresh path also isolates lockout state.
+    """
+    hash_path = tmp_path / "doberman-password.hash"
+    monkeypatch.setenv(PASSWORD_FILE_ENV, str(hash_path))
+    return hash_path
 
 
 @pytest.fixture(autouse=True)

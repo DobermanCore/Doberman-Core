@@ -1,17 +1,18 @@
-"""C1 slice 2 — subjective preference-vector weakening (SL5 weights) is gated
-behind the same mandatory 2FA chokepoint as a policy-rule weakening
-(:func:`_run_weaken_gate`); raising a weight stays frictionless (raise-only),
-mirroring :func:`doberman.policy.drift.apply_change`.
+"""C1 slice 2 — subjective preference-vector permanent-lowering gate.
+
+Lowering an SL5 weight requires confirmation plus the strongest enrolled
+possession factor (TOTP, otherwise password); raising remains frictionless.
 """
 
 from datetime import datetime, timezone
 
 import pyotp
 
-from doberman.auth import totp
+from doberman.auth import password, totp
 from doberman.policy.drift import Classification, apply_preferences_change, read_policy_changes
 
 _NOW = datetime(2026, 7, 16, tzinfo=timezone.utc)
+_PASSWORD = "correct horse battery staple"  # noqa: S105 — synthetic test credential
 
 
 class ScriptedPrompter:
@@ -44,10 +45,11 @@ def _enrolled_code() -> str:
     return pyotp.TOTP(totp._read_secret()).now()
 
 
-# --- A: lowering a weight requires 2FA ---------------------------------------
+# --- A: lowering a weight requires the strongest enrolled factor ------------
 
 
 async def test_lowering_a_weight_with_valid_2fa_is_approved(tmp_path):
+    password.enroll(_PASSWORD)  # TOTP must take precedence when both exist.
     code = _enrolled_code()
     outcome = await apply_preferences_change(
         {"confidentiality": 0.7},
@@ -76,6 +78,7 @@ async def test_lowering_a_weight_denied_when_confirmation_declined(tmp_path):
 
 
 async def test_lowering_a_weight_denied_when_read_code_raises(tmp_path):
+    _enrolled_code()
     outcome = await apply_preferences_change(
         {"confidentiality": 0.7},
         {"confidentiality": 0.3},
@@ -104,6 +107,38 @@ async def test_denial_is_still_recorded_in_the_ledger(tmp_path):
     assert rows[0]["approved"] == 0
     assert rows[0]["classification"] == "weaken"
     assert rows[0]["approval_method"] == "denied"
+
+
+async def test_lowering_with_password_only_is_approved_and_recorded(tmp_path):
+    password.enroll(_PASSWORD)
+    outcome = await apply_preferences_change(
+        {"confidentiality": 0.7},
+        {"confidentiality": 0.3},
+        "lower confidentiality",
+        repo_root=str(tmp_path),
+        prompter=ScriptedPrompter(confirm=True, code=_PASSWORD),
+        now=_NOW,
+    )
+
+    assert outcome.approved is True
+    assert outcome.method == "password"
+    rows = await read_policy_changes(str(tmp_path))
+    assert rows[0]["approval_method"] == "password"
+
+
+async def test_lowering_with_password_only_rejects_wrong_password(tmp_path):
+    password.enroll(_PASSWORD)
+    outcome = await apply_preferences_change(
+        {"confidentiality": 0.7},
+        {"confidentiality": 0.3},
+        "lower confidentiality",
+        repo_root=str(tmp_path),
+        prompter=ScriptedPrompter(confirm=True, code="this is the wrong password"),
+        now=_NOW,
+    )
+
+    assert outcome.approved is False
+    assert outcome.method == "denied"
 
 
 # --- B: raising a weight is frictionless (raise-only) -------------------------
@@ -165,13 +200,14 @@ async def test_mixed_change_classifies_as_weaken(tmp_path):
 
 
 async def test_confirm_true_but_wrong_code_still_denied(tmp_path):
-    totp.enroll()  # enrolled, but the supplied code is wrong
+    password.enroll(_PASSWORD)
+    totp.enroll()  # enrolled, so even the correct password cannot replace TOTP
     outcome = await apply_preferences_change(
         {"confidentiality": 0.7},
         {"confidentiality": 0.3},
         "lower confidentiality",
         repo_root=str(tmp_path),
-        prompter=ScriptedPrompter(confirm=True, code="000000"),
+        prompter=ScriptedPrompter(confirm=True, code=_PASSWORD),
         now=_NOW,
     )
     assert outcome.approved is False
@@ -179,21 +215,18 @@ async def test_confirm_true_but_wrong_code_still_denied(tmp_path):
 
 
 async def test_confirm_only_cannot_approve_when_nothing_is_enrolled(tmp_path):
-    # Not enrolled at all (isolated_totp_secret autouse fixture) -- confirm=True
-    # plus any code must still deny: totp.verify() fails closed with nothing
-    # enrolled, so there is no code path that approves a weaken by confirmation
-    # alone. This is the proof that a plain "yes" can never substitute for the
-    # possession factor.
+    prompter = ScriptedPrompter(confirm=True, code="123456")
     outcome = await apply_preferences_change(
         {"confidentiality": 0.7},
         {"confidentiality": 0.3},
         "lower confidentiality",
         repo_root=str(tmp_path),
-        prompter=ScriptedPrompter(confirm=True, code="123456"),
+        prompter=prompter,
         now=_NOW,
     )
     assert outcome.approved is False
-    assert outcome.method == "denied"
+    assert outcome.method == "no_factor_enrolled"
+    assert prompter.read_code_calls == 0
 
 
 # --- extra edge cases: removed dimension / non-numeric junk -> weaken ---------
