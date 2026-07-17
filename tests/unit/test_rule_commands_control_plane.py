@@ -133,6 +133,28 @@ def test_benign_interpreter_command_passes(command):
     assert _cmd(command).verdict is Verdict.PASS
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c\"import shutil; shutil.rmtree('.doberman')\"",
+        "node -e\"require('fs').rmSync('.claude',{recursive:true})\"",
+        "python --eval=\"shutil.rmtree('.doberman')\"",
+    ],
+)
+def test_interpreter_attached_inline_payload_targeting_control_plane_is_blocked(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['python -c"print(1)"', 'node -e"console.log(1)"'],
+)
+def test_benign_attached_inline_payload_passes(command):
+    assert _cmd(command).verdict is Verdict.PASS
+
+
 def test_traversal_into_control_plane_is_blocked():
     assert _cmd("rm a/../.doberman/policies.yaml").verdict is Verdict.BLOCK
 

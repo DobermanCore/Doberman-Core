@@ -73,6 +73,10 @@ _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 # Non-shell interpreters whose inline payloads can directly mutate files.
 _INTERPRETERS = {"python", "python3", "py", "node", "nodejs", "deno", "bun", "perl", "ruby"}
 _INLINE_CODE_FLAGS = {"-c", "-e", "--eval", "-p", "--print"}
+# Attached forms (no space before the payload): shlex glues the quoted body to
+# the flag, e.g. `python -c"..."` -> token `-cimport ...` (never equals "-c").
+_SHORT_INLINE_CODE_FLAGS = ("-c", "-e")
+_LONG_INLINE_CODE_FLAG_PREFIXES = ("--eval=", "--print=")
 _DESTRUCTIVE_INTERPRETER_OP = re.compile(
     r"\b(?:shutil\.)?rmtree\b|\bos\.(?:remove|unlink)\b|\brmSync\b|"
     r"\bunlinkSync\b|\bfs\.rm\b|\bRemove-Item\b|\brm\s+-rf\b|\bunlink\b",
@@ -275,11 +279,16 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
     """BLOCK obvious control-plane or destructive interpreter one-liners."""
     if not tokens or tokens[0] not in _INTERPRETERS:
         return None
-    payloads = [
-        tokens[index + 1]
-        for index in range(1, len(tokens) - 1)
-        if tokens[index] in _INLINE_CODE_FLAGS
-    ]
+    payloads: list[str] = []
+    for index in range(1, len(tokens)):
+        token = tokens[index]
+        if token in _INLINE_CODE_FLAGS:
+            if index + 1 < len(tokens):
+                payloads.append(tokens[index + 1])
+        elif token.startswith(_SHORT_INLINE_CODE_FLAGS) and len(token) > 2:
+            payloads.append(token[2:])
+        elif token.startswith(_LONG_INLINE_CODE_FLAG_PREFIXES):
+            payloads.append(token.split("=", 1)[1])
     if not payloads:
         return None
 
