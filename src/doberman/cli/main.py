@@ -1,9 +1,9 @@
 """The ``doberman`` CLI entry point (Features 5-7).
 
 Exposes ``doberman scan`` (risk map), ``review`` / ``mode`` / ``status``
-(policy), and the Feature 7 auth surface: ``doberman 2fa setup`` (TOTP
-enrollment) and ``doberman revoke`` (revoke a role elevation). ``status`` also
-lists currently-active elevations.
+(policy), and local auth surfaces: ``doberman password set``, ``doberman 2fa
+setup`` (optional TOTP enrollment), and ``doberman revoke`` (revoke a role
+elevation). ``status`` also lists currently-active elevations.
 """
 
 import asyncio
@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import typer
 
 from doberman import __version__
-from doberman.auth import totp
+from doberman.auth import password, totp
 from doberman.auth.provider import CliPrompter
 from doberman.config import (
     load_active_role,
@@ -30,7 +30,13 @@ from doberman.config import (
 )
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
-from doberman.policy.drift import apply_enforcement_change, log_change, read_policy_changes
+from doberman.policy.drift import (
+    apply_change,
+    apply_enforcement_change,
+    apply_preferences_change,
+    log_change,
+    read_policy_changes,
+)
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.storage.db import active_elevations, revoke_elevation
@@ -67,6 +73,12 @@ app = typer.Typer(
 
 twofa_app = typer.Typer(help="Two-factor (TOTP) enrollment.", no_args_is_help=True)
 app.add_typer(twofa_app, name="2fa")
+
+password_app = typer.Typer(
+    help="Local password possession factor (the minimum lowering-gate auth).",
+    no_args_is_help=True,
+)
+app.add_typer(password_app, name="password")
 
 hook_app = typer.Typer(
     help="Host-harness integration hooks (e.g. Claude Code PreToolUse/PostToolUse).",
@@ -192,26 +204,37 @@ def review(
         typer.echo("\n(read-only; re-run with --yes to save)")
 
 
-def _apply_mode_change(name: str, path: str, reason: str) -> str:
-    """Resolve ``name``, best-effort audit-log the change, then persist it (F10).
+def _apply_mode_change(
+    name: str, path: str, reason: str, *, establish_ok: bool = False
+) -> str | None:
+    """Resolve ``name``, gate any weakening behind a possession factor, then persist it.
 
-    The mode dial is deliberately frictionless, but every user-initiated change
-    still lands in the append-only policy-change ledger via
-    :func:`doberman.policy.drift.log_change` (``method="logged"``). A ledger
-    problem must never block the mode change itself, so logging is attempted
-    *before* saving and any unexpected failure is swallowed with a printed
-    warning; the save always proceeds. A no-op (unchanged mode) skips the
-    ledger call entirely rather than writing a confusing neutral entry.
+    The mode dial is now gated at parity with the enforcement dial:
+    lowering strictness (a downgrade on the paranoid>strict>balanced>light
+    scale) is a ``weaken`` and must clear a possession factor — a 2FA code if
+    enrolled, otherwise the Doberman password set via ``doberman password set`` —
+    before it is persisted. Raising stays frictionless: ``apply_change`` auto-approves
+    a strengthen with no prompt. A no-op (unchanged mode) skips the gate/ledger entirely.
+    Every attempt (incl. denials) is recorded to the append-only ledger. Returns
+    ``None`` when the gate denies the change — fail closed, nothing persisted.
+
+    ``establish_ok`` (first-run onboarding via ``doberman setup``) writes the
+    INITIAL posture freely when no policy is persisted yet — choosing a starting
+    mode is not weakening an existing one, and 2FA is enrolled later in the
+    wizard. The change is still recorded to the ledger. Once a policy exists,
+    even a setup re-run falls through to the gate, so neither ``setup`` nor
+    ``mode`` can bypass the possession factor on a lowering.
     """
     old = load_mode(path)
     new = resolve_mode(name).value  # raises ValueError for an unknown mode
-    if old != new:
-        try:
-            asyncio.run(log_change({"mode": old}, {"mode": new}, reason, repo_root=path))
-        except Exception as exc:  # noqa: BLE001 -- ledger issues must never block the mode change
-            typer.echo(
-                f"warning: could not record mode change in the policy ledger: {exc}", err=True
-            )
+    if old == new:
+        return save_mode(name, path)
+    if establish_ok and load_policy(path) is None:
+        asyncio.run(log_change({"mode": old}, {"mode": new}, reason, repo_root=path))
+        return save_mode(name, path)
+    outcome = asyncio.run(apply_change({"mode": old}, {"mode": new}, reason, repo_root=path))
+    if not outcome.approved:
+        return None
     return save_mode(name, path)
 
 
@@ -220,7 +243,12 @@ def mode(
     name: str = typer.Argument(None, help="Mode to set (light/balanced/strict/paranoid)."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
-    """Show or set the security strength mode."""
+    """Show or set the security strength mode.
+
+    Lowering strictness requires a possession factor — a 2FA code if enrolled,
+    otherwise your Doberman password (set via `doberman password set`). Raising
+    is always frictionless.
+    """
     if name is None:
         typer.echo(load_mode(path))
         return
@@ -229,6 +257,9 @@ def mode(
     except ValueError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
+    if saved is None:
+        typer.echo("mode change denied; unchanged", err=True)
+        raise typer.Exit(code=1)
     typer.echo(f"mode set to {saved}")
 
 
@@ -302,7 +333,9 @@ def prefs(
 
     With no arguments, prints the active vector and which mode preset it
     matches (if any). Weights tune SUBJECTIVE step-up propensity only - the
-    objective hard-block floor is unaffected by every weight.
+    objective hard-block floor is unaffected by every weight. Lowering a
+    weight requires a possession factor — a 2FA code if enrolled, otherwise
+    your Doberman password (set via `doberman password set`). Raising is always frictionless.
     """
     if dimension is None:
         vector = load_preferences(path)
@@ -318,11 +351,23 @@ def prefs(
             "error: provide a value in [0, 1] (e.g. `doberman prefs confidentiality 0.8`)", err=True
         )
         raise typer.Exit(code=2)
+    current = load_preferences(path)
     try:
-        updated = load_preferences(path).with_weight(dimension, value)
+        updated = current.with_weight(dimension, value)
     except (KeyError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
+    outcome = asyncio.run(
+        apply_preferences_change(
+            current.to_mapping(),
+            updated.to_mapping(),
+            "doberman prefs CLI",
+            repo_root=path,
+        )
+    )
+    if not outcome.approved:
+        typer.echo("preference change denied; unchanged", err=True)
+        raise typer.Exit(code=1)
     save_preferences(updated, path)
     typer.echo(f"{dimension} set to {value:.2f}")
 
@@ -364,8 +409,10 @@ def status(
         enabled = sum(1 for it in doc.items if it.enabled)
         typer.echo(f"Policy: {enabled}/{len(doc.items)} items enabled")
 
-    enrolled = "yes" if totp.is_enrolled() else "no (run `doberman 2fa setup`)"
-    typer.echo(f"2FA:    {enrolled}")
+    twofa_status = "yes" if totp.is_enrolled() else "no"
+    typer.echo(f"2FA:    {twofa_status} (optional; run `doberman 2fa setup`)")
+    password_status = "yes" if password.is_enrolled() else "no (run `doberman password set`)"
+    typer.echo(f"Password: {password_status}")
 
     grants = asyncio.run(active_elevations(path, datetime.now(timezone.utc)))
     if not grants:
@@ -483,6 +530,34 @@ def hook_post() -> None:
     if out is not None:
         sys.stdout.write(out + "\n")
     raise typer.Exit(0)
+
+
+@password_app.command("set")
+def password_set(
+    force: bool = typer.Option(
+        False, "--force", help="Rotate an existing password after proving the current one."
+    ),
+) -> None:
+    """Set or deliberately rotate the local password possession factor."""
+    prompter = CliPrompter()
+    current_password = None
+    if force and password.is_enrolled():
+        current_password = prompter.read_code("Enter your current Doberman password")
+    new_password = prompter.read_code("Enter a new Doberman password")
+    repeated_password = prompter.read_code("Enter the new Doberman password again")
+    if new_password != repeated_password:
+        typer.echo("error: passwords do not match", err=True)
+        raise typer.Exit(code=1)
+    try:
+        password.enroll(
+            new_password,
+            force=force,
+            current_password=current_password,
+        )
+    except (ValueError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("Password set. Stored locally with owner-only permissions; never committed.")
 
 
 @twofa_app.command("setup")
@@ -746,6 +821,8 @@ def setup(
     """Friendly first-run wizard: choose your security posture and wire Claude Code hooks.
 
     Walks through alertness mode, preference tuning, and automatic hook installation.
+    Later lowerings require a possession factor — a 2FA code if enrolled,
+    otherwise your Doberman password (set via ``doberman password set``).
     Pass ``--yes`` for a fully non-interactive run (useful for CI or scripting).
     """
     from doberman.hosthooks.install import (
@@ -794,9 +871,19 @@ def setup(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
 
-    # Save the chosen mode.
+    # Save the chosen mode. First-run onboarding establishes the initial posture
+    # freely (establish_ok); a re-run over an existing policy still gates a
+    # lowering behind a possession factor, so setup can't bypass the mode gate.
     try:
-        _apply_mode_change(chosen_mode.value, path, "doberman setup wizard")
+        if (
+            _apply_mode_change(chosen_mode.value, path, "doberman setup wizard", establish_ok=True)
+            is None
+        ):
+            typer.echo(
+                "note: mode not lowered (a lowering needs an enrolled possession factor); "
+                "keeping the current mode",
+                err=True,
+            )
     except ValueError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
@@ -895,7 +982,10 @@ def setup(
     typer.echo("")
     typer.echo("Doberman is now active.")
     typer.echo("Restart your Claude Code session to pick up the hooks.")
-    typer.echo("Next steps: `doberman 2fa setup`  |  `doberman status`")
+    typer.echo(
+        "Next steps: `doberman password set`  |  `doberman 2fa setup` (optional)  |  "
+        "`doberman status`"
+    )
 
 
 @app.command()
