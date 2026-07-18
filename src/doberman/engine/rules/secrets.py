@@ -80,8 +80,6 @@ _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     # --- GCP ----------------------------------------------------------------
     # GCP service-account key JSON marker (`"type": "service_account"`).
     re.compile(r'"type"\s*:\s*"service_account"'),
-    # GCP service-account client email (`…@….iam.gserviceaccount.com`).
-    re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.iam\.gserviceaccount\.com"),
 )
 
 # ``.env``-style assignment of a secret-looking key to a non-trivial value.

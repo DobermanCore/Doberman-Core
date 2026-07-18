@@ -165,11 +165,13 @@ def test_benign_lookalikes_do_not_secret_block_on_exfiltration(text):
 
 
 # --- Issue #93: Azure + GCP service-account key shapes ----------------------
+# NOTE: the GCP SA *email* (FAKE_GCP_SA_EMAIL) is intentionally NOT in this
+# BLOCK-on-exfil list — it is an identifier, not credential material; see the
+# dedicated regression tests below.
 AZURE_GCP_CREDENTIALS = [
     FAKE_AZURE_STORAGE_KEY,
     FAKE_AZURE_SB_KEY,
     FAKE_GCP_SA_JSON,
-    FAKE_GCP_SA_EMAIL,
 ]
 # Strings that resemble Azure / GCP material but are NOT secrets — must not block.
 AZURE_GCP_BENIGN = [
@@ -205,6 +207,34 @@ def test_azure_gcp_benign_do_not_block_on_exfiltration(text):
     )
     result = RULE.evaluate(action, _ctx(url="https://example.com/c", body=f"value: {text}"))
     assert ReasonCode.secret_exfiltration not in result.reason_codes
+
+
+def test_gcp_sa_email_alone_external_does_not_block():
+    # Regression: a GCP service-account EMAIL (unlike the SA *key* JSON marker
+    # above) is an identifier that shows up routinely in configs/logs, not
+    # credential material — it must NOT drive a hard BLOCK on exfil.
+    action = _action(
+        ActionType.network_request,
+        target="https://example.com/c",
+        dest="https://example.com/c",
+    )
+    result = RULE.evaluate(
+        action, _ctx(url="https://example.com/c", body=f"data: {FAKE_GCP_SA_EMAIL}")
+    )
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.secret_exfiltration not in result.reason_codes
+    assert ReasonCode.sensitive_secret_access not in result.reason_codes
+
+
+def test_gcp_sa_email_alone_local_does_not_auth():
+    # Same identifier, staying local — must not step up to AUTH via the
+    # credential path either (it carries no secret material on its own).
+    action = _action(ActionType.file_write, target="scratch.txt")
+    result = RULE.evaluate(
+        action, _ctx(path="scratch.txt", content=f"client_email: {FAKE_GCP_SA_EMAIL}")
+    )
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.sensitive_secret_access not in result.reason_codes
 
 
 def test_local_secret_file_read_is_auth_not_block():
