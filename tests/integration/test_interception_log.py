@@ -30,10 +30,14 @@ async def test_one_valid_json_line_per_call_with_action_id(caplog):
     for record in records:
         assert record["event"] == "tool_call_intercepted"
         assert record["verdict"] == "PASS"
-        assert record["action"]["id"]  # stable id for correlation
-    assert records[0]["action"]["tool_name"] == "fs_write"
-    assert records[0]["action"]["action_type"] == "file_write"
-    assert records[1]["action"]["target"] == "echo hi"
+        assert record["id"]  # stable id for correlation
+    assert records[0]["tool_name"] == "fs_write"
+    assert records[0]["action_type"] == "file_write"
+    assert records[0]["target_path_class"] == "*.txt"
+    # shell_exec has no path class, and the raw command text is never logged
+    # (the sink only ever emits the redaction-safe field set — see log_action).
+    assert records[1]["target_path_class"] is None
+    assert "echo hi" not in caplog.text
 
 
 async def test_synthetic_secret_never_appears_in_log(caplog):
@@ -88,8 +92,54 @@ async def test_failed_calls_are_still_logged_and_ids_correlate(caplog):
     assert result.isError
     records = _log_records(caplog)
     assert len(records) == 1
-    logged_id = records[0]["action"]["id"]
+    logged_id = records[0]["id"]
     # The denial the agent sees carries the same action id as the log line.
     match = re.search(r"action id: ([0-9a-f]+)", result.content[0].text)
     assert match is not None
     assert match.group(1) == logged_id
+
+
+def test_short_unshaped_secret_under_non_sensitive_key_never_logged(caplog):
+    """The critical proof: log_action must not depend on normalize()'s redactor.
+
+    normalize()'s ``_redact_value`` is a length/shape heuristic stopgap — a
+    short, unshaped secret under a non-sensitive argument key (e.g.
+    ``content="db_password=..."``) passes through ``raw_args_redacted``
+    completely unredacted. Before this fix, ``log_action`` logged
+    ``action.model_dump()`` (which includes ``raw_args_redacted``), so a
+    routine PASS could write that secret to the interception log in
+    cleartext. This test fails on the old code and passes on the new.
+    """
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    secret_value = "db_password=Tr0ub4dor&3"  # noqa: S105 — synthetic test value
+    action = normalize("write_file", {"content": secret_value, "path": "config.env"})
+    # Sanity-check the premise: the heuristic redactor really did let this
+    # secret through unredacted (otherwise this test would prove nothing).
+    assert action.raw_args_redacted["content"] == secret_value
+
+    interception_log.log_action(action, Verdict.PASS)
+
+    assert "db_password" not in caplog.text
+    assert "Tr0ub4dor" not in caplog.text
+
+    records = _log_records(caplog)
+    assert len(records) == 1
+    record = records[0]
+    assert record["event"] == "tool_call_intercepted"
+    assert record["verdict"] == "PASS"
+    assert record["action_type"] == "file_write"
+    assert record["tool_name"] == "write_file"
+    assert record["target_path_class"] == "*.env"
+    assert "raw_args_redacted" not in record
+    assert "target" not in record
+
+
+def test_secret_shaped_value_never_logged(caplog):
+    """Regression guard: a secret-SHAPED value is also absent from the log."""
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    secret_value = "AKIA" + "1234567890ABCDEF"  # noqa: S105 — synthetic test value
+    action = normalize("write_file", {"token": secret_value, "path": "a.txt"})
+
+    interception_log.log_action(action, Verdict.PASS)
+
+    assert secret_value not in caplog.text
