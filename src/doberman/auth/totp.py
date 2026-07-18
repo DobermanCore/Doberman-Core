@@ -99,17 +99,10 @@ def enroll(
             raise RuntimeError(
                 "TOTP is already enrolled; pass force=True to deliberately rotate the secret"
             )
-        existing_secret = _read_secret()
-        try:
-            verified = (
-                existing_secret is not None
-                and current_code is not None
-                and pyotp.TOTP(existing_secret).verify(
-                    str(current_code), valid_window=_VALID_WINDOW
-                )
-            )
-        except Exception:  # noqa: BLE001 — any proof error refuses rotation
-            verified = False
+        # Route the rotation proof through the rate-limited verify() (not a direct
+        # pyotp check) so repeated wrong-code rotation attempts trip the same
+        # _failures lockout as a normal auth attempt — symmetric with password.py.
+        verified = current_code is not None and verify(str(current_code))
         if not verified:
             raise RuntimeError("a valid current 2FA code is required to rotate TOTP")
 
