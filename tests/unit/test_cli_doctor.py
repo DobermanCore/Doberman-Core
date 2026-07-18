@@ -13,6 +13,7 @@ test ever touches real per-user state.
 """
 
 import asyncio
+import os
 from datetime import datetime, timezone
 
 import pytest
@@ -209,6 +210,9 @@ def test_doctor_reports_2fa_state(tmp_path):
     assert "not enrolled" in twofa.detail
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX file-permission bits are not enforced on Windows (NTFS)"
+)
 def test_doctor_fingerprint_key_loose_perms_warns(tmp_path, isolated_fingerprint_key):
     # The autouse fixture points DOBERMAN_KEY_FILE at this path; create it world-readable.
     isolated_fingerprint_key.write_bytes(b"x" * 32)
@@ -220,6 +224,9 @@ def test_doctor_fingerprint_key_loose_perms_warns(tmp_path, isolated_fingerprint
     assert "group/other-accessible" in key.detail
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX file-permission bits are not enforced on Windows (NTFS)"
+)
 def test_doctor_fingerprint_key_tight_perms_ok(tmp_path, isolated_fingerprint_key):
     isolated_fingerprint_key.write_bytes(b"x" * 32)
     isolated_fingerprint_key.chmod(0o600)
