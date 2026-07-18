@@ -37,8 +37,12 @@ from doberman.models import (
     BLAST_RADIUS_ORDER,
     TARGET_CLASS_ORDER,
     ActionType,
+    BlastRadius,
+    Capability,
+    DestinationClass,
     Reversibility,
     SecurityObject,
+    TargetClass,
 )
 from doberman.storage.db import open_db
 from doberman.storage.fingerprint import fingerprint
@@ -319,6 +323,34 @@ HST_SEED = 42
 #: A feature class seen at least this many times is fully familiar.
 FAMILIAR_AT = 3
 
+#: A HIGH-SEVERITY feature class (destructive / secret / exfil — see
+#: :func:`_familiar_at`) needs this many more allowed observations before it
+#: counts as familiar. Audit H4 / EF-4 (raise-only tightening): a flat
+#: FAMILIAR_AT let an attacker "slow-boil" a dangerous capability to zero
+#: novelty with just FAMILIAR_AT allows. Only ever RAISES the threshold above
+#: FAMILIAR_AT — never used to lower one.
+FAMILIAR_AT_HIGH = 10
+
+#: Capabilities severe enough (destructive, privilege-escalating, or arbitrary
+#: code execution) to require :data:`FAMILIAR_AT_HIGH` instead of the default.
+_HIGH_SEVERITY_CAPABILITIES = frozenset(
+    {Capability.delete, Capability.grant, Capability.execute}
+)
+
+#: Target-class tiers severe enough (secret material, flagged sensitive
+#: assets) to require :data:`FAMILIAR_AT_HIGH`.
+_HIGH_SEVERITY_TARGETS = frozenset({TargetClass.sensitive, TargetClass.secret})
+
+#: Destination-class tiers severe enough (data leaving to an external host) to
+#: require :data:`FAMILIAR_AT_HIGH`.
+_HIGH_SEVERITY_DESTINATIONS = frozenset(
+    {DestinationClass.known_external, DestinationClass.unknown_external}
+)
+
+#: Blast-radius tiers severe enough (many/mass entities touched in one action)
+#: to require :data:`FAMILIAR_AT_HIGH`.
+_HIGH_SEVERITY_BLAST = frozenset({BlastRadius.many, BlastRadius.mass})
+
 #: Below this many calibration samples a raw sub-score is used as-is.
 MIN_CALIBRATION_SAMPLES = 20
 
@@ -402,17 +434,43 @@ def reset_hst(entity: str | None = None) -> None:
         _HST_LEARN_COUNTS.pop(entity, None)
 
 
-def _novelty(freq: int) -> float:
+def _familiar_at(key: str) -> int:
+    """Per-key familiar-at threshold — high-severity classes need more allows.
+
+    ``key`` is a :func:`scoring_keys` entry (``"<prefix>:<value>"``). Destructive
+    capabilities, secret/sensitive targets, external destinations, and mass
+    blast radii return :data:`FAMILIAR_AT_HIGH`; everything else keeps the
+    default :data:`FAMILIAR_AT`. Raise-only: never returns below FAMILIAR_AT.
+    """
+    prefix, _, value = key.partition(":")
+    if prefix == "capability" and value in _HIGH_SEVERITY_CAPABILITIES:
+        return FAMILIAR_AT_HIGH
+    if prefix == "target" and value in _HIGH_SEVERITY_TARGETS:
+        return FAMILIAR_AT_HIGH
+    if prefix == "dest" and value in _HIGH_SEVERITY_DESTINATIONS:
+        return FAMILIAR_AT_HIGH
+    if prefix == "blast" and value in _HIGH_SEVERITY_BLAST:
+        return FAMILIAR_AT_HIGH
+    if prefix == "destination":  # a concrete external destination host — exfil
+        return FAMILIAR_AT_HIGH
+    return FAMILIAR_AT
+
+
+def _novelty(freq: int, familiar_at: int = FAMILIAR_AT) -> float:
     """Frequency → novelty in [0,1] (never seen = 1.0, familiar = 0.0)."""
     if freq <= 0:
         return 1.0
-    if freq >= FAMILIAR_AT:
+    if freq >= familiar_at:
         return 0.0
-    return max(0.0, 1.0 - freq / FAMILIAR_AT)
+    return max(0.0, 1.0 - freq / familiar_at)
 
 
 async def _novelty_score(conn, eid: str, action: SecurityObject) -> float:
-    """Max frequency-novelty across the action's class keys (pre-update view)."""
+    """Max frequency-novelty across the action's class keys (pre-update view).
+
+    Each key's novelty is judged against its own severity-aware threshold
+    (:func:`_familiar_at`) so a high-severity class stays novel for longer.
+    """
     worst = 0.0
     for key in scoring_keys(action):
         async with conn.execute(
@@ -420,7 +478,7 @@ async def _novelty_score(conn, eid: str, action: SecurityObject) -> float:
             (eid, key),
         ) as cur:
             row = await cur.fetchone()
-        worst = max(worst, _novelty(int(row[0]) if row else 0))
+        worst = max(worst, _novelty(int(row[0]) if row else 0, _familiar_at(key)))
     return worst
 
 
