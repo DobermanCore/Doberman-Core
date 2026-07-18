@@ -16,6 +16,7 @@ import pytest
 from doberman.hosthooks import claude_code
 from doberman.hosthooks.claude_code import (
     GATED_BUILTINS,
+    evaluate_post,
     evaluate_pre,
     run_pre_hook,
     to_normalize_input,
@@ -26,6 +27,23 @@ from doberman.storage.log import read_decisions
 @pytest.fixture
 def cwd(tmp_path):
     """An isolated repo root so the test never inherits a real ``.doberman`` policy."""
+    return str(tmp_path)
+
+
+@pytest.fixture
+def role_cwd(tmp_path):
+    """An isolated repo root with an active role policy scoped to ``frontend/**``.
+
+    Modeled on test_auth_release.py's ``_write_role`` fixture pattern. Used to prove
+    the hosthook parity fix (F4 role-boundary enforcement) actually engages once a
+    role policy exists.
+    """
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "role.yaml").write_text(
+        'name: webdev\nallowed:\n  - "frontend/**"\n',
+        encoding="utf-8",
+    )
     return str(tmp_path)
 
 
@@ -355,3 +373,52 @@ def test_pre_hook_block_never_logs_raw_secret(cwd):
     rows = asyncio.run(read_decisions(cwd))
     assert rows
     assert secret not in repr(rows[0])
+
+
+# --- role-boundary parity (F4 hosthook/proxy gap) ------------------------------
+#
+# The Claude Code hosthook used to build EvalContext with role=None on every path,
+# so an active role policy never got checked for hosthook-mediated tool calls
+# (unlike the MCP proxy, which always wires the active role). "random/notes.txt"
+# is used as the out-of-scope target rather than a backend/auth/** path — that
+# path independently triggers AUTH(sensitive_path_access) from the unrelated
+# path-sensitivity rule, which would confound a test meant to isolate the
+# role-boundary parity fix.
+
+_OUT_OF_SCOPE_EDIT = (
+    "Edit",
+    {"file_path": "random/notes.txt", "old_string": "a", "new_string": "b"},
+)
+
+
+def test_pre_hook_enforces_role_boundary_when_role_policy_is_active(role_cwd, monkeypatch):
+    # Before the fix: role=None → RoleBoundaryRule always abstains → PASS.
+    # After the fix: the active role (allowed=["frontend/**"]) rides into EvalContext,
+    # "random/notes.txt" is unmatched-by-allowed → suspicious → AUTH(role_out_of_scope)
+    # in balanced mode (the default; escalate_out_of_scope=True).
+    monkeypatch.setattr(claude_code, "AUTH_PROMPTER", _Decline())
+    out = _pre(*_OUT_OF_SCOPE_EDIT, role_cwd)
+    assert _permission(out) == "deny"
+    assert "role_out_of_scope" in _reason(out)
+
+
+def test_pre_hook_role_boundary_is_a_noop_with_no_role_policy(cwd):
+    # Parity/no-regression: a repo with no .doberman/role.yaml still abstains on the
+    # same out-of-scope path — load_active_role() returns None, RoleBoundaryRule
+    # abstains, and nothing else escalates a plain notes file.
+    assert _pre(*_OUT_OF_SCOPE_EDIT, cwd) is None
+
+
+def test_evaluate_post_output_scan_stays_role_free_with_active_role_policy(role_cwd):
+    # The evaluate_post output-scan EvalContext intentionally stays role=None (the
+    # action there is synthetic — built from tool OUTPUT to scan for secrets, not
+    # the real call target). Confirms an active role policy does not make the
+    # output scan spuriously fire role_out_of_scope on benign output text.
+    payload = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": "random/notes.txt"},
+        "tool_response": "just some benign notes, nothing sensitive here",
+        "cwd": role_cwd,
+    }
+    result = evaluate_post(payload)
+    assert result is None

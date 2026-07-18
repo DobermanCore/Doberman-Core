@@ -43,8 +43,8 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
-from doberman.config import load_mode, resolve_enforcement_sync
-from doberman.engine.decision_engine import PASS_STUB, decide, max_risk
+from doberman.config import load_active_role, load_mode, resolve_enforcement_sync
+from doberman.engine.decision_engine import PASS_STUB, decide, max_risk, max_verdict
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.taint_floor import apply_taint_floor
 from doberman.models import Decision, EvalContext, ReasonCode, Risk, SecurityObject, Verdict
@@ -333,11 +333,11 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
         canonical, args = to_normalize_input(tool_name, tool_input)
         action = normalize(canonical, args)
         # The objective rules inspect the UN-redacted call via metadata['raw_arguments']
-        # (in-memory only, never logged). role=None ⇒ role-boundary rule no-ops; the
-        # deterministic floor (paths, destructive commands, destinations, secrets,
-        # token channels) is what fires here.
+        # (in-memory only, never logged). This is the real tool-call decision path, so
+        # the active role rides along too (parity with proxy.executor._build_ctx) — a
+        # repo with no .doberman/role.yaml still gets role=None (no-op, opt-in only).
         ctx = EvalContext(
-            role=None,
+            role=load_active_role(repo_root),
             mode=mode,
             metadata={"raw_arguments": args, "repo_root": repo_root},
         )
@@ -554,6 +554,9 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
             scan_args["tool_output"] = output_text
 
             action = normalize(canonical, scan_args)
+            # role=None is intentional here (not the parity gap fixed elsewhere in this
+            # module): this action is synthetic, built to scan tool OUTPUT for secrets,
+            # not the real call target. Role-boundary is meaningless against scan text.
             ctx = EvalContext(
                 role=None,
                 mode=mode,
@@ -606,12 +609,15 @@ def _record_post_history(
     Wrapped in a broad except — must never raise or affect any verdict. ``mode`` is
     the strictness mode already resolved by the caller (#51) so the history row uses
     the same safe mode as the live decision, never a re-derived ``load_mode(".")``.
+    This is also the ONLY decision computed for pure-read tools (Read/Glob/Grep are
+    gated here but never in evaluate_pre), so the active role rides along too — same
+    real-input action as evaluate_pre, just recomputed post-execution for the log.
     """
     try:
         canonical, args = to_normalize_input(tool_name, tool_input)
         action = normalize(canonical, args)
         ctx = EvalContext(
-            role=None,
+            role=load_active_role(repo_root),
             mode=mode,
             metadata={"raw_arguments": args, "repo_root": repo_root},
         )
