@@ -333,9 +333,7 @@ FAMILIAR_AT_HIGH = 10
 
 #: Capabilities severe enough (destructive, privilege-escalating, or arbitrary
 #: code execution) to require :data:`FAMILIAR_AT_HIGH` instead of the default.
-_HIGH_SEVERITY_CAPABILITIES = frozenset(
-    {Capability.delete, Capability.grant, Capability.execute}
-)
+_HIGH_SEVERITY_CAPABILITIES = frozenset({Capability.delete, Capability.grant, Capability.execute})
 
 #: Target-class tiers severe enough (secret material, flagged sensitive
 #: assets) to require :data:`FAMILIAR_AT_HIGH`.
