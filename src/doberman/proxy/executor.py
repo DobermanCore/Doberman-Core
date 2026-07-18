@@ -283,10 +283,23 @@ async def _forward(
 
 
 async def _consume_single_use(action: SecurityObject, grants: tuple, now: datetime) -> None:
-    """Mark a single-use elevation spent after it released a forward (best-effort)."""
-    grant = find_cover(action.target, grants, root=REPO_ROOT)
-    if grant is not None and grant.single_use:
-        await mark_used(REPO_ROOT, grant.id)
+    """Mark a single-use elevation spent after it released a forward (best-effort).
+
+    Wrapped so a failure here can never turn an already-successful forward into
+    an error result. On failure the grant may remain active until its TTL
+    expires; that residual is surfaced via a warning rather than crashing the
+    response for an action that has already, legitimately, been forwarded.
+    """
+    try:
+        grant = find_cover(action.target, grants, root=REPO_ROOT)
+        if grant is not None and grant.single_use:
+            await mark_used(REPO_ROOT, grant.id)
+    except Exception:  # noqa: BLE001 — must never break an already-successful forward
+        _engine_logger.warning(
+            "single-use elevation consumption failed (action %s); grant may remain active "
+            "until its TTL expires",
+            action.id,
+        )
 
 
 async def _persist(
@@ -331,11 +344,16 @@ async def _handle_auth(
     # Off the event loop: the challenge blocks for a human, and an elicitation
     # answer arrives over the very session this loop services — waiting in-loop
     # would deadlock it (and freeze the proxy during GUI/TTY prompts too).
-    auth_result = await asyncio.to_thread(
-        run_auth_challenge, decision, action, prompter=AUTH_PROMPTER
-    )
-    # Approval is bound to THIS action id — never honor a result for another call.
-    approved = auth_result.approved and auth_result.action_id == action.id
+    try:
+        auth_result = await asyncio.to_thread(
+            run_auth_challenge, decision, action, prompter=AUTH_PROMPTER
+        )
+    except Exception:  # noqa: BLE001 — a challenge failure must fail closed, not crash/leak
+        _engine_logger.warning("auth challenge raised; failing closed (action %s)", action.id)
+        approved = False
+    else:
+        # Approval is bound to THIS action id — never honor a result for another call.
+        approved = auth_result.approved and auth_result.action_id == action.id
     await _learn_from_auth(action, decision, approved, eid)
     if not approved:
         await _persist(decision, action, auth_result="denied", eid=eid)

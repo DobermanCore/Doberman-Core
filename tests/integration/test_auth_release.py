@@ -1,5 +1,6 @@
 """Slice 7.5 — actions are released only after a successful, bound auth."""
 
+import logging
 from datetime import datetime, timezone
 
 from doberman.auth.challenge import AuthResult, AuthTier
@@ -180,3 +181,56 @@ async def test_destructive_elevation_is_single_use(monkeypatch, isolated_executo
         r2 = await agent.call_tool("fs_delete", {"path": "backend/api.ts"})
         assert not r2.isError
         assert calls["n"] == 2
+
+
+async def test_auth_challenge_raising_fails_closed_and_sanitized(monkeypatch):
+    """A `run_auth_challenge` crash must deny — never crash the proxy or leak."""
+    monkeypatch.setattr(executor, "DEFAULT_OBJECTIVE", _AUTHING)
+
+    def boom(decision, action, *, prompter=None, at=None):
+        raise RuntimeError("challenge backend exploded: leaked-internal-detail")
+
+    monkeypatch.setattr(executor, "run_auth_challenge", boom)
+    async with proxied_session() as (fake, agent):
+        result = await agent.call_tool("fs_write", {"path": "a.txt", "content": "x"})
+        # Fail-closed denial, shaped exactly like an ordinary AUTH denial.
+        assert result.isError
+        text = result.content[0].text
+        assert "authentication required" in text
+        # The raw exception must never reach the agent — sanitized like every
+        # other error path in the proxy.
+        assert "leaked-internal-detail" not in text
+        assert "RuntimeError" not in text
+        # Nothing was forwarded — the challenge failed before release.
+        assert fake.calls == []
+
+
+async def test_mark_used_failure_does_not_corrupt_successful_forward(
+    monkeypatch, isolated_executor_repo_root, caplog
+):
+    """A `mark_used` crash after a successful forward must not turn it into an error."""
+    _write_role(isolated_executor_repo_root)
+
+    def approve_elev(decision, action, *, prompter=None, at=None):
+        return AuthResult(
+            approved=True,
+            tier=AuthTier.role_elevation,
+            method="test",
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    def boom_mark_used(repo_root, elevation_id):
+        raise RuntimeError("db exploded")
+
+    monkeypatch.setattr(executor, "run_auth_challenge", approve_elev)
+    monkeypatch.setattr(executor, "mark_used", boom_mark_used)
+    with caplog.at_level(logging.WARNING, logger="doberman.proxy.engine"):
+        async with proxied_session() as (fake, agent):
+            result = await agent.call_tool("fs_delete", {"path": "backend/api.ts"})
+    # The downstream delete already succeeded — a broken mark_used must not
+    # turn that real success into an isError result.
+    assert not result.isError
+    assert fake.calls == [("fs_delete", {"path": "backend/api.ts"})]
+    # The residual (grant may still be marked unused) is surfaced, not silent.
+    assert any("single-use elevation consumption failed" in r.message for r in caplog.records)
