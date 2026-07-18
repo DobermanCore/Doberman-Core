@@ -46,11 +46,25 @@ from doberman.models import (
 )
 from doberman.policy.modes import thresholds_for
 
-# Doberman's own CLI subcommands that install/remove the host hooks or rewire the
-# control plane: an agent invoking these through a shell is tampering with the
-# cop, not doing project work (HK.5.0b). The human runs these directly (not via a
-# gated tool), so the hook only ever sees the *agent* invoking them.
-_DOBERMAN_CONTROL_SUBCOMMANDS = {"uninstall-hooks", "install-hooks", "setup"}
+# Doberman's own CLI subcommands that install/remove the host hooks or otherwise
+# mutate the control plane (posture, enforcement, auth factors, or an active
+# elevation): an agent invoking these through a shell is tampering with the cop,
+# not doing project work (HK.5.0b). The human runs these directly (not via a
+# gated tool), so the hook only ever sees the *agent* invoking them. Read/utility
+# verbs (`status`, `doctor`, `encode-safe`, `log`, `scan`, `review`) are
+# deliberately excluded — they don't mutate anything.
+_DOBERMAN_CONTROL_SUBCOMMANDS = {
+    "install-hooks",
+    "uninstall-hooks",
+    "setup",
+    "mode",
+    "prefs",
+    "enforcement",
+    "2fa",
+    "taint",
+    "password",
+    "revoke",
+}
 
 #: Default bulk-operation threshold: deleting/touching this many paths in one
 #: command steps up to AUTH. Overridable (F6 wires this from policy/mode).
@@ -222,7 +236,9 @@ _DISK_WIPE = re.compile(r"^(?:mkfs(?:\.\w+)?|shred|wipefs)$")
 
 
 def _is_doberman_control_cli(tokens: list[str]) -> bool:
-    """``doberman uninstall-hooks`` / ``install-hooks`` / ``setup`` — control-plane tamper."""
+    """``doberman <verb>`` for a posture/auth-mutating verb (install/uninstall-hooks,
+    setup, mode, prefs, enforcement, 2fa, taint, password, revoke) — control-plane
+    tamper. Read/utility verbs are not in the set and stay allowed."""
     return (
         bool(tokens)
         and tokens[0] == "doberman"
@@ -324,7 +340,8 @@ def _segment_verdict(
         )
     if _is_doberman_control_cli(tokens):
         return _block_control_plane(
-            "Shell command would install/remove Doberman's host hooks (control-plane tamper)."
+            "Shell command would tamper with Doberman's control plane (install/remove "
+            "hooks, or change mode, enforcement, prefs, 2FA, taint, or password)."
         )
     if _package_manager_removes_doberman(tokens):
         return _block_control_plane(
