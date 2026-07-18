@@ -23,6 +23,7 @@ a forward), never softened here.
 from dataclasses import dataclass
 from datetime import datetime
 from fnmatch import fnmatch
+from glob import escape as glob_escape
 
 from doberman.canonical import canonicalize
 
@@ -81,13 +82,19 @@ def scope_for_target(target: str | None, *, root: str = ".") -> str | None:
     the grant covers *that one file* and nothing else. Returns ``None`` for a
     non-path target, a path that escapes the repo root, or a whole-tree result —
     none of which may ever be elevated (fail toward refusing the grant).
+
+    SECURITY (H3): ``covers`` matches the stored scope as an ``fnmatch`` glob
+    pattern, so any ``*``/``?``/``[``/``]`` in the target's canonical path must
+    be escaped before it becomes the scope — otherwise a target like
+    ``secret*`` would grant a wildcard instead of the one literal path
+    requested (scope widening).
     """
     if not target:
         return None
     canonical = canonicalize(target, root=root)
     if canonical.escapes_root or canonical.relposix in _WHOLE_TREE:
         return None
-    return canonical.relposix
+    return glob_escape(canonical.relposix)
 
 
 def find_cover(

@@ -64,6 +64,38 @@ def test_covers_matches_exact_path_only_and_never_whole_tree():
     assert _grant("**").covers("anything") is False  # whole-tree never covers
 
 
+# H3 — elevation scope must not glob-widen -------------------------------
+
+
+def test_scope_for_target_escapes_glob_metacharacters():
+    # A target containing fnmatch metacharacters must come back with those
+    # characters escaped, so the stored scope matches only the literal path.
+    assert scope_for_target("secret*", root=".") == "secret[*]"
+    assert scope_for_target("report[1].txt", root=".") == "report[[]1].txt"
+
+
+def test_elevation_scoped_to_star_target_does_not_cover_other_paths():
+    scope = scope_for_target("secret*", root=".")
+    g = _grant(scope)
+    assert g.covers("secret*") is True  # the literal target still covers itself
+    assert g.covers("secretsauce.txt") is False  # '*' must not act as a wildcard
+    assert g.covers("secret") is False
+
+
+def test_elevation_scoped_to_bracket_target_does_not_cover_other_paths():
+    scope = scope_for_target("report[1].txt", root=".")
+    g = _grant(scope)
+    assert g.covers("report[1].txt") is True  # the literal target still covers itself
+    assert g.covers("report1.txt") is False  # '[1]' must not act as a character class
+
+
+def test_elevation_literal_target_still_covers_itself_and_nothing_else():
+    scope = scope_for_target("backend/api.ts", root=".")
+    g = _grant(scope)
+    assert g.covers("backend/api.ts") is True
+    assert g.covers("backend/other.ts") is False
+
+
 def test_find_cover_canonicalizes_target():
     grants = (_grant("backend/api.ts"),)
     assert find_cover("backend/api.ts", grants, root=".") is not None
