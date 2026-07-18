@@ -157,6 +157,22 @@ def test_recursive_shell_and_globs_imply_many():
     assert infer_blast_radius(globby, None)[0] is BlastRadius.many
 
 
+def test_non_recursive_flag_cluster_is_not_treated_as_recursive():
+    # "-lart" bundles list/all/reverse/time flags — not a recursive delete.
+    action = _action("shell_exec", action_type=ActionType.shell_exec, target="ls -lart")
+    assert infer_blast_radius(action, None)[0] is BlastRadius.single
+
+
+def test_dash_capital_r_flag_is_still_recursive():
+    action = _action("shell_exec", action_type=ActionType.shell_exec, target="chmod -R ./config")
+    assert infer_blast_radius(action, None)[0] is BlastRadius.many
+
+
+def test_url_query_string_is_not_treated_as_a_glob():
+    action = _net("https://api.example.com/search?q=foo")
+    assert infer_blast_radius(action, None)[0] is BlastRadius.single
+
+
 def test_single_concrete_target_is_single_and_no_target_is_unknown():
     single = _action("fs_write", action_type=ActionType.file_write, target="src/a.py")
     assert infer_blast_radius(single, None)[0] is BlastRadius.single
@@ -183,6 +199,31 @@ def test_reads_are_high_and_writes_keep_existing_assessment():
     assert infer_reversibility(read) is Reversibility.high
     write = _action("fs_write", action_type=ActionType.file_write, target="a.txt")
     assert infer_reversibility(write) is Reversibility.medium
+
+
+def test_force_push_only_forces_low_when_force_belongs_to_the_push():
+    # "docker rmi --force" after "&&" must not spill into the git push's own
+    # reversibility signal (the bounded clause, not a greedy `.*`).
+    action = _action(
+        "shell_exec",
+        action_type=ActionType.shell_exec,
+        target="git push origin main && docker rmi --force old-image",
+    )
+    assert infer_reversibility(action) is not Reversibility.low
+
+
+def test_hard_reset_is_still_low_reversibility():
+    action = _action(
+        "shell_exec", action_type=ActionType.shell_exec, target="git reset --hard HEAD~1"
+    )
+    assert infer_reversibility(action) is Reversibility.low
+
+
+def test_hard_links_flag_is_not_treated_as_git_reset_hard():
+    action = _action(
+        "shell_exec", action_type=ActionType.shell_exec, target="rsync -a --hard-links src/ dst/"
+    )
+    assert infer_reversibility(action) is not Reversibility.low
 
 
 # --- full algebra ----------------------------------------------------------------
