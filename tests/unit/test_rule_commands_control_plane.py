@@ -179,6 +179,79 @@ def test_doberman_setup_is_blocked():
 @pytest.mark.parametrize(
     "command",
     [
+        "doberman mode light",
+        "doberman prefs --auto-tighten off",
+        "doberman enforcement off",
+        "doberman 2fa setup",
+        "doberman taint clear",
+        "doberman password set",
+        "doberman revoke abc123",
+    ],
+)
+def test_doberman_posture_and_auth_mutating_verbs_are_blocked(command):
+    # Every verb that changes Doberman's own posture, enforcement, auth factors,
+    # or an active elevation must be unreachable via shell — the human runs these
+    # out-of-band, never a mediated agent (HK.5.0b expanded control-plane set).
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_doberman_status_is_not_blocked_by_control_cli_rule():
+    assert _cmd("doberman status").verdict is not Verdict.BLOCK
+
+
+def test_bare_doberman_is_not_blocked_by_control_cli_rule():
+    assert _cmd("doberman").verdict is not Verdict.BLOCK
+
+
+# --- regression: deleting .doberman/policies.yaml is already blocked via the
+# control-plane *path*-target rule (paths.py CONTROL_PLANE_GLOBS), independent
+# of the CLI-verb rule above. No new path logic needed for this; this just pins
+# the existing behavior. ---
+
+
+def test_rm_doberman_policies_yaml_is_blocked():
+    result = _cmd("rm .doberman/policies.yaml")
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_rm_rf_doberman_dir_is_blocked_regression():
+    result = _cmd("rm -rf .doberman")
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "action_type,target",
+    [
+        (ActionType.file_delete, ".doberman/policies.yaml"),
+        (ActionType.file_write, ".doberman/policies.yaml"),
+    ],
+)
+def test_file_op_targeting_policies_yaml_is_blocked_by_objective_guardrail(action_type, target):
+    # The command rule only inspects shell_exec/git_op actions; a direct
+    # file_delete/file_write SecurityObject against the control plane is caught
+    # by the path-target rule inside the full ObjectiveGuardrail pipeline.
+    action = SecurityObject(
+        id="cp-fileop-1",
+        ts=datetime(2026, 6, 26, tzinfo=timezone.utc),
+        agent_role="unknown",
+        action_type=action_type,
+        tool_name="Write",
+        target=target,
+        metadata={},
+    )
+    ctx = EvalContext(metadata={"repo_root": "."})
+    result = ObjectiveGuardrail(load_plugins=False).evaluate(action, ctx)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "pip uninstall doberman -y",
         "pip3 uninstall doberman",
         "pipx uninstall doberman",
