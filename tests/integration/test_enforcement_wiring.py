@@ -96,7 +96,7 @@ def test_discretionary_auth_dispatch_honors_dial(cwd, monkeypatch, state, expect
         claude_code, "decide", _fake_discretionary_auth(ReasonCode.sensitive_path_access)
     )
     # keep the taint floor inert so the decision under test is purely discretionary
-    monkeypatch.setattr(claude_code, "_apply_taint_floor", lambda _a, decision, *a, **k: decision)
+    monkeypatch.setattr(claude_code, "apply_taint_floor", lambda _a, decision, *a, **k: decision)
 
     out = _pre("Write", {"file_path": "app.py", "content": "x"}, cwd)
 
@@ -118,7 +118,7 @@ def test_monitor_records_the_would_have_verdict(cwd, monkeypatch):
     monkeypatch.setattr(
         claude_code, "decide", _fake_discretionary_auth(ReasonCode.sensitive_path_access)
     )
-    monkeypatch.setattr(claude_code, "_apply_taint_floor", lambda _a, decision, *a, **k: decision)
+    monkeypatch.setattr(claude_code, "apply_taint_floor", lambda _a, decision, *a, **k: decision)
 
     assert _pre("Write", {"file_path": "app.py", "content": "x"}, cwd) is None
     rows = _rows(cwd)
@@ -132,7 +132,7 @@ def test_off_does_not_record_the_would_have(cwd, monkeypatch):
     monkeypatch.setattr(
         claude_code, "decide", _fake_discretionary_auth(ReasonCode.sensitive_path_access)
     )
-    monkeypatch.setattr(claude_code, "_apply_taint_floor", lambda _a, decision, *a, **k: decision)
+    monkeypatch.setattr(claude_code, "apply_taint_floor", lambda _a, decision, *a, **k: decision)
 
     assert _pre("Write", {"file_path": "app.py", "content": "x"}, cwd) is None
     assert _rows(cwd) == [], "off does not evaluate the discretionary layer, so it stays silent"
