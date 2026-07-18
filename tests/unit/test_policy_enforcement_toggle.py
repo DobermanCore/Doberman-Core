@@ -6,15 +6,17 @@ Covers the `feat/policy/soften-toggle` slice:
   and **enforcement** states (off<monitor<enforce), so a `mode` or `enforcement`
   downgrade classifies as a **weaken** rather than silently neutral.
 * `apply_enforcement_change` is the chokepoint for enforce/monitor/off: softening is
-  gated (confirm + TOTP-**if-enrolled**, fail-closed); re-arming is a strengthen and
-  applies automatically. Every attempt — including denials — hits the append-only ledger.
+  gated (confirm + the strongest **enrolled** possession factor — TOTP if enrolled,
+  else password — fail-closed with no factor enrolled); re-arming is a strengthen
+  and applies automatically. Every attempt — including denials — hits the
+  append-only ledger.
 * `log_change` is the audited-but-not-gated path for the mode dial.
 * `PolicyDoc` carries the orthogonal `enforcement` state + optional timed revert and
   round-trips through its mapping.
 
 Security invariants asserted here: a weakening is never silently approved (raise-only);
-re-arming is never gated; the disable stays reachable without 2FA (confirm-only) but is
-always confirmed + recorded; every gate fails closed.
+re-arming is never gated; the disable requires a real possession factor — there is no
+confirm-only fallback when nothing is enrolled; every gate fails closed.
 """
 
 from datetime import datetime, timezone
@@ -38,13 +40,26 @@ _NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 class _Approve:
-    """Present human who confirms and supplies a code."""
+    """Present human who confirms and supplies a code (default: TOTP-shaped)."""
+
+    def __init__(self, code="999999"):
+        self._code = code
 
     def confirm(self, message):
         return True
 
     def read_code(self, message):
-        return "999999"
+        return self._code
+
+
+class _ConfirmOnly:
+    """Confirms but must never be asked for a secret (no factor enrolled)."""
+
+    def confirm(self, message):
+        return True
+
+    def read_code(self, message):
+        raise AssertionError("no factor is enrolled, so no secret prompt is valid")
 
 
 class _Decline:
@@ -78,6 +93,13 @@ def _enrolled(monkeypatch):
     """2FA enrolled; only the code '999999' verifies."""
     monkeypatch.setattr(drift.totp, "is_enrolled", lambda: True)
     monkeypatch.setattr(drift.totp, "verify", lambda code, **kw: code == "999999")
+
+
+@pytest.fixture
+def _password_enrolled(monkeypatch):
+    """Local password enrolled (no TOTP); only 'the-password' verifies."""
+    monkeypatch.setattr(drift.password, "is_enrolled", lambda: True)
+    monkeypatch.setattr(drift.password, "verify", lambda pw: pw == "the-password")
 
 
 # --- classify_change: mode + enforcement ranking ---------------------------
@@ -148,14 +170,64 @@ async def test_soften_with_2fa_enrolled_and_valid_code_is_approved(tmp_path, _en
     assert rows and "999999" not in str(rows)
 
 
-async def test_soften_without_2fa_falls_back_to_confirm_only(tmp_path):
-    # conftest isolates the TOTP secret to an empty temp path → not enrolled. The
-    # disable must stay reachable (safety valve) via an explicit confirmation.
+async def test_soften_with_no_factor_enrolled_fails_closed(tmp_path):
+    # conftest isolates both the TOTP secret and the password hash to empty temp
+    # paths → neither factor is enrolled. The off-switch must fail closed instead
+    # of falling back to confirm-only — there is no safety-valve bypass anymore.
     out = await apply_enforcement_change(
-        *_SOFTEN, "no 2fa here", repo_root=str(tmp_path), prompter=_Approve(), now=_NOW
+        *_SOFTEN, "no factor here", repo_root=str(tmp_path), prompter=_ConfirmOnly(), now=_NOW
+    )
+    assert out.approved is False
+    assert out.method == "no_factor_enrolled"
+
+
+async def test_soften_with_password_enrolled_and_valid_password_is_approved(
+    tmp_path, _password_enrolled
+):
+    out = await apply_enforcement_change(
+        *_SOFTEN,
+        "quiet hours",
+        repo_root=str(tmp_path),
+        prompter=_Approve("the-password"),
+        now=_NOW,
     )
     assert out.approved is True
-    assert out.method == "confirmed"
+    assert out.method == "password"
+    # The password must never end up in the ledger.
+    rows = await read_policy_changes(str(tmp_path))
+    assert rows and "the-password" not in str(rows)
+
+
+async def test_soften_with_wrong_password_is_denied(tmp_path, _password_enrolled):
+    out = await apply_enforcement_change(
+        *_SOFTEN, "wrong password", repo_root=str(tmp_path), prompter=_Approve("nope"), now=_NOW
+    )
+    assert out.approved is False
+    assert out.method == "denied"
+
+
+async def test_soften_with_both_enrolled_totp_wins_password_is_rejected(
+    tmp_path, _enrolled, _password_enrolled
+):
+    # A valid TOTP code still succeeds when both factors are enrolled...
+    out = await apply_enforcement_change(
+        *_SOFTEN, "totp wins", repo_root=str(tmp_path), prompter=_Approve("999999"), now=_NOW
+    )
+    assert out.approved is True
+    assert out.method == "two_factor"
+
+    # ...but supplying the (correct) password instead of a TOTP code is rejected:
+    # the password cannot substitute for TOTP once TOTP is enrolled.
+    out = await apply_enforcement_change(
+        {"enforcement": "monitor"},
+        {"enforcement": "off"},
+        "password instead of totp",
+        repo_root=str(tmp_path),
+        prompter=_Approve("the-password"),
+        now=_NOW,
+    )
+    assert out.approved is False
+    assert out.method == "denied"
 
 
 async def test_soften_declined_is_denied(tmp_path):
@@ -249,7 +321,7 @@ async def test_extending_a_soften_expiry_is_gated(tmp_path):
 # --- ledger: every attempt recorded, denials included ----------------------
 
 
-async def test_approved_soften_is_recorded_in_the_ledger(tmp_path):
+async def test_approved_soften_is_recorded_in_the_ledger(tmp_path, _enrolled):
     await apply_enforcement_change(
         *_SOFTEN, "reason A", repo_root=str(tmp_path), prompter=_Approve(), now=_NOW
     )
