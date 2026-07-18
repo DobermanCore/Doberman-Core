@@ -28,6 +28,12 @@ from doberman.models import (
     Verdict,
 )
 from doberman.storage.log import record_decision
+from doberman.storage.taint import (
+    TAINT_SECRET_ACCESS,
+    TAINT_UNTRUSTED_READ,
+    entity_scope,
+    record_taints,
+)
 
 runner = CliRunner()
 _NOW = datetime(2026, 7, 6, tzinfo=timezone.utc)
@@ -98,3 +104,21 @@ def test_status_never_crashes_with_no_db_and_no_settings(tmp_path):
     assert result.exit_code == 0
     assert "(no decisions recorded yet)" in result.stdout
     assert "[not installed]" in result.stdout
+
+
+def test_status_shows_taint_state(tmp_path):
+    root = str(tmp_path)
+    scope = entity_scope(root)
+    asyncio.run(record_taints(root, [scope], [TAINT_SECRET_ACCESS, TAINT_UNTRUSTED_READ]))
+
+    result = runner.invoke(app, ["status", "--path", root])
+    assert result.exit_code == 0
+    assert "Taint:" in result.stdout
+    assert "secret_access=1" in result.stdout
+    assert "untrusted_read=1" in result.stdout
+
+
+def test_status_shows_no_taint_by_default(tmp_path):
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Taint: (none)" in result.stdout

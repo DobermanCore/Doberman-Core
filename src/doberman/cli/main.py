@@ -41,6 +41,7 @@ from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
+from doberman.storage.taint import entity_scope, read_taint
 
 
 def _ensure_encode_safe_stdio() -> None:
@@ -389,7 +390,7 @@ def status(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
     """Show the active role, security mode, policy summary, hook install state,
-    and the most recent decisions."""
+    taint state, and the most recent decisions."""
     role = load_active_role(path)
     doc = load_policy(path)
     typer.echo("Doberman status")
@@ -425,6 +426,12 @@ def status(
                 f"  {grant.id}  {grant.scope_glob}  "
                 f"(expires {grant.expires_at.isoformat()}; {kind})"
             )
+
+    taints = asyncio.run(read_taint(path, entity_scope(path)))
+    if not taints:
+        typer.echo("Taint: (none)")
+    else:
+        typer.echo(f"Taint: {', '.join(f'{kind}={count}' for kind, count in taints.items())}")
 
     typer.echo("Hooks:")
     for scope, settings_path, installed in _hook_install_states(path):
