@@ -279,13 +279,14 @@ def enforcement(
     layer). The objective floor (secret exfil, destructive commands, ...) stays
     live in every state.
 
-    Turning the dial DOWN is a weaken: it is confirmed -- plus a 2FA code when one
-    is enrolled, and confirm-only otherwise so the safety valve is never out of
-    reach -- and recorded in the append-only policy-change ledger. Re-arming
-    (``-> enforce``) is a strengthen and applies automatically. A softened state is
-    honored only while the ledger confirms it; hand-editing ``policies.yaml`` is
-    clamped back to ``enforce`` (fail closed). With no argument, prints the current
-    on-disk state.
+    Turning the dial DOWN is a weaken: it is confirmed -- plus the strongest
+    enrolled possession factor (a 2FA code if enrolled, else the local password)
+    -- and recorded in the append-only policy-change ledger. With neither factor
+    enrolled the change fails closed (run ``doberman password set`` first).
+    Re-arming (``-> enforce``) is a strengthen and applies automatically. A
+    softened state is honored only while the ledger confirms it; hand-editing
+    ``policies.yaml`` is clamped back to ``enforce`` (fail closed). With no
+    argument, prints the current on-disk state.
     """
     current, _expires, _revert = load_enforcement(path)
     if state is None:
@@ -302,7 +303,8 @@ def enforcement(
     if new == current:
         typer.echo(f"enforcement already {current}")
         return
-    # Route through the gated chokepoint: it confirms a soften (2FA-if-enrolled),
+    # Route through the gated chokepoint: it confirms a soften behind the
+    # strongest enrolled possession factor (fails closed if none is enrolled),
     # auto-approves a re-arm, and records every attempt to the ledger. Persist the
     # new state ONLY when it approved, and persist the exact fields the ledger just
     # recorded so the read-side effective_enforcement clamp confirms the soften.

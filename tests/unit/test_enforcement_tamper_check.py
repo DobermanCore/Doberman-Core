@@ -16,24 +16,38 @@ reverts to a weaker-than-current target. Ledger rows are written through the rea
 
 from datetime import datetime, timezone
 
+import pytest
+
+from doberman.auth import password
 from doberman.policy.drift import apply_enforcement_change, effective_enforcement
 
 _NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)  # ~1_767_225_600 epoch
 _PAST = 1000.0  # long before _NOW
 _FUTURE = 2_000_000_000.0  # 2033 — comfortably after _NOW
+_PASSWORD = "correct horse battery staple"  # noqa: S105 — synthetic test credential
+
+
+@pytest.fixture(autouse=True)
+def _enrolled_password(isolated_password_hash):
+    """These tests exercise the read-side tamper clamp, not the gate itself, so
+    enroll a possession factor for every test here -- otherwise `_Approve` would
+    hit the (now fail-closed) no-factor-enrolled path instead of approving.
+    """
+    password.enroll(_PASSWORD)
 
 
 # --- fakes -----------------------------------------------------------------
 
 
 class _Approve:
-    """Present human who confirms (and supplies a code if 2FA is enrolled)."""
+    """Present human who confirms and supplies the enrolled password (TOTP is
+    never enrolled in this file; only the password gate is exercised here)."""
 
     def confirm(self, message):
         return True
 
     def read_code(self, message):
-        return "999999"
+        return _PASSWORD
 
 
 class _Decline:

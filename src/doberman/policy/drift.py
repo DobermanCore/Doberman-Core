@@ -15,7 +15,8 @@ mechanism (a core safety invariant):
   fanned out to registered :class:`DriftObserver` s.
 * :func:`apply_enforcement_change` — the same chokepoint for the orthogonal
   enforcement dial (enforce / monitor / off): softening is gated (confirm +
-  TOTP-if-enrolled), re-arming applies automatically.
+  a possession factor, TOTP if enrolled else password — fails closed if
+  neither is enrolled), re-arming applies automatically.
 * :func:`apply_preferences_change` — the sibling chokepoint for the SL5
   preference vector (numeric weights, so classified directly rather than via
   the token-rank table): lowering any weight is a weaken and requires the
@@ -202,13 +203,15 @@ def _render_diff(before: dict, after: dict, reason: str) -> str:
     return "\n".join(lines)
 
 
-def _verify_possession_factor(prompter: Prompter) -> tuple[bool, str]:
+def _verify_possession_factor(
+    prompter: Prompter, *, action_label: str = "this policy weakening"
+) -> tuple[bool, str]:
     """Verify the strongest enrolled factor; never fall back after a failure."""
     if totp.is_enrolled():
-        code = prompter.read_code("Enter your 2FA code to authorize this policy weakening")
+        code = prompter.read_code(f"Enter your 2FA code to authorize {action_label}")
         return (True, "two_factor") if totp.verify(code) else (False, "denied")
     if password.is_enrolled():
-        pw = prompter.read_code("Enter your Doberman password to authorize this policy weakening")
+        pw = prompter.read_code(f"Enter your Doberman password to authorize {action_label}")
         return (True, "password") if password.verify(pw) else (False, "denied")
     return False, "no_factor_enrolled"
 
@@ -383,24 +386,22 @@ async def log_change(
 def _run_enforcement_gate(
     before: dict, after: dict, reason: str, prompter: Prompter
 ) -> tuple[bool, str]:
-    """Gate softening/disabling enforcement: confirm, plus TOTP **only if enrolled**.
+    """Gate softening/disabling enforcement behind a possession factor.
 
     Disabling Doberman is a deliberate operator action that must be confirmed and
-    audited — but, unlike a policy-rule weakening, must not be made *impossible* for
-    a user who never set up 2FA (that would put the safety valve out of reach). So
-    we require a 2FA code when one is enrolled and fall back to an explicit
-    confirmation when it is not. Scoped to the enforcement toggle: it does NOT relax
-    :func:`_run_weaken_gate` (policy/role weakenings still require 2FA). Fails closed.
+    audited. Like a policy weakening, it now requires the strongest **enrolled**
+    possession factor — a TOTP code if 2FA is enrolled, otherwise the local
+    password — and **fails closed** ("no_factor_enrolled") when neither is set up:
+    the off-switch must not be reachable without proving possession. A user who has
+    enrolled nothing sets the minimum factor first with ``doberman password set``
+    (first-time enrolment is free) then retries — there is no confirm-only bypass.
+    Scoped to the enforcement toggle; it does NOT relax :func:`_run_weaken_gate`.
+    Fails closed.
     """
     try:
         if not prompter.confirm(_render_diff(before, after, reason)):
             return False, "denied"
-        if totp.is_enrolled():
-            code = prompter.read_code("Enter your 2FA code to authorize softening enforcement")
-            if not totp.verify(code):
-                return False, "denied"
-            return True, "two_factor"
-        return True, "confirmed"
+        return _verify_possession_factor(prompter, action_label="disabling enforcement")
     except Exception:  # noqa: BLE001 — any input/timeout error denies the change
         return False, "denied"
 
@@ -424,10 +425,11 @@ async def apply_enforcement_change(
     """Chokepoint for an enforcement-state change (enforce / monitor / off).
 
     Softening (enforce→monitor/off) is gated by :func:`_run_enforcement_gate`
-    (confirm + 2FA-if-enrolled); re-arming (→enforce) is a strengthen and applies
-    automatically. Every attempt — including denials — is recorded to the
-    append-only ledger and fanned out to observers; the caller persists only when
-    ``approved`` is True.
+    (confirm + a possession factor, TOTP if enrolled else password — fails
+    closed if neither is enrolled); re-arming (→enforce) is a strengthen and
+    applies automatically. Every attempt — including denials — is recorded to
+    the append-only ledger and fanned out to observers; the caller persists
+    only when ``approved`` is True.
     """
     reason = _redact_reason(reason)
     when = now or datetime.now(timezone.utc)
@@ -520,9 +522,9 @@ async def apply_preferences_change(
     of the token-rank table. Lowering ANY weight is a weaken — it lowers
     subjective step-up propensity, i.e. protection — so it must clear the
     same mandatory possession-factor gate (TOTP if enrolled, else password) as
-    a policy-rule weakening (:func:`_run_weaken_gate`); unlike the enforcement
-    dial there is no confirm-only escape hatch, because prefs are not the safety valve.
-    Raising a weight is a strengthen and applies automatically — raise-only is
+    a policy-rule weakening (:func:`_run_weaken_gate`) — the same gate the
+    enforcement off-switch now uses too; there is no confirm-only escape hatch
+    anywhere in the weaken path. Raising a weight is a strengthen and applies automatically — raise-only is
     preserved, and the prompter is never invoked on that path. Every attempt
     (incl. denials) is recorded to the append-only ledger and fanned out to
     observers; the caller persists only when ``outcome.approved``.
