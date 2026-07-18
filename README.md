@@ -413,7 +413,7 @@ The adaptive layer's four SL5 "care" weights (`confidentiality`, `reversibility`
 - ✅ **Security fix:** protected-path confinement (`ProtectedPathRule`) now canonicalizes and matches the **raw, un-redacted** call argument when available, instead of the redacted `action.target` — closing a bypass where a path over 256 chars (or one only revealed as protected/traversing after canonicalization) had already been replaced with `"<redacted>"` before the confinement check ran, letting the write slip past as PASS
 - 🚧 Turn gate (pre-inference prompt-injection screening) — in development, not yet merged
 - 📋 Host-harness, continued (containment architecture): deeper Bash-command egress parsing · entropy-on-egress escalation · warm-daemon adaptive layer · honeytoken tripwire + session circuit-breaker
-- 🛠 Cost observability — **CB.1 landed**: a redaction-safe `CostEvent` + local append-only meter (`doberman.storage.cost`), advisory and strictly off the decision path. Next: `CostObserver` plugin seam (CB.2) and a raise-only loop-anomaly detector (CB.3)
+- 🛠 Cost observability — **CB.1 + CB.2 landed**: a redaction-safe `CostEvent` + local append-only meter (`doberman.storage.cost`), advisory and strictly off the decision path; plus a `CostObserver` plugin seam (`doberman.cost_observers` entry-point group) — observers receive a copy of every recorded event, are isolated (a raising observer is logged and skipped, never breaks the record path), and can never alter a verdict. Next: raise-only loop-anomaly detector (CB.3)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC
 
 ### Known limitations

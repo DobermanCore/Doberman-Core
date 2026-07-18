@@ -1,4 +1,4 @@
-"""Local cost meter (Feature CB.1).
+"""Local cost meter (Feature CB.1) + CostObserver plugin seam (CB.2).
 
 Persists redaction-safe :class:`~doberman.models.CostEvent` rows to the
 append-only ``cost_events`` ledger and reads them back as aggregate totals —
@@ -13,17 +13,69 @@ Two non-negotiables, mirrored from the decision log:
 * **Redaction-safe.** A ``CostEvent`` holds counts and coarse classes only; no
   prompt/response text or raw role/path ever reaches this table.
 
+The :class:`CostObserver` seam (CB.2) follows the same plugin pattern as
+:class:`~doberman.storage.sinks.AuditSink` and
+:class:`~doberman.policy.drift.DriftObserver`: observers register via the
+``doberman.cost_observers`` entry-point group, receive a copy of every
+``CostEvent`` after a successful ledger write, and can never raise into or
+block the record path.
+
 This module is policy-core storage and must never import ``doberman.proxy``.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Protocol, runtime_checkable
 
 from doberman.models import CostEvent, CostKind
 from doberman.storage.db import open_db
 
 logger = logging.getLogger("doberman.storage.cost")
+
+
+# --- CostObserver seam (CB.2) ------------------------------------------------
+
+
+@runtime_checkable
+class CostObserver(Protocol):
+    """Receives a copy of every :class:`~doberman.models.CostEvent` after it is
+    written to the ledger (org-wide cost monitoring / budget enforcement seam).
+
+    Implementations live in installed packages registered via the
+    ``doberman.cost_observers`` entry-point group. ``on_cost`` is purely
+    observational: it can never alter, block, or prevent a cost record, and must
+    not raise into the caller. Observers receive the same frozen
+    ``CostEvent`` instance — immutability is the redaction guarantee, not a
+    defensive copy.
+    """
+
+    def on_cost(self, event: CostEvent) -> None: ...
+
+
+def _looks_like_cost_observer(obj: object) -> bool:
+    """Structural check (the Protocol's isinstance is method-name only)."""
+    return callable(getattr(obj, "on_cost", None))
+
+
+def notify_cost_observers(event: CostEvent) -> None:
+    """Fan a :class:`~doberman.models.CostEvent` out to every registered observer.
+
+    Never raises and never affects the ledger write: observers are notified
+    *after* a successful commit. A non-observer-shaped or raising observer is
+    logged and skipped. With none installed this is a no-op.
+    """
+    from doberman.engine.registry import discover_cost_observers
+
+    for observer in discover_cost_observers():
+        if not _looks_like_cost_observer(observer):
+            logger.warning("skipping cost observer %r: not observer-shaped", observer)
+            continue
+        try:
+            observer.on_cost(event)
+        except Exception:  # noqa: BLE001 — an observer can never break the record path
+            logger.warning("cost observer %r raised; skipping", type(observer).__name__)
+
 
 _INSERT_COST_EVENT = (
     "INSERT INTO cost_events (ts, action_id, kind, units, model, entity_id) "
@@ -52,6 +104,7 @@ async def record_cost_event(event: CostEvent, *, repo_root: str) -> None:
                 ),
             )
             await conn.commit()
+        notify_cost_observers(event)
     except Exception:  # noqa: BLE001 — the cost meter must never break execution
         logger.warning("cost meter write failed for action %s; continuing", event.action_id)
 
