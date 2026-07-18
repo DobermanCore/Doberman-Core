@@ -50,14 +50,14 @@ def _action(target="backend/api.ts"):
     )
 
 
-def _auth_decision(reasons=(ReasonCode.role_out_of_scope,)):
+def _auth_decision(reasons=(ReasonCode.role_out_of_scope,), risk: Risk = Risk.medium):
     objective = GuardrailResult(
-        verdict=Verdict.AUTH, risk=Risk.medium, reason_codes=list(reasons), explanation="why"
+        verdict=Verdict.AUTH, risk=risk, reason_codes=list(reasons), explanation="why"
     )
     return Decision(
         action_id="act-7",
         final_verdict=Verdict.AUTH,
-        final_risk=Risk.medium,
+        final_risk=risk,
         objective=objective,
         reason_codes=list(reasons),
         explanation="why",
@@ -135,6 +135,36 @@ def test_challenge_message_names_target_and_reason():
     assert "backend/api.ts" in message  # the EXACT target
     assert "role_out_of_scope" in message  # the reason
     assert "webdev" in message  # the role
+
+
+def test_challenge_message_includes_risk_badge():
+    prompter = FakePrompter(confirm=False)
+    LocalAuthProvider().authenticate(
+        _auth_decision(risk=Risk.critical),
+        _action("backend/api.ts"),
+        AuthTier.soft_confirm,
+        prompter=prompter,
+    )
+    message = prompter.messages[0]
+    assert "RISK: CRITICAL" in message  # the badge is additive, not a replacement
+    assert "webdev" in message  # the role
+    assert "backend/api.ts" in message  # the target
+    assert "role_out_of_scope" in message  # the reason
+
+
+def test_challenge_message_low_risk_renders_cleanly():
+    prompter = FakePrompter(confirm=False)
+    LocalAuthProvider().authenticate(
+        _auth_decision(risk=Risk.low),
+        _action("backend/api.ts"),
+        AuthTier.soft_confirm,
+        prompter=prompter,
+    )
+    message = prompter.messages[0]
+    assert "RISK: LOW" in message
+    assert "webdev" in message  # the role
+    assert "backend/api.ts" in message  # the target
+    assert "role_out_of_scope" in message  # the reason
 
 
 def test_registered_provider_is_preferred(monkeypatch):
