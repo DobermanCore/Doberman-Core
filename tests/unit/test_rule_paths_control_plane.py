@@ -52,6 +52,20 @@ def test_writing_the_policy_file_is_blocked(tmp_path):
     assert ReasonCode.protected_path_blocked in result.reason_codes
 
 
+def test_deleting_the_policy_file_is_blocked(tmp_path):
+    # ADR 0032 / TODO 4b: deleting policies.yaml must not be a way to fake a
+    # "fresh install" and re-trigger the establishment carve-out (load_policy()
+    # returning None). Regression test: CONTROL_PLANE_GLOBS already covers
+    # ".doberman/**" and the rule matches on path regardless of action_type
+    # (see test_reading_the_control_plane_is_blocked above), so this was
+    # already blocked — this test locks that in for this specific path+verb.
+    result = RULE.evaluate(
+        _action(".doberman/policies.yaml", action_type=ActionType.file_delete), _ctx(tmp_path)
+    )
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
 def test_writing_the_role_file_is_blocked(tmp_path):
     result = RULE.evaluate(_action(".doberman/role.yaml"), _ctx(tmp_path))
     assert result.verdict is Verdict.BLOCK
@@ -99,6 +113,18 @@ def test_objective_guardrail_blocks_a_control_plane_write(tmp_path):
     # guardrail (not just the rule in isolation) hard-blocks the policy file.
     guardrail = ObjectiveGuardrail(load_plugins=False)
     result = guardrail.evaluate(_action(".doberman/policies.yaml"), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_objective_guardrail_blocks_a_control_plane_delete(tmp_path):
+    # Same wired-guardrail proof as the write case above, but for delete — the
+    # reset-abuse vector this regression test set targets (delete policies.yaml
+    # to fake a fresh install and re-trigger the establishment carve-out).
+    guardrail = ObjectiveGuardrail(load_plugins=False)
+    result = guardrail.evaluate(
+        _action(".doberman/policies.yaml", action_type=ActionType.file_delete), _ctx(tmp_path)
+    )
     assert result.verdict is Verdict.BLOCK
     assert ReasonCode.protected_path_blocked in result.reason_codes
 
