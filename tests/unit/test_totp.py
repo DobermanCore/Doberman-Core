@@ -92,6 +92,47 @@ def test_enroll_rotation_accepts_current_code_without_logging_credentials(caplog
         assert sensitive_value not in caplog.text
 
 
+def test_enroll_rotation_wrong_code_shares_rate_limiter():
+    """H5a: rotation's current_code proof must route through verify()'s
+    _failures lockout, not a direct un-rate-limited pyotp check."""
+    totp.enroll()
+    correct = _current_code(_T0)
+    for _ in range(5):
+        with pytest.raises(RuntimeError, match="current 2FA code"):
+            totp.enroll(force=True, current_code="000000")
+    # 5 wrong rotation attempts tripped the same limiter a normal verify() uses.
+    assert totp.verify(correct, at=_T0) is False
+
+
+def test_enroll_rotation_correct_code_succeeds_and_resets_counter():
+    # enroll()'s rotation proof checks the CURRENT wall clock (no `at` injection
+    # point), so prove it with `.now()` like the existing rotation test does.
+    totp.enroll()
+    first = totp._read_secret()
+    correct = pyotp.TOTP(first).now()
+
+    rotated_uri = totp.enroll(force=True, current_code=correct)
+
+    assert rotated_uri.startswith("otpauth://")
+    rotated = totp._read_secret()
+    assert rotated is not None and rotated != first
+    # Counter reset by the successful verify(): a fresh wrong attempt is just one failure.
+    assert totp.verify("000000", at=_T0) is False
+    assert totp.verify(pyotp.TOTP(rotated).at(_T0), at=_T0) is True
+
+
+def test_enroll_rotation_blocked_while_locked_out():
+    totp.enroll()
+    first = totp._read_secret()
+    correct = pyotp.TOTP(first).now()
+    for _ in range(5):
+        assert totp.verify("000000", at=_T0) is False
+    # Locked out: even the CORRECT current code must not rotate the secret.
+    with pytest.raises(RuntimeError, match="current 2FA code"):
+        totp.enroll(force=True, current_code=correct)
+    assert totp._read_secret() == first
+
+
 def test_secret_file_is_owner_only(isolated_totp_secret):
     import os
     import stat
