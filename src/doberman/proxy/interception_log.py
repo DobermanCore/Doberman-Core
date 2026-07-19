@@ -20,7 +20,7 @@ import logging
 from typing import Any
 
 from doberman.models import SecurityObject, Verdict
-from doberman.storage.log import _path_class
+from doberman.storage.log import path_class
 
 LOGGER_NAME = "doberman.interception"
 
@@ -64,7 +64,7 @@ def log_action(action: SecurityObject, verdict: Verdict) -> None:
             "action_type": action.action_type.value,
             "source_context": action.source_context.value,
             "tool_name": action.tool_name,
-            "target_path_class": _path_class(action),
+            "target_path_class": path_class(action),
             "risk": action.risk.value,
             "metadata": action.metadata,
         }

@@ -45,10 +45,11 @@ DB_FILE = "doberman.db"
 #: transitions, score history, preference feedback), to 4 for the host-hook sticky
 #: taint ledger (HK.5.1: decisions.session_id + the session_taint table), to 5 for
 #: Feature CB (CB.1: the append-only ``cost_events`` meter ledger), to 6 for the
-#: read-vs-send exfil store (HK.5.2b: session_secret_fingerprints), and to 7 for the
+#: read-vs-send exfil store (HK.5.2b: session_secret_fingerprints), to 7 for the
 #: shadow-only adjudication ledger (adaptive-precision Phase 0: shadow_adjudications;
-#: additive CREATE TABLE — no legacy migration needed).
-SCHEMA_VERSION = 7
+#: additive CREATE TABLE — no legacy migration needed), and to 8 for the dashboard's
+#: pending-approval queue (D3: pending_approvals; additive CREATE TABLE).
+SCHEMA_VERSION = 8
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -205,6 +206,33 @@ CREATE TABLE IF NOT EXISTS shadow_adjudications (
     shadow_verdict      TEXT,
     shadow_reason_codes TEXT,
     entity_id           TEXT
+);
+
+-- Dashboard pending-approval queue (D3): mediates an AUTH challenge between
+-- the decision-path process (which writes a row via DashboardPrompter) and
+-- the dash server process (which shows it and posts a resolution) - no HTTP
+-- ever touches the decision path itself. Display fields are the SAME
+-- redaction-safe vocabulary the terminal/GUI prompters already show a human
+-- (action type, risk, reason codes, explanation, path *class*) - never the
+-- raw target/arguments. `status` transitions 'pending' -> 'resolved' exactly
+-- once (see storage.approvals.resolve's race-safe UPDATE ... WHERE clause).
+-- `totp_code` rides the row only because the dash NEVER verifies it - the
+-- prompter (decision path) is the sole consumer, via the existing
+-- doberman.auth.totp.verify.
+CREATE TABLE IF NOT EXISTS pending_approvals (
+    id                 TEXT PRIMARY KEY,
+    action_id          TEXT NOT NULL,
+    created_at         TEXT NOT NULL,
+    expires_at         TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'pending',
+    tier               TEXT,
+    action_type        TEXT,
+    risk               TEXT,
+    reason_codes_json  TEXT,
+    explanation        TEXT,
+    target_path_class  TEXT,
+    decision           TEXT,
+    totp_code          TEXT
 );
 """
 

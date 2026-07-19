@@ -20,6 +20,7 @@ generic "enter 2FA". Any timeout, input error, or denial yields a non-approved
 :func:`select_tier` rejects a non-``AUTH`` decision.
 """
 
+import contextvars
 from enum import StrEnum
 from typing import Protocol
 
@@ -123,6 +124,30 @@ class AuthResult(BaseModel):
     elevation_id: str | None = None
 
 
+#: The (decision, action, tier) of the challenge currently running on this
+#: thread/task, if any — see :func:`current_challenge`.
+_current_challenge: contextvars.ContextVar[tuple[Decision, SecurityObject, AuthTier] | None] = (
+    contextvars.ContextVar("_current_challenge", default=None)
+)
+
+
+def current_challenge() -> tuple[Decision, SecurityObject, AuthTier] | None:
+    """The real ``(decision, action, tier)`` of the challenge in progress here.
+
+    Lets a :class:`Prompter` (e.g. the dashboard's ``DashboardPrompter``) derive
+    redaction-safe display fields (risk, reason codes, explanation, path class)
+    straight from the typed objects instead of parsing
+    :func:`~doberman.auth.provider._challenge_message`'s free-text string, which
+    embeds the raw target and is unsafe to persist. ``None`` outside a challenge.
+
+    Set only for the duration of :func:`run_auth_challenge` on the calling
+    thread/task; ``asyncio.to_thread`` propagates the current
+    ``contextvars.Context`` into its worker thread, so a prompter running there
+    (as the proxy's auth challenge does) still sees it.
+    """
+    return _current_challenge.get()
+
+
 def run_auth_challenge(
     decision: Decision,
     action: SecurityObject,
@@ -141,4 +166,8 @@ def run_auth_challenge(
     from doberman.auth.provider import active_provider
 
     tier = select_tier(decision)
-    return active_provider().authenticate(decision, action, tier, prompter=prompter, at=at)
+    token = _current_challenge.set((decision, action, tier))
+    try:
+        return active_provider().authenticate(decision, action, tier, prompter=prompter, at=at)
+    finally:
+        _current_challenge.reset(token)

@@ -326,8 +326,21 @@ current mode + effective enforcement — `GET /api/stats`) and a **scrolling liv
 streams new ones as they're recorded. Both are read-only and serve only already-redacted decision-
 log fields (verdict, action type, path *class*, reason codes, timestamp) — never a raw target,
 argument, or secret. `EventSource` can't set request headers, so the feed also accepts the token
-as `?token=` (loopback-only + single-run token keeps this sound). Approve/deny actions and visual
-polish land in upcoming versions.
+as `?token=` (loopback-only + single-run token keeps this sound).
+
+**Interactive AUTH approve/deny.** An `AUTH` challenge can now be answered from the dashboard
+instead of the terminal: `GET /api/pending` lists redacted pending approvals (action type, risk,
+reason codes, human explanation, path *class* — never a raw target or secret) and
+`POST /api/resolve/{id}` (body `{"decision": "approved"|"denied", "totp_code"?}`) answers one.
+Resolution is a single-use, race-safe state transition (`UPDATE ... WHERE status='pending'`) —
+two concurrent resolves of the same row can never both win, and a resolved/expired row 409s.
+The dashboard never verifies a TOTP code itself: it only relays the human's decision (and, for
+tiers that need one, the code) back to the *existing* auth-challenge machinery running in the
+decision path, which performs the real verification unchanged. The channel engages only while a
+dashboard's liveness heartbeat is fresh (< 5s old); a stale or missing heartbeat, or an
+unanswered approval, falls back to the next channel (MCP elicitation → GUI dialog → terminal)
+with no added latency and no denial invented on the dashboard's behalf. Visual polish lands in
+upcoming versions.
 
 ### Try the demo
 
@@ -475,6 +488,7 @@ The adaptive layer's four SL5 "care" weights (`confidentiality`, `reversibility`
 - ✅ **Security hardening (H1):** the MCP proxy's `normalize()` redaction no longer relies solely on its own length/shape stopgap — it now also runs the canonical shared secret detector (`doberman.engine.rules.secrets`, the same one that drives `secret_exfiltration`), layered strictly ON TOP of the stopgap so coverage can only widen, never narrow (Azure/GCP/Stripe/SendGrid/npm/JWT/DB-URI/env-assignment shapes the old stopgap missed are now redacted too). The proxy's `_call_tool` handler is also now wrapped end-to-end: any unexpected exception escaping `decide_and_execute` returns a fail-closed error naming only a reason code and the exception's class — never the exception's own message or a raw argument fragment — closing the last gap where an unhandled error could have leaked call content back to the agent
 - ✅ **Turn gate (Feature 11):** a second, pre-inference invocation point (`doberman.turngate`) that judges the user's *turn* — prompt plus attached/pasted/tool-fetched content — before a single inference token is spent. Tier 0 deterministic signatures (instruction nullification, authority override, secret export, encoded payload) hard-block on an issue-vs-mention + origin discrimination (untrusted-origin match always blocks; a typed *mention* steps up instead of blocking); Tier 1 heuristic classes (embedded pasted instructions, persona override, obfuscation, urgency+secrecy framing) are AUTH-only and structurally block-incapable; a stylometric co-occurrence gate steps up only when an extreme per-entity style outlier coincides with a sensitive apparent intent, never on style alone; a repeat-after-block escape hatch scales the re-challenge to the original block (Tier 0 → 2FA) with single-use approval and a third-attempt lockout. Released turns tag-and-pass a bounded, raise-only `TurnContext` into the action stage (a flagged turn's follow-on actions score harsher; flagged pasted segments inherit `provenance: untrusted_data`). The turn gate is additive and an efficiency/early-warning layer only — the action gate above remains the safety guarantee, and with no host pre-inference hook or `DOBERMAN_TURN_GATE=off` it is simply absent.
 - ✅ **Turn gate boundary:** the import-linter contract now forbids the policy core from importing **either** invocation adapter (`doberman.proxy`, `doberman.turngate`) — the turn gate stays a pure adapter, injected into the engine like the proxy, never a static dependency of it.
+- ✅ Dashboard, interactive AUTH approve/deny (D3): a `pending_approvals` queue mediates between the decision path and the dashboard purely through SQLite — never HTTP into the decision path. `DashboardPrompter` implements the existing `Prompter` interface, engaging the queue only while a liveness heartbeat is fresh; a stale/missing heartbeat, an unanswered approval, or a poll timeout all fall back to the next channel (elicitation → GUI → terminal) with zero added latency and no denial invented on the dashboard's behalf. Resolution is a single-use, race-safe `UPDATE ... WHERE status='pending'` transition (a resolved/expired row 409s), and the dashboard only ever relays a decision (plus, for 2FA tiers, a code) — verification stays entirely in the decision-path process via the existing TOTP check. Pending rows carry only already-redacted fields (action type, risk, reason codes, explanation, path class) — never a raw target or secret
 - 📋 Host-harness, continued (containment architecture): deeper Bash-command egress parsing · entropy-on-egress escalation · warm-daemon adaptive layer · honeytoken tripwire + session circuit-breaker
 - 🛠 Cost observability — **CB.1 + CB.2 landed**: a redaction-safe `CostEvent` + local append-only meter (`doberman.storage.cost`), advisory and strictly off the decision path; plus a `CostObserver` plugin seam (`doberman.cost_observers` entry-point group) — observers receive a copy of every recorded event, are isolated (a raising observer is logged and skipped, never breaks the record path), and can never alter a verdict. Next: raise-only loop-anomaly detector (CB.3)
 - 📋 Enterprise platform: centralized control plane, dashboards, org policy, SSO/RBAC

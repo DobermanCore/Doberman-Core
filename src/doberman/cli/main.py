@@ -668,8 +668,11 @@ def dash(
     token is generated for this run and embedded in the printed URL; every API
     route requires it as a bearer token, checked in constant time. Reports the
     live decision feed, summary stats, mode, and enforcement state for
-    ``--path`` (default: the current repo). Requires the optional 'dash'
-    extra; approve/deny actions and polish land in later slices.
+    ``--path`` (default: the current repo), plus an interactive AUTH
+    approve/deny queue: a challenge on the decision path engages this
+    dashboard only while it is running (see the heartbeat below), and falls
+    back to the terminal/GUI otherwise. Requires the optional 'dash' extra;
+    polish lands in a later slice.
     """
     try:
         import uvicorn
@@ -681,6 +684,22 @@ def dash(
             err=True,
         )
         raise typer.Exit(code=1) from exc
+
+    import threading
+
+    from doberman.storage.heartbeat import touch_heartbeat
+
+    # ponytail: a daemon thread ticking a file mtime - simplest possible
+    # liveness signal the decision-path process can check without any IPC.
+    # Dies with the process; no explicit stop needed for a CLI-lifetime thread.
+    stop_heartbeat = threading.Event()
+
+    def _heartbeat_loop() -> None:
+        while not stop_heartbeat.is_set():
+            touch_heartbeat(path)
+            stop_heartbeat.wait(2.0)
+
+    threading.Thread(target=_heartbeat_loop, daemon=True).start()
 
     token = secrets.token_urlsafe(32)
     typer.echo(f"Dashboard: http://{_DASH_HOST}:{port}/?token={token}")
