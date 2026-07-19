@@ -116,7 +116,16 @@ async def test_end_to_end_error_never_echoes_arguments():
 
 
 async def test_every_call_is_normalized_before_execution(monkeypatch):
-    """Slice 1.3 wiring proof: the chokepoint normalizes each call."""
+    """Slice 1.3 wiring proof: the chokepoint normalizes each call.
+
+    Each successful call now normalizes TWICE: once for the pre-execution
+    decision (the property this test proves), and once more inside parity-1's
+    ``_scan_output_for_secrets``, which re-normalizes the call with the
+    downstream RESULT folded in so the output-scan gate reuses the same
+    ``ObjectiveGuardrail`` detection rather than a second detector. The
+    pre-execution normalize still always happens before the downstream forward
+    — that invariant is unchanged.
+    """
     from doberman.proxy import normalize as normalize_mod
 
     seen: list[str] = []
@@ -130,7 +139,7 @@ async def test_every_call_is_normalized_before_execution(monkeypatch):
     async with proxied_session() as (_, agent):
         await agent.call_tool("fs_write", {"path": "a.txt", "content": "x"})
         await agent.call_tool("net_get", {"url": "https://example.com"})
-    assert seen == ["fs_write", "net_get"]
+    assert seen == ["fs_write", "fs_write", "net_get", "net_get"]
 
 
 async def test_every_call_routes_through_decide_and_execute(monkeypatch):
