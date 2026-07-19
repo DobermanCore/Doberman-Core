@@ -30,6 +30,7 @@ from doberman.config import load_active_role, load_enforcement, load_mode, load_
 from doberman.engine.decision_engine import Guardrail, decide
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.subjective import SubjectiveGuardrail
+from doberman.engine.taint_floor import apply_taint_floor_async, record_output_taint
 from doberman.models import (
     ActionType,
     Decision,
@@ -282,6 +283,25 @@ async def _forward(
         return _denied_result(ReasonCode.downstream_error, type(exc).__name__, action.id)
 
 
+async def _record_result_taint(result: CallToolResult) -> None:
+    """Best-effort: feed a successful tool result's text to the taint floor.
+
+    Mirrors the host-hook's PostToolUse recording so a secret read through the
+    proxy taints the session for the next call's cross-call exfil check
+    (``apply_taint_floor_async``). Guards non-text content blocks; never raises —
+    ``record_output_taint`` is itself fail-closed/best-effort, but a malformed
+    result (e.g. a non-string ``.text``) must not break the forward/return path.
+    """
+    try:
+        output_text = "".join(
+            block.text for block in result.content if isinstance(block, TextContent)
+        )
+        if output_text:
+            await record_output_taint(output_text, REPO_ROOT, None)
+    except Exception:  # noqa: BLE001 — recording must never break the execution path
+        _engine_logger.warning("output taint recording failed; continuing")
+
+
 async def _consume_single_use(action: SecurityObject, grants: tuple, now: datetime) -> None:
     """Mark a single-use elevation spent after it released a forward (best-effort)."""
     grant = find_cover(action.target, grants, root=REPO_ROOT)
@@ -374,6 +394,7 @@ async def _handle_auth(
 
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
+        await _record_result_taint(result)
         await _consume_single_use(action, grants, now)
         await _observe_allowed(action, eid, surprise_score)
     await _persist(decision, action, auth_result="approved", elevation_id=elevation_id, eid=eid)
@@ -405,6 +426,15 @@ async def decide_and_execute(
     decision = _safe_decide(
         action,
         _build_ctx(arguments, grants, score, budget_ok=budget_ok, eid=eid, scope_token=token),
+    )
+
+    # HK.5.2/5.2b cross-call exfil floor: raise-only, awaited directly (this
+    # function already runs inside a live event loop — see taint_floor.py's
+    # module docstring for why the sync `apply_taint_floor` must NOT be used here).
+    # `session_id=None`: the proxy has no session id of its own, so the floor falls
+    # back to the per-repo entity scope.
+    decision = await apply_taint_floor_async(
+        action, decision, load_mode(REPO_ROOT), REPO_ROOT, None, arguments or {}
     )
 
     # Record every intercepted action with its REAL verdict. Logged before the
@@ -439,6 +469,7 @@ async def decide_and_execute(
     softened = decision.final_verdict is not Verdict.PASS
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
+        await _record_result_taint(result)
         await _consume_single_use(action, grants, now)
         if not softened:
             # Teach the baseline only on a GENUINE pass. A softened would-have
