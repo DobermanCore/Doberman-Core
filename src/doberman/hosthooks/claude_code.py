@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
 from doberman.config import load_active_role, load_mode, resolve_enforcement_sync
-from doberman.engine.decision_engine import PASS_STUB, decide, max_risk, max_verdict
+from doberman.engine.decision_engine import PASS_STUB, decide, max_risk
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.taint_floor import apply_taint_floor
 from doberman.models import Decision, EvalContext, ReasonCode, Risk, SecurityObject, Verdict
