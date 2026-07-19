@@ -431,6 +431,13 @@ Doberman is **defense-in-depth, not airtight** — no single rule is a guarantee
 
 ---
 
+## Contributing
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, CI checks, project
+invariants, and the PR workflow.
+
+---
+
 ## License
 
 Apache-2.0. The core is genuinely standalone — no proprietary dependency, ever (CI-enforced).
