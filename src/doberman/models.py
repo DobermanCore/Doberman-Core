@@ -214,6 +214,11 @@ class ReasonCode(StrEnum):
     objective_guardrail_error = "objective_guardrail_error"
     subjective_guardrail_error = "subjective_guardrail_error"
     subjective_block_clamped = "subjective_block_clamped"
+    # H1: an unexpected exception escaped the proxy's top-level call_tool
+    # handler (outside normalize()/decide()'s own failure boundaries, e.g. a
+    # config/DB read inside decide_and_execute's orchestration). Fail closed;
+    # never carries the exception's own message, only its class name.
+    proxy_handler_error = "proxy_handler_error"
 
     # Feature 3 — objective guardrail (basic rules + plugin seam).
     secret_exfiltration = "secret_exfiltration"  # noqa: S105 — reason-code constant, not a secret

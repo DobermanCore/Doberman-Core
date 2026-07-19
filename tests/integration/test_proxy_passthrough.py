@@ -158,3 +158,29 @@ async def test_every_call_routes_through_decide_and_execute(monkeypatch):
         await agent.call_tool("net_get", {"url": "https://github.com/owner/repo"})
     assert routed == ["shell_exec", "net_get"]
     assert [name for name, _ in fake.calls] == ["shell_exec", "net_get"]
+
+
+async def test_call_tool_handler_wraps_unexpected_exception_fail_closed(monkeypatch):
+    """H1 Part 2: an exception escaping `decide_and_execute` itself — not a
+    downstream transport failure, which `_forward` already handles internally
+    (see the tests above) — must still be caught by the top-level `_call_tool`
+    wrap in mcp_proxy.py. The agent must see a fail-closed error result, never
+    a raw exception, and that result must never echo the exception's own
+    message (which could carry argument fragments) or a synthetic secret.
+    """
+    secret = "AKIA-FAKE-SECRET-VALUE-24680"  # noqa: S105 — synthetic test value
+
+    async def boom(downstream, tool_name, arguments):
+        raise RuntimeError(f"unexpected failure touching {arguments!r}")
+
+    monkeypatch.setattr(executor, "decide_and_execute", boom)
+    async with proxied_session() as (fake, agent):
+        result = await agent.call_tool("fs_write", {"path": "x", "content": secret})
+    assert result.isError
+    text = result.content[0].text
+    assert secret not in text
+    assert "unexpected failure" not in text  # the exception's own message never echoes
+    assert "touching" not in text  # the repr'd arguments dict never echoes either
+    assert "RuntimeError" in text
+    assert "proxy_handler_error" in text
+    assert fake.calls == []  # nothing was forwarded

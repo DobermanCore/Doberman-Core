@@ -50,6 +50,12 @@ def build_proxy_server(downstream: ClientSession, *, name: str = PROXY_NAME) -> 
         # NOTE: tests monkeypatch `executor.decide_and_execute`; keep this a
         # module-attribute call (not a `from`-import) so the routing invariant
         # stays observable.
-        return await executor.decide_and_execute(downstream, tool_name, arguments)
+        try:
+            return await executor.decide_and_execute(downstream, tool_name, arguments)
+        except Exception as exc:  # noqa: BLE001 — H1: the chokepoint must never
+            # leak a raw exception (and its message, which could carry argument
+            # fragments) past this point. Deliberately `Exception`, not
+            # `BaseException`: cancellation/interpreter shutdown still propagate.
+            return executor.handler_failure_result(exc)
 
     return server

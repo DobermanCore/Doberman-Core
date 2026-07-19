@@ -6,8 +6,13 @@ failure it produces a conservative object (``action_type=other``,
 ``risk=high``) so the engine fails toward caution, and it never copies raw
 argument values into the object — values are redacted first.
 
-The redaction here is a deliberate stopgap (length- and shape-based); real
-secret detection arrives with Feature 3's rules.
+The redaction here layers a length/shape stopgap with Feature 3's canonical
+shared secret detector (``doberman.engine.rules.secrets.contains_strong_secret``)
+so credential-shape knowledge lives in one place (H1 hardening) — the shared
+detector's coverage (AWS/OpenAI/Anthropic/GitHub/GitLab/Slack/Google/Stripe/
+SendGrid/npm/JWT/DB-URI/PEM/Azure/GCP/env-assignment) is added ON TOP OF the
+original stopgap shapes, never instead of them: this call is raise-only, it
+only ever redacts *more*, never less.
 """
 
 import re
@@ -15,6 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from doberman.engine.rules.secrets import contains_strong_secret
 from doberman.models import ActionType, ReasonCode, Risk, SecurityObject, SourceContext
 from doberman.subjective.adapters import apply_adapters
 from doberman.subjective.infer import infer_algebra, infer_reversibility
@@ -24,7 +30,8 @@ REDACTED = "<redacted>"
 # Values longer than this are replaced wholesale — avoids logging huge blobs.
 MAX_VALUE_LENGTH = 256
 
-# Obvious secret shapes (stopgap until Feature 3's secret rules):
+# Obvious secret shapes (original stopgap; kept as a floor — see
+# `contains_strong_secret` below for the canonical, more complete detector):
 # long unbroken token-ish strings, common key prefixes, key=value secrets.
 _SECRET_SHAPES = re.compile(
     r"""
@@ -99,6 +106,11 @@ def _redact_value(key: str, value: Any, depth: int = 0) -> Any:
         if len(value) > MAX_VALUE_LENGTH:
             return REDACTED
         if len(value) >= _MIN_SECRET_LENGTH and _SECRET_SHAPES.search(value):
+            return REDACTED
+        # H1: layer the canonical shared detector (Azure/GCP/Stripe/JWT/DB-URI/
+        # env-assignment/...) on top of the stopgap shapes above — a strict
+        # superset of coverage, so this can only redact MORE, never less.
+        if contains_strong_secret(value):
             return REDACTED
         return value
     if isinstance(value, list | tuple):
