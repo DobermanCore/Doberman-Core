@@ -76,7 +76,7 @@ def _challenge_message(decision: Decision, action: SecurityObject, tier: AuthTie
     reasons = ", ".join(decision.reason_codes) or "unspecified"
     target = action.target or "(no target)"
     return (
-        f"Doberman authentication required [{tier.value}]\n"
+        f"[RISK: {decision.final_risk.upper()}]  Doberman authentication required [{tier.value}]\n"
         f"  role:   {action.agent_role}\n"
         f"  action: {action.tool_name} → {target}\n"
         f"  reason: {reasons} — {decision.explanation.strip() or 'no further detail'}\n"
