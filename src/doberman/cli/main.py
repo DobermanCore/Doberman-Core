@@ -659,14 +659,16 @@ _DASH_DEFAULT_PORT = 8642
 @app.command()
 def dash(
     port: int = typer.Option(_DASH_DEFAULT_PORT, "--port", help="Port to bind the dashboard to."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root to report on."),
 ) -> None:
     """Launch the local dashboard (preview) - a localhost-only control surface.
 
     Binds to 127.0.0.1 only, never a public interface. A fresh, single-use
     token is generated for this run and embedded in the printed URL; every API
-    route requires it as a bearer token, checked in constant time. Requires the
-    optional 'dash' extra; the live feed, stats, and approve/deny actions land
-    in later slices.
+    route requires it as a bearer token, checked in constant time. Reports the
+    live decision feed, summary stats, mode, and enforcement state for
+    ``--path`` (default: the current repo). Requires the optional 'dash'
+    extra; approve/deny actions and polish land in later slices.
     """
     try:
         import uvicorn
@@ -681,7 +683,7 @@ def dash(
 
     token = secrets.token_urlsafe(32)
     typer.echo(f"Dashboard: http://{_DASH_HOST}:{port}/?token={token}")
-    uvicorn.run(create_app(token), host=_DASH_HOST, port=port)
+    uvicorn.run(create_app(token, path), host=_DASH_HOST, port=port)
 
 
 @app.command()

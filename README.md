@@ -311,15 +311,23 @@ Basic protection works immediately out of the box. Pick a strength mode to match
 ### 6. Dashboard (preview)
 
 ```bash
-pip install "doberman-core[dash]"   # optional extra: starlette + uvicorn
-doberman dash                       # prints a URL, e.g. http://127.0.0.1:8642/?token=...
+pip install "doberman-core[dash]"    # optional extra: starlette + uvicorn
+doberman dash --path .                # prints a URL, e.g. http://127.0.0.1:8642/?token=...
 ```
 
 A localhost-only web dashboard, off by default. Binds to `127.0.0.1` only (never a public
 interface) and generates a fresh, single-use token for that run — open the printed URL to
-connect; every API call is authenticated with that token. This preview slice is the serving
-skeleton only (an empty shell that confirms it's connected); the live decision feed, summary
-stats, and approve/deny actions land in upcoming versions.
+connect; every API call is authenticated with that token. `--path` selects the repo to report
+on (default: the current directory).
+
+Now live: a **summary stats line** (verdict counts, top reason codes, secret/taint event count,
+current mode + effective enforcement — `GET /api/stats`) and a **scrolling live decision feed**
+(`GET /api/feed`, Server-Sent Events) that backfills the most recent decisions on connect, then
+streams new ones as they're recorded. Both are read-only and serve only already-redacted decision-
+log fields (verdict, action type, path *class*, reason codes, timestamp) — never a raw target,
+argument, or secret. `EventSource` can't set request headers, so the feed also accepts the token
+as `?token=` (loopback-only + single-run token keeps this sound). Approve/deny actions and visual
+polish land in upcoming versions.
 
 ---
 

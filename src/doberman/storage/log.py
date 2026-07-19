@@ -54,10 +54,35 @@ _UPSERT_FINGERPRINT = (
 )
 
 _SELECT_DECISIONS = (
-    "SELECT ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
+    "SELECT id, ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id "
     "FROM decisions ORDER BY id DESC"
 )
+
+# Mirrors _SELECT_DECISIONS but ascending + cursor-bounded, for the dash's live
+# feed poll (doberman.dash): "give me what's new since the last row I saw".
+_SELECT_DECISIONS_SINCE = (
+    "SELECT id, ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
+    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id "
+    "FROM decisions WHERE id > ? ORDER BY id ASC"
+)
+
+_DECISION_COLUMNS = [
+    "id",
+    "ts",
+    "action_id",
+    "agent_role",
+    "action_type",
+    "target_path_class",
+    "risk",
+    "source_context",
+    "final_verdict",
+    "decided_layer",
+    "reason_codes_json",
+    "auth_required",
+    "auth_result",
+    "elevation_id",
+]
 
 
 def _path_class(action: SecurityObject) -> str | None:
@@ -243,28 +268,36 @@ async def read_decisions(repo_root: str, *, limit: int | None = None) -> list[di
     if not db_path(repo_root).exists():
         return []
     query = _SELECT_DECISIONS + (f" LIMIT {int(limit)}" if limit else "")
-    cols = [
-        "ts",
-        "action_id",
-        "agent_role",
-        "action_type",
-        "target_path_class",
-        "risk",
-        "source_context",
-        "final_verdict",
-        "decided_layer",
-        "reason_codes_json",
-        "auth_required",
-        "auth_result",
-        "elevation_id",
-    ]
     try:
         async with open_db(repo_root) as conn:
             async with conn.execute(query) as cur:
                 rows = await cur.fetchall()
     except Exception:  # noqa: BLE001 — a read failure must never crash the CLI
         return []
-    return [dict(zip(cols, row, strict=True)) for row in rows]
+    return [dict(zip(_DECISION_COLUMNS, row, strict=True)) for row in rows]
+
+
+async def read_decisions_since(
+    repo_root: str, since_id: int, *, limit: int | None = None
+) -> list[dict]:
+    """Read decision rows with ``id > since_id``, oldest first (cursor-based poll).
+
+    For the dash's live feed (``doberman.dash``): pass the highest ``id`` already
+    seen and get back only what's new. Same shape/columns as :func:`read_decisions`
+    and the same fail-closed-to-``[]`` behavior (missing/locked DB, any error).
+    """
+    from doberman.storage.db import db_path
+
+    if not db_path(repo_root).exists():
+        return []
+    query = _SELECT_DECISIONS_SINCE + (f" LIMIT {int(limit)}" if limit else "")
+    try:
+        async with open_db(repo_root) as conn:
+            async with conn.execute(query, (since_id,)) as cur:
+                rows = await cur.fetchall()
+    except Exception:  # noqa: BLE001 — a read failure must never crash the dash
+        return []
+    return [dict(zip(_DECISION_COLUMNS, row, strict=True)) for row in rows]
 
 
 async def memory_summary(repo_root: str) -> dict:
