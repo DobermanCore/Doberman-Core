@@ -308,6 +308,19 @@ doberman scan   # discover local MCP capabilities and build a risk map
 
 Basic protection works immediately out of the box. Pick a strength mode to match your risk tolerance.
 
+### 6. Dashboard (preview)
+
+```bash
+pip install "doberman-core[dash]"   # optional extra: starlette + uvicorn
+doberman dash                       # prints a URL, e.g. http://127.0.0.1:8642/?token=...
+```
+
+A localhost-only web dashboard, off by default. Binds to `127.0.0.1` only (never a public
+interface) and generates a fresh, single-use token for that run — open the printed URL to
+connect; every API call is authenticated with that token. This preview slice is the serving
+skeleton only (an empty shell that confirms it's connected); the live decision feed, summary
+stats, and approve/deny actions land in upcoming versions.
+
 ---
 
 ## Verify it end-to-end (real downstream, no fakes)

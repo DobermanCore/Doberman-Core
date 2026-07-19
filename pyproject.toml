@@ -39,9 +39,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "import-linter", "textual", "hypothesis"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "import-linter", "textual", "hypothesis", "starlette", "uvicorn", "httpx"]
 explain = ["anthropic"]
 tui = ["textual"]
+dash = ["starlette", "uvicorn"]
 
 [project.scripts]
 doberman = "doberman.cli.main:app"
@@ -100,7 +101,7 @@ include_external_packages = true
 name = "Policy core must not depend on an invocation adapter"
 type = "forbidden"
 source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "doberman.storage", "doberman.auth", "doberman.subjective"]
-forbidden_modules = ["doberman.proxy", "doberman.hosthooks"]
+forbidden_modules = ["doberman.proxy", "doberman.hosthooks", "doberman.dash"]
 
 # Cross-repo boundary: the public core must never import the private enterprise package.
 # NOTE: defense-in-depth only — enterprise is never installed in core CI, so this contract
