@@ -329,6 +329,25 @@ argument, or secret. `EventSource` can't set request headers, so the feed also a
 as `?token=` (loopback-only + single-run token keeps this sound). Approve/deny actions and visual
 polish land in upcoming versions.
 
+### Try the demo
+
+Want to see real verdicts light up the dashboard without wiring up an agent? `doberman demo` runs a
+scripted "attack reel" — five malicious tool calls and two benign ones — through the **real** decision
+engine (no stubs) and logs every verdict, so the dashboard's live feed lights up with genuine
+PASS/AUTH/BLOCK decisions. Nothing is ever executed against a real tool or downstream server.
+
+```bash
+# Terminal 1
+doberman dash --path .
+
+# Terminal 2
+doberman demo --path .          # add --fast to skip the pacing delay between scenarios
+```
+
+Each scenario prints one line (verdict, reason codes, explanation — never the raw tool arguments or
+any synthetic secret used to trip a rule), then a summary table. Exit code is `0` only if every
+scenario matched its expected verdict, so `doberman demo` doubles as a smoke test of the engine itself.
+
 ---
 
 ## Verify it end-to-end (real downstream, no fakes)

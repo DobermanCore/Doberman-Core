@@ -29,6 +29,7 @@ from doberman.config import (
     save_policy,
     save_preferences,
 )
+from doberman.demo import format_outcome_line, format_summary_table, run_demo
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
@@ -684,6 +685,50 @@ def dash(
     token = secrets.token_urlsafe(32)
     typer.echo(f"Dashboard: http://{_DASH_HOST}:{port}/?token={token}")
     uvicorn.run(create_app(token, path), host=_DASH_HOST, port=port)
+
+
+@app.command()
+def demo(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root to log decisions against."),
+    mode: str = typer.Option(
+        "balanced", "--mode", help="Security mode to evaluate scenarios under."
+    ),
+    fast: bool = typer.Option(False, "--fast", help="Skip the pacing delay between scenarios."),
+) -> None:
+    """Run a scripted attack reel through the REAL decision engine.
+
+    Drives a fixed list of canned tool calls -- a secret-exfiltration attempt,
+    a destructive command, a protected-branch force push, a Unicode-smuggled
+    egress, a sensitive-file read, and two benign calls -- through the SAME
+    normalize -> decide -> record_decision pipeline the real proxy uses, so the
+    redacted decision log (and `doberman dash`) fills with genuine verdicts.
+    Nothing is ever executed against a real tool or downstream server: no
+    network call, no unexpected file mutation, and no auth prompt (an AUTH
+    verdict is recorded and shown here, never challenged).
+    """
+    try:
+        resolved_mode = resolve_mode(mode)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("Doberman demo -- scripted attack reel (real engine, nothing executed)")
+    typer.echo("")
+
+    outcomes = run_demo(
+        mode=resolved_mode.value,
+        repo_root=path,
+        fast=fast,
+        on_scenario=lambda outcome: typer.echo(format_outcome_line(outcome)),
+    )
+
+    typer.echo("")
+    typer.echo(format_summary_table(outcomes))
+    typer.echo("")
+    typer.echo("Run `doberman dash` in another terminal to watch this live.")
+
+    if not all(outcome.matched for outcome in outcomes):
+        raise typer.Exit(code=1)
 
 
 @app.command()
