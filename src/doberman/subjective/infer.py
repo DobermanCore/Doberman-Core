@@ -111,7 +111,8 @@ _CONF_WEAK = 0.2  # nothing observable
 # access to credential material). Benign claims ("safe", "read-only") are
 # deliberately ignored — untrusted metadata can never lower a classification.
 _DESCRIPTION_SENSITIVE = re.compile(
-    r"(?i)secret|credential|password|token|private[ _-]?key|api[ _-]?key"
+    r"(?i)secret|credential|password|private[ _-]?key|api[ _-]?key"
+    r"|(?:api|access|auth|bearer|oauth|session|refresh)[ _-]?token"
 )
 
 # Shapes a target string can take (used for the `internal` tier: a concrete
@@ -295,14 +296,15 @@ if set(_SOURCE_PROVENANCE) != set(SourceContext):  # pragma: no cover — import
 # Volume signals: argument keys that carry recipient/target collections, glob
 # metacharacters, and recursive shell flags.
 _RECIPIENT_KEYS = ("to", "cc", "bcc", "recipients", "emails", "targets", "ids", "user_ids")
-_GLOB_CHARS = re.compile(r"[*?\[]")
-_RECURSIVE_SHELL = re.compile(r"(?i)(?:^|\s)-[a-z]*r[a-z]*f?\b|--recursive\b|\*\*?")
+_GLOB_CHARS = re.compile(r"[*\[]")
+_RECURSIVE_SHELL = re.compile(r"(?i)(?:^|\s)-[rf]+\b|--recursive\b|\*\*?")
 
 # Shell text whose effects are effectively irreversible (destroyed data /
 # rewritten remote history). Matching is on the command string only.
 _IRREVERSIBLE_SHELL = re.compile(
     r"(?i)\brm\b|\bshred\b|\bmkfs\b|\bdd\b\s+if=|drop\s+(?:table|database)"
-    r"|\btruncate\b|push\s+.*--force|--hard\b"
+    r"|\btruncate\b|push\b[^;&|\n]{0,40}--force|--hard\b(?!-)"
+    # ponytail: 40-char budget between `push` and `--force` is a tunable heuristic
 )
 
 # Blast-radius tier boundaries on an observed target/recipient count.

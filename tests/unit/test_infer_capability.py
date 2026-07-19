@@ -150,6 +150,16 @@ def test_credential_admitting_description_raises_target_class():
     assert confidence <= 0.6  # raised class, not raised certainty
 
 
+def test_token_counting_description_does_not_raise_target_class():
+    # "tokens" in the NLP sense (not a credential) must not trip the bare
+    # "token" alternative — only qualified forms (api/access/auth/... token).
+    action = _action("api_call", target="record-42")
+    result, _ = infer_target_class(
+        action, None, tool_description="splits input text into tokens and counts them"
+    )
+    assert result is not TargetClass.sensitive
+
+
 # --- never raises ----------------------------------------------------------------
 
 
