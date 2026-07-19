@@ -39,6 +39,14 @@ _EXTERNAL = re.compile(
 )
 _ENCODED = re.compile(r"[A-Za-z0-9+/_-]{40,}|\bxn--[a-z0-9-]+", re.IGNORECASE)
 
+#: Cap on how much raw text the *categorizing* scans below run over (the
+#: encoded-carrier flag and the per-segment fold): mirrors signatures.py's Tier 0
+#: cap so a multi-megabyte hostile paste can't make normalization itself run
+#: unbounded. The turn-level `id`/`prompt_fingerprint` still hash the FULL text —
+#: TG4's repeat-after-block cache correctness depends on that — only these
+#: categorizing scans are capped.
+_MAX_SCAN_CHARS = 200_000
+
 
 def _fold(text: str) -> str:
     """Lower-case, collapse whitespace, and strip punctuation for the fingerprint."""
@@ -88,8 +96,8 @@ def normalize_turn(
     content_segments = tuple(
         ContentSegment(
             origin=o,
-            fingerprint=fingerprint(_fold(t)),
-            flags=(["encoded"] if _ENCODED.search(t) else []),
+            fingerprint=fingerprint(_fold(t[:_MAX_SCAN_CHARS])),
+            flags=(["encoded"] if _ENCODED.search(t[:_MAX_SCAN_CHARS]) else []),
         )
         for o, t in raw_pairs
     )
@@ -98,7 +106,7 @@ def normalize_turn(
         "length_bucket": _length_bucket(len(full_text)),
         "n_segments": len(raw_pairs),
         "has_untrusted": any(o.is_untrusted for o, _ in raw_pairs),
-        "encoding_flag": bool(_ENCODED.search(full_text)),
+        "encoding_flag": bool(_ENCODED.search(full_text[:_MAX_SCAN_CHARS])),
     }
 
     turn = TurnObject(

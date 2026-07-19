@@ -11,6 +11,7 @@ semantic edit is a new turn.
 from datetime import datetime, timezone
 
 from doberman.models import ApparentIntent, SegmentOrigin
+from doberman.turngate import normalize as normalize_module
 from doberman.turngate.normalize import normalize_turn
 
 _TS = datetime(2026, 6, 10, tzinfo=timezone.utc)
@@ -70,3 +71,55 @@ def test_apparent_intent_inference():
 def test_entity_id_is_carried_through():
     turn, _ = normalize_turn("hi", entity_id="ent-42", ts=_TS)
     assert turn.entity_id == "ent-42"
+
+
+def test_categorizing_scans_are_capped_for_a_multi_megabyte_paste():
+    """A hostile multi-MB paste must not make normalize_turn's *categorizing*
+    scans (the encoded-carrier flag) run unbounded — they only look at the
+    first `_MAX_SCAN_CHARS` characters, mirroring Tier 0's cap in
+    signatures.py. This is a deliberate ceiling: an encoded marker placed
+    beyond the cap is NOT flagged, so normalization of a hostile paste stays
+    promptly bounded regardless of how much filler precedes the marker.
+    """
+    filler = "filler " * 40_000  # 280,000 chars of harmless padding
+    marker = "B" * 50  # a valid encoded-carrier token (>= 40 alnum chars)
+
+    beyond_cap = filler + marker  # marker starts well past the 200_000 cap
+    turn, _ = normalize_turn(beyond_cap, entity_id="e", ts=_TS)
+    assert turn.prompt_features["encoding_flag"] is False
+    assert turn.segments[0].flags == []
+
+    within_cap = marker + filler  # marker starts at offset 0
+    turn2, _ = normalize_turn(within_cap, entity_id="e", ts=_TS)
+    assert turn2.prompt_features["encoding_flag"] is True
+    assert turn2.segments[0].flags == ["encoded"]
+
+
+def test_prompt_fingerprint_is_not_capped_like_the_categorizing_scans(monkeypatch):
+    """`prompt_fingerprint` is correctness-critical (TG4's repeat-after-block
+    cache keys on it), so it must NOT be capped like the categorizing scans
+    above. Verified by spying on the shared ``fingerprint()`` call: the
+    id/prompt_fingerprint computation must hand it the full folded text, not a
+    ``_MAX_SCAN_CHARS``-sliced prefix.
+
+    We can't observe this via the returned fingerprint *value* alone (e.g. by
+    diffing two pastes that differ only past the cap): the shared
+    ``fingerprint()`` helper (``storage/fingerprint.py``) has its own,
+    unrelated internal length cap (8192 chars, sized for secret-fingerprinting
+    sanity) that is smaller than ``_MAX_SCAN_CHARS`` and would mask any
+    difference placed beyond it either way.
+    """
+    seen_lengths = []
+    real_fingerprint = normalize_module.fingerprint
+
+    def spy(value):
+        seen_lengths.append(len(value))
+        return real_fingerprint(value)
+
+    monkeypatch.setattr(normalize_module, "fingerprint", spy)
+
+    filler = "filler " * 40_000  # folds to well over _MAX_SCAN_CHARS characters
+    normalize_turn(filler + "tail", entity_id="e", ts=_TS)
+
+    assert seen_lengths, "fingerprint() was never called"
+    assert max(seen_lengths) > normalize_module._MAX_SCAN_CHARS
