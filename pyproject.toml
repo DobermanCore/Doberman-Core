@@ -1,6 +1,6 @@
 [project]
 name = "doberman-core"
-version = "0.14.0"
+version = "0.15.0"
 description = "Adaptive authorization layer for coding agents (open core)"
 readme = "README.md"
 license = "Apache-2.0"
@@ -95,13 +95,15 @@ root_package = "doberman"
 include_external_packages = true
 
 # Inside-core decoupling: the policy core must not import an invocation adapter
-# (the MCP proxy or the host-harness hooks). Adapters depend on the engine, never
-# the reverse — so the safety-critical core stays small, open, and adapter-agnostic.
+# (the MCP proxy, the host-harness hooks, the dash, or the turngate = the
+# pre-inference gate). Adapters depend on the engine, never the reverse — so the
+# safety-critical core stays small, open, and adapter-agnostic; decide()/decide_turn()
+# take their guardrails by injection so the engine holds no static reference.
 [[tool.importlinter.contracts]]
 name = "Policy core must not depend on an invocation adapter"
 type = "forbidden"
 source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "doberman.storage", "doberman.auth", "doberman.subjective"]
-forbidden_modules = ["doberman.proxy", "doberman.hosthooks", "doberman.dash"]
+forbidden_modules = ["doberman.proxy", "doberman.hosthooks", "doberman.dash", "doberman.turngate"]
 
 # Cross-repo boundary: the public core must never import the private enterprise package.
 # NOTE: defense-in-depth only — enterprise is never installed in core CI, so this contract
