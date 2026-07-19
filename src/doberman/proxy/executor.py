@@ -488,16 +488,19 @@ async def _handle_auth(
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _record_result_taint(result)
+        # Spending != learning: a single-use grant is spent by EXECUTION, not by
+        # a clean result — consume it here, before the gate, so a secret-bearing
+        # output can't leave the grant unspent to release a second execution.
+        await _consume_single_use(action, grants, now)
         gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
         if gate is not None:
             # Output-scan parity (parity-1): a secret in the RESULT must not
             # reach the model even though the call itself was approved. Log
-            # only the block — skip consuming the elevation / baseline
-            # "allowed" observation, since the outcome is not confirmed safe
-            # (mirrors the host-hook: one log row, the block, not a clean one).
-            await _persist(gate, action, auth_result="blocked", eid=eid)
+            # only the block — skip the baseline "allowed" observation, since
+            # the outcome is not confirmed safe (mirrors the host-hook: one log
+            # row, the block, not a clean one).
+            await _persist(gate, action, auth_result="blocked", elevation_id=elevation_id, eid=eid)
             return _verdict_result(gate)
-        await _consume_single_use(action, grants, now)
         await _observe_allowed(action, eid, surprise_score)
     await _persist(decision, action, auth_result="approved", elevation_id=elevation_id, eid=eid)
     return result
@@ -572,16 +575,19 @@ async def decide_and_execute(
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _record_result_taint(result)
+        # Spending != learning: a single-use grant is spent by EXECUTION, not by
+        # a clean result — consume it here, before the gate, so a secret-bearing
+        # output can't leave the grant unspent to release a second execution.
+        await _consume_single_use(action, grants, now)
         gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
         if gate is not None:
             # Output-scan parity (parity-1): a secret in the RESULT must not
             # reach the model even though the call itself was PASS. Log only
-            # the block — skip consuming any elevation / baseline "allowed"
-            # observation below, since the outcome is not confirmed safe
-            # (mirrors the host-hook: one log row, the block, not a clean one).
+            # the block — skip the baseline "allowed" observation below, since
+            # the outcome is not confirmed safe (mirrors the host-hook: one log
+            # row, the block, not a clean one).
             await _persist(gate, action, auth_result="blocked", eid=eid)
             return _verdict_result(gate)
-        await _consume_single_use(action, grants, now)
         if not softened:
             # Teach the baseline only on a GENUINE pass. A softened would-have
             # (monitor/off suppressed a step-up) is NOT confirmed-benign — feeding

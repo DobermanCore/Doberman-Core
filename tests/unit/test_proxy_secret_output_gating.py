@@ -22,11 +22,14 @@ under test here.
 """
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
+from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.models import ReasonCode
 from doberman.proxy import executor
+from doberman.proxy.executor import _safe_decide as _real_safe_decide
 from doberman.storage.db import db_path
 from doberman.storage.log import read_decisions
 from tests.unit.test_proxy_taint_floor import _FakeSession, _ok_result, _pass_decision
@@ -42,6 +45,15 @@ def _deterministic_baseline_decision(monkeypatch):
 
 
 _SYNTHETIC_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+
+
+def _write_role(repo_root):
+    cfg = repo_root / ".doberman"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "role.yaml").write_text(
+        'name: webdev\nallowed:\n  - "frontend/**"\nsuspicious:\n  - "backend/**"\n',
+        encoding="utf-8",
+    )
 
 
 async def _rows() -> list[dict]:
@@ -111,3 +123,54 @@ async def test_scan_exception_fails_closed(monkeypatch):
     assert len(rows) == 1
     assert rows[0]["final_verdict"] == "BLOCK"
     assert ReasonCode.objective_guardrail_error.value in rows[0]["reason_codes_json"]
+
+
+async def test_gated_output_still_consumes_a_single_use_elevation(
+    monkeypatch, isolated_executor_repo_root
+):
+    """Grant spending tracks EXECUTION, not output cleanliness (coordinator
+    review, PR #126): the single-use elevation that released a destructive
+    forward must be spent even when the RESULT is gated to BLOCK for a
+    secret — otherwise the same grant could release a second execution just
+    because the first result happened to contain a secret.
+    """
+    _write_role(isolated_executor_repo_root)
+    # Restore the REAL decision engine for this test: the role rule reading
+    # ctx.grants (not a stub) is what proves whether the elevation still
+    # covers the second call.
+    monkeypatch.setattr(executor, "_safe_decide", _real_safe_decide)
+    calls = {"n": 0}
+
+    def approve_elev(decision, action, *, prompter=None, at=None):
+        calls["n"] += 1
+        return AuthResult(
+            approved=True,
+            tier=AuthTier.role_elevation,
+            method="test",
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    monkeypatch.setattr(executor, "run_auth_challenge", approve_elev)
+    session = _FakeSession({"fs_delete": _ok_result(_SYNTHETIC_AWS_KEY)})
+
+    # 1) destructive, out-of-scope path -> AUTH -> single-use elevation granted
+    #    -> the call DOES execute, but the RESULT carries a secret -> gated.
+    result = await executor.decide_and_execute(session, "fs_delete", {"path": "backend/api.ts"})
+    assert result.isError
+    assert "blocked by policy" in result.content[0].text
+    assert _SYNTHETIC_AWS_KEY not in result.content[0].text
+    assert session.calls == [("fs_delete", {"path": "backend/api.ts"})]
+    assert calls["n"] == 1
+
+    # 2) SAME destructive call again: if the grant were left unspent because
+    #    the first output was gated, this would silently ride the same grant
+    #    (no new challenge) and delete a second time for free. It must instead
+    #    require a FRESH role-elevation challenge.
+    result2 = await executor.decide_and_execute(session, "fs_delete", {"path": "backend/api.ts"})
+    assert calls["n"] == 2, "the single-use grant was not consumed by the gated execution"
+    assert result2.isError  # gated again (same secret-bearing response)
+    assert session.calls == [
+        ("fs_delete", {"path": "backend/api.ts"}),
+        ("fs_delete", {"path": "backend/api.ts"}),
+    ]
