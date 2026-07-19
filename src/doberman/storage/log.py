@@ -85,12 +85,16 @@ _DECISION_COLUMNS = [
 ]
 
 
-def _path_class(action: SecurityObject) -> str | None:
+def path_class(action: SecurityObject) -> str | None:
     """A redaction-safe class for a file target: drop the filename, keep dir + ext.
 
     ``backend/auth/session.ts`` → ``backend/auth/*.ts``; ``.env`` → ``.env``
     (dotfiles/extensionless names are themselves the class). Non-file actions
     have no path class. Never returns the raw filename of an extensioned file.
+
+    Public (renamed from ``_path_class``) so D3's dashboard-approval queue
+    (``doberman.auth.dashboard_prompter``) can derive the same redaction-safe
+    path class for a pending row without duplicating this logic.
     """
     if action.target_path_class:
         return action.target_path_class
@@ -131,7 +135,7 @@ def build_record(
         "action_id": decision.action_id,
         "agent_role": action.agent_role,
         "action_type": action.action_type.value,
-        "target_path_class": _path_class(action),
+        "target_path_class": path_class(action),
         "risk": decision.final_risk.value,
         "source_context": action.source_context.value,
         "final_verdict": decision.final_verdict.value,

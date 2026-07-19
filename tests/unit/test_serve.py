@@ -15,6 +15,7 @@ from mcp import StdioServerParameters
 from typer.testing import CliRunner
 
 import doberman.cli.main as cli
+from doberman.auth.dashboard_prompter import DashboardPrompter
 from doberman.auth.elicitation_prompter import ElicitationPrompter
 from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
 from doberman.auth.tty_prompter import TtyPrompter
@@ -127,12 +128,13 @@ def test_stderr_logging_keeps_stdout_clean():
 async def test_serve_stdio_sets_repo_root_and_elicitation_first_prompter(monkeypatch):
     """serve_stdio points the engine at repo_root and installs the challenge chain, then runs.
 
-    The order is load-bearing: elicitation renders the challenge INSIDE the agent client
-    (best UX, works remotely) but only for clients that support it; the GUI dialog covers
-    desktop sessions (and is the only 2FA-code channel — the MCP spec forbids sensitive
-    data via elicitation); the terminal is the last resort for headless/SSH sessions.
-    A TTY-first chain would never fall through: the agent-owned console OPENS successfully
-    even though its prompt is invisible.
+    The order is load-bearing: the dashboard goes first (D3) but only engages when its
+    heartbeat is fresh, else it falls back immediately with zero added latency; elicitation
+    renders the challenge INSIDE the agent client (best UX, works remotely) but only for
+    clients that support it; the GUI dialog covers desktop sessions (and is the only
+    2FA-code channel — the MCP spec forbids sensitive data via elicitation); the terminal is
+    the last resort for headless/SSH sessions. A TTY-first chain would never fall through:
+    the agent-owned console OPENS successfully even though its prompt is invisible.
     """
     ran: dict = {}
 
@@ -175,6 +177,7 @@ async def test_serve_stdio_sets_repo_root_and_elicitation_first_prompter(monkeyp
     assert executor.REPO_ROOT == "/some/repo"
     assert isinstance(executor.AUTH_PROMPTER, FallbackPrompter)
     assert [type(p) for p in executor.AUTH_PROMPTER.prompters] == [
+        DashboardPrompter,
         ElicitationPrompter,
         GuiPrompter,
         TtyPrompter,

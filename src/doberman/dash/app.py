@@ -26,7 +26,25 @@ decision log is redacted at write time - see ``doberman.storage.log``):
   server is loopback-only and the token is single-use per run (see
   ``_feed_token_matches``).
 
-D3 (approve/deny) and D5 (polish) are later slices - not built here.
+D3 adds the interactive AUTH approve/deny queue, mediated ENTIRELY through the
+local SQLite ``pending_approvals`` table (:mod:`doberman.storage.approvals`) -
+never HTTP into the decision path:
+
+* ``GET /api/pending`` - unexpired rows still awaiting a decision. Same
+  allow-listed, redaction-safe vocabulary as the D2 feed (action type, risk,
+  reason codes, the human explanation, path *class*, tier) - never a raw
+  target/argument/secret. Bearer token via header only (no query-param
+  fallback - this route isn't consumed by ``EventSource``).
+* ``POST /api/resolve/{id}`` - body ``{"decision": "approved"|"denied",
+  "totp_code": <str, optional>}``. Resolves the row via the same race-safe,
+  single-use ``UPDATE ... WHERE status='pending'`` :func:`doberman.storage.
+  approvals.resolve` used everywhere else; an already-resolved or expired row
+  -> 409. The dash server NEVER verifies the TOTP code itself - it only rides
+  along on the row back to the ``DashboardPrompter`` polling it on the
+  decision-path side, which feeds it through the EXISTING
+  :func:`doberman.auth.totp.verify`.
+
+D5 (polish) is a later slice - not built here.
 """
 
 from __future__ import annotations
@@ -42,7 +60,12 @@ from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Route
 
 from doberman.dash.stats import build_stats, reason_codes
+from doberman.storage import approvals
 from doberman.storage.log import read_decisions, read_decisions_since
+
+#: Tiers whose challenge requires a TOTP code (mirrors
+#: ``LocalAuthProvider._run_tier``'s ``two_factor``/``role_elevation`` branch).
+_TOTP_TIERS = frozenset({"two_factor", "role_elevation"})
 
 _BEARER_PREFIX = "Bearer "
 #: Rows sent immediately on `/api/feed` connect, oldest-first, before live polling starts.
@@ -85,12 +108,36 @@ _HTML_SHELL = """<!doctype html>
   }
   @media (prefers-color-scheme: light) { #feed li { border-color: #eee; } }
   #feed li:last-child { border-bottom: none; }
+  h2 { font-size: .9rem; font-weight: 600; margin: 1.5rem 0 .5rem; }
+  #pending-list { list-style: none; margin: 0; padding: 0; }
+  #pending-list li {
+    padding: .6rem; margin-bottom: .5rem; border: 1px solid #333; border-radius: 4px;
+    font-size: .8rem;
+  }
+  @media (prefers-color-scheme: light) { #pending-list li { border-color: #ccc; } }
+  #pending-list .row-explanation { margin: .3rem 0; }
+  #pending-list input[type="text"] {
+    font-family: inherit; font-size: .85rem; padding: .25rem .4rem; margin-right: .4rem;
+    width: 8rem;
+  }
+  #pending-list button {
+    font: inherit; font-size: .8rem; padding: .3rem .7rem; margin-right: .4rem;
+    border: 1px solid #444; border-radius: 4px; background: transparent; color: inherit;
+    cursor: pointer;
+  }
+  #pending-list button.approve { border-color: #3fb950; }
+  #pending-list button.deny { border-color: #f85149; }
+  #pending-empty { opacity: .6; font-size: .8rem; }
 </style>
 </head>
 <body>
   <h1>Doberman Dashboard (preview)</h1>
   <div id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></div>
   <div id="stats">stats loading...</div>
+  <h2>Pending approvals</h2>
+  <ul id="pending-list"></ul>
+  <div id="pending-empty">no pending approvals</div>
+  <h2>Recent decisions</h2>
   <ul id="feed"></ul>
   <script>
     (function () {
@@ -139,6 +186,97 @@ _HTML_SHELL = """<!doctype html>
         .catch(function () {
           statsEl.textContent = "stats unavailable";
         });
+
+      var pendingList = document.getElementById("pending-list");
+      var pendingEmpty = document.getElementById("pending-empty");
+      var PENDING_POLL_MS = 2000;
+
+      function resolveApproval(id, decision, totpCode, card) {
+        var body = { decision: decision };
+        if (totpCode) { body.totp_code = totpCode; }
+        fetch("/api/resolve/" + encodeURIComponent(id), {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(body)
+        }).then(function (res) {
+          if (res.ok) {
+            card.remove();
+          } else {
+            // Already resolved/expired elsewhere, or a bad request — refresh
+            // the list from the server rather than trust local state.
+            refreshPending();
+          }
+        }).catch(function () { /* network hiccup — next poll retries */ });
+      }
+
+      function renderPending(rows) {
+        pendingList.textContent = "";
+        pendingEmpty.style.display = rows.length ? "none" : "block";
+        rows.forEach(function (row) {
+          var li = document.createElement("li");
+
+          var header = document.createElement("div");
+          // textContent only — every field is row-derived and must render
+          // literally, never as markup (mirrors the feed's discipline).
+          header.textContent = "[" + row.risk + "] " + row.action_type +
+            " " + (row.target_path_class || "-") + " (tier: " + row.tier + ")";
+          li.appendChild(header);
+
+          var reasons = document.createElement("div");
+          reasons.textContent = (row.reason_codes || []).join(", ") || "-";
+          li.appendChild(reasons);
+
+          var explanation = document.createElement("div");
+          explanation.className = "row-explanation";
+          explanation.textContent = row.explanation || "";
+          li.appendChild(explanation);
+
+          var totpInput = null;
+          if (row.needs_totp) {
+            totpInput = document.createElement("input");
+            totpInput.type = "text";
+            totpInput.placeholder = "TOTP code";
+            totpInput.autocomplete = "off";
+            li.appendChild(totpInput);
+          }
+
+          var approveBtn = document.createElement("button");
+          approveBtn.type = "button";
+          approveBtn.className = "approve";
+          approveBtn.textContent = "Approve";
+          approveBtn.addEventListener("click", function () {
+            resolveApproval(row.id, "approved", totpInput ? totpInput.value : null, li);
+          });
+          li.appendChild(approveBtn);
+
+          var denyBtn = document.createElement("button");
+          denyBtn.type = "button";
+          denyBtn.className = "deny";
+          denyBtn.textContent = "Deny";
+          denyBtn.addEventListener("click", function () {
+            resolveApproval(row.id, "denied", totpInput ? totpInput.value : null, li);
+          });
+          li.appendChild(denyBtn);
+
+          pendingList.appendChild(li);
+        });
+      }
+
+      function refreshPending() {
+        fetch("/api/pending", { headers: { "Authorization": "Bearer " + token } })
+          .then(function (res) {
+            if (!res.ok) { throw new Error("status " + res.status); }
+            return res.json();
+          })
+          .then(renderPending)
+          .catch(function () { /* leave the last known list showing */ });
+      }
+
+      refreshPending();
+      setInterval(refreshPending, PENDING_POLL_MS);
 
       // EventSource cannot set request headers, so the token travels as a
       // query param here only (see doberman.dash.app._feed_token_matches).
@@ -295,6 +433,65 @@ def _make_feed_route(
     return Route("/api/feed", feed)
 
 
+def _pending_row(row: dict) -> dict:
+    """The ONLY fields ``/api/pending`` ever serializes for one queued approval.
+
+    ``row`` comes from :func:`doberman.storage.approvals.list_pending` /
+    ``get_pending`` - already redaction-safe at write time (path *class*, the
+    human explanation string, reason-code/tier/risk/action-type CLASSES). This
+    is a further allow-list on top: ``decision``/``totp_code`` are the
+    resolution's own write-side fields and are never echoed back out.
+    """
+    return {
+        "id": row.get("id"),
+        "created_at": row.get("created_at"),
+        "expires_at": row.get("expires_at"),
+        "tier": row.get("tier"),
+        "action_type": row.get("action_type"),
+        "risk": row.get("risk"),
+        "reason_codes": row.get("reason_codes") or [],
+        "explanation": row.get("explanation"),
+        "target_path_class": row.get("target_path_class"),
+        "needs_totp": row.get("tier") in _TOTP_TIERS,
+    }
+
+
+def _make_pending_route(token: str, repo_root: str) -> Route:
+    async def pending(request: Request) -> Response:
+        if not _token_matches(request, token):
+            return _unauthorized()
+        rows = await approvals.list_pending(repo_root=repo_root)
+        return JSONResponse([_pending_row(row) for row in rows])
+
+    return Route("/api/pending", pending)
+
+
+def _make_resolve_route(token: str, repo_root: str) -> Route:
+    async def resolve(request: Request) -> Response:
+        if not _token_matches(request, token):
+            return _unauthorized()
+        approval_id = request.path_params["approval_id"]
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        decision = body.get("decision")
+        if decision not in ("approved", "denied"):
+            return JSONResponse({"error": "decision must be 'approved' or 'denied'"}, 400)
+        totp_code = body.get("totp_code")
+        won = await approvals.resolve(
+            approval_id,
+            decision=decision,
+            totp_code=totp_code if isinstance(totp_code, str) else None,
+            repo_root=repo_root,
+        )
+        if not won:
+            return JSONResponse({"error": "already resolved or expired"}, status_code=409)
+        return JSONResponse({"status": "resolved"})
+
+    return Route("/api/resolve/{approval_id}", resolve, methods=["POST"])
+
+
 def create_app(
     token: str,
     repo_root: str = ".",
@@ -319,5 +516,7 @@ def create_app(
         _make_feed_route(
             token, repo_root, poll_interval=feed_poll_interval, max_polls=feed_max_polls
         ),
+        _make_pending_route(token, repo_root),
+        _make_resolve_route(token, repo_root),
     ]
     return Starlette(routes=routes)

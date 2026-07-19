@@ -7,7 +7,11 @@ around it. This is the deployable counterpart to :func:`doberman.proxy.mcp_proxy
 which builds the proxy object; this module gives it a transport.
 
 SECURITY: nothing here writes this process's stdout (that is the agent's MCP channel). AUTH
-challenges try three channels in order: MCP **elicitation** first
+challenges try four channels in order: the **dashboard** first
+(:class:`~doberman.auth.dashboard_prompter.DashboardPrompter` — engages only when a dash
+server's heartbeat is fresh, D3; falls back with zero added latency if no dashboard is running,
+and falls back on its own poll timeout too — a live-but-unwatched dashboard must not deny a
+human who can still answer elsewhere), then MCP **elicitation**
 (:class:`~doberman.auth.elicitation_prompter.ElicitationPrompter` — rendered natively inside
 the agent client, for clients that support it; never used for 2FA codes), then a topmost GUI
 dialog (:class:`~doberman.auth.gui_prompter.GuiPrompter` — when an agent's TUI owns the
@@ -23,6 +27,7 @@ import logging
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.server.stdio import stdio_server
 
+from doberman.auth.dashboard_prompter import DashboardPrompter
 from doberman.auth.elicitation_prompter import ElicitationPrompter
 from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
 from doberman.auth.tty_prompter import TtyPrompter
@@ -36,8 +41,8 @@ async def serve_stdio(downstream: StdioServerParameters, *, repo_root: str = "."
     """Spawn ``downstream``, then serve the Doberman proxy to the agent over stdio.
 
     Points the engine at ``repo_root`` (its ``.doberman/`` holds the active role, policy,
-    decision log, and elevation store) and installs the elicitation→GUI→terminal prompter
-    chain so an ``AUTH`` challenge never reads/writes the agent's stdin/stdout — and is
+    decision log, and elevation store) and installs the dashboard→elicitation→GUI→terminal
+    prompter chain so an ``AUTH`` challenge never reads/writes the agent's stdin/stdout — and is
     actually *visible* when the agent's TUI owns the console. Returns when the agent
     disconnects; any transport failure propagates (the caller exits non-zero, forwarding
     nothing).
@@ -52,6 +57,7 @@ async def serve_stdio(downstream: StdioServerParameters, *, repo_root: str = "."
             # session) and this loop (challenges run in a worker thread and bridge back).
             executor.AUTH_PROMPTER = FallbackPrompter(
                 [
+                    DashboardPrompter(executor.REPO_ROOT),
                     ElicitationPrompter(proxy, asyncio.get_running_loop()),
                     GuiPrompter(),
                     TtyPrompter(),
