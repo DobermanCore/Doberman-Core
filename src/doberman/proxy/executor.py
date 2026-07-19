@@ -19,6 +19,7 @@ exactly one action id (no replay onto a different call).
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from mcp.client.session import ClientSession
@@ -29,6 +30,7 @@ from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import load_active_role, load_enforcement, load_mode, load_preferences
 from doberman.engine.decision_engine import Guardrail, decide, max_risk
 from doberman.engine.objective import ObjectiveGuardrail
+from doberman.engine.rules.secrets import contains_strong_secret
 from doberman.engine.subjective import SubjectiveGuardrail
 from doberman.engine.taint_floor import apply_taint_floor_async, record_output_taint
 from doberman.models import (
@@ -123,6 +125,35 @@ def _denied_result(reason: ReasonCode, error_class: str, action_id: str) -> Call
         ],
         isError=True,
     )
+
+
+def handler_failure_result(exc: Exception) -> CallToolResult:
+    """Fail-closed result for an exception that escaped the whole chokepoint (H1).
+
+    Mirrors :func:`_denied_result`: reason code + the exception's Python
+    **class name** only — never ``str(exc)``, which could carry argument
+    fragments (e.g. a ``KeyError``/pydantic ``ValidationError`` message often
+    echoes the offending value). No :class:`SecurityObject` may exist yet at
+    this point (the failure can occur before, or elsewhere inside,
+    ``decide_and_execute``'s own orchestration), so a fresh id stands in for
+    ``action_id`` — nothing here can be correlated with a persisted decision
+    row, which is expected: nothing was safely decided.
+
+    Called from ``doberman.proxy.mcp_proxy``'s ``_call_tool`` handler, the
+    single point every ``tools/call`` passes through.
+    """
+    text = _DENIED_TEMPLATE.format(
+        reason=ReasonCode.proxy_handler_error,
+        error_class=type(exc).__name__,
+        action_id=uuid.uuid4().hex,
+    )
+    # ponytail: every field above (a reason enum, an exception's own Python
+    # type name, a fresh uuid) is structurally incapable of carrying argument
+    # content — this scrub is defense-in-depth against a future edit to the
+    # template that interpolates something unsafe.
+    if contains_strong_secret(text):
+        text = "doberman: internal error; action denied (redacted)"
+    return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
 
 
 def _verdict_result(decision: Decision) -> CallToolResult:

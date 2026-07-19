@@ -315,6 +315,21 @@ def _strong_secret_in_text(text: str) -> bool:
     return any(_value_looks_secretish(m.group("value")) for m in _ENV_ASSIGNMENT.finditer(sample))
 
 
+def contains_strong_secret(text: str) -> bool:
+    """Public reuse surface (H1 hardening): does ``text`` contain STRONG secret
+    evidence — a known credential shape (AWS/OpenAI/Anthropic/GitHub/GitLab/
+    Slack/Google/Stripe/SendGrid/npm/JWT/DB-URI/PEM/Azure/GCP/...) or a
+    ``KEY=secret-looking-value`` env assignment?
+
+    This is the exact check :func:`SecretLeakageRule.evaluate` uses to justify
+    a hard BLOCK on exfiltration — the single, canonical place credential-shape
+    knowledge lives. Other modules (e.g. ``doberman.proxy.normalize``'s stopgap
+    redactor) call this instead of maintaining a second, weaker pattern set.
+    Never raises; a falsy ``text`` is never a secret.
+    """
+    return bool(text) and _strong_secret_in_text(text)
+
+
 def _token_looks_like_weak_secret(token: str) -> bool:
     """Judge a single candidate token for the high-entropy heuristic.
 

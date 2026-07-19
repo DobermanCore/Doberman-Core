@@ -102,16 +102,19 @@ async def test_failed_calls_are_still_logged_and_ids_correlate(caplog):
 def test_short_unshaped_secret_under_non_sensitive_key_never_logged(caplog):
     """The critical proof: log_action must not depend on normalize()'s redactor.
 
-    normalize()'s ``_redact_value`` is a length/shape heuristic stopgap — a
-    short, unshaped secret under a non-sensitive argument key (e.g.
-    ``content="db_password=..."``) passes through ``raw_args_redacted``
-    completely unredacted. Before this fix, ``log_action`` logged
-    ``action.model_dump()`` (which includes ``raw_args_redacted``), so a
-    routine PASS could write that secret to the interception log in
-    cleartext. This test fails on the old code and passes on the new.
+    normalize()'s ``_redact_value`` is a length/shape heuristic stopgap (H1
+    hardening layered the canonical shared detector on top, but it too is
+    shape-based) — a short, unshaped secret under a non-sensitive argument key
+    and an env-assignment-style key name the shared detector's keyword list
+    doesn't recognize (e.g. ``content="db_config=..."``, not "db_password=...";
+    see the shared detector's ``_ENV_ASSIGNMENT`` keyword list) passes through
+    ``raw_args_redacted`` completely unredacted. Before this fix, ``log_action``
+    logged ``action.model_dump()`` (which includes ``raw_args_redacted``), so a
+    routine PASS could write that secret to the interception log in cleartext.
+    This test fails on the old code and passes on the new.
     """
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
-    secret_value = "db_password=Tr0ub4dor&3"  # noqa: S105 — synthetic test value
+    secret_value = "db_config=Tr0ub4dor&3"  # noqa: S105 — synthetic test value
     action = normalize("write_file", {"content": secret_value, "path": "config.env"})
     # Sanity-check the premise: the heuristic redactor really did let this
     # secret through unredacted (otherwise this test would prove nothing).
@@ -119,7 +122,7 @@ def test_short_unshaped_secret_under_non_sensitive_key_never_logged(caplog):
 
     interception_log.log_action(action, Verdict.PASS)
 
-    assert "db_password" not in caplog.text
+    assert "db_config" not in caplog.text
     assert "Tr0ub4dor" not in caplog.text
 
     records = _log_records(caplog)
