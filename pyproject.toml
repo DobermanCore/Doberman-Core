@@ -61,13 +61,18 @@ packages = ["src/doberman"]
 
 # Lock down exactly what ships in the sdist so no local/runtime files (graphify-out,
 # .doberman/, *.db, key files, dev plans) can ever leak into a published artifact.
+# Patterns are gitignore-style: the leading "/" anchors each one to the project root,
+# so an unrelated nested copy of the tree (e.g. a stray git worktree inside the
+# checkout) can never match and leak into the artifact.
+# "/tools" ships explicitly because [tool.pytest.ini_options] testpaths lists it.
 [tool.hatch.build.targets.sdist]
 include = [
-    "src/doberman",
-    "tests",
-    "README.md",
-    "LICENSE",
-    "pyproject.toml",
+    "/src/doberman",
+    "/tests",
+    "/tools",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
 ]
 
 [tool.pytest.ini_options]
