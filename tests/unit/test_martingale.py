@@ -92,10 +92,29 @@ def test_mean_reversion_is_over_correction_not_entrenchment():
 
 def test_short_and_degenerate_windows_never_flag():
     assert not martingale_score(_entrenched_stream(start=0.3, n=10)).entrenched  # too short
-    constant = [0.7] * (MIN_WINDOW + 5)
-    result = martingale_score(constant)  # constant prior: nothing to regress on
+    # A constant window BELOW SAFE_BELIEF: nothing to regress on, and not the
+    # dangerous frozen-HIGH case, so it stays unflagged (see
+    # test_frozen_high_belief_is_flagged_entrenched below for the HIGH side).
+    constant = [0.5] * (MIN_WINDOW + 5)
+    result = martingale_score(constant)
     assert result.beta == 0.0
     assert result.p_value == 1.0
+
+
+def test_frozen_high_belief_is_flagged_entrenched():
+    # A belief window that stopped updating entirely at a HIGH (safe) value is
+    # entrenchment's most extreme case — the zero-variance OLS blind spot.
+    result = martingale_score([0.9] * (MIN_WINDOW + 2))
+    assert result.beta > 0
+    assert result.p_value < 0.05
+    assert result.entrenched
+
+
+def test_frozen_low_belief_not_flagged():
+    # A frozen LOW (cautious) belief is unchanged behavior: raise-only means
+    # this never auto-refreshes toward a warmer baseline.
+    result = martingale_score([0.3] * (MIN_WINDOW + 2))
+    assert not result.entrenched
 
 
 # --- the monitor ----------------------------------------------------------------
@@ -166,6 +185,23 @@ async def test_entrenched_toward_risky_is_surfaced_and_protection_held(tmp_path)
     assert await read_beliefs(_EID, repo_root=root)  # beliefs NOT wiped: held, not refreshed
 
 
+async def test_frozen_high_stream_persists_to_refresh(tmp_path):
+    root = str(tmp_path)
+    await _seed_beliefs(root, [0.9] * (MIN_WINDOW + 2))
+    first = await run_monitor(_EID, repo_root=root, now=_NOW)
+    assert first is None  # one flagged window is not yet actionable
+    second = await run_monitor(_EID, repo_root=root, now=_NOW)
+    assert second == "refresh"  # persistence reached; frozen HIGH belief is the safe/dangerous case
+
+
+async def test_frozen_low_stream_never_refreshes(tmp_path):
+    root = str(tmp_path)
+    eid = "hmac:martingale-frozen-low-test"
+    await _seed_beliefs(root, [0.3] * (MIN_WINDOW + 2), eid=eid)
+    for _ in range(2):
+        assert await run_monitor(eid, repo_root=root, now=_NOW) is None
+
+
 async def test_rational_stream_never_triggers_an_action(tmp_path):
     root = str(tmp_path)
     await _seed_beliefs(root, _rational_stream())
@@ -199,3 +235,10 @@ def test_guard_blocks_entrenched_and_insufficient_allows_rational():
 
     allowed = guard_self_update(_rational_stream())
     assert allowed.allowed
+
+
+def test_frozen_high_stream_blocks_self_update():
+    # Tightens the self-improvement guard too: a fully frozen HIGH belief
+    # stream is entrenched, so a proposed self-update driven by it is blocked.
+    blocked = guard_self_update([0.9] * (MIN_WINDOW + 2))
+    assert not blocked.allowed

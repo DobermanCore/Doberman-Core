@@ -120,6 +120,16 @@ def martingale_score(beliefs: list[float] | tuple[float, ...]) -> MartingaleResu
     x_centered = prior - prior.mean()
     sxx = float(np.dot(x_centered, x_centered))
     if sxx < 1e-12:
+        # A literally-invariant belief window is entrenchment's extreme case:
+        # the belief stopped updating entirely, which OLS can't express (no
+        # regressor variance to regress on) so it would otherwise score "no
+        # signal". Flag it directly — but ONLY when the frozen belief is HIGH
+        # (the dangerous "stopped escalating / desensitized" case, which
+        # run_monitor routes to the raise-safe baseline refresh). A frozen LOW
+        # belief stays unflagged, exactly as before (raise-only: never
+        # auto-refreshes a cautious baseline).
+        if float(prior.mean()) >= SAFE_BELIEF:
+            return MartingaleResult(beta=1.0, p_value=0.0, n=n)
         return MartingaleResult(beta=0.0, p_value=1.0, n=n)
     beta = float(np.dot(x_centered, delta - delta.mean()) / sxx)
     intercept = float(delta.mean() - beta * prior.mean())
