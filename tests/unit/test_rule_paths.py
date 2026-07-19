@@ -54,6 +54,20 @@ def test_sensitive_path_requires_auth(tmp_path):
     assert ReasonCode.sensitive_path_access in result.reason_codes
 
 
+def test_ci_config_paths_require_auth(tmp_path):
+    # Non-GitHub CI configs are sensitive (AUTH), matching GitHub Actions.
+    for path in (
+        ".gitlab-ci.yml",
+        "Jenkinsfile",
+        ".circleci/config.yml",
+        "azure-pipelines.yml",
+        "nested/.gitlab-ci.yml",
+    ):
+        result = RULE.evaluate(_action(path), _ctx(tmp_path))
+        assert result.verdict is Verdict.AUTH, path
+        assert ReasonCode.sensitive_path_access in result.reason_codes
+
+
 def test_benign_path_passes(tmp_path):
     result = RULE.evaluate(_action("frontend/Button.tsx"), _ctx(tmp_path))
     assert result.verdict is Verdict.PASS
