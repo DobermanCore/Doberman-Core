@@ -27,7 +27,7 @@ from mcp.types import CallToolResult, TextContent
 from doberman.auth.challenge import AuthTier, Prompter, run_auth_challenge
 from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import load_active_role, load_enforcement, load_mode, load_preferences
-from doberman.engine.decision_engine import Guardrail, decide
+from doberman.engine.decision_engine import Guardrail, decide, max_risk
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.subjective import SubjectiveGuardrail
 from doberman.engine.taint_floor import apply_taint_floor_async, record_output_taint
@@ -97,6 +97,17 @@ _VERDICT_TEMPLATES = {
         "doberman: blocked by policy (reasons: {reasons}; {explanation}; action id: {action_id})"
     ),
 }
+
+#: Reason codes whose presence in a forwarded tool's OUTPUT hard-blocks that
+#: output from reaching the model — parity with the host-hook's PostToolUse
+#: output scan (``doberman.hosthooks.claude_code._POST_BLOCK_REASON_CODES``).
+#: The weaker ``possible_high_entropy_secret`` code is deliberately excluded:
+#: it false-positives on hashes/UUIDs/base64 fragments, so it stays recorded
+#: (via ``record_output_taint``, already wired below) but never hard-blocks
+#: a read on its own.
+_OUTPUT_BLOCK_REASON_CODES: frozenset[ReasonCode] = frozenset(
+    {ReasonCode.secret_exfiltration, ReasonCode.sensitive_secret_access}
+)
 
 
 def _denied_result(reason: ReasonCode, error_class: str, action_id: str) -> CallToolResult:
@@ -283,6 +294,11 @@ async def _forward(
         return _denied_result(ReasonCode.downstream_error, type(exc).__name__, action.id)
 
 
+def _result_text(result: CallToolResult) -> str:
+    """Flatten a tool result's text content blocks into one string (never raises)."""
+    return "".join(block.text for block in result.content if isinstance(block, TextContent))
+
+
 async def _record_result_taint(result: CallToolResult) -> None:
     """Best-effort: feed a successful tool result's text to the taint floor.
 
@@ -293,13 +309,72 @@ async def _record_result_taint(result: CallToolResult) -> None:
     result (e.g. a non-string ``.text``) must not break the forward/return path.
     """
     try:
-        output_text = "".join(
-            block.text for block in result.content if isinstance(block, TextContent)
-        )
+        output_text = _result_text(result)
         if output_text:
             await record_output_taint(output_text, REPO_ROOT, None)
     except Exception:  # noqa: BLE001 — recording must never break the execution path
         _engine_logger.warning("output taint recording failed; continuing")
+
+
+async def _scan_output_for_secrets(
+    tool_name: str,
+    arguments: dict | None,
+    action: SecurityObject,
+    result: CallToolResult,
+) -> Decision | None:
+    """Port of the host-hook's PostToolUse output-scan gate (parity-1).
+
+    Re-normalizes this call with the downstream RESULT text folded into
+    ``raw_arguments["tool_output"]`` and runs it back through the same
+    ``ObjectiveGuardrail`` used for the pre-execution decision — reusing the
+    shared ``doberman.engine.rules.secrets`` detection, never duplicating it.
+    A high-confidence secret finding (``secret_exfiltration`` /
+    ``sensitive_secret_access``) must not reach the model: this returns a
+    synthetic BLOCK ``Decision`` naming only reason codes + a static
+    explanation string (never the scanned output text — see
+    ``SecretLeakageRule.evaluate``'s fixed explanation strings). Returns
+    ``None`` when the output is clean (nothing to gate).
+
+    Fails closed: any exception during the scan itself is treated exactly
+    like a hard-block-worthy finding, so a broken scan blocks the output
+    rather than silently letting it through.
+    """
+    try:
+        output_text = _result_text(result)
+        if not output_text:
+            return None
+        scan_args = dict(arguments or {})
+        scan_args["tool_output"] = output_text
+        scan_action = normalize(tool_name, scan_args)
+        # role=None is intentional (mirrors the host-hook's synthetic scan
+        # action): this action exists only to scan OUTPUT text for secrets,
+        # not to re-judge the real call target — role-boundary rules are
+        # meaningless against scan text.
+        scan_ctx = EvalContext(
+            role=None,
+            mode=load_mode(REPO_ROOT),
+            metadata={"raw_arguments": scan_args, "repo_root": REPO_ROOT},
+        )
+        scan_result = DEFAULT_OBJECTIVE.evaluate(scan_action, scan_ctx)
+        if not set(scan_result.reason_codes) & _OUTPUT_BLOCK_REASON_CODES:
+            return None
+    except Exception:  # noqa: BLE001 — fail closed: a broken scan blocks the output
+        scan_result = GuardrailResult(
+            verdict=Verdict.BLOCK,
+            risk=Risk.high,
+            reason_codes=[ReasonCode.objective_guardrail_error],
+            explanation="Output secret scan failed; failing closed.",
+        )
+    return Decision(
+        action_id=action.id,
+        final_verdict=Verdict.BLOCK,
+        final_risk=max_risk(scan_result.risk, Risk.high),
+        objective=scan_result,
+        subjective=None,
+        reason_codes=list(scan_result.reason_codes),
+        explanation=scan_result.explanation,
+        decided_at=datetime.now(timezone.utc),
+    )
 
 
 async def _consume_single_use(action: SecurityObject, grants: tuple, now: datetime) -> None:
@@ -413,7 +488,19 @@ async def _handle_auth(
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _record_result_taint(result)
+        # Spending != learning: a single-use grant is spent by EXECUTION, not by
+        # a clean result — consume it here, before the gate, so a secret-bearing
+        # output can't leave the grant unspent to release a second execution.
         await _consume_single_use(action, grants, now)
+        gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
+        if gate is not None:
+            # Output-scan parity (parity-1): a secret in the RESULT must not
+            # reach the model even though the call itself was approved. Log
+            # only the block — skip the baseline "allowed" observation, since
+            # the outcome is not confirmed safe (mirrors the host-hook: one log
+            # row, the block, not a clean one).
+            await _persist(gate, action, auth_result="blocked", elevation_id=elevation_id, eid=eid)
+            return _verdict_result(gate)
         await _observe_allowed(action, eid, surprise_score)
     await _persist(decision, action, auth_result="approved", elevation_id=elevation_id, eid=eid)
     return result
@@ -488,7 +575,19 @@ async def decide_and_execute(
     result = await _forward(downstream, tool_name, arguments, action)
     if not result.isError:
         await _record_result_taint(result)
+        # Spending != learning: a single-use grant is spent by EXECUTION, not by
+        # a clean result — consume it here, before the gate, so a secret-bearing
+        # output can't leave the grant unspent to release a second execution.
         await _consume_single_use(action, grants, now)
+        gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
+        if gate is not None:
+            # Output-scan parity (parity-1): a secret in the RESULT must not
+            # reach the model even though the call itself was PASS. Log only
+            # the block — skip the baseline "allowed" observation below, since
+            # the outcome is not confirmed safe (mirrors the host-hook: one log
+            # row, the block, not a clean one).
+            await _persist(gate, action, auth_result="blocked", eid=eid)
+            return _verdict_result(gate)
         if not softened:
             # Teach the baseline only on a GENUINE pass. A softened would-have
             # (monitor/off suppressed a step-up) is NOT confirmed-benign — feeding

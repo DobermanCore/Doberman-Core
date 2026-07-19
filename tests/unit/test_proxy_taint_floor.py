@@ -77,9 +77,12 @@ def _ok_result(text: str) -> CallToolResult:
 
 async def test_cross_call_exfil_blocked_in_strict_mode():
     # Call 1: a local read whose result carries a secret. Nothing in the
-    # request itself is secret-shaped, so it forwards (PASS) — and the proxy
-    # records secret_access taint from the OUTPUT text via
-    # `_record_result_taint` -> `record_output_taint`.
+    # request itself is secret-shaped, so the PRE-execution decision is PASS
+    # and the downstream call is made — but parity-1's output-scan gate now
+    # hard-blocks the RESULT before it reaches the model (the same
+    # sensitive_secret_access finding the host-hook's PostToolUse scan would
+    # hard-block), while still recording secret_access taint from the OUTPUT
+    # text via `_record_result_taint` -> `record_output_taint` beforehand.
     save_mode("strict", executor.REPO_ROOT)
     session = _FakeSession(
         {
@@ -89,14 +92,19 @@ async def test_cross_call_exfil_blocked_in_strict_mode():
     )
 
     read_result = await executor.decide_and_execute(session, "fs_read", {"path": "cfg.txt"})
-    assert not read_result.isError
+    assert read_result.isError
+    assert "blocked by policy" in read_result.content[0].text
+    assert _SYNTHETIC_AWS_KEY not in read_result.content[0].text
+    # The downstream WAS called (the gate blocks the RESPONSE, not the call);
+    # taint from its output is recorded regardless of the gate outcome.
     assert session.calls == [("fs_read", {"path": "cfg.txt"})]
 
     # Call 2: an egress whose own payload is clean — the per-call objective
     # floor alone would let this PASS. The cross-call taint floor must raise
     # it to BLOCK in strict mode because this session already holds
-    # secret_access taint from call 1. This assertion is the fail-open
-    # catcher: if the async refactor silently no-ops, this call forwards.
+    # secret_access taint from call 1's OUTPUT (recorded before the gate
+    # decided call 1's response). This assertion is the fail-open catcher: if
+    # the async refactor silently no-ops, this call forwards.
     egress_result = await executor.decide_and_execute(session, "net_get", {"url": _EGRESS_URL})
     assert egress_result.isError
     assert "blocked by policy" in egress_result.content[0].text
@@ -122,14 +130,21 @@ async def test_clean_session_egress_not_blocked_by_floor():
 
 async def test_output_taint_recording_failure_is_best_effort(monkeypatch):
     # A recording failure (e.g. a degraded taint store) must never break the
-    # forward/return path — the tool result still comes back untouched.
+    # forward/return path — the tool result still comes back untouched. Uses
+    # BENIGN output deliberately: this test isolates taint-*recording*
+    # failure (`record_output_taint`, best-effort by design) from the
+    # separate, independent output-scan *gate* (parity-1,
+    # `_scan_output_for_secrets`) — a secret-bearing result is covered by
+    # `test_cross_call_exfil_blocked_in_strict_mode` and
+    # `tests/unit/test_proxy_secret_output_gating.py` instead, where it is
+    # gated regardless of whether recording succeeds.
     async def _boom(*_args, **_kwargs):
         raise RuntimeError("taint store unavailable")
 
     monkeypatch.setattr(executor, "record_output_taint", _boom)
-    session = _FakeSession({"fs_read": _ok_result(_SYNTHETIC_AWS_KEY)})
+    session = _FakeSession({"fs_read": _ok_result("just an ordinary config value")})
 
     result = await executor.decide_and_execute(session, "fs_read", {"path": "cfg.txt"})
 
     assert not result.isError
-    assert result.content[0].text == _SYNTHETIC_AWS_KEY
+    assert result.content[0].text == "just an ordinary config value"
