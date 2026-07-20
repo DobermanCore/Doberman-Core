@@ -44,7 +44,10 @@ never HTTP into the decision path:
   decision-path side, which feeds it through the EXISTING
   :func:`doberman.auth.totp.verify`.
 
-D5 (polish) is a later slice - not built here.
+D5 (polish) layers verdict/risk color badges, a mode + enforcement header bar,
+and CSS-only empty states onto this same inline shell - the dark-by-default
+palette is formalized as CSS custom properties. Still no build toolchain, no
+new endpoints, no change to auth/redaction/decision-path behavior.
 """
 
 from __future__ import annotations
@@ -82,65 +85,140 @@ _HTML_SHELL = """<!doctype html>
 <title>Doberman Dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { color-scheme: dark light; }
-  body {
-    margin: 0; padding: 2rem; min-height: 100vh; box-sizing: border-box;
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: #0b0d10; color: #e6e6e6;
+  :root {
+    color-scheme: dark light;
+    --bg: #0b0d10;
+    --surface: #14171c;
+    --border: #262b33;
+    --ink: #e6e6e6;
+    --ink-dim: #9aa1ac;
+    --mono: ui-monospace, "SF Mono", Consolas, monospace;
+    --pass: #3fb950;
+    --pass-bg: rgba(63, 185, 80, .14);
+    --auth: #d29922;
+    --auth-bg: rgba(210, 153, 34, .14);
+    --block: #f85149;
+    --block-bg: rgba(248, 81, 73, .14);
+    --neutral: #8b949e;
+    --neutral-bg: rgba(139, 148, 158, .14);
   }
   @media (prefers-color-scheme: light) {
-    body { background: #f7f7f8; color: #111; }
+    :root {
+      --bg: #f7f7f8;
+      --surface: #ffffff;
+      --border: #dde1e6;
+      --ink: #111;
+      --ink-dim: #5b6572;
+    }
   }
-  h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 1rem; }
-  #status { display: inline-flex; align-items: center; gap: .5rem; font-size: .9rem; }
-  .dot { width: .6rem; height: .6rem; border-radius: 50%; background: #888; flex: none; }
-  .dot.ok { background: #3fb950; }
-  .dot.err { background: #f85149; }
-  #stats { margin: 1rem 0; font-size: .85rem; opacity: .85; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem; min-height: 100vh;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--ink);
+  }
+  h1 { font-size: 1.1rem; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+  h2 { font-size: .9rem; font-weight: 600; margin: 1.75rem 0 .6rem; color: var(--ink-dim); }
+  .topbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem;
+    padding-bottom: 1rem; margin-bottom: .5rem; border-bottom: 1px solid var(--border);
+  }
+  #status { display: inline-flex; align-items: center; gap: .5rem; font-size: .85rem; color: var(--ink-dim); }
+  .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--neutral); flex: none; }
+  .dot.ok { background: var(--pass); }
+  .dot.err { background: var(--block); }
+  .badge {
+    display: inline-flex; align-items: center; font-family: var(--mono);
+    font-size: .72rem; font-weight: 600; letter-spacing: .02em;
+    padding: .2rem .5rem; border-radius: 4px; line-height: 1.4;
+  }
+  .badge-pass { color: var(--pass); background: var(--pass-bg); }
+  .badge-auth { color: var(--auth); background: var(--auth-bg); }
+  .badge-block { color: var(--block); background: var(--block-bg); }
+  .badge-neutral { color: var(--ink-dim); background: var(--neutral-bg); }
+  .badge-risk-low { color: var(--pass); background: var(--pass-bg); }
+  .badge-risk-medium { color: var(--auth); background: var(--auth-bg); }
+  .badge-risk-high, .badge-risk-critical { color: var(--block); background: var(--block-bg); }
+  #stats {
+    margin: 0 0 1.5rem; font-size: .82rem; color: var(--ink-dim);
+    display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center;
+  }
+  #stats .count { color: var(--ink); font-family: var(--mono); }
+  .empty-state {
+    padding: 1rem; border: 1px dashed var(--border); border-radius: 6px;
+    color: var(--ink-dim); font-size: .82rem; text-align: center;
+  }
+  #feed, #pending-list { list-style: none; margin: .5rem 0 0; padding: 0; }
   #feed {
-    list-style: none; margin: .5rem 0 0; padding: 0; max-height: 60vh;
-    overflow-y: auto; border: 1px solid #333; border-radius: 4px;
+    max-height: 60vh; overflow-y: auto;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
   }
-  @media (prefers-color-scheme: light) { #feed { border-color: #ccc; } }
+  #feed:not(:empty) ~ #feed-empty { display: none; }
   #feed li {
-    padding: .35rem .6rem; border-bottom: 1px solid #222; font-size: .8rem;
-    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    display: flex; align-items: baseline; gap: .5rem;
+    padding: .5rem .7rem; border-bottom: 1px solid var(--border);
+    font-size: .8rem; font-family: var(--mono);
   }
-  @media (prefers-color-scheme: light) { #feed li { border-color: #eee; } }
   #feed li:last-child { border-bottom: none; }
-  h2 { font-size: .9rem; font-weight: 600; margin: 1.5rem 0 .5rem; }
-  #pending-list { list-style: none; margin: 0; padding: 0; }
+  #feed li .detail { color: var(--ink-dim); overflow-wrap: anywhere; }
   #pending-list li {
-    padding: .6rem; margin-bottom: .5rem; border: 1px solid #333; border-radius: 4px;
+    padding: .7rem .8rem; margin-bottom: .6rem;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
     font-size: .8rem;
   }
-  @media (prefers-color-scheme: light) { #pending-list li { border-color: #ccc; } }
-  #pending-list .row-explanation { margin: .3rem 0; }
+  #pending-list:not(:empty) ~ #pending-empty { display: none; }
+  #pending-list .row-header { display: flex; align-items: center; gap: .5rem; margin-bottom: .4rem; flex-wrap: wrap; }
+  #pending-list .row-header .detail { color: var(--ink-dim); }
+  #pending-list .row-explanation { margin: .4rem 0; color: var(--ink-dim); }
   #pending-list input[type="text"] {
-    font-family: inherit; font-size: .85rem; padding: .25rem .4rem; margin-right: .4rem;
-    width: 8rem;
+    font-family: var(--mono); font-size: .85rem; padding: .3rem .5rem; margin-right: .4rem;
+    width: 8rem; background: var(--bg); color: var(--ink); border: 1px solid var(--border); border-radius: 4px;
   }
   #pending-list button {
-    font: inherit; font-size: .8rem; padding: .3rem .7rem; margin-right: .4rem;
-    border: 1px solid #444; border-radius: 4px; background: transparent; color: inherit;
+    font: inherit; font-size: .78rem; font-weight: 600; padding: .35rem .8rem; margin-right: .4rem;
+    border: 1px solid var(--border); border-radius: 4px; background: transparent; color: inherit;
     cursor: pointer;
   }
-  #pending-list button.approve { border-color: #3fb950; }
-  #pending-list button.deny { border-color: #f85149; }
-  #pending-empty { opacity: .6; font-size: .8rem; }
+  #pending-list button.approve { border-color: var(--pass); color: var(--pass); }
+  #pending-list button.deny { border-color: var(--block); color: var(--block); }
 </style>
 </head>
 <body>
-  <h1>Doberman Dashboard (preview)</h1>
-  <div id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></div>
+  <div class="topbar">
+    <h1>Doberman Dashboard</h1>
+    <div id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></div>
+    <span class="badge badge-neutral" id="mode-badge">mode: -</span>
+    <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
+  </div>
   <div id="stats">stats loading...</div>
   <h2>Pending approvals</h2>
   <ul id="pending-list"></ul>
-  <div id="pending-empty">no pending approvals</div>
+  <div id="pending-empty" class="empty-state">No pending approvals right now.</div>
   <h2>Recent decisions</h2>
   <ul id="feed"></ul>
+  <div id="feed-empty" class="empty-state">Waiting for the first decision...</div>
   <script>
     (function () {
+      // Verdict/risk/enforcement -> badge class lookups. Explicit,
+      // exact-substring-matchable object literals (not an if/else chain) so
+      // the served shell can be asserted against directly by a test.
+      var VERDICT_BADGE_CLASS = {
+        PASS: "badge badge-pass",
+        AUTH: "badge badge-auth",
+        BLOCK: "badge badge-block"
+      };
+      var RISK_BADGE_CLASS = {
+        low: "badge badge-risk-low",
+        medium: "badge badge-risk-medium",
+        high: "badge badge-risk-high",
+        critical: "badge badge-risk-critical"
+      };
+      var ENFORCEMENT_BADGE_CLASS = {
+        enforce: "badge badge-pass",
+        monitor: "badge badge-auth",
+        off: "badge badge-block"
+      };
+
       var params = new URLSearchParams(window.location.search);
       var token = params.get("token") || "";
       // Strip the token from the URL/history immediately so it never lingers
@@ -154,6 +232,8 @@ _HTML_SHELL = """<!doctype html>
       var dot = document.getElementById("dot");
       var label = document.getElementById("label");
       var statsEl = document.getElementById("stats");
+      var modeBadge = document.getElementById("mode-badge");
+      var enforcementBadge = document.getElementById("enforcement-badge");
       var feedEl = document.getElementById("feed");
       var MAX_FEED_ROWS = 200;
 
@@ -171,24 +251,51 @@ _HTML_SHELL = """<!doctype html>
           label.textContent = "not connected";
         });
 
+      function renderStats(s) {
+        // Every piece is built via textContent, never innerHTML — mirrors
+        // the feed/pending-card discipline below.
+        statsEl.textContent = "";
+
+        var total = document.createElement("span");
+        total.textContent = "decisions: ";
+        var totalCount = document.createElement("span");
+        totalCount.className = "count";
+        totalCount.textContent = String(s.total_decisions);
+        total.appendChild(totalCount);
+        statsEl.appendChild(total);
+
+        ["PASS", "AUTH", "BLOCK"].forEach(function (verdict) {
+          var n = (s.verdict_counts && s.verdict_counts[verdict]) || 0;
+          var b = document.createElement("span");
+          b.className = VERDICT_BADGE_CLASS[verdict];
+          b.textContent = verdict + ": " + n;
+          statsEl.appendChild(b);
+        });
+
+        var taint = document.createElement("span");
+        taint.textContent = "secret/taint events: ";
+        var taintCount = document.createElement("span");
+        taintCount.className = "count";
+        taintCount.textContent = String(s.secret_taint_events);
+        taint.appendChild(taintCount);
+        statsEl.appendChild(taint);
+
+        modeBadge.textContent = "mode: " + s.mode;
+        enforcementBadge.textContent = "enforcement: " + s.enforcement;
+        enforcementBadge.className = ENFORCEMENT_BADGE_CLASS[s.enforcement] || "badge badge-neutral";
+      }
+
       fetch("/api/stats", { headers: { "Authorization": "Bearer " + token } })
         .then(function (res) {
           if (!res.ok) { throw new Error("status " + res.status); }
           return res.json();
         })
-        .then(function (s) {
-          statsEl.textContent =
-            "decisions: " + s.total_decisions +
-            " | verdicts: " + JSON.stringify(s.verdict_counts) +
-            " | secret/taint events: " + s.secret_taint_events +
-            " | mode: " + s.mode + " | enforcement: " + s.enforcement;
-        })
+        .then(renderStats)
         .catch(function () {
           statsEl.textContent = "stats unavailable";
         });
 
       var pendingList = document.getElementById("pending-list");
-      var pendingEmpty = document.getElementById("pending-empty");
       var PENDING_POLL_MS = 2000;
 
       function resolveApproval(id, decision, totpCode, card) {
@@ -213,19 +320,31 @@ _HTML_SHELL = """<!doctype html>
       }
 
       function renderPending(rows) {
+        // The empty state is CSS-only (`#pending-list:not(:empty) ~
+        // #pending-empty`) - clearing to no children is enough to reveal it.
         pendingList.textContent = "";
-        pendingEmpty.style.display = rows.length ? "none" : "block";
         rows.forEach(function (row) {
           var li = document.createElement("li");
 
           var header = document.createElement("div");
+          header.className = "row-header";
+
+          var riskBadge = document.createElement("span");
+          riskBadge.className = RISK_BADGE_CLASS[row.risk] || "badge badge-neutral";
+          riskBadge.textContent = "RISK: " + (row.risk || "-").toUpperCase();
+          header.appendChild(riskBadge);
+
+          var summary = document.createElement("span");
+          summary.className = "detail";
           // textContent only — every field is row-derived and must render
           // literally, never as markup (mirrors the feed's discipline).
-          header.textContent = "[" + row.risk + "] " + row.action_type +
+          summary.textContent = row.action_type +
             " " + (row.target_path_class || "-") + " (tier: " + row.tier + ")";
+          header.appendChild(summary);
           li.appendChild(header);
 
           var reasons = document.createElement("div");
+          reasons.className = "detail";
           reasons.textContent = (row.reason_codes || []).join(", ") || "-";
           li.appendChild(reasons);
 
@@ -290,12 +409,24 @@ _HTML_SHELL = """<!doctype html>
             return;
           }
           var li = document.createElement("li");
+
+          var badge = document.createElement("span");
+          badge.className = VERDICT_BADGE_CLASS[row.verdict] || "badge badge-neutral";
+          badge.textContent = row.verdict;
+          li.appendChild(badge);
+
+          var detail = document.createElement("span");
+          detail.className = "detail";
           // textContent only - a row-derived string must render literally,
           // never as markup (mirrors the TUI's markup=False discipline).
-          li.textContent = "[" + row.verdict + "] " + row.action_type +
+          detail.textContent = row.action_type +
             " " + (row.target_path_class || "-") +
             " " + (row.reason_codes && row.reason_codes.length ? row.reason_codes.join(",") : "-") +
             " @ " + row.ts;
+          li.appendChild(detail);
+
+          // The empty state is CSS-only (`#feed:not(:empty) ~ #feed-empty`) -
+          // appending the first row is enough to reveal the real list.
           feedEl.appendChild(li);
           while (feedEl.children.length > MAX_FEED_ROWS) {
             feedEl.removeChild(feedEl.firstChild);
