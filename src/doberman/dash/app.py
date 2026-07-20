@@ -285,15 +285,22 @@ _HTML_SHELL = """<!doctype html>
         enforcementBadge.className = ENFORCEMENT_BADGE_CLASS[s.enforcement] || "badge badge-neutral";
       }
 
-      fetch("/api/stats", { headers: { "Authorization": "Bearer " + token } })
-        .then(function (res) {
-          if (!res.ok) { throw new Error("status " + res.status); }
-          return res.json();
-        })
-        .then(renderStats)
-        .catch(function () {
-          statsEl.textContent = "stats unavailable";
-        });
+      // Stats refresh on an interval, not just at page load - otherwise the
+      // counters freeze at their load-time values while the live feed fills.
+      var STATS_REFRESH_MS = 5000;
+      function refreshStats() {
+        fetch("/api/stats", { headers: { "Authorization": "Bearer " + token } })
+          .then(function (res) {
+            if (!res.ok) { throw new Error("status " + res.status); }
+            return res.json();
+          })
+          .then(renderStats)
+          .catch(function () {
+            statsEl.textContent = "stats unavailable";
+          });
+      }
+      refreshStats();
+      setInterval(refreshStats, STATS_REFRESH_MS);
 
       var pendingList = document.getElementById("pending-list");
       var PENDING_POLL_MS = 2000;
@@ -419,10 +426,12 @@ _HTML_SHELL = """<!doctype html>
           detail.className = "detail";
           // textContent only - a row-derived string must render literally,
           // never as markup (mirrors the TUI's markup=False discipline).
+          // Compact HH:MM:SS (UTC) - the full ISO timestamp is noise at a glance
+          // and stays available in `doberman log` / the TUI.
           detail.textContent = row.action_type +
             " " + (row.target_path_class || "-") +
             " " + (row.reason_codes && row.reason_codes.length ? row.reason_codes.join(",") : "-") +
-            " @ " + row.ts;
+            " @ " + (String(row.ts || "").slice(11, 19) || "-");
           li.appendChild(detail);
 
           // The empty state is CSS-only (`#feed:not(:empty) ~ #feed-empty`) -

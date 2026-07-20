@@ -104,3 +104,19 @@ def test_feed_and_pending_rows_still_use_textcontent_only(tmp_path):
     # (The word "innerHTML" legitimately appears in comments documenting this
     # discipline, so assert on the assignment form specifically.)
     assert ".innerHTML" not in html
+
+
+def test_stats_refresh_on_an_interval_not_just_at_load(tmp_path):
+    html = _index_html(tmp_path)
+    # Counters must track the live feed instead of freezing at their
+    # page-load values.
+    assert "function refreshStats()" in html
+    assert "setInterval(refreshStats, STATS_REFRESH_MS)" in html
+
+
+def test_feed_timestamp_renders_compact_not_full_iso(tmp_path):
+    html = _index_html(tmp_path)
+    # HH:MM:SS sliced from the ISO string; the full timestamp stays available
+    # in `doberman log` / the TUI.
+    assert ".slice(11, 19)" in html
+    assert '" @ " + row.ts;' not in html
