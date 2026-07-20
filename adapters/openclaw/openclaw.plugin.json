@@ -1,0 +1,14 @@
+{
+  "id": "doberman",
+  "name": "Doberman",
+  "description": "Gates every OpenClaw tool call through Doberman's local, fail-closed PASS/AUTH/BLOCK decision engine before it runs.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

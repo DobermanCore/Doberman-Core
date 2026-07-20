@@ -543,6 +543,33 @@ def hook_post() -> None:
     raise typer.Exit(0)
 
 
+@hook_app.command("openclaw")
+def hook_openclaw() -> None:
+    """OpenClaw ``before_tool_call`` plugin hook - gate one tool call.
+
+    Reads the event as JSON on stdin (see ``adapters/openclaw/``) and ALWAYS
+    writes exactly one JSON verdict to stdout - unlike the Claude Code hooks
+    above, this bridge is a fresh subprocess spawned per call under a hard
+    timeout on the OpenClaw side, so silence would be indistinguishable from a
+    hang and the shim would fail closed on every benign PASS too.
+
+    Runs only the fast deterministic objective floor (no numpy/scipy/river),
+    fails closed (``{"verdict":"block",...}``) on any malformed input or
+    engine error.
+
+    Wire it into an OpenClaw gateway via the ``adapters/openclaw/`` plugin
+    (see its README for install + the mandatory "verify it's live" canary).
+    """
+    _configure_stderr_logging()
+    # Imported here, not at module scope, so the other CLI commands don't load
+    # the decision path on every `--help`/`status`/`log` invocation.
+    from doberman.hosthooks.openclaw import run_before_tool_call_hook
+
+    out = run_before_tool_call_hook(sys.stdin.read())
+    sys.stdout.write(out + "\n")
+    raise typer.Exit(0)
+
+
 @password_app.command("set")
 def password_set(
     force: bool = typer.Option(

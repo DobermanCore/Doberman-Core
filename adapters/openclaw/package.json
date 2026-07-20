@@ -1,0 +1,10 @@
+{
+  "name": "doberman-openclaw-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw plugin that routes every tool call through Doberman's PASS/AUTH/BLOCK decision engine (`doberman hook openclaw`) before it runs.",
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}
