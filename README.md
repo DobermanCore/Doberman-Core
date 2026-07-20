@@ -13,6 +13,12 @@
 
 </div>
 
+<p align="center">
+  <img src="docs/assets/dash-demo.gif" alt="The doberman demo attack reel against the live dashboard: a secret exfiltration, a destructive rm -rf, a protected-branch force push, a smuggled-token egress and a .env read are blocked in the live feed, then a human denies a high-risk SSH-trust-file write from the pending-approvals queue" width="820">
+  <br>
+  <em><code>doberman demo</code> against the live dashboard (<code>doberman dash</code>): five attacks blocked as they happen, then a human denies a high-risk approval.</em>
+</p>
+
 > If it isn't on the execution path, it's advisory, not protective.
 
 AI coding agents (Claude Code, Cursor, Codex, Copilot agents, and any **MCP-compatible agent**) can read files, run shell commands, and call external APIs autonomously. Doberman sits *between the agent and its tools* as a transparent **MCP proxy**, turning every action into an explicit, auditable authorization decision.
