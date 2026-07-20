@@ -20,7 +20,7 @@ single JSON document — ``{"verdict": "allow"}`` included.
 
 **Verdict -> OpenClaw mapping** (see ``adapters/openclaw/index.js``):
 
-* ``allow`` -> no-op (``{}}`` from the plugin hook) - Doberman is raise-only, it
+* ``allow`` -> no-op (``{}`` from the plugin hook) - Doberman is raise-only, it
   never overrides an approval OpenClaw would otherwise grant.
 * ``block`` -> ``{block: true, blockReason}`` - terminal, no lower-priority hook runs.
 * ``auth``  -> ``{requireApproval: {...}}``. Unlike the Claude Code hook (which
@@ -37,20 +37,30 @@ hook only evaluates a small, closed set of built-ins (``GATED_BUILTINS``) plus
 ``mcp__``-prefixed tools; everything else abstains, because Claude Code's
 built-in tool catalog is small, stable, and fully documented. OpenClaw's is not
 (the public docs explicitly do not publish an exhaustive tool-name or
-``toolKind`` enum). So this module inverts the default: only a tiny,
-confirmed-safe set (:data:`_ABSTAIN_TOOLS` - pure reads and internal status
-calls) abstains; every other tool name - known built-in, MCP-provided, or a
-name we've simply never seen - is normalized and run through the real decision
-path. An unrecognized tool with nothing suspicious in its arguments still comes
-back ``allow`` (that is ordinary guardrail behavior, not a loophole); the point
-is it is never skipped without being looked at.
+``toolKind`` enum). So this module inverts the default: only one
+confirmed-safe tool (:data:`_ABSTAIN_TOOLS` - ``session_status``, an internal
+status call with no path/command/network surface) abstains; every other tool
+name - known built-in, MCP-provided, or a name we've simply never seen - is
+normalized and run through the real decision path. ``read`` is deliberately
+NOT in ``_ABSTAIN_TOOLS``: it is normalized to ``read_file`` and its
+``params.path`` is gated by :class:`~doberman.engine.rules.paths.ProtectedPathRule`
+the same as every other action, so a `.env`/key/control-plane read is blocked
+or authenticated exactly like a write to the same path — this adapter has no
+``after_tool_call`` hook in this slice, so pre-gating the read *target* by path
+is the only defense it has; the read's *content* still isn't scanned (a
+documented limitation, not a loophole; see ``adapters/openclaw/README.md``).
+An unrecognized tool with nothing suspicious in its arguments still comes back
+``allow`` (that is ordinary guardrail behavior, not a loophole); the point is
+it is never skipped without being looked at.
 
-**Confirmed vs. best-effort field names.** ``exec``'s ``params.command`` and
-``web_search``'s ``params.query`` are confirmed against OpenClaw's own docs /
-issue tracker. ``web_fetch``'s ``params.url`` is inferred by convention (not
-independently confirmed) - if wrong, ``web_fetch`` calls fail closed (denied)
-until corrected, which is safe, just overly strict; see the module's
-``_REQUIRED_FIELD`` comment.
+**Confirmed vs. best-effort field names.** ``exec``'s ``params.command``,
+``web_search``'s ``params.query``, and ``read``'s ``params.path`` are
+confirmed against OpenClaw's own docs / issue tracker (``read``'s ``path`` key
+via openclaw/openclaw#2596 and #16717, two independent bug reports of agents
+mistakenly sending ``file_path`` instead). ``web_fetch``'s ``params.url`` is
+inferred by convention (not independently confirmed) - if wrong, ``web_fetch``
+calls fail closed (denied) until corrected, which is safe, just overly strict;
+see the module's ``_REQUIRED_FIELD`` comment.
 
 **Speed.** Like the Claude Code hook, this module imports only the light
 deterministic path — never :mod:`doberman.proxy.executor` or the subjective
@@ -72,35 +82,48 @@ from doberman.policy.drift import acted_verdict
 from doberman.policy.modes import DEFAULT_MODE
 from doberman.proxy.normalize import normalize
 
-#: Tool names OpenClaw's docs confirm are pure reads / internal status calls -
-#: never a mutation, execution, or egress. Not gated pre (this slice adds no
-#: ``after_tool_call`` output scan, so a read's *content* is not vetted here -
-#: a documented limitation, not an oversight; see ``adapters/openclaw/README.md``).
-_ABSTAIN_TOOLS: frozenset[str] = frozenset({"read", "session_status"})
+#: Tool names that carry no path/command/network surface to gate at all - an
+#: internal status call, never a mutation, execution, or egress. Deliberately
+#: does NOT include "read": a read's *target path* is gated like any other
+#: file-touching action (see ``_CANONICAL_RENAME`` / ``_REQUIRED_FIELD`` below
+#: and the module docstring's "Tool recognition" section); only the read's
+#: *content* goes unscanned in this slice.
+_ABSTAIN_TOOLS: frozenset[str] = frozenset({"session_status"})
 
 #: Rename a tool name to the canonical name :func:`doberman.proxy.normalize.normalize`
 #: already maps to the right :class:`~doberman.models.ActionType` via its
-#: prefix table. ``exec``/``web_search``/anything else pass through unchanged:
-#: ``normalize``'s own prefix table already recognizes literal ``"exec"`` as
-#: ``shell_exec``, and an unmapped name safely falls to ``ActionType.other``
-#: (still scanned generically - see the module docstring).
+#: prefix table. ``"read"`` -> ``"read_file"`` mirrors
+#: :mod:`doberman.hosthooks.claude_code`'s own ``"Read"`` mapping and lands on
+#: ``ActionType.file_read``, so its ``path`` is gated by
+#: :class:`~doberman.engine.rules.paths.ProtectedPathRule` like any other
+#: file-touching action. ``exec``/``web_search``/anything else pass through
+#: unchanged: ``normalize``'s own prefix table already recognizes literal
+#: ``"exec"`` as ``shell_exec``, and an unmapped name safely falls to
+#: ``ActionType.other`` (still scanned generically - see the module docstring).
 _CANONICAL_RENAME: dict[str, str] = {
+    "read": "read_file",
     "web_fetch": "http_request",
     "apply_patch": "file_write",
 }
 
 #: A gated tool must expose the field that identifies its action, else we
 #: cannot see what we are being asked to gate and fail closed (deny) rather
-#: than abstain - mirrors ``claude_code._REQUIRED_FIELD``.
+#: than abstain - mirrors ``claude_code._REQUIRED_FIELD``. Keyed on the
+#: pre-rename tool name (e.g. "read", not "read_file"), so this check runs
+#: before ``_CANONICAL_RENAME`` is applied.
 #: CONFIRMED: "exec" -> "command" (openclaw/openclaw plugin issue tracker
 #: example rewriting ``event.params.command``); "web_search" -> "query"
-#: (docs.openclaw.ai/plugins/hooks quick-start example, ``event.params.query``).
+#: (docs.openclaw.ai/plugins/hooks quick-start example, ``event.params.query``);
+#: "read" -> "path" (openclaw/openclaw#2596 and #16717, two independent bug
+#: reports of agents mistakenly sending "file_path" instead of the tool's
+#: actual "path" key).
 #: BEST-EFFORT (not independently confirmed): "web_fetch" -> "url", inferred by
 #: convention from web_search's "query" and Claude Code's own WebFetch tool. If
 #: OpenClaw's real key differs, web_fetch calls will always deny here (safe,
 #: just overly strict) until this one line is corrected against a live install.
 _REQUIRED_FIELD: dict[str, str] = {
     "exec": "command",
+    "read": "path",
     "web_fetch": "url",
     "web_search": "query",
 }

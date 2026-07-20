@@ -167,8 +167,24 @@ def test_apply_patch_without_derived_paths_fails_closed(cwd):
 
 
 def test_abstain_tools_always_allow(cwd):
-    assert _call("read", {"path": ".env"}, cwd=cwd)["verdict"] == "allow"
     assert _call("session_status", {}, cwd=cwd)["verdict"] == "allow"
+
+
+def test_read_sensitive_path_is_gated_not_abstained(cwd):
+    # "read" is NOT in _ABSTAIN_TOOLS: its target path is gated by
+    # ProtectedPathRule like any other file-touching action, so a .env read
+    # is blocked outright (.env matches DEFAULT_BLOCKED_GLOBS) rather than
+    # silently allowed.
+    out = _call("read", {"path": ".env"}, cwd=cwd)
+    assert out["verdict"] == "block"
+
+
+def test_read_benign_path_allows(cwd):
+    assert _call("read", {"path": "src/app.py"}, cwd=cwd)["verdict"] == "allow"
+
+
+def test_read_missing_path_fails_closed(cwd):
+    assert _call("read", {}, cwd=cwd)["verdict"] == "block"
 
 
 def test_unrecognized_tool_with_benign_args_allows(cwd):

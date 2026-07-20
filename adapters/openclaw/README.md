@@ -82,9 +82,11 @@ After install, and after every OpenClaw upgrade or config change:
   BLOCK and PASS/monitor-softened outcomes are (an AUTH's eventual resolution happens
   asynchronously via OpenClaw's own `/approve` flow, outside this process's lifetime — wiring
   `onResolution` back to the log is a follow-up slice).
-- **Pre-execution gating only** — this slice adds no `after_tool_call`/output scan, so a
-  read tool's *returned content* isn't vetted for leaked secrets here (unlike the Claude
-  Code post-hook).
+- **Pre-execution gating only** — this slice adds no `after_tool_call`/output scan. A read's
+  *target path* is still gated the same as any other file-touching action (`.env`, keys, and
+  the rest of Doberman's protected/sensitive globs are blocked or authenticated up front), but
+  a read tool's *returned content* isn't vetted for leaked secrets here (unlike the Claude
+  Code post-hook, which scans output after execution).
 - **`cwd` is best-effort** (`process.cwd()` of the gateway process, since `before_tool_call`
   exposes no working-directory field of its own). If the gateway runs from somewhere other
   than the project root, per-repo role/policy resolution falls back to Doberman's default
