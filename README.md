@@ -437,6 +437,25 @@ It reports two plugin profiles — `builtins_only` and `with_plugins` (built-ins
 
 ---
 
+## Write a custom Guardrail (plugin)
+
+Third-party rules register through the **`doberman.rules`** entry-point group. Core never imports your package by name — install it, and `discover_rules()` / the objective guardrail pick it up automatically.
+
+A five-minute worked example lives at [`examples/plugin-guardrail/`](examples/plugin-guardrail/) (from a git checkout):
+
+```bash
+pip install -e ".[dev]"
+pip install -e examples/plugin-guardrail
+pytest examples/plugin-guardrail/tests -q
+pip uninstall -y doberman-example-plugin-guardrail   # optional: restore core-only discovery
+```
+
+The tutorial rule steps up a write to `SECRETS_TODO.md` to AUTH, stays raise-only, and never puts the path or payload into its explanation. Copy the package when you need a real custom rule of your own.
+
+> While the example is installed, core's "no plugins registered" checks will see it — that is expected. Uninstall before re-running the full core suite if you want a clean standalone environment.
+
+---
+
 ## Tune to your risk tolerance
 
 Set a mode in `.doberman/policies.yaml` or via `doberman mode <mode>`. Every mode change made this way — the CLI dial or the setup wizard — is recorded in the append-only policy-change ledger (view it with `doberman policy-history`). Lowering strictness (paranoid → strict → balanced → light) is a **weaken** and requires confirmation plus a possession factor: **TOTP if enrolled, otherwise the local Doberman password**. If neither exists, the lowering fails closed; confirmation alone never suffices. Raising stays frictionless and auto-applies:
@@ -486,6 +505,7 @@ The adaptive layer's four SL5 "care" weights (`confidentiality`, `reversibility`
 
 - ✅ Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense (classify strengthen/weaken, possession-factor-gated permanent weakening, append-only ledger, **enforce/monitor/off enforcement dial — now consumed by the decision path (discretionary verdicts soften; the objective floor stays live), softening now gated behind the same possession-factor check as a policy weakening (TOTP if enrolled else password, fails closed with neither — no confirm-only fallback) + a ledger-verified tamper clamp**, **strictness `mode` and SL5 `prefs` now use the corrected 2FA-or-password gate: password is the minimum factor, optional TOTP takes precedence when enrolled, neither enrolled fails closed, and raising stays frictionless**) · universal subjective layer (SL1–SL9)
 - ✅ Benchmark harness (suite-agnostic ASR/FPR over labeled actions; `builtins_only` vs `with_plugins`; deterministic synthetic gate; external-suite adapters via `tests/benchmarks/`)
+- ✅ Tutorial custom Guardrail plugin package ([`examples/plugin-guardrail/`](examples/plugin-guardrail/)) — installable via the `doberman.rules` entry-point group with a worked discovery + AUTH demo
 - ✅ Host-harness integration: Claude Code `PreToolUse` + `PostToolUse` hooks (`doberman hook pre`/`post`) gate every built-in *and* MCP tool call — and scan tool **output** for leaked secrets — with no MCP reconfig; fail-closed, import-light, surfacing an in-session approval dialog (confirm / TOTP 2FA) on a sensitive action, and recording a local redacted history
 - ✅ Host-harness integration: an OpenClaw plugin (`adapters/openclaw/`, `doberman hook openclaw`) gates every `before_tool_call` event through the same fail-closed decision path — verdict `allow`/`block`/`auth` maps to a no-op / terminal block / OpenClaw's own `/approve` flow respectively (no Doberman-local challenge dialog — the gateway has no interactive terminal). Ships as a plain, build-step-free ESM plugin; see `adapters/openclaw/README.md` for install and the mandatory "verify it's live" canary check
 - ✅ One-command onboarding: `doberman setup` (alertness + guardrails + auto-wires the hooks) · `install-hooks`/`uninstall-hooks` · `doberman doctor` (read-only health self-check: hooks / config / DB / 2FA / enforcement dial / fingerprint key; non-zero exit on any critical failure)
