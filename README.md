@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🐕 Doberman
+<img src="logo.png" alt="Doberman logo" width="200">
+
+# Doberman
 
 **Adaptive Authorization & Runtime Guardrails for AI Coding Agents**
 
@@ -24,11 +26,11 @@ Your AI coding agent can `rm -rf` your repo, leak your API keys, or be prompt-in
 
 Doberman sits *between the agent and its tools* — a transparent **MCP proxy** or **host hook** — and turns every action into an explicit, auditable decision. Every tool call gets exactly one verdict, decided *before* it executes:
 
-| | Verdict | What happens |
-|:--:|---|---|
-| ✅ | **PASS** | Routine work — straight through, zero friction. |
-| 🔐 | **AUTH** | Sensitive — paused for your one-tap approval. |
-| ⛔ | **BLOCK** | Dangerous — stopped cold. It never runs. |
+| Verdict | What happens |
+|---|---|
+| **PASS** | Routine work — straight through, zero friction. |
+| **AUTH** | Sensitive — paused for your one-tap approval. |
+| **BLOCK** | Dangerous — stopped cold. It never runs. |
 
 ```
 AI agent ──▶ Doberman ──▶ real tools (files, shell, MCP servers, APIs)
@@ -39,7 +41,7 @@ Works with **Claude Code, Cursor, Codex, Copilot, and any MCP-compatible agent.*
 
 <div align="center">
 
-### ⚡ [Get protected in two commands](#quick-start)  ·  💬 [Join the pack on Discord](https://discord.gg/Sfy5XGNqty)
+### [Get protected in two commands](#quick-start)  ·  [Join the pack on Discord](https://discord.gg/Sfy5XGNqty)
 
 </div>
 
@@ -68,8 +70,8 @@ Those three verdicts aren't advice a model can talk its way past — each is enf
 
 **Two non-negotiable properties:**
 
-- 🔒 **Fail closed** — any error, uncertainty, or unhandled case denies the action. There is no path to a tool around the decision engine.
-- 📈 **Raise-only learning** — guardrails and adaptive learning can auto-*tighten*, never silently loosen. Every permanent policy weakening requires explicit, possession-factor-gated, audited human approval (TOTP if enrolled, otherwise the local Doberman password).
+- **Fail closed** — any error, uncertainty, or unhandled case denies the action. There is no path to a tool around the decision engine.
+- **Raise-only learning** — guardrails and adaptive learning can auto-*tighten*, never silently loosen. Every permanent policy weakening requires explicit, possession-factor-gated, audited human approval (TOTP if enrolled, otherwise the local Doberman password).
 
 ---
 
