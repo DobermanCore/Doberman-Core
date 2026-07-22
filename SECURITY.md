@@ -1,0 +1,72 @@
+# Security Policy
+
+Doberman is a security tool, so we hold its own security to a high bar. If you find a
+vulnerability — in Doberman itself, or a way to bypass a guardrail it claims to enforce — we
+want to hear about it.
+
+## Reporting a vulnerability
+
+**Please do not open a public issue, pull request, or Discord message for a security report.**
+Public disclosure before a fix is available puts every user at risk.
+
+Report privately through either channel:
+
+1. **GitHub private vulnerability reporting (preferred).** Open a private advisory from the
+   repository's [**Security → Report a vulnerability**](https://github.com/fu351/Doberman-Core/security/advisories/new)
+   tab. This keeps the report confidential and lets us collaborate on the fix in one place.
+2. **Email.** If you can't use GitHub advisories, email **afu7568@gmail.com** with a subject line
+   starting `Doberman security:`.
+
+Please include as much of the following as you can:
+
+- The Doberman version (`doberman --version`) and how it's deployed (MCP proxy, Claude Code hook,
+  or OpenClaw plugin).
+- A clear description of the issue and its impact.
+- Step-by-step reproduction — ideally a minimal policy plus tool call that demonstrates the bypass
+  or failure.
+- Relevant logs, but **redact real secrets**: a synthetic placeholder is enough to prove a leak.
+
+## What to expect
+
+- **Acknowledgement within 3 business days** that we received your report.
+- An initial assessment (severity, whether we can reproduce it) within **7 days**.
+- Ongoing updates through to a fix, and a coordinated disclosure date. With your consent we'll
+  credit you in the advisory and the changelog.
+
+Doberman is a volunteer-maintained open-source project, so timelines are best-effort — but
+security reports jump the queue ahead of features.
+
+## Supported versions
+
+Doberman is pre-1.0 and moves fast. Security fixes land on the **latest release** (currently the
+`0.x` line on [PyPI](https://pypi.org/project/doberman-core/)). Please upgrade before reporting in
+case the issue is already fixed; older versions are not separately patched.
+
+## Scope
+
+**In scope** — anything in this repository (`doberman-core`):
+
+- A bypass of a guardrail Doberman claims to enforce — e.g. a destructive command, secret
+  exfiltration, or protected-path write that reaches a tool when the policy should have blocked it.
+- A way to silently **loosen** policy without the human-approved, possession-factor-gated path
+  (this breaks the **raise-only** invariant).
+- A path by which a protected agent reaches a real tool **around** the decision engine (breaks the
+  execution-path chokepoint).
+- Secret or credential material leaking into logs, the decision history, or any persisted state.
+- Standard software vulnerabilities (injection, path traversal, unsafe deserialization, etc.).
+
+**Out of scope:**
+
+- Findings that require an attacker who **already** has local admin or write access to
+  `~/.doberman/` or the host. Doberman defends the *agent*, not a fully-compromised host.
+- The documented gaps in the README's **Known limitations** section — those are defense-in-depth
+  weaknesses we already disclose, not hidden ones. (A *new* way to exploit one at scale is still
+  worth reporting.)
+- Vulnerabilities in the third-party tool servers Doberman proxies — please report those upstream.
+
+## A note on Doberman's threat model
+
+Doberman is **defense-in-depth, not a guarantee** — no single rule is airtight, and we say so
+throughout the docs. A report that one heuristic can be evaded is useful but expected; the
+highest-value reports show a break in a **core invariant** — fail-closed, raise-only, or the
+execution-path chokepoint.
