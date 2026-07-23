@@ -15,13 +15,17 @@ original stopgap shapes, never instead of them: this call is raise-only, it
 only ever redacts *more*, never less.
 """
 
+import os
 import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from doberman.engine.rules.secrets import contains_strong_secret
+from doberman.engine.rules.commands import walk_command
+from doberman.engine.rules.destinations import _parse_host
+from doberman.engine.rules.secrets import candidate_secret_fingerprints, contains_strong_secret
 from doberman.models import ActionType, ReasonCode, Risk, SecurityObject, SourceContext
+from doberman.storage.fingerprint import fingerprint
 from doberman.subjective.adapters import apply_adapters
 from doberman.subjective.infer import infer_algebra, infer_reversibility
 
@@ -85,6 +89,56 @@ _EGRESS_DEST_KEYS: tuple[str, ...] = (
     "remote",
 )
 
+_COMMAND_EGRESS_ACTIONS = frozenset(
+    {ActionType.shell_exec, ActionType.package_install, ActionType.git_op}
+)
+_DIRECT_EGRESS_VERBS = frozenset({"curl", "wget", "scp", "sftp", "rsync"})
+_GIT_EGRESS_SUBCOMMANDS = frozenset({"clone", "fetch", "pull", "push"})
+_PACKAGE_EGRESS_VERBS = frozenset(
+    {
+        "bun",
+        "cargo",
+        "gem",
+        "go",
+        "npm",
+        "pip",
+        "pip3",
+        "pipx",
+        "pnpm",
+        "poetry",
+        "twine",
+        "uv",
+        "yarn",
+    }
+)
+_PACKAGE_EGRESS_SUBCOMMANDS = frozenset(
+    {
+        "add",
+        "download",
+        "fetch",
+        "install",
+        "publish",
+        "push",
+        "sync",
+        "update",
+        "upload",
+    }
+)
+_TRANSPARENT_COMMAND_WRAPPERS = frozenset(
+    {"command", "env", "exec", "ionice", "nice", "nohup", "sudo", "time"}
+)
+_PROXY_ENV_NAMES = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"})
+_ROUTE_OVERRIDE_FLAGS = frozenset({"--connect-to", "--proxy", "--resolve", "-x"})
+_ENV_ASSIGNMENT = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
+_DYNAMIC_EGRESS_TOKEN = re.compile(r"\$\(|`|\$(?:\{|[A-Za-z_])|[*]")
+_SUSPECTED_EGRESS_VERB = re.compile(
+    r"(?<![A-Za-z0-9_.-])"
+    r"(?:curl|wget|scp|sftp|rsync|git|pip3?|pipx|npm|pnpm|yarn|bun|cargo|"
+    r"gem|go|poetry|twine|uv)"
+    r"(?![A-Za-z0-9_.-])",
+    re.IGNORECASE,
+)
+
 
 def _map_action_type(tool_name: str) -> ActionType:
     name = tool_name.lower()
@@ -126,18 +180,248 @@ def _redact_args(arguments: dict[str, Any]) -> dict[str, Any]:
     return {str(key): _redact_value(str(key), value) for key, value in arguments.items()}
 
 
-def _extract_egress_destination(redacted_args: dict[str, Any]) -> str | None:
-    """Pick an outbound destination from well-known egress arg-keys (reads the
-    REDACTED args, so a secret-shaped value is already redacted)."""
+def _command_text(arguments: dict[str, Any]) -> str | None:
+    for key in ("command", "cmd", "script", "args"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, (list, tuple)) and value:
+            return " ".join(str(part) for part in value)
+    return None
+
+
+def _command_name(token: str) -> str:
+    return token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def _command_verb(tokens: list[str]) -> tuple[str | None, list[str]]:
+    """Return the visible executable + arguments without losing the input tokens."""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if _ENV_ASSIGNMENT.match(token):
+            index += 1
+            continue
+        name = _command_name(token)
+        if name in _TRANSPARENT_COMMAND_WRAPPERS:
+            index += 1
+            continue
+        return name, tokens[index + 1 :]
+    return None, []
+
+
+def _is_egress_verb(verb: str | None, arguments: list[str]) -> bool:
+    if verb in _DIRECT_EGRESS_VERBS:
+        return True
+    if verb == "git":
+        return any(
+            _command_name(arg) in _GIT_EGRESS_SUBCOMMANDS
+            for arg in arguments
+            if not arg.startswith("-")
+        )
+    if verb in _PACKAGE_EGRESS_VERBS:
+        return any(
+            _command_name(arg) in _PACKAGE_EGRESS_SUBCOMMANDS
+            for arg in arguments
+            if not arg.startswith("-")
+        )
+    if verb in {"python", "python3", "py"} and len(arguments) >= 3:
+        return (
+            arguments[0] == "-m"
+            and _command_name(arguments[1]) in {"pip", "pip3"}
+            and _command_name(arguments[2]) in _PACKAGE_EGRESS_SUBCOMMANDS
+        )
+    return False
+
+
+def _has_route_override(tokens: list[str]) -> bool:
+    for token in tokens:
+        assignment = _ENV_ASSIGNMENT.match(token)
+        if assignment and assignment.group("name").upper() in _PROXY_ENV_NAMES:
+            return True
+        lowered = token.lower()
+        if lowered in _ROUTE_OVERRIDE_FLAGS:
+            return True
+        if any(lowered.startswith(f"{flag}=") for flag in _ROUTE_OVERRIDE_FLAGS):
+            return True
+    return False
+
+
+def _ambient_proxy_present() -> bool:
+    return any(
+        name.upper() in _PROXY_ENV_NAMES and bool(value) for name, value in os.environ.items()
+    )
+
+
+def _looks_like_host_token(token: str) -> bool:
+    if "://" in token or token.startswith("//"):
+        return True
+    if re.match(r"^(?:[^@/\s]+@)?(?:\[[^\]]+\]|[^:/\s]+\.[^:/\s]+)(?::|/|$)", token):
+        return True
+    return bool(re.match(r"^\d{1,3}(?:\.\d{1,3}){3}(?::|/|$)", token))
+
+
+def _candidate_hosts(arguments: list[str]) -> tuple[list[str], bool, bool]:
+    """Return visible hosts plus dynamic/credential signals from egress args."""
+    hosts: list[str] = []
+    dynamic = False
+    had_credentials = False
+    skip_route_value = False
+
+    for token in arguments:
+        lowered = token.lower()
+        if skip_route_value:
+            skip_route_value = False
+            continue
+        if lowered in _ROUTE_OVERRIDE_FLAGS:
+            skip_route_value = True
+            continue
+        if any(lowered.startswith(f"{flag}=") for flag in _ROUTE_OVERRIDE_FLAGS):
+            continue
+        if token.startswith("-"):
+            continue
+        if _DYNAMIC_EGRESS_TOKEN.search(token):
+            dynamic = True
+            continue
+        if not _looks_like_host_token(token):
+            continue
+        host, embedded_credentials = _parse_host(token)
+        if host:
+            hosts.append(host)
+            had_credentials = had_credentials or embedded_credentials
+    return hosts, dynamic, had_credentials
+
+
+def _redact_host_label(label: str) -> str:
+    """HMAC/redact one sensitive host label before it reaches the object."""
+    prints = candidate_secret_fingerprints(label)
+    # DNS labels are case-insensitive and `_parse_host` canonicalizes to lower
+    # case. Check both case forms so that canonicalization cannot erase a
+    # case-shaped credential signal such as an AWS access-key prefix.
+    redacted = any(
+        _redact_value("host_label", variant) == REDACTED for variant in (label, label.upper())
+    )
+    if not prints and not redacted:
+        return label
+    try:
+        keyed = next(iter(prints)) if prints else fingerprint(label)
+    except Exception:  # noqa: BLE001 — a key failure must redact, never expose
+        return REDACTED
+    digest = keyed.removeprefix("hmac:")
+    return f"hmac-{digest[:32]}"
+
+
+def _redact_host(host: str) -> str:
+    return ".".join(_redact_host_label(label) for label in host.split("."))
+
+
+def _suspected_egress_token(segments: list[list[str]]) -> bool:
+    """True if any shlex-normalized token names a suspected egress tool.
+
+    Matches the normalized tokens (not the raw command) so a quote-split verb
+    (``cu''rl`` -> ``curl``) or a path-qualified one (``/usr/bin/curl`` ->
+    ``curl``) is still caught, while an egress name that only appears *inside*
+    another token (``--git-ref``) is not.
+    """
+    return any(
+        _SUSPECTED_EGRESS_VERB.fullmatch(_command_name(token)) is not None
+        for tokens in segments
+        for token in tokens
+    )
+
+
+def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
+    segments, parse_ambiguous, dynamic_walk = walk_command(command)
+    hosts: list[str] = []
+    saw_egress = False
+    dynamic_host = False
+    had_credentials = False
+    route_override = False
+    unresolved_wrapper = False
+
+    for tokens in segments:
+        verb, arguments = _command_verb(tokens)
+        # A flag-taking transparent wrapper (`sudo -u X`, `nice -n N`, `ionice -c N`)
+        # shifts argv so the wrapper's own option is misread as the command verb; the
+        # real command is then unidentified -> fail upward, never treat it as local.
+        if verb is not None and verb.startswith("-"):
+            unresolved_wrapper = True
+            continue
+        if not _is_egress_verb(verb, arguments):
+            continue
+        saw_egress = True
+        route_override = route_override or _has_route_override(tokens)
+        found, dynamic, embedded = _candidate_hosts(arguments)
+        hosts.extend(found)
+        dynamic_host = dynamic_host or dynamic
+        had_credentials = had_credentials or embedded
+
+    # A parse failure/cap or a flag-taking wrapper can hide the real command
+    # before a suspected egress verb is classified. Surface ambiguity rather
+    # than silently treating it as local. When shlex parsing succeeded (the
+    # wrapper case) match the NORMALIZED tokens, so a quote-split (`cu''rl`) or
+    # path-qualified (`/usr/bin/curl`) verb is still caught and an egress name
+    # that only appears *inside* another token (`--git-ref`) is not; fall back
+    # to the raw string only when parsing itself was unreliable.
+    # ponytail: a bare egress name used purely as an argument (`grep curl x`)
+    # still steps a wrapped command up to AUTH — a blunt fail-closed ceiling.
+    # The precise fix is the deferred runtime egress broker, not a per-wrapper
+    # flag-grammar parser: no clean heuristic exists (`sudo -u www-data` and
+    # `nice -n 10` have different option arity).
+    unresolved_suspected = not saw_egress and (
+        (parse_ambiguous and _SUSPECTED_EGRESS_VERB.search(command) is not None)
+        or (unresolved_wrapper and _suspected_egress_token(segments))
+    )
+    if not saw_egress and not unresolved_suspected:
+        return None, {}
+
+    unique_hosts = list(dict.fromkeys(hosts))
+    destination = _redact_host(unique_hosts[0]) if unique_hosts else None
+    ambiguous = (
+        parse_ambiguous
+        or unresolved_suspected
+        or dynamic_host
+        or (dynamic_walk and saw_egress)
+        or route_override
+        or _ambient_proxy_present()
+        or len(unique_hosts) != 1
+    )
+    metadata: dict[str, Any] = {}
+    if ambiguous:
+        metadata["egress_ambiguous"] = True
+    if had_credentials:
+        metadata["egress_embedded_credentials"] = True
+    return destination, metadata
+
+
+def _extract_egress_destination(
+    redacted_args: dict[str, Any],
+    raw_args: dict[str, Any],
+    action_type: ActionType,
+) -> tuple[str | None, dict[str, Any]]:
+    """Pick a redacted domain destination or classify raw command egress."""
+    if action_type in _COMMAND_EGRESS_ACTIONS:
+        command = _command_text(raw_args)
+        if command is not None:
+            dest, meta = _extract_command_egress(command)
+            # Raise-only: a NON-egress command must not discard a structured
+            # destination key (url/repo/remote/...) the fallback below would
+            # surface. Otherwise {"command": "echo <secret>", "url": <host>}
+            # drops the secret-exfil floor (origin/main BLOCK -> AUTH) and
+            # ordinary dest-key egress (AUTH -> PASS). Only short-circuit when the
+            # command itself yielded a destination or ambiguity metadata.
+            if dest is not None or meta:
+                return dest, meta
+
     for key in _EGRESS_DEST_KEYS:
         value = redacted_args.get(key)
         if isinstance(value, str) and value:
-            return value
+            return value, {}
         if isinstance(value, list | tuple) and value:
             parts = [str(v) for v in value if isinstance(v, str) and v]
             if parts:
-                return ",".join(parts)
-    return None
+                return ",".join(parts), {}
+    return None, {}
 
 
 def _extract_target(action_type: ActionType, arguments: dict[str, Any]) -> tuple[str | None, dict]:
@@ -175,7 +459,10 @@ def normalize(
         if action_type is ActionType.network_request:
             external_destination = target
         else:
-            external_destination = _extract_egress_destination(redacted_args)
+            external_destination, egress_metadata = _extract_egress_destination(
+                redacted_args, args, action_type
+            )
+            metadata.update(egress_metadata)
         base = SecurityObject(
             id=uuid.uuid4().hex,
             ts=datetime.now(timezone.utc),

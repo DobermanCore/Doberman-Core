@@ -68,6 +68,9 @@ UNKEYED_ENTITY = "entity:unkeyed"
 EWMA_ALPHA = 0.1
 
 _PATH_ACTIONS = frozenset({ActionType.file_read, ActionType.file_write, ActionType.file_delete})
+_COMMAND_EGRESS_ACTIONS = frozenset(
+    {ActionType.shell_exec, ActionType.package_install, ActionType.git_op}
+)
 
 _UPSERT_COUNT = (
     "INSERT INTO baseline_counts (entity_id, feature_key, role, count, first_seen, last_seen) "
@@ -128,7 +131,10 @@ def scoring_keys(action: SecurityObject) -> list[str]:
     bucket = _path_bucket(action)
     if bucket:
         keys.append(f"path_class:{bucket}")
-    if action.external_destination:
+    # A human-approved static command egress is permission for one action, not
+    # evidence that the tenant/host is normal. Keep it out of the learned
+    # destination-host baseline so approval cannot poison future scoring.
+    if action.external_destination and action.action_type not in _COMMAND_EGRESS_ACTIONS:
         keys.append(f"destination:{action.external_destination}")
     if action.action_type is ActionType.shell_exec and action.target:
         verb = str(action.target).strip().split()[0] if str(action.target).strip() else ""

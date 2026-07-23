@@ -11,9 +11,13 @@ def test_core_imports_with_no_enterprise_installed():
 
 
 def test_version_is_exposed():
+    from importlib.metadata import version
+
     import doberman
 
-    assert doberman.__version__ == "0.12.0"
+    # __version__ must equal the installed distribution version — not a hardcoded
+    # literal that silently drifts every time the release is bumped.
+    assert doberman.__version__ == version("doberman-core")
 
 
 def test_policy_core_packages_import_cleanly():

@@ -1,14 +1,9 @@
 """External-destination rule (Feature 3, slice 3.5).
 
 Steps up authentication when an action sends data to a destination Doberman
-does not recognize as trusted. On its own an unknown destination is ``AUTH`` in
-Strict/Paranoid and ``PASS`` in Light/Balanced (mode flag
-``escalate_unknown_destination``); combined with secret material (the secrets
-rule) the engine's raise-only ``combine`` turns the pair into a ``BLOCK`` in
-every mode — that is how "upload the repo to an unknown endpoint" becomes a hard
-block without this rule needing to know about secrets. The sharper destination
-smells below (embedded URL credentials, raw IPs, unresolvable hosts) stay
-``AUTH`` regardless of mode.
+does not recognize as trusted, or when a raw shell/package/git command visibly
+egresses. Static command classification is raise-only: even a trusted-looking
+host requires ``AUTH`` because parsing cannot prove the runtime socket.
 
 Host classification is treated as adversarial. We extract the host from a
 properly parsed URL (never substring-match the raw string) and:
@@ -104,14 +99,18 @@ def _registered_match(host: str, trusted: Iterable[str]) -> bool:
 
 
 def _extract_destination(action: SecurityObject) -> str | None:
-    """The destination this rule classifies. Only network requests are stepped
-    up here. Domain tools (send_email/…) also carry external_destination so the
-    trifecta + secret-exfil floors can see the recipient, but their unknown
-    recipients are deliberately NOT auto-AUTH'd by this rule (alert fatigue);
-    serious domain exfil is caught by those floors instead (ADR 0021)."""
-    if action.action_type is not ActionType.network_request:
-        return None
-    return action.external_destination or action.target
+    """The network or command-egress destination this rule classifies."""
+    if action.action_type is ActionType.network_request:
+        return action.external_destination or action.target
+    if action.action_type in (
+        ActionType.shell_exec,
+        ActionType.package_install,
+        ActionType.git_op,
+    ):
+        return action.external_destination
+    # Domain tools still expose recipients to the secret/trifecta floors, but
+    # destination-alone AUTH remains suppressed to avoid message-send spam.
+    return None
 
 
 def _parse_host(destination: str) -> tuple[str | None, bool]:
@@ -139,23 +138,49 @@ def _parse_host(destination: str) -> tuple[str | None, bool]:
 
 
 class ExternalDestinationRule:
-    """Classify network destinations as trusted (PASS) or unknown (AUTH)."""
+    """Classify network destinations and raise static command egress to AUTH."""
 
     def __init__(self, trusted_hosts: Iterable[str] = TRUSTED_HOSTS) -> None:
         self._trusted = tuple(h.lower() for h in trusted_hosts)
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
+        metadata = action.metadata if isinstance(action.metadata, dict) else {}
+        command_egress = action.action_type in (
+            ActionType.shell_exec,
+            ActionType.package_install,
+            ActionType.git_op,
+        )
+        if metadata.get("egress_ambiguous"):
+            return self._auth_egress(
+                "Command egress could not be resolved to one runtime route; "
+                "authentication required."
+            )
+
         destination = _extract_destination(action)
         if not destination:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
         host, had_credentials = _parse_host(destination)
+        had_credentials = had_credentials or bool(metadata.get("egress_embedded_credentials"))
 
-        # A malformed/absent host on a network action is suspicious → AUTH.
+        # A malformed/absent host on a network/egress action is suspicious → AUTH.
         if host is None:
+            if command_egress:
+                return self._auth_egress(
+                    "Command egress destination could not be resolved safely; "
+                    "authentication required."
+                )
             return self._auth_unknown(
                 "Network destination could not be resolved to a known host; "
                 "authentication required."
+            )
+
+        # A visible command destination can only raise risk. The parsed host is
+        # not proof of the runtime socket, even when it looks trusted/read-only.
+        if command_egress:
+            return self._auth_egress(
+                "Shell, package, or git egress requires authentication because "
+                "static parsing cannot prove the runtime route."
             )
 
         # Embedded credentials in the URL are a smell on their own → AUTH even
@@ -195,5 +220,13 @@ class ExternalDestinationRule:
             verdict=Verdict.AUTH,
             risk=Risk.medium,
             reason_codes=[ReasonCode.unknown_external_destination],
+            explanation=explanation,
+        )
+
+    def _auth_egress(self, explanation: str) -> GuardrailResult:
+        return GuardrailResult(
+            verdict=Verdict.AUTH,
+            risk=Risk.high,
+            reason_codes=[ReasonCode.egress_requires_auth],
             explanation=explanation,
         )

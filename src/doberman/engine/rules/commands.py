@@ -97,6 +97,14 @@ _DESTRUCTIVE_INTERPRETER_OP = re.compile(
     re.IGNORECASE,
 )
 
+# Shared work bound for every static command walk. Exhaustion is ambiguity,
+# never silent success.
+_MAX_COMMAND_SEGMENTS = 256
+
+# Any shell expansion can construct a destination at runtime. The shared walk
+# reports the fact; consumers decide whether it matters for their rule.
+_DYNAMIC_SHELL = re.compile(r"\$\(|`|\$(?:\{|[A-Za-z_])")
+
 
 def _strip_substitutions(segment: str) -> tuple[str, list[str]]:
     """Remove ``$()``/backtick bodies from a segment, returning them separately."""
@@ -162,6 +170,47 @@ def _split_segments(command: str) -> list[str]:
     return segments
 
 
+def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
+    """Tokenize every shell segment/substitution without stripping prefixes.
+
+    Returns ``(segments, ambiguous, dynamic)``. Each segment is the raw
+    :func:`shlex.split` token list *before* env assignments or transparent
+    wrappers are removed, so security consumers can still see proxy/route
+    overrides. Unbalanced input and the shared work-cap surface through
+    ``ambiguous``. No command is executed.
+    """
+    pending = _split_segments(command)
+    segments: list[list[str]] = []
+    ambiguous = False
+    processed = 0
+
+    while pending and processed < _MAX_COMMAND_SEGMENTS:
+        processed += 1
+        segment = pending.pop()
+        stripped, bodies = _strip_substitutions(segment)
+        for body in bodies:
+            pending.extend(_split_segments(body))
+        try:
+            tokens = shlex.split(stripped, comments=True, posix=True)
+        except ValueError:
+            ambiguous = True
+            continue
+        if tokens:
+            segments.append(tokens)
+
+    if pending:
+        ambiguous = True
+    return segments, ambiguous, bool(_DYNAMIC_SHELL.search(command))
+
+
+def _argv_from_tokens(tokens: list[str]) -> list[str]:
+    """Strip prefixes from an already parsed segment for command classification."""
+    tokens = list(tokens)
+    while tokens and (_ENV_ASSIGNMENT.match(tokens[0]) or tokens[0] in _TRANSPARENT_WRAPPERS):
+        tokens.pop(0)
+    return tokens
+
+
 def _argv(segment: str) -> list[str] | None:
     """Parse one segment into argv with shlex; ``None`` if it cannot be parsed.
 
@@ -172,11 +221,7 @@ def _argv(segment: str) -> list[str] | None:
         tokens = shlex.split(segment, posix=True)
     except ValueError:
         return None
-    # Strip env assignments and transparent wrappers (sudo/nice/...). Keep
-    # track of whether a privilege wrapper was present (raises risk).
-    while tokens and (_ENV_ASSIGNMENT.match(tokens[0]) or tokens[0] in _TRANSPARENT_WRAPPERS):
-        tokens.pop(0)
-    return tokens
+    return _argv_from_tokens(tokens)
 
 
 def _is_root_or_home_target(arg: str) -> bool:
@@ -506,24 +551,11 @@ class DestructiveCommandRule:
 
     def _classify_line(self, command: str, bulk_threshold: int, root: str) -> GuardrailResult:
         worst: GuardrailResult = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
-        saw_unparseable = False
-
-        # Work queue of command-line segments (strings). We seed it with the
-        # top-level segments and push substitution / -c payload bodies as we
-        # discover them, bounded so a hostile nesting cannot loop forever.
-        pending: list[str] = _split_segments(command)
+        pending, saw_unparseable, _ = walk_command(command)
         processed = 0
-        while pending and processed < 256:
+        while pending and processed < _MAX_COMMAND_SEGMENTS:
             processed += 1
-            segment = pending.pop()
-            stripped, bodies = _strip_substitutions(segment)
-            for body in bodies:  # recurse into $(...) / `...` bodies
-                pending.extend(_split_segments(body))
-
-            tokens = _argv(stripped)
-            if tokens is None:
-                saw_unparseable = True
-                continue
+            tokens = _argv_from_tokens(pending.pop())
             if not tokens:
                 continue
             if _opaque_shell_payload(tokens):
@@ -538,7 +570,11 @@ class DestructiveCommandRule:
                 )
                 # Still scan the payload body for obvious catastrophes — an
                 # opaque AUTH can be raised to BLOCK if the body is e.g. rm -rf /.
-                pending.extend(_payload_segments(tokens))
+                payload = _payload_command(tokens)
+                if payload is not None:
+                    payload_segments, payload_ambiguous, _ = walk_command(payload)
+                    pending.extend(payload_segments)
+                    saw_unparseable = saw_unparseable or payload_ambiguous
                 continue
 
             verdict = _segment_verdict(tokens, self._protected, bulk_threshold, root)
@@ -546,6 +582,9 @@ class DestructiveCommandRule:
                 worst = _max_result(worst, verdict)
                 if worst.verdict is Verdict.BLOCK:
                     return worst
+
+        if pending:
+            saw_unparseable = True
 
         # ``curl ... | sh`` arrives as two segments; if the line both fetches
         # and pipes into a shell, escalate (defense-in-depth at the line level).
@@ -563,14 +602,14 @@ class DestructiveCommandRule:
         return worst
 
 
-def _payload_segments(tokens: list[str]) -> list[str]:
-    """Pull the argument after ``-c`` and split it for a best-effort scan."""
+def _payload_command(tokens: list[str]) -> str | None:
+    """Pull the argument after ``-c`` for a bounded shared-command walk."""
     for flag in ("-c", "--command"):
         if flag in tokens:
             idx = tokens.index(flag)
             if idx + 1 < len(tokens):
-                return _split_segments(tokens[idx + 1])
-    return []
+                return tokens[idx + 1]
+    return None
 
 
 def _line_fetches_and_pipes_to_shell(command: str) -> bool:
