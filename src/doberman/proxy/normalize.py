@@ -315,6 +315,21 @@ def _redact_host(host: str) -> str:
     return ".".join(_redact_host_label(label) for label in host.split("."))
 
 
+def _suspected_egress_token(segments: list[list[str]]) -> bool:
+    """True if any shlex-normalized token names a suspected egress tool.
+
+    Matches the normalized tokens (not the raw command) so a quote-split verb
+    (``cu''rl`` -> ``curl``) or a path-qualified one (``/usr/bin/curl`` ->
+    ``curl``) is still caught, while an egress name that only appears *inside*
+    another token (``--git-ref``) is not.
+    """
+    return any(
+        _SUSPECTED_EGRESS_VERB.fullmatch(_command_name(token)) is not None
+        for tokens in segments
+        for token in tokens
+    )
+
+
 def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
     segments, parse_ambiguous, dynamic_walk = walk_command(command)
     hosts: list[str] = []
@@ -322,9 +337,16 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
     dynamic_host = False
     had_credentials = False
     route_override = False
+    unresolved_wrapper = False
 
     for tokens in segments:
         verb, arguments = _command_verb(tokens)
+        # A flag-taking transparent wrapper (`sudo -u X`, `nice -n N`, `ionice -c N`)
+        # shifts argv so the wrapper's own option is misread as the command verb; the
+        # real command is then unidentified -> fail upward, never treat it as local.
+        if verb is not None and verb.startswith("-"):
+            unresolved_wrapper = True
+            continue
         if not _is_egress_verb(verb, arguments):
             continue
         saw_egress = True
@@ -334,10 +356,21 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
         dynamic_host = dynamic_host or dynamic
         had_credentials = had_credentials or embedded
 
-    # If parsing failed/capped before a suspected egress could be classified,
-    # surface ambiguity rather than silently treating the command as local.
-    unresolved_suspected = (
-        parse_ambiguous and not saw_egress and _SUSPECTED_EGRESS_VERB.search(command) is not None
+    # A parse failure/cap or a flag-taking wrapper can hide the real command
+    # before a suspected egress verb is classified. Surface ambiguity rather
+    # than silently treating it as local. When shlex parsing succeeded (the
+    # wrapper case) match the NORMALIZED tokens, so a quote-split (`cu''rl`) or
+    # path-qualified (`/usr/bin/curl`) verb is still caught and an egress name
+    # that only appears *inside* another token (`--git-ref`) is not; fall back
+    # to the raw string only when parsing itself was unreliable.
+    # ponytail: a bare egress name used purely as an argument (`grep curl x`)
+    # still steps a wrapped command up to AUTH — a blunt fail-closed ceiling.
+    # The precise fix is the deferred runtime egress broker, not a per-wrapper
+    # flag-grammar parser: no clean heuristic exists (`sudo -u www-data` and
+    # `nice -n 10` have different option arity).
+    unresolved_suspected = not saw_egress and (
+        (parse_ambiguous and _SUSPECTED_EGRESS_VERB.search(command) is not None)
+        or (unresolved_wrapper and _suspected_egress_token(segments))
     )
     if not saw_egress and not unresolved_suspected:
         return None, {}
