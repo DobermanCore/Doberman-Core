@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (report privately)
+    url: https://github.com/fu351/Doberman-Core/security/policy
+    about: Do not open a public issue for security problems — report privately per our security policy.
+  - name: Questions and ideas
+    url: https://github.com/fu351/Doberman-Core/discussions
+    about: Ask questions, share usage patterns, or discuss ideas in Discussions.

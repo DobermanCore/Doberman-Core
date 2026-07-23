@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest an idea or improvement for Doberman
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The use case or gap this addresses. What can't you do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like to see — interface, behavior, or CLI shape if you have one in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches or workarounds you've weighed.
+    validations:
+      required: false
+  - type: checkboxes
+    id: invariant
+    attributes:
+      label: Invariant
+      options:
+        - label: This keeps Doberman's raise-only guarantee — it never silently loosens a decision.

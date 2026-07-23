@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a problem with Doberman
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Doberman is a security tool — please do **not** paste real
+        secrets, tokens, or unredacted `.doberman/` contents. Scrub sensitive data from any
+        logs or examples first.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: When I run `doberman ...`, I expected X but got Y.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps (commands, config, action) that trigger the bug.
+      placeholder: |
+        1. Configure ...
+        2. Run `doberman ...`
+        3. See error
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Doberman version
+      description: Output of `doberman --version` (or `pip show doberman-core`).
+      placeholder: "0.16.0"
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Python version & OS
+      placeholder: "Python 3.12, Ubuntu 24.04"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Paste redacted logs. This is automatically formatted as code, so no backticks needed.
+      render: shell
+    validations:
+      required: false
