@@ -403,7 +403,15 @@ def _extract_egress_destination(
     if action_type in _COMMAND_EGRESS_ACTIONS:
         command = _command_text(raw_args)
         if command is not None:
-            return _extract_command_egress(command)
+            dest, meta = _extract_command_egress(command)
+            # Raise-only: a NON-egress command must not discard a structured
+            # destination key (url/repo/remote/...) the fallback below would
+            # surface. Otherwise {"command": "echo <secret>", "url": <host>}
+            # drops the secret-exfil floor (origin/main BLOCK -> AUTH) and
+            # ordinary dest-key egress (AUTH -> PASS). Only short-circuit when the
+            # command itself yielded a destination or ambiguity metadata.
+            if dest is not None or meta:
+                return dest, meta
 
     for key in _EGRESS_DEST_KEYS:
         value = redacted_args.get(key)

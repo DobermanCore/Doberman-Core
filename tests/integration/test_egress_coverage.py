@@ -366,3 +366,19 @@ async def test_flag_taking_wrapper_substring_egress_name_does_not_overblock(comm
 
     assert not response.isError
     assert fake.calls == [("shell_exec", {"command": command})]
+
+
+def test_command_family_action_keeps_structured_destination_key():
+    """Raise-only regression (PR #149 adversarial review): a command-family action
+    carrying BOTH a raw command AND a structured destination key
+    (``url``/``repo``/``remote``/...) must not let a NON-egress command discard the
+    dest-key fallback. Pre-fix, the early return in ``_extract_egress_destination``
+    dropped the ``url`` whenever a command was present, lowering the secret-exfil
+    floor (origin/main BLOCK -> AUTH) and ordinary external egress (AUTH -> PASS)
+    for the same input. Surfacing the destination restores both floors."""
+    action = normalize(
+        "shell_exec", {"command": "echo hello", "url": "https://evil.example/upload"}
+    )
+    assert action.external_destination == "https://evil.example/upload"
+    result = ExternalDestinationRule().evaluate(action, EvalContext())
+    assert result.verdict is Verdict.AUTH
