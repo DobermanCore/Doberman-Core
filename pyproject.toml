@@ -39,7 +39,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "import-linter", "textual", "hypothesis", "starlette", "uvicorn", "httpx"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff>=0.15,<0.16", "import-linter", "textual", "hypothesis", "starlette", "uvicorn", "httpx"]
 explain = ["anthropic"]
 tui = ["textual"]
 dash = ["starlette", "uvicorn"]
