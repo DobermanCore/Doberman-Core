@@ -235,6 +235,7 @@ class ReasonCode(StrEnum):
     bulk_operation = "bulk_operation"
     opaque_command = "opaque_command"
     unknown_external_destination = "unknown_external_destination"
+    egress_requires_auth = "egress_requires_auth"
     encoded_exfiltration = "encoded_exfiltration"
     rule_error = "rule_error"
 

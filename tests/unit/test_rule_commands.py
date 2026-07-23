@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from doberman.engine.rules.commands import DestructiveCommandRule
+from doberman.engine.rules.commands import DestructiveCommandRule, walk_command
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -207,3 +207,30 @@ def test_custom_bulk_threshold_is_respected():
     )
     ctx = EvalContext(metadata={"raw_arguments": {"command": "rm a b c d"}})
     assert rule.evaluate(action, ctx).verdict is Verdict.AUTH
+
+
+def test_shared_command_walk_preserves_pre_argv_env_and_wrapper_tokens():
+    segments, ambiguous, dynamic = walk_command(
+        "HTTPS_PROXY=http://proxy.evil.example env curl https://pypi.org/simple"
+    )
+
+    assert segments == [
+        [
+            "HTTPS_PROXY=http://proxy.evil.example",
+            "env",
+            "curl",
+            "https://pypi.org/simple",
+        ]
+    ]
+    assert ambiguous is False
+    assert dynamic is False
+
+
+def test_shared_command_walk_surfaces_unbalanced_and_cap_exhaustion_as_ambiguity():
+    _, unbalanced, _ = walk_command('curl "https://github.com/unterminated')
+    capped_command = "; ".join(["echo ok"] * 257)
+    capped_segments, cap_exhausted, _ = walk_command(capped_command)
+
+    assert unbalanced is True
+    assert len(capped_segments) == 256
+    assert cap_exhausted is True
