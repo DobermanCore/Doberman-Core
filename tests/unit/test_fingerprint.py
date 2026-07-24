@@ -110,8 +110,16 @@ def test_default_key_path_is_outside_any_repo(monkeypatch):
     monkeypatch.delenv(KEY_FILE_ENV, raising=False)
     path = fp_mod._default_key_path()
     assert "doberman" in str(path).lower()
-    # It must not resolve inside the current working directory (the repo).
-    assert os.path.commonpath([str(path.resolve()), os.getcwd()]) != os.getcwd()
+    # It must not resolve inside the current working directory (the repo). On
+    # Windows the per-user config dir and the repo can sit on different drives
+    # (e.g. key under C:\Users\...\AppData while the checkout is on D:\); there
+    # commonpath raises ValueError, which is itself proof the key is outside the
+    # repo — the exact property this test guards. Treat it as a pass.
+    try:
+        common = os.path.commonpath([str(path.resolve()), os.getcwd()])
+    except ValueError:
+        common = None  # no shared path at all -> definitively outside the repo
+    assert common != os.getcwd()
 
 
 def test_fingerprint_module_exposes_no_plaintext_key(key_path):
