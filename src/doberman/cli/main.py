@@ -90,6 +90,26 @@ hook_app = typer.Typer(
 app.add_typer(hook_app, name="hook")
 
 
+def _print_version_and_exit(show_version: bool) -> None:
+    if show_version:
+        typer.echo(__version__)
+        raise typer.Exit()
+
+
+@app.callback()
+def _main_callback(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Print the installed Doberman version and exit.",
+        callback=_print_version_and_exit,
+        is_eager=True,
+    ),
+) -> None:
+    pass
+
+
 def _configure_stderr_logging(level: int = logging.INFO) -> None:
     """Send Doberman logs to STDERR only.
 
