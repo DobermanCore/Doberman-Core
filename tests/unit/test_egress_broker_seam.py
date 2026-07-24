@@ -10,6 +10,9 @@ authority does not land until RB.4.
 """
 
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
+
+import pytest
 
 from doberman.egress.broker import (
     BrokerVerdict,
@@ -19,8 +22,23 @@ from doberman.egress.broker import (
     consult_broker,
 )
 from doberman.engine import registry
+from doberman.engine.objective import ObjectiveGuardrail
+from doberman.engine.rules import destinations as destinations_module
 from doberman.engine.rules.destinations import ExternalDestinationRule
 from doberman.models import ActionType, EvalContext, ReasonCode, SecurityObject, Verdict
+from doberman.proxy.executor import _default_objective_rules
+
+
+@pytest.fixture(autouse=True)
+def _reset_egress_broker_cache():
+    """``discover_egress_brokers`` is memoized (RB.1-fix). Tests in this file
+    monkeypatch ``entry_points`` per-test, so the cache must be cleared before
+    (a stale hit would ignore the patch) and after (so it never leaks a
+    test-only broker into a later test / module).
+    """
+    registry.discover_egress_brokers.cache_clear()
+    yield
+    registry.discover_egress_brokers.cache_clear()
 
 
 def _egress_action(action_type=ActionType.shell_exec, **overrides):
@@ -261,10 +279,46 @@ def test_broker_wiring_also_covers_plain_network_requests():
     assert result.verdict is Verdict.AUTH
 
 
-def test_default_construction_discovers_no_broker_in_this_environment():
-    # No `doberman.egress_brokers` plugin is installed here — the real
-    # (unmocked) discovery path must also be a no-op. Regression guard for
-    # the RB.1 dormant default.
+def test_default_construction_never_discovers_a_broker():
+    # RB.1-fix: load_broker now defaults to False, so a bare construction
+    # (what the host hooks do, once per tool call) never touches discovery
+    # at all — not just "discovers nothing in this environment".
     rule = ExternalDestinationRule()
+    assert rule._broker is None
     result = rule.evaluate(_egress_action(), EvalContext())
     assert result.verdict is Verdict.AUTH
+
+
+def test_opted_in_construction_discovers_no_broker_in_this_environment():
+    # No `doberman.egress_brokers` plugin is installed here — the real
+    # (unmocked) discovery path, when explicitly opted into, must also be a
+    # no-op. Regression guard for the RB.1 dormant default.
+    rule = ExternalDestinationRule(load_broker=True)
+    result = rule.evaluate(_egress_action(), EvalContext())
+    assert result.verdict is Verdict.AUTH
+
+
+# --- 5. RB.1-fix — hook path never discovers, proxy path opts in ----------------
+
+
+def test_hook_style_objective_guardrail_never_discovers_egress_brokers(monkeypatch):
+    # ObjectiveGuardrail() is exactly how the host hooks (claude_code.py,
+    # openclaw.py) build the guardrail — once per tool call, in a cold-start
+    # CLI process. That must never trigger the entry-point scan.
+    spy = MagicMock(wraps=destinations_module.discover_egress_brokers)
+    monkeypatch.setattr(destinations_module, "discover_egress_brokers", spy)
+    ObjectiveGuardrail()
+    assert spy.call_count == 0
+
+
+def test_proxy_opt_in_path_resolves_a_registered_broker(monkeypatch):
+    # `_default_objective_rules()` is exactly what builds the proxy's
+    # long-lived DEFAULT_OBJECTIVE singleton (doberman.proxy.executor) — it
+    # must resolve a registered broker, unlike the hook path above.
+    instance = _ProvenAllowlistedBroker()
+    table = _FakeEntryPoints([_FakeEntryPoint("p", lambda: instance)])
+    monkeypatch.setattr(registry, "entry_points", lambda: table)
+    rules = _default_objective_rules()
+    destination_rules = [r for r in rules if isinstance(r, ExternalDestinationRule)]
+    assert len(destination_rules) == 1
+    assert destination_rules[0]._broker is instance

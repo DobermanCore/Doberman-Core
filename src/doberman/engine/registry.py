@@ -24,6 +24,7 @@ SECURITY:
 
 import logging
 from collections.abc import Iterator
+from functools import lru_cache
 from importlib.metadata import EntryPoint, entry_points
 
 from doberman.engine.decision_engine import Guardrail
@@ -57,7 +58,13 @@ ADJUDICATOR_GROUP = "doberman.adjudicators"
 #: Runtime egress brokers (Feature RB) register here; resolved by
 #: :class:`~doberman.engine.rules.destinations.ExternalDestinationRule`. RB.1
 #: wires consultation in but keeps it dormant — no broker verdict can raise or
-#: lower a decision until RB.4.
+#: lower a decision until RB.4. Discovery defaults OFF on
+#: ``ExternalDestinationRule`` (``load_broker=False``): that rule is rebuilt on
+#: every ``ObjectiveGuardrail()`` construction, and the host-hook path builds
+#: one per tool call in a cold-start process, so a default-on scan there would
+#: add real per-call cost for a verdict RB.1 discards anyway. Only the
+#: long-lived proxy singleton opts in — see :func:`discover_egress_brokers`
+#: for the memoization that also keeps a repeated opted-in construction cheap.
 EGRESS_BROKER_GROUP = "doberman.egress_brokers"
 
 
@@ -330,6 +337,7 @@ def discover_adjudicators() -> list[object]:
     return adjudicators
 
 
+@lru_cache(maxsize=1)
 def discover_egress_brokers() -> list[object]:
     """Discover registered runtime egress brokers (Feature RB, group ``doberman.egress_brokers``).
 
@@ -339,6 +347,12 @@ def discover_egress_brokers() -> list[object]:
     when nothing is installed — the same as core-only. Core never imports a
     broker by name, and the seam is fail-closed: RB.1 wires consultation in but
     a broker verdict cannot yet raise or lower a decision (that starts RB.4).
+
+    Memoized (``lru_cache``): the entry-point scan runs at most once per
+    process, however many ``ExternalDestinationRule(load_broker=True)``
+    instances are built. Tests that monkeypatch ``entry_points`` must call
+    ``discover_egress_brokers.cache_clear()`` first (see
+    ``tests/unit/test_egress_broker_seam.py``).
     """
     # Local import mirrors the other seams and keeps discovery self-contained.
     from doberman.egress.broker import EgressBroker

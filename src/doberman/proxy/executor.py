@@ -30,6 +30,8 @@ from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import load_active_role, load_enforcement, load_mode, load_preferences
 from doberman.engine.decision_engine import Guardrail, decide, max_risk
 from doberman.engine.objective import ObjectiveGuardrail
+from doberman.engine.rules import BUILTIN_RULE_TYPES
+from doberman.engine.rules.destinations import ExternalDestinationRule
 from doberman.engine.rules.secrets import contains_strong_secret
 from doberman.engine.subjective import SubjectiveGuardrail
 from doberman.engine.taint_floor import apply_taint_floor_async, record_output_taint
@@ -76,10 +78,30 @@ REPO_ROOT = "."
 #: so tests can inject a headless fake.
 AUTH_PROMPTER: Prompter | None = None
 
+
+def _default_objective_rules() -> list[Guardrail]:
+    """Built-in rules for :data:`DEFAULT_OBJECTIVE` below.
+
+    Identical to ``ObjectiveGuardrail()``'s own default construction except
+    ``ExternalDestinationRule`` opts into egress-broker discovery
+    (``load_broker=True``). Unlike the host-hook path (a fresh
+    ``ObjectiveGuardrail()`` built on every tool call — see
+    ``ExternalDestinationRule``'s docstring), this proxy singleton is built
+    once per long-lived process, and ``discover_egress_brokers()`` is itself
+    memoized, so the entry-point scan happens at most once here regardless.
+    """
+    return [
+        ExternalDestinationRule(load_broker=True)
+        if rule_type is ExternalDestinationRule
+        else rule_type()
+        for rule_type in BUILTIN_RULE_TYPES
+    ]
+
+
 # Guardrail implementations used by the proxy: the real Feature 3 objective rule
 # set and the real Feature 9 subjective (workflow-baseline) guardrail. Module-
 # level so tests can monkeypatch the policy without touching the routing.
-DEFAULT_OBJECTIVE: Guardrail = ObjectiveGuardrail()
+DEFAULT_OBJECTIVE: Guardrail = ObjectiveGuardrail(rules=_default_objective_rules())
 DEFAULT_SUBJECTIVE: Guardrail = SubjectiveGuardrail()
 
 #: Action types whose elevations are single-use (a destructive op should not be

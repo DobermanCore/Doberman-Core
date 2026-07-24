@@ -148,6 +148,18 @@ class ExternalDestinationRule:
     result is currently DISCARDED — it must not raise or lower this rule's
     verdict versus the static-only baseline. A broker verdict starts
     influencing the outcome at RB.4.
+
+    ``load_broker`` defaults to **False**. This rule is rebuilt from scratch
+    on every :class:`~doberman.engine.objective.ObjectiveGuardrail`
+    construction, and the host hooks (``doberman.hosthooks.claude_code`` /
+    ``.openclaw``) construct a fresh ``ObjectiveGuardrail`` on **every tool
+    call**, in a cold-start CLI process, on a path whose whole point is
+    near-zero per-call cost. Defaulting broker discovery on there would add a
+    full ``importlib.metadata.entry_points()`` scan to every tool call for a
+    verdict RB.1 unconditionally discards. Only the long-lived proxy
+    singleton (``doberman.proxy.executor.DEFAULT_OBJECTIVE``), built once per
+    process, opts in explicitly with ``load_broker=True``. Do not flip this
+    default back to ``True`` without re-solving the hook cold-start cost.
     """
 
     def __init__(
@@ -155,7 +167,7 @@ class ExternalDestinationRule:
         trusted_hosts: Iterable[str] = TRUSTED_HOSTS,
         *,
         egress_broker: EgressBroker | None = None,
-        load_broker: bool = True,
+        load_broker: bool = False,
     ) -> None:
         self._trusted = tuple(h.lower() for h in trusted_hosts)
         if egress_broker is not None:
