@@ -92,7 +92,30 @@ _EGRESS_DEST_KEYS: tuple[str, ...] = (
 _COMMAND_EGRESS_ACTIONS = frozenset(
     {ActionType.shell_exec, ActionType.package_install, ActionType.git_op}
 )
-_DIRECT_EGRESS_VERBS = frozenset({"curl", "wget", "scp", "sftp", "rsync"})
+# Direct data-movement verbs. curl/wget/scp/sftp/rsync usually carry a
+# URL/host; nc/ncat/netcat/ssh/telnet/ftp/tftp/socat are raw socket/shell
+# channels (reverse shells, `nc host port < secret`, `ssh -R` tunnels) that
+# rarely expose a URL-parseable host — so they reach AUTH via the
+# zero-host -> egress_ambiguous path rather than a host-bearing verdict. Adding
+# a verb here is strictly raise-only: it can only turn a previously-silent PASS
+# into AUTH (or BLOCK when a secret is also present), never lower a verdict.
+_DIRECT_EGRESS_VERBS = frozenset(
+    {
+        "curl",
+        "ftp",
+        "nc",
+        "ncat",
+        "netcat",
+        "rsync",
+        "scp",
+        "sftp",
+        "socat",
+        "ssh",
+        "telnet",
+        "tftp",
+        "wget",
+    }
+)
 _GIT_EGRESS_SUBCOMMANDS = frozenset({"clone", "fetch", "pull", "push"})
 _PACKAGE_EGRESS_VERBS = frozenset(
     {
@@ -131,9 +154,14 @@ _PROXY_ENV_NAMES = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"})
 _ROUTE_OVERRIDE_FLAGS = frozenset({"--connect-to", "--proxy", "--resolve", "-x"})
 _ENV_ASSIGNMENT = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
 _DYNAMIC_EGRESS_TOKEN = re.compile(r"\$\(|`|\$(?:\{|[A-Za-z_])|[*]")
+# Mirrors _DIRECT_EGRESS_VERBS (+ git/package verbs) for the unparseable /
+# flag-taking-wrapper path. Word-boundary lookarounds keep each verb exact, so
+# alternation order is not load-bearing (ssh-keygen, ncdu, sftp/tftp never match
+# the bare ssh/nc/ftp); longest-first within a family is kept only for clarity.
 _SUSPECTED_EGRESS_VERB = re.compile(
     r"(?<![A-Za-z0-9_.-])"
-    r"(?:curl|wget|scp|sftp|rsync|git|pip3?|pipx|npm|pnpm|yarn|bun|cargo|"
+    r"(?:curl|wget|scp|sftp|rsync|netcat|ncat|nc|ssh|telnet|tftp|ftp|socat|"
+    r"git|pip3?|pipx|npm|pnpm|yarn|bun|cargo|"
     r"gem|go|poetry|twine|uv)"
     r"(?![A-Za-z0-9_.-])",
     re.IGNORECASE,
