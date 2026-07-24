@@ -54,6 +54,11 @@ ALGEBRA_ADAPTER_GROUP = "doberman.algebra_adapters"
 #: the decision engine. Shadow-only: they observe a decision on REDACTED features
 #: and can never change the live verdict.
 ADJUDICATOR_GROUP = "doberman.adjudicators"
+#: Runtime egress brokers (Feature RB) register here; resolved by
+#: :class:`~doberman.engine.rules.destinations.ExternalDestinationRule`. RB.1
+#: wires consultation in but keeps it dormant — no broker verdict can raise or
+#: lower a decision until RB.4.
+EGRESS_BROKER_GROUP = "doberman.egress_brokers"
 
 
 def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
@@ -323,6 +328,42 @@ def discover_adjudicators() -> list[object]:
             continue
         adjudicators.append(candidate)
     return adjudicators
+
+
+def discover_egress_brokers() -> list[object]:
+    """Discover registered runtime egress brokers (Feature RB, group ``doberman.egress_brokers``).
+
+    Loaded defensively like every other seam: an import/constructor failure, or
+    an object that is not broker-shaped (no ``enforcement_status``/``classify``/
+    ``connection_events`` attributes), is logged and skipped. Returns ``[]``
+    when nothing is installed — the same as core-only. Core never imports a
+    broker by name, and the seam is fail-closed: RB.1 wires consultation in but
+    a broker verdict cannot yet raise or lower a decision (that starts RB.4).
+    """
+    # Local import mirrors the other seams and keeps discovery self-contained.
+    from doberman.egress.broker import EgressBroker
+
+    brokers: list[object] = []
+    seen: set[str] = set()
+    for entry_point in _iter_entry_points(EGRESS_BROKER_GROUP):
+        key = f"{EGRESS_BROKER_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = _load_and_construct(entry_point)
+        if candidate is None:
+            continue
+        # Structural check only (runtime_checkable can't verify signatures) —
+        # the real safety gate is that consult_broker() validates every return
+        # value and isolates exceptions.
+        if not isinstance(candidate, EgressBroker):
+            logger.warning(
+                "skipping egress broker %r: does not implement the EgressBroker protocol",
+                getattr(entry_point, "name", "?"),
+            )
+            continue
+        brokers.append(candidate)
+    return brokers
 
 
 def discover_drift_observers() -> list[object]:

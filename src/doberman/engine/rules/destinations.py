@@ -25,6 +25,8 @@ import ipaddress
 from collections.abc import Iterable
 from urllib.parse import urlsplit
 
+from doberman.egress.broker import EgressBroker, consult_broker
+from doberman.engine.registry import discover_egress_brokers
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -138,10 +140,31 @@ def _parse_host(destination: str) -> tuple[str | None, bool]:
 
 
 class ExternalDestinationRule:
-    """Classify network destinations and raise static command egress to AUTH."""
+    """Classify network destinations and raise static command egress to AUTH.
 
-    def __init__(self, trusted_hosts: Iterable[str] = TRUSTED_HOSTS) -> None:
+    RB.1: also consults a registered :class:`~doberman.egress.broker.
+    EgressBroker` (if any) for every egress-classified action, via the
+    fail-closed :func:`~doberman.egress.broker.consult_broker` helper. The
+    result is currently DISCARDED — it must not raise or lower this rule's
+    verdict versus the static-only baseline. A broker verdict starts
+    influencing the outcome at RB.4.
+    """
+
+    def __init__(
+        self,
+        trusted_hosts: Iterable[str] = TRUSTED_HOSTS,
+        *,
+        egress_broker: EgressBroker | None = None,
+        load_broker: bool = True,
+    ) -> None:
         self._trusted = tuple(h.lower() for h in trusted_hosts)
+        if egress_broker is not None:
+            self._broker: EgressBroker | None = egress_broker
+        elif load_broker:
+            discovered = discover_egress_brokers()
+            self._broker = discovered[0] if discovered else None
+        else:
+            self._broker = None
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         metadata = action.metadata if isinstance(action.metadata, dict) else {}
@@ -150,6 +173,11 @@ class ExternalDestinationRule:
             ActionType.package_install,
             ActionType.git_op,
         )
+        if command_egress or action.action_type is ActionType.network_request:
+            # DORMANT (RB.1): the broker is genuinely consulted (so the seam is
+            # real and testable) but its verdict is unconditionally discarded —
+            # this rule's outcome must not change versus the static baseline.
+            consult_broker(self._broker, action)
         if metadata.get("egress_ambiguous"):
             return self._auth_egress(
                 "Command egress could not be resolved to one runtime route; "
