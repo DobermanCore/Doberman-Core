@@ -428,28 +428,34 @@ def _extract_egress_destination(
     action_type: ActionType,
 ) -> tuple[str | None, dict[str, Any]]:
     """Pick a redacted domain destination or classify raw command egress."""
+    command_meta: dict[str, Any] = {}
     if action_type in _COMMAND_EGRESS_ACTIONS:
         command = _command_text(raw_args)
         if command is not None:
             dest, meta = _extract_command_egress(command)
-            # Raise-only: a NON-egress command must not discard a structured
-            # destination key (url/repo/remote/...) the fallback below would
-            # surface. Otherwise {"command": "echo <secret>", "url": <host>}
-            # drops the secret-exfil floor (origin/main BLOCK -> AUTH) and
-            # ordinary dest-key egress (AUTH -> PASS). Only short-circuit when the
-            # command itself yielded a destination or ambiguity metadata.
-            if dest is not None or meta:
+            # A command that resolved a destination host wins outright.
+            if dest is not None:
                 return dest, meta
+            # Raise-only: a command that parsed to NO host — whether it was
+            # non-egress or a recognized egress verb with no parseable host
+            # (e.g. `nc localhost 4444`, egress_ambiguous) — must NOT discard a
+            # structured destination key (url/repo/remote/...) the fallback
+            # below would surface. Otherwise {"command": "nc localhost 4444",
+            # "url": <host>} drops the secret-exfil floor (BLOCK -> AUTH) and
+            # ordinary dest-key egress (AUTH -> PASS). Carry any ambiguity
+            # metadata onto whatever the fallback surfaces (raise-only: it can
+            # only add an AUTH floor, never lower the surfaced host's verdict).
+            command_meta = meta
 
     for key in _EGRESS_DEST_KEYS:
         value = redacted_args.get(key)
         if isinstance(value, str) and value:
-            return value, {}
+            return value, command_meta
         if isinstance(value, list | tuple) and value:
             parts = [str(v) for v in value if isinstance(v, str) and v]
             if parts:
-                return ",".join(parts), {}
-    return None, {}
+                return ",".join(parts), command_meta
+    return None, command_meta
 
 
 def _extract_target(action_type: ActionType, arguments: dict[str, Any]) -> tuple[str | None, dict]:
