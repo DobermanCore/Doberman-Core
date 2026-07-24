@@ -11,11 +11,25 @@ concurrency:
   cancel-in-progress: true
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    # Windows runners default `run:` to PowerShell; pin bash (Git Bash ships on
+    # GitHub's Windows images) so the shell-scripted steps below — the `grep`-based
+    # standalone-guarantee check in particular — behave identically on every OS.
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
+        os: ["ubuntu-latest"]
         python-version: ["3.11", "3.12"]
+        # Doberman is a local-first tool that runs on developer machines of every
+        # OS, and it carries OS-specific code (e.g. the Windows O_BINARY key-write
+        # path in storage/fingerprint.py). Guard that surface with one Windows leg
+        # so cross-platform regressions surface in CI, not on a contributor's box.
+        include:
+          - os: "windows-latest"
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
