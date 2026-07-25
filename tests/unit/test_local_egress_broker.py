@@ -1,11 +1,15 @@
-"""Feature RB, slice RB.2a — `LocalEgressBroker`, the concrete reference broker.
+"""Feature RB, slices RB.2a/RB.2b — `LocalEgressBroker`, the concrete
+reference broker.
 
-Every test here defends the RB.2a scope: no listener exists yet, so
-`will_enforce` must always be False, `connection_events` must always be
-empty, and `classify()` must never claim to know a pending action's actual
-runtime destination. `enforcement_status()` must simply delegate to the
-injected probe. No test performs real network I/O — the allowlist and probe
-are always injected.
+With no proxy injected: no listener exists, so `will_enforce` must always be
+False, `connection_events` must always be empty, and `classify()` must never
+claim to know a pending action's actual runtime destination.
+`enforcement_status()` must simply delegate to the injected probe's (pure,
+non-blocking) cache read; `refresh_enforcement()` delegates to the probe's
+async refresh, including through the real `proxy=` lambda wiring built in
+`__init__` -- see the asyncio-event-loop regression tests below. No test
+performs real network I/O — the allowlist, probe, and any proxy are always
+injected/faked.
 """
 
 from datetime import datetime, timezone
@@ -37,6 +41,23 @@ class _FixedProbe:
 
     def status(self):
         return self._status
+
+
+class _FakeAsyncProbeProxy:
+    """A minimal async ``probe()`` stand-in for ``ForwardProxy`` -- exercises
+    exactly the lambda wiring ``LocalEgressBroker.__init__`` builds around a
+    proxy's ``probe()`` coroutine (the site of the RB.2b asyncio.run() bug),
+    with no real proxy and no real network.
+    """
+
+    def __init__(self, *, should_succeed: bool = True):
+        self._should_succeed = should_succeed
+        self.probe_calls = 0
+
+    async def probe(self, host, port):
+        self.probe_calls += 1
+        if not self._should_succeed:
+            raise ConnectionRefusedError("simulated broker probe failure")
 
 
 def test_local_egress_broker_satisfies_the_protocol():
@@ -106,6 +127,38 @@ def test_connection_events_is_always_empty_in_rb2a():
         (datetime(2026, 7, 1, tzinfo=timezone.utc), datetime(2026, 7, 24, tzinfo=timezone.utc)),
     )
     assert list(events) == []
+
+
+async def test_enforcement_status_from_inside_a_running_event_loop_never_raises():
+    # Regression: the old wiring called `asyncio.run(proxy.probe(...))`
+    # inside the broker_probe consulted by `status()`'s implicit refresh,
+    # which raises RuntimeError when reached from code already running
+    # inside an event loop -- exactly where the real decision path
+    # (`ExternalDestinationRule.evaluate()`) calls `enforcement_status()`.
+    # This test itself runs inside a live event loop, reproducing that
+    # context. `enforcement_status()` is now a pure cache read, so it must
+    # never raise and must never invoke asyncio.run -- with nothing yet
+    # refreshed it reads UNPROVEN rather than crashing.
+    fake_proxy = _FakeAsyncProbeProxy(should_succeed=True)
+    broker = LocalEgressBroker(proxy=fake_proxy)
+
+    assert broker.enforcement_status() is EnforcementStatus.UNPROVEN
+    assert fake_proxy.probe_calls == 0  # a pure cache read never probes
+
+
+async def test_refresh_enforcement_reaches_proven_through_the_real_proxy_wiring():
+    # Proves the positive half is reachable through LocalEgressBroker's own
+    # `proxy=` wiring (not just a directly-constructed EnforcementProbe):
+    # direct half fails closed (EnforcementProbe's default no-network
+    # connector), broker half succeeds via the fake proxy's async probe().
+    fake_proxy = _FakeAsyncProbeProxy(should_succeed=True)
+    broker = LocalEgressBroker(proxy=fake_proxy, probe_target=("localhost", 1234))
+
+    status = await broker.refresh_enforcement()
+
+    assert status is EnforcementStatus.PROVEN
+    assert broker.enforcement_status() is EnforcementStatus.PROVEN
+    assert fake_proxy.probe_calls == 1
 
 
 def test_default_construction_builds_a_real_allowlist_and_probe_without_network_io():

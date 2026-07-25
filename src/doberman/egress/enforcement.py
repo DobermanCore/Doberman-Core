@@ -28,17 +28,23 @@ Truth table::
     unexpected exception in either half   -> UNPROVEN
 
 Never raises. RB.2a wires no listener yet, so no ``broker_probe`` can be
-supplied — :meth:`EnforcementProbe.status` can therefore only ever return
-``UNPROVEN`` here; RB.2b enables ``PROVEN`` simply by supplying a real one.
+supplied — the cached verdict can therefore only ever be ``UNPROVEN`` here;
+RB.2b enables ``PROVEN`` by supplying a real one and calling
+:meth:`EnforcementProbe.refresh`.
 
-:meth:`EnforcementProbe.status` never runs the probe on a call within the TTL
-window — it returns the cached verdict. Only the call that crosses the TTL
-boundary pays the (short, bounded) probe cost; see the ponytail note there.
+:meth:`EnforcementProbe.status` is a **pure cache read**: it performs no I/O
+and never blocks, so it is safe to call from inside a running event loop (a
+proxy decision path). All probing happens in the **async**
+:meth:`EnforcementProbe.refresh`, which the broker's owner drives explicitly,
+off the decision path — ``status()`` itself never triggers a probe. A cache
+that was never refreshed, or has gone stale (older than the TTL), reads as
+``UNPROVEN`` — fail closed.
 """
 
+import asyncio
 import socket
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from doberman.egress.broker import EnforcementStatus
 
@@ -63,10 +69,12 @@ Connector = Callable[[str, int, float], None]
 
 #: A broker probe attempts one connection THROUGH the broker to an
 #: allowlisted destination, raising on failure and returning on success.
-#: ``None`` (the RB.2a default -- no listener exists yet) means the
-#: positive half can never be satisfied, so ``status()`` can only ever
-#: return ``UNPROVEN``.
-BrokerProbe = Callable[[], None]
+#: Async, so :meth:`EnforcementProbe.refresh` can await it directly without
+#: blocking the event loop (e.g. ``ForwardProxy.probe``, already ``async
+#: def``). ``None`` (the RB.2a default -- no listener exists yet) means the
+#: positive half can never be satisfied, so the cached verdict can only ever
+#: be ``UNPROVEN``.
+BrokerProbe = Callable[[], Awaitable[None]]
 
 
 def _socket_connector(host: str, port: int, timeout: float) -> None:
@@ -123,24 +131,41 @@ class EnforcementProbe:
         self._cached_at: float | None = None
 
     def status(self) -> EnforcementStatus:
-        """The cached enforcement verdict, refreshing once the TTL elapses.
+        """The cached enforcement verdict -- a pure read, no I/O, never raises.
 
-        # ponytail: the single call that crosses the TTL boundary pays the
-        # probe's bounded timeout (~1.5s by default); every other call is a
-        # cache read. A background refresh thread would remove even that, but
-        # RB.2a never wires this broker into a live decision path (it isn't
-        # registered yet) so that's unwarranted complexity here -- revisit if
-        # probe latency becomes visible once RB.2b registers a real broker.
+        Safe to call from inside a running event loop (a proxy decision
+        path): it does not probe, does not block, and does not schedule a
+        probe. Returns ``UNPROVEN`` if nothing has been cached yet, or if the
+        cached verdict is older than the TTL -- a stale cache fails closed,
+        exactly like an unproven one. Call :meth:`refresh` to update the
+        cache.
         """
-        now = self._clock()
-        if self._cached is None or self._cached_at is None or (now - self._cached_at) >= self._ttl:
-            self._cached = self._probe_once()
-            self._cached_at = now
+        if self._cached is None or self._cached_at is None:
+            return EnforcementStatus.UNPROVEN
+        if (self._clock() - self._cached_at) >= self._ttl:
+            return EnforcementStatus.UNPROVEN
         return self._cached
 
-    def _probe_once(self) -> EnforcementStatus:
+    async def refresh(self) -> EnforcementStatus:
+        """Run the two-sided probe and update the cache. Never raises.
+
+        Caller-driven, off the decision path -- nothing here starts a
+        background task on its own; whoever owns the broker calls this on
+        whatever cadence makes sense.
+
+        # ponytail: the direct half runs the (blocking) connector in a
+        # worker thread via ``asyncio.to_thread`` so it never stalls the
+        # event loop; the positive half is awaited directly since
+        # ``BrokerProbe`` is now async.
+        """
+        verdict = await self._probe_once()
+        self._cached = verdict
+        self._cached_at = self._clock()
+        return verdict
+
+    async def _probe_once(self) -> EnforcementStatus:
         try:
-            direct_succeeded = self._direct_connection_succeeds()
+            direct_succeeded = await self._direct_connection_succeeds()
         except Exception:  # noqa: BLE001 — a non-network exception is a probe bug, not
             # a network signal either way; it can't count toward PROVEN.
             return EnforcementStatus.UNPROVEN
@@ -148,7 +173,7 @@ class EnforcementProbe:
             # Egress is demonstrably NOT constrained -- the positive half
             # can't change that verdict.
             return EnforcementStatus.UNPROVEN
-        if self._broker_connection_succeeds():
+        if await self._broker_connection_succeeds():
             # The direct attempt failed AND a broker-routed connection
             # works: the network is fine, so the direct failure can only be
             # egress enforcement.
@@ -158,18 +183,18 @@ class EnforcementProbe:
         # machine (or the probe target) is offline.
         return EnforcementStatus.UNPROVEN
 
-    def _direct_connection_succeeds(self) -> bool:
+    async def _direct_connection_succeeds(self) -> bool:
         try:
-            self._connector(self._host, self._port, self._timeout)
+            await asyncio.to_thread(self._connector, self._host, self._port, self._timeout)
         except OSError:  # a real network-level failure: refused, timed out, unreachable
             return False
         return True
 
-    def _broker_connection_succeeds(self) -> bool:
+    async def _broker_connection_succeeds(self) -> bool:
         if self._broker_probe is None:
             return False
         try:
-            self._broker_probe()
+            await self._broker_probe()
         except Exception:  # noqa: BLE001 — any failure means the positive half is unmet
             return False
         return True
