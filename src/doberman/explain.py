@@ -105,6 +105,10 @@ _REASON_DESCRIPTIONS: dict[str, str] = {
         "a proven egress broker attested this destination is allowlisted and will enforce it "
         "at the socket"
     ),
+    "egress_blocked_by_mode": (
+        "paranoid mode hard-blocks this destination because a proven egress broker will "
+        "itself drop it at the socket"
+    ),
 }
 
 # Fail at import time if a ReasonCode is ever added without a description — a
