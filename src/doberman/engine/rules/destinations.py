@@ -27,7 +27,7 @@ from collections.abc import Iterable
 from datetime import timedelta
 from urllib.parse import urlsplit
 
-from doberman.egress.broker import EgressBroker, consult_broker
+from doberman.egress.broker import BrokerVerdict, EgressBroker, consult_broker
 from doberman.engine.registry import discover_egress_brokers
 from doberman.models import (
     ActionType,
@@ -119,6 +119,20 @@ def _is_egress_classified(action: SecurityObject) -> bool:
     )
 
 
+def _broker_grants_pass(verdict: BrokerVerdict | None) -> bool:
+    """RB.4: true only when a PROVEN broker's verdict allowlists AND will
+    enforce this exact destination.
+
+    ``consult_broker`` already collapses everything short of that — no
+    broker, ``UNPROVEN``/``ABSENT``, or a raising broker — to ``None`` (see
+    ``doberman.egress.broker``), so a ``None`` here means "no signal,
+    unchanged AUTH behavior." Both flags are required: an allowlisted
+    destination the broker will NOT itself enforce (e.g. no proxy running)
+    is still a bare claim, not proof, and must stay AUTH.
+    """
+    return verdict is not None and verdict.allowlisted and verdict.will_enforce
+
+
 def _raise_for_divergence(result: GuardrailResult) -> GuardrailResult:
     """RB.3: attach ``egress_route_divergence`` and ensure at least ``AUTH``.
 
@@ -189,10 +203,19 @@ class ExternalDestinationRule:
 
     RB.1: also consults a registered :class:`~doberman.egress.broker.
     EgressBroker` (if any) for every egress-classified action, via the
-    fail-closed :func:`~doberman.egress.broker.consult_broker` helper. The
-    result is currently DISCARDED — it must not raise or lower this rule's
-    verdict versus the static-only baseline. A broker verdict starts
-    influencing the outcome at RB.4.
+    fail-closed :func:`~doberman.egress.broker.consult_broker` helper.
+
+    RB.4: the consulted verdict may now grant ``PASS`` in place of this
+    rule's two "static parsing can't prove it" ``AUTH`` outcomes — command
+    egress with a resolved host, and an unknown/untrusted network
+    destination — but ONLY when :func:`_broker_grants_pass` holds (broker
+    ``PROVEN``, and it both allowlists AND will itself enforce this exact
+    destination at the socket). Every other static ``AUTH`` (an
+    unresolvable/malformed host, embedded credentials, a raw IP literal, RB.3
+    route divergence) is unaffected: a broker PASS never overrides those, and
+    ``combine()`` downstream is raise-only, so this can never punch through a
+    BLOCK/AUTH from any other rule (e.g. the secrets rule, the
+    lethal-trifecta floor).
 
     RB.3: separately, :meth:`evaluate` also performs RETROSPECTIVE
     ground-truth reconciliation — never a pre-flight check of the pending
@@ -282,11 +305,13 @@ class ExternalDestinationRule:
             ActionType.package_install,
             ActionType.git_op,
         )
+        broker_verdict: BrokerVerdict | None = None
         if command_egress or action.action_type is ActionType.network_request:
-            # DORMANT (RB.1): the broker is genuinely consulted (so the seam is
-            # real and testable) but its verdict is unconditionally discarded —
-            # this rule's outcome must not change versus the static baseline.
-            consult_broker(self._broker, action)
+            # RB.4: genuinely consulted now — may grant PASS below via
+            # _broker_grants_pass, but ONLY at the two sites documented in the
+            # class docstring. Everywhere else in this method behaves exactly
+            # as before RB.4 (this local var is simply unused there).
+            broker_verdict = consult_broker(self._broker, action)
         if metadata.get("egress_ambiguous"):
             return self._auth_egress(
                 "Command egress could not be resolved to one runtime route; "
@@ -315,6 +340,8 @@ class ExternalDestinationRule:
         # A visible command destination can only raise risk. The parsed host is
         # not proof of the runtime socket, even when it looks trusted/read-only.
         if command_egress:
+            if _broker_grants_pass(broker_verdict):
+                return self._pass_broker_enforced()
             return self._auth_egress(
                 "Shell, package, or git egress requires authentication because "
                 "static parsing cannot prove the runtime route."
@@ -348,6 +375,9 @@ class ExternalDestinationRule:
         if not thresholds_for(getattr(ctx, "mode", "balanced")).escalate_unknown_destination:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
+        if _broker_grants_pass(broker_verdict):
+            return self._pass_broker_enforced()
+
         return self._auth_unknown(
             "Network destination is not on the trusted list; authentication required."
         )
@@ -366,4 +396,20 @@ class ExternalDestinationRule:
             risk=Risk.high,
             reason_codes=[ReasonCode.egress_requires_auth],
             explanation=explanation,
+        )
+
+    def _pass_broker_enforced(self) -> GuardrailResult:
+        """RB.4: reached only via :func:`_broker_grants_pass` — a PROVEN
+        broker attested it allowlists AND will itself enforce this exact
+        destination at the socket, so static parsing's inability to prove
+        the runtime route is no longer the last word.
+        """
+        return GuardrailResult(
+            verdict=Verdict.PASS,
+            risk=Risk.low,
+            reason_codes=[ReasonCode.egress_broker_enforced],
+            explanation=(
+                "A proven egress broker attests this destination is allowlisted and "
+                "will enforce it at the socket; authentication is not required."
+            ),
         )

@@ -287,6 +287,12 @@ class ReasonCode(StrEnum):
     # from this rule's static host-trust classification (retrospective only —
     # never a pre-flight check of the pending action's own destination).
     egress_route_divergence = "egress_route_divergence"
+    # RB.4 — a broker PROVEN to enforce egress attested this exact destination
+    # is allowlisted AND will be enforced at the socket, so ExternalDestinationRule
+    # contributed PASS instead of its usual AUTH for this egress-classified action.
+    # combine() is raise-only, so this can never override a BLOCK/AUTH from any
+    # other rule (secrets, trifecta floor, RB.3 divergence).
+    egress_broker_enforced = "egress_broker_enforced"
 
 
 class GuardrailResult(BaseModel):
