@@ -109,6 +109,10 @@ _REASON_DESCRIPTIONS: dict[str, str] = {
         "paranoid mode hard-blocks this destination because a proven egress broker will "
         "itself drop it at the socket"
     ),
+    "anomalous_egress_velocity": (
+        "this entity's recent egress connections show anomalous velocity (burst, volume, "
+        "or fan-out)"
+    ),
 }
 
 # Fail at import time if a ReasonCode is ever added without a description — a

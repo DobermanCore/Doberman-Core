@@ -299,6 +299,12 @@ class ReasonCode(StrEnum):
     # truthful (the broker really stops the packet), not merely advisory. Dormant
     # without a broker in every mode, including paranoid (raise-only; ADR 0021).
     egress_blocked_by_mode = "egress_blocked_by_mode"
+    # RB.6 — a bounded, in-memory per-entity velocity detector
+    # (doberman.egress.velocity.EgressVelocityTracker) tripped a burst/
+    # volume/fan-out signal over this entity's broker-observed connections in
+    # the same bounded recent window as RB.3. Retrospective and raise-only,
+    # same shape as egress_route_divergence: no broker means no signal.
+    anomalous_egress_velocity = "anomalous_egress_velocity"
 
 
 class GuardrailResult(BaseModel):
