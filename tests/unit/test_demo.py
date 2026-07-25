@@ -131,6 +131,38 @@ def test_exit_code_nonzero_when_a_scenario_mismatches(tmp_path, monkeypatch):
     assert result.exit_code != 0
 
 
+def test_mismatch_surfaces_loudly_with_actual_and_expected(tmp_path, monkeypatch):
+    # Same mismatch-forcing technique as the exit-code test above, but this one
+    # asserts on the *content* a human reads: a mismatch must never look like
+    # ordinary output -- silence is reserved for scenarios that matched.
+    bad_scenarios = tuple(
+        Scenario(
+            name=s.name,
+            tool_name=s.tool_name,
+            args=s.args,
+            expected_verdict=Verdict.AUTH if s.name == "Benign file read" else s.expected_verdict,
+            label=s.label,
+        )
+        for s in SCENARIOS
+    )
+    monkeypatch.setattr(demo, "SCENARIOS", bad_scenarios)
+
+    result = runner.invoke(app, ["demo", "--path", str(tmp_path), "--fast"])
+    assert "MISMATCH" in result.output
+    assert "expected AUTH" in result.output
+    assert "got PASS" in result.output
+    assert result.exit_code != 0
+
+
+def test_full_match_run_has_no_ok_or_mismatch_markers(tmp_path):
+    # Silent on success: no bracketed [OK] bookkeeping, no MISMATCH marker --
+    # a verdict should read as itself, not as "matched the QA script".
+    result = runner.invoke(app, ["demo", "--path", str(tmp_path), "--fast"])
+    assert result.exit_code == 0, result.output
+    assert "[OK]" not in result.output
+    assert "MISMATCH" not in result.output
+
+
 def test_fast_flag_never_paces(tmp_path, monkeypatch):
     async def _boom():
         raise AssertionError("--fast must never sleep/pace")

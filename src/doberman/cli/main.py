@@ -765,12 +765,14 @@ def demo(
 
     Drives a fixed list of canned tool calls -- a secret-exfiltration attempt,
     a destructive command, a protected-branch force push, a Unicode-smuggled
-    egress, a sensitive-file read, and two benign calls -- through the SAME
-    normalize -> decide -> record_decision pipeline the real proxy uses, so the
-    redacted decision log (and `doberman dash`) fills with genuine verdicts.
-    Nothing is ever executed against a real tool or downstream server: no
-    network call, no unexpected file mutation, and no auth prompt (an AUTH
-    verdict is recorded and shown here, never challenged).
+    egress, a sensitive-file read, a git clone to an external host (the real
+    engine's AUTH verdict -- human-in-the-loop, not a fake one), and two
+    benign calls -- through the SAME normalize -> decide -> record_decision
+    pipeline the real proxy uses, so the redacted decision log (and
+    `doberman dash`) fills with genuine verdicts. Nothing is ever executed
+    against a real tool or downstream server: no network call, no unexpected
+    file mutation, and no auth prompt (an AUTH verdict is recorded and shown
+    here, never challenged).
     """
     try:
         resolved_mode = resolve_mode(mode)
