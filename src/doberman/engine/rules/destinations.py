@@ -23,11 +23,14 @@ query parameters, or any embedded credential.
 
 import ipaddress
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import timedelta
 from urllib.parse import urlsplit
 
-from doberman.egress.broker import BrokerVerdict, EgressBroker, consult_broker
+from pydantic import AwareDatetime
+
+from doberman.egress.broker import BrokerVerdict, ConnectionEvent, EgressBroker, consult_broker
+from doberman.egress.velocity import EgressVelocityTracker
 from doberman.engine.registry import discover_egress_brokers
 from doberman.models import (
     ActionType,
@@ -159,6 +162,32 @@ def _raise_for_divergence(result: GuardrailResult) -> GuardrailResult:
     )
 
 
+def _raise_for_velocity(result: GuardrailResult) -> GuardrailResult:
+    """RB.6: attach ``anomalous_egress_velocity`` and ensure at least ``AUTH``.
+
+    Strictly raise-only, same shape as :func:`_raise_for_divergence` — only
+    ever raises a ``PASS`` to ``AUTH``, or appends the reason code to an
+    already-``AUTH``/``BLOCK`` result. Never lowers a verdict/risk, never
+    grants ``PASS``.
+    """
+    if result.verdict is Verdict.PASS:
+        return GuardrailResult(
+            verdict=Verdict.AUTH,
+            risk=Risk.medium,
+            reason_codes=[ReasonCode.anomalous_egress_velocity],
+            explanation=(
+                "This entity's recent egress connections show anomalous velocity "
+                "(burst, volume, or fan-out); authentication required."
+            ),
+        )
+    return GuardrailResult(
+        verdict=result.verdict,
+        risk=result.risk,
+        reason_codes=[*result.reason_codes, ReasonCode.anomalous_egress_velocity],
+        explanation=result.explanation,
+    )
+
+
 def _extract_destination(action: SecurityObject) -> str | None:
     """The network or command-egress destination this rule classifies."""
     if action.action_type is ActionType.network_request:
@@ -251,6 +280,7 @@ class ExternalDestinationRule:
         load_broker: bool = False,
     ) -> None:
         self._trusted = tuple(h.lower() for h in trusted_hosts)
+        self._velocity = EgressVelocityTracker()
         if egress_broker is not None:
             self._broker: EgressBroker | None = egress_broker
         elif load_broker:
@@ -260,15 +290,45 @@ class ExternalDestinationRule:
             self._broker = None
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
-        """Static classification, then RB.3's raise-only retrospective check.
+        """Static classification, then RB.3/RB.6's raise-only retrospective
+        checks.
 
         The static result (unchanged from RB.1) is computed first; ground-
-        truth reconciliation only ever raises it — see the class docstring.
+        truth reconciliation and velocity anomalies only ever raise it — see
+        the class docstring.
         """
         result = self._evaluate_static(action, ctx)
-        if _is_egress_classified(action) and self._has_route_divergence(action, ctx):
-            return _raise_for_divergence(result)
+        if _is_egress_classified(action):
+            if self._has_route_divergence(action, ctx):
+                result = _raise_for_divergence(result)
+            if self._has_velocity_anomaly(action, ctx):
+                result = _raise_for_velocity(result)
         return result
+
+    def _recent_broker_events(
+        self, action: SecurityObject, ctx: EvalContext
+    ) -> tuple[str, Sequence[ConnectionEvent], tuple[AwareDatetime, AwareDatetime]] | None:
+        """Fail-closed fetch of this entity's broker-observed egress within
+        the bounded reconciliation window.
+
+        Returns ``None`` (no signal) when there is no broker, no entity id in
+        ``ctx.metadata``, or the broker's ``connection_events`` raises.
+        Shared by RB.3 and RB.6 so both stay byte-for-byte dormant without a
+        broker.
+        """
+        if self._broker is None:
+            return None
+        entity = ctx.metadata.get("entity_id") if isinstance(ctx.metadata, dict) else None
+        if not entity:
+            return None
+        end = action.ts
+        start = end - _RECONCILIATION_WINDOW
+        try:
+            events = self._broker.connection_events(entity, (start, end))
+        except Exception:  # noqa: BLE001 — a raising broker is no signal, never a crash
+            logger.debug("egress broker raised in connection_events(); treating as no signal")
+            return None
+        return entity, events, (start, end)
 
     def _has_route_divergence(self, action: SecurityObject, ctx: EvalContext) -> bool:
         """RB.3: has this entity's broker-observed egress, within the bounded
@@ -282,21 +342,28 @@ class ExternalDestinationRule:
         whose ``connection_events`` raises all return ``False`` — dormant
         without a broker means byte-for-byte unchanged behavior.
         """
-        if self._broker is None:
+        fetched = self._recent_broker_events(action, ctx)
+        if fetched is None:
             return False
-        entity = ctx.metadata.get("entity_id") if isinstance(ctx.metadata, dict) else None
-        if not entity:
-            return False
-        end = action.ts
-        start = end - _RECONCILIATION_WINDOW
-        try:
-            events = self._broker.connection_events(entity, (start, end))
-        except Exception:  # noqa: BLE001 — a raising broker is no signal, never a crash
-            logger.debug("egress broker raised in connection_events(); treating as no signal")
-            return False
+        _entity, events, _window = fetched
         return any(
             not _registered_match(_decode_host(event.host), self._trusted) for event in events
         )
+
+    def _has_velocity_anomaly(self, action: SecurityObject, ctx: EvalContext) -> bool:
+        """RB.6: has this entity's broker-observed egress, within the bounded
+        recent window, tripped a burst/volume/fan-out velocity signal?
+
+        RETROSPECTIVE only, same fail-closed shape as :meth:`_has_route_
+        divergence`: no broker, no entity id, or a broker whose
+        ``connection_events`` raises all return ``False`` — dormant without a
+        broker means byte-for-byte unchanged behavior.
+        """
+        fetched = self._recent_broker_events(action, ctx)
+        if fetched is None:
+            return False
+        entity, events, window = fetched
+        return self._velocity.assess(entity, events, window) is not None
 
     def _evaluate_static(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         metadata = action.metadata if isinstance(action.metadata, dict) else {}
