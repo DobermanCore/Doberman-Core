@@ -1,43 +1,55 @@
-"""The enforcement negative probe (Feature RB, slice RB.2a).
+"""The two-sided enforcement probe (Feature RB, slice RB.2a).
 
 Answers one question: is this machine's egress actually constrained to the
 broker right now? A deployment attestation token can be forged or stale; an
-ACTIVE NEGATIVE PROBE cannot lie the same way — it attempts the thing an
-unconstrained agent would do (open a direct socket to a destination outside
-the broker) and watches whether that attempt is actually stopped.
+ACTIVE PROBE cannot lie the same way.
 
-Fail-closed rule (the whole point of this module):
+Proof requires BOTH halves, not a negative result alone:
 
-* Direct connection SUCCEEDS -> egress is NOT constrained -> ``UNPROVEN``.
-* ``ConnectionRefusedError`` / ``TimeoutError`` -> a definitive rejection of
-  the direct attempt -> egress appears constrained -> ``PROVEN``.
-* Any other error (a plain ``OSError`` such as a DNS failure or "network
-  unreachable", or a non-``OSError`` bug in the connector) is ambiguous -- it
-  may mean the probe itself is misconfigured rather than that egress is
-  enforced -> ``UNPROVEN``. Never raises.
+* NEGATIVE — a DIRECT connection to a non-allowlisted destination FAILS with
+  a network-level error (refused, timed out, unreachable).
+* POSITIVE — a connection made THROUGH THE BROKER to an allowlisted
+  destination SUCCEEDS.
+
+A one-sided (negative-only) probe is unsound: a corporate firewall that
+*drops* packets (the most common enterprise block) produces a ``TimeoutError``,
+and a resolver policy that blocks the specific probe target (many
+enterprises block ``1.1.1.1`` outright) produces a ``ConnectionRefusedError``
+-- both indistinguishable from real broker enforcement, even on a machine
+whose egress is otherwise wide open. The positive half is what rules that
+out: it proves the network (and the probe target) are working, so a direct
+failure can then only mean egress really is constrained.
+
+Truth table::
+
+    direct fails  + broker succeeds       -> PROVEN
+    direct succeeds + broker (any)        -> UNPROVEN (demonstrably unconstrained)
+    direct fails  + broker fails/absent   -> UNPROVEN (proves nothing; may be offline)
+    unexpected exception in either half   -> UNPROVEN
+
+Never raises. RB.2a wires no listener yet, so no ``broker_probe`` can be
+supplied — :meth:`EnforcementProbe.status` can therefore only ever return
+``UNPROVEN`` here; RB.2b enables ``PROVEN`` simply by supplying a real one.
 
 :meth:`EnforcementProbe.status` never runs the probe on a call within the TTL
 window — it returns the cached verdict. Only the call that crosses the TTL
 boundary pays the (short, bounded) probe cost; see the ponytail note there.
 """
 
-import logging
 import socket
 import time
 from collections.abc import Callable
 
 from doberman.egress.broker import EnforcementStatus
 
-logger = logging.getLogger("doberman.egress.enforcement")
-
 # The default target is a stable, well-known, publicly reachable host:port
 # (Cloudflare's 1.1.1.1:443) that is not on the static TRUSTED_HOSTS
-# allowlist. It must be something that ACCEPTS a connection when reached
-# directly, not merely a closed port -- a closed port produces the same
-# ConnectionRefusedError as a local firewall REJECT, which would make an
-# *unconstrained* machine falsely read as PROVEN. Override for air-gapped or
-# egress-restrictive environments where this default is itself unreachable
-# for reasons unrelated to broker enforcement.
+# allowlist. With two-sided proof the exact target is less load-bearing than
+# it was for a negative-only probe (a blocked/dropped target alone can no
+# longer produce a false PROVEN), but it should still be a host that
+# normally ACCEPTS connections rather than a closed port. Override for
+# air-gapped or egress-restrictive environments where this default is
+# itself unreachable for reasons unrelated to broker enforcement.
 DEFAULT_PROBE_HOST = "1.1.1.1"
 DEFAULT_PROBE_PORT = 443
 DEFAULT_PROBE_TIMEOUT_SECONDS = 1.5
@@ -49,6 +61,13 @@ DEFAULT_ENFORCEMENT_TTL_SECONDS = 300.0
 #: success. Constructor-injectable so tests never touch a real socket.
 Connector = Callable[[str, int, float], None]
 
+#: A broker probe attempts one connection THROUGH the broker to an
+#: allowlisted destination, raising on failure and returning on success.
+#: ``None`` (the RB.2a default -- no listener exists yet) means the
+#: positive half can never be satisfied, so ``status()`` can only ever
+#: return ``UNPROVEN``.
+BrokerProbe = Callable[[], None]
+
 
 def _socket_connector(host: str, port: int, timeout: float) -> None:
     """Default connector: a direct TCP connect, bypassing any broker/proxy."""
@@ -57,7 +76,7 @@ def _socket_connector(host: str, port: int, timeout: float) -> None:
 
 
 class EnforcementProbe:
-    """Caches an active negative-probe verdict, TTL'd, and never raises.
+    """Caches a two-sided proof verdict, TTL'd, and never raises.
 
     :meth:`status` is the only entry point; a broker's ``enforcement_status()``
     should simply delegate to it.
@@ -71,6 +90,7 @@ class EnforcementProbe:
         timeout: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
         ttl: float = DEFAULT_ENFORCEMENT_TTL_SECONDS,
         connector: Connector | None = None,
+        broker_probe: BrokerProbe | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._host = host
@@ -78,6 +98,7 @@ class EnforcementProbe:
         self._timeout = timeout
         self._ttl = ttl
         self._connector = connector or _socket_connector
+        self._broker_probe = broker_probe
         self._clock = clock
         self._cached: EnforcementStatus | None = None
         self._cached_at: float | None = None
@@ -100,17 +121,36 @@ class EnforcementProbe:
 
     def _probe_once(self) -> EnforcementStatus:
         try:
-            self._connector(self._host, self._port, self._timeout)
-        except (ConnectionRefusedError, TimeoutError):
-            # A definitive rejection of the direct attempt -- egress appears
-            # constrained to the broker.
+            direct_succeeded = self._direct_connection_succeeds()
+        except Exception:  # noqa: BLE001 — a non-network exception is a probe bug, not
+            # a network signal either way; it can't count toward PROVEN.
+            return EnforcementStatus.UNPROVEN
+        if direct_succeeded:
+            # Egress is demonstrably NOT constrained -- the positive half
+            # can't change that verdict.
+            return EnforcementStatus.UNPROVEN
+        if self._broker_connection_succeeds():
+            # The direct attempt failed AND a broker-routed connection
+            # works: the network is fine, so the direct failure can only be
+            # egress enforcement.
             return EnforcementStatus.PROVEN
-        except Exception:  # noqa: BLE001 — any other failure is ambiguous; fail closed
-            logger.debug(
-                "egress enforcement probe raised an unexpected error; treating as UNPROVEN"
-            )
-            return EnforcementStatus.UNPROVEN
-        else:
-            # The direct connection SUCCEEDED -- egress is demonstrably NOT
-            # constrained to the broker.
-            return EnforcementStatus.UNPROVEN
+        # Direct failed but there's no working broker probe to corroborate
+        # it -- proves nothing; the direct failure may just mean this
+        # machine (or the probe target) is offline.
+        return EnforcementStatus.UNPROVEN
+
+    def _direct_connection_succeeds(self) -> bool:
+        try:
+            self._connector(self._host, self._port, self._timeout)
+        except OSError:  # a real network-level failure: refused, timed out, unreachable
+            return False
+        return True
+
+    def _broker_connection_succeeds(self) -> bool:
+        if self._broker_probe is None:
+            return False
+        try:
+            self._broker_probe()
+        except Exception:  # noqa: BLE001 — any failure means the positive half is unmet
+            return False
+        return True

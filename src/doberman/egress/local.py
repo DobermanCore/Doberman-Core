@@ -45,7 +45,7 @@ class LocalEgressBroker:
         self._probe = probe if probe is not None else EnforcementProbe()
 
     def enforcement_status(self) -> EnforcementStatus:
-        """The cached active-negative-probe verdict; never blocks/raises."""
+        """The cached two-sided enforcement-probe verdict; never blocks/raises."""
         return self._probe.status()
 
     def classify(self, action: SecurityObject) -> BrokerVerdict:
