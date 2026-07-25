@@ -306,6 +306,15 @@ class ReasonCode(StrEnum):
     # same shape as egress_route_divergence: no broker means no signal.
     anomalous_egress_velocity = "anomalous_egress_velocity"
 
+    # RB.7 — post-fetch artifact digest verification. The proxy already sees
+    # returned tool-result content (the same point the output secret-scan
+    # runs); when a pin exists for the fetched identity and the content's
+    # sha256 digest disagrees, the result is withheld from the agent. Never
+    # produced pre-decision (a PASS is granted before the fetch happens, and
+    # the RB.2b broker relays TLS opaquely) — this is strictly post-fetch,
+    # post-result.
+    artifact_digest_mismatch = "artifact_digest_mismatch"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).
