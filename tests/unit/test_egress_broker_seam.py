@@ -2,11 +2,13 @@
 the fail-closed dormant default.
 
 Every test here defends one property: today's shipped raise-only egress
-behavior (EB.1 / v0.16.0) is UNCHANGED by RB.1. The seam is real — a
-registered broker's ``enforcement_status``/``classify`` are genuinely called
-— but DORMANT: no broker verdict (ABSENT, UNPROVEN, PROVEN, or one that
-raises) may raise or lower ``ExternalDestinationRule``'s verdict. PASS
-authority does not land until RB.4.
+behavior (EB.1 / v0.16.0) is UNCHANGED for anything short of a fully proven
+verdict. The seam is real — a registered broker's ``enforcement_status``/
+``classify`` are genuinely called — but DORMANT for ABSENT, UNPROVEN, or a
+raising broker: none of those may raise or lower
+``ExternalDestinationRule``'s verdict. RB.4 (see test_broker_backed_pass.py
+for its full gate coverage) turned on the one case this file also asserts:
+a PROVEN + allowlisted + will_enforce broker now grants PASS.
 """
 
 from datetime import datetime, timezone
@@ -257,17 +259,19 @@ def test_raising_broker_is_treated_as_absent_and_does_not_crash():
     assert result.verdict is Verdict.AUTH
 
 
-def test_proven_broker_still_grants_no_pass_in_rb1():
-    # RB.1 ships PASS-authority dormant — even a PROVEN, allowlisted,
-    # will-enforce broker changes nothing until RB.4.
+def test_proven_allowlisted_enforced_broker_now_grants_pass_via_rb4():
+    # RB.1 shipped PASS-authority dormant; RB.4 turned it on for exactly this
+    # conjunction — a PROVEN, allowlisted, will-enforce broker now grants
+    # PASS (full gate coverage lives in test_broker_backed_pass.py).
     rule = ExternalDestinationRule(egress_broker=_ProvenAllowlistedBroker())
     result = rule.evaluate(_egress_action(), EvalContext())
-    assert result.verdict is Verdict.AUTH
+    assert result.verdict is Verdict.PASS
+    assert result.reason_codes == [ReasonCode.egress_broker_enforced]
 
 
 def test_broker_wiring_also_covers_plain_network_requests():
     # network_request egress goes through a different branch of evaluate();
-    # the dormant consultation (and its discard) must hold there too.
+    # the RB.4 broker-backed PASS gate must hold there too.
     rule = ExternalDestinationRule(egress_broker=_ProvenAllowlistedBroker())
     action = _egress_action(
         action_type=ActionType.network_request,
@@ -276,7 +280,8 @@ def test_broker_wiring_also_covers_plain_network_requests():
         external_destination="https://not-a-trusted-host.example",
     )
     result = rule.evaluate(action, EvalContext(mode="strict"))
-    assert result.verdict is Verdict.AUTH
+    assert result.verdict is Verdict.PASS
+    assert result.reason_codes == [ReasonCode.egress_broker_enforced]
 
 
 def test_default_construction_never_discovers_a_broker():
