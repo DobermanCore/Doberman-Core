@@ -28,6 +28,7 @@ from mcp.types import CallToolResult, TextContent
 from doberman.auth.challenge import AuthTier, Prompter, run_auth_challenge
 from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import load_active_role, load_enforcement, load_mode, load_preferences
+from doberman.egress.artifact import ArtifactPinStore, ArtifactVerdict
 from doberman.engine.decision_engine import Guardrail, decide, max_risk
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.rules import BUILTIN_RULE_TYPES
@@ -437,6 +438,60 @@ async def _scan_output_for_secrets(
     )
 
 
+async def _verify_artifact_digest(
+    action: SecurityObject, result: CallToolResult
+) -> Decision | None:
+    """Post-fetch pinned-digest check (RB.7), alongside the output secret-scan.
+
+    **Post-fetch only.** A PASS is granted BEFORE the fetch happens, and the
+    RB.2b broker relays TLS opaquely (it never sees plaintext response
+    bytes), so this can only verify content Doberman already sees in the
+    RESULT — it never gates the pre-fetch decision itself. Only meaningful
+    for network-fetch actions with a target identity; anything else is a
+    no-op. A pinned identity whose fetched content's digest disagrees
+    withholds the content from the agent (synthetic BLOCK ``Decision``,
+    reason-coded only — never the content or either digest). An unpinned
+    identity is unchanged pass-through (the common case).
+
+    Fails closed: any exception during verification is treated exactly like
+    a mismatch, so a broken check blocks the output rather than silently
+    letting unverified content through.
+    """
+    if action.action_type is not ActionType.network_request or not action.target:
+        return None
+    try:
+        content_text = _result_text(result)
+        if not content_text:
+            return None
+        store = ArtifactPinStore.from_repo(REPO_ROOT)
+        verdict = store.verify(action.target, content_text.encode("utf-8"))
+        if verdict is not ArtifactVerdict.mismatch:
+            return None
+        gate_result = GuardrailResult(
+            verdict=Verdict.BLOCK,
+            risk=Risk.high,
+            reason_codes=[ReasonCode.artifact_digest_mismatch],
+            explanation="Fetched content's digest did not match its pinned expected digest.",
+        )
+    except Exception:  # noqa: BLE001 — fail closed: a broken check blocks the output
+        gate_result = GuardrailResult(
+            verdict=Verdict.BLOCK,
+            risk=Risk.high,
+            reason_codes=[ReasonCode.objective_guardrail_error],
+            explanation="Artifact digest verification failed; failing closed.",
+        )
+    return Decision(
+        action_id=action.id,
+        final_verdict=Verdict.BLOCK,
+        final_risk=max_risk(gate_result.risk, Risk.high),
+        objective=gate_result,
+        subjective=None,
+        reason_codes=list(gate_result.reason_codes),
+        explanation=gate_result.explanation,
+        decided_at=datetime.now(timezone.utc),
+    )
+
+
 async def _consume_single_use(action: SecurityObject, grants: tuple, now: datetime) -> None:
     """Mark a single-use elevation spent after it released a forward (best-effort).
 
@@ -561,6 +616,15 @@ async def _handle_auth(
             # row, the block, not a clean one).
             await _persist(gate, action, auth_result="blocked", elevation_id=elevation_id, eid=eid)
             return _verdict_result(gate)
+        artifact_gate = await _verify_artifact_digest(action, result)
+        if artifact_gate is not None:
+            # RB.7: a pinned artifact's fetched content disagreed with its
+            # expected digest — withhold it from the agent, same shape as the
+            # secret-scan gate above (one log row, the block, not a clean one).
+            await _persist(
+                artifact_gate, action, auth_result="blocked", elevation_id=elevation_id, eid=eid
+            )
+            return _verdict_result(artifact_gate)
         await _observe_allowed(action, eid, surprise_score)
     await _persist(decision, action, auth_result="approved", elevation_id=elevation_id, eid=eid)
     return result
@@ -651,6 +715,13 @@ async def decide_and_execute(
             # row, the block, not a clean one).
             await _persist(gate, action, auth_result="blocked", eid=eid)
             return _verdict_result(gate)
+        artifact_gate = await _verify_artifact_digest(action, result)
+        if artifact_gate is not None:
+            # RB.7: a pinned artifact's fetched content disagreed with its
+            # expected digest — withhold it from the agent, same shape as the
+            # secret-scan gate above (one log row, the block, not a clean one).
+            await _persist(artifact_gate, action, auth_result="blocked", eid=eid)
+            return _verdict_result(artifact_gate)
         if not softened:
             # Teach the baseline only on a GENUINE pass. A softened would-have
             # (monitor/off suppressed a step-up) is NOT confirmed-benign — feeding

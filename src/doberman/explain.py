@@ -113,6 +113,9 @@ _REASON_DESCRIPTIONS: dict[str, str] = {
         "this entity's recent egress connections show anomalous velocity (burst, volume, "
         "or fan-out)"
     ),
+    "artifact_digest_mismatch": (
+        "the fetched content's digest did not match its pinned expected digest"
+    ),
 }
 
 # Fail at import time if a ReasonCode is ever added without a description — a
