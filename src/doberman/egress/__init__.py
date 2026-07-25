@@ -18,6 +18,15 @@ from doberman.egress.broker import (
     consult_broker,
 )
 
+# NOTE: allowlist.py/local.py are deliberately NOT re-exported here. They
+# import doberman.engine.rules.destinations, which itself imports
+# doberman.egress.broker at its own module top — eagerly importing them from
+# this package __init__ would make that resolution order-dependent (whichever
+# of the two modules some caller imports first) and can deadlock on a
+# partially-initialized module. Import them directly:
+# `from doberman.egress.allowlist import EgressAllowlist`,
+# `from doberman.egress.local import LocalEgressBroker`.
+
 __all__ = [
     "BrokerVerdict",
     "ConnectionEvent",
