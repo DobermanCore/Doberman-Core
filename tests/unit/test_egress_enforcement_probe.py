@@ -9,6 +9,8 @@ enforcement from the outside. No test ever touches a real socket or sleeps:
 the connector, the broker probe, and the clock are all injected.
 """
 
+import socket
+
 from doberman.egress.broker import EnforcementStatus
 from doberman.egress.enforcement import EnforcementProbe
 
@@ -158,6 +160,18 @@ def test_probe_re_runs_once_the_ttl_elapses():
     assert probe.status() is EnforcementStatus.PROVEN
     assert connector_calls["count"] == 2
     assert broker_calls["count"] == 2
+
+
+def test_default_construction_performs_no_network_io(monkeypatch):
+    # A caller that constructs EnforcementProbe() with no injected connector
+    # must never reach the network -- socket.create_connection should never
+    # even be called. The default connector fails closed instead.
+    def _must_not_be_called(*args, **kwargs):
+        raise AssertionError("EnforcementProbe touched the real network by default")
+
+    monkeypatch.setattr(socket, "create_connection", _must_not_be_called)
+    probe = EnforcementProbe()
+    assert probe.status() is EnforcementStatus.UNPROVEN
 
 
 def test_probe_target_and_timeout_are_constructor_injectable():

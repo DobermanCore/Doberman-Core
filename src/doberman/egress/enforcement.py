@@ -70,9 +70,28 @@ BrokerProbe = Callable[[], None]
 
 
 def _socket_connector(host: str, port: int, timeout: float) -> None:
-    """Default connector: a direct TCP connect, bypassing any broker/proxy."""
+    """A direct TCP connect, bypassing any broker/proxy -- real network I/O.
+
+    This is the production connector, but it is deliberately NOT the
+    constructor default (see ``_no_network_connector``): a caller that wants
+    the real probe must pass ``connector=_socket_connector`` explicitly.
+    """
     with socket.create_connection((host, port), timeout=timeout):
         pass
+
+
+def _no_network_connector(host: str, port: int, timeout: float) -> None:
+    """Fail-closed default connector: performs no network I/O whatsoever.
+
+    ``EnforcementProbe`` must never reach the network unless a caller
+    deliberately opts in via ``connector=_socket_connector`` (or an
+    equivalent). Raising ``OSError`` makes the direct-connection half read
+    as "failed" without ever dialing out -- combined with the default
+    ``broker_probe=None``, a default-constructed probe can therefore only
+    ever report ``UNPROVEN`` (truth table: direct fails + broker absent ->
+    UNPROVEN), which is also the correct fail-closed answer.
+    """
+    raise OSError("EnforcementProbe has no connector configured (network I/O is opt-in)")
 
 
 class EnforcementProbe:
@@ -97,7 +116,7 @@ class EnforcementProbe:
         self._port = port
         self._timeout = timeout
         self._ttl = ttl
-        self._connector = connector or _socket_connector
+        self._connector = connector or _no_network_connector
         self._broker_probe = broker_probe
         self._clock = clock
         self._cached: EnforcementStatus | None = None
