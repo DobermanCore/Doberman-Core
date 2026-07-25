@@ -266,15 +266,17 @@ async def test_enforcement_status_proven_via_a_running_proxy(proxy, origin):
     def failing_direct_connector(host, port, timeout):
         raise OSError("simulated: no direct route out of this machine")
 
-    def broker_probe():
-        asyncio.run(proxy.probe("localhost", origin.port))
+    async def broker_probe():
+        await proxy.probe("localhost", origin.port)
 
     probe = EnforcementProbe(connector=failing_direct_connector, broker_probe=broker_probe)
-    # Run the sync, blocking probe in a worker thread so the proxy's own
-    # server (bound to this test's event loop) stays free to service the
-    # probe's own connection attempt back into itself.
-    status = await asyncio.to_thread(probe.status)
+    # Called directly from this test's own running event loop -- the exact
+    # scenario the sync `asyncio.run()`-based wiring used to blow up on.
+    # `refresh()` runs the (blocking) direct connector in a worker thread and
+    # awaits the async broker_probe, so it never needs a loop of its own.
+    status = await probe.refresh()
     assert status is EnforcementStatus.PROVEN
+    assert probe.status() is EnforcementStatus.PROVEN
 
 
 def test_enforcement_status_unproven_with_no_proxy_running():

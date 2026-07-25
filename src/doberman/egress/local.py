@@ -8,7 +8,8 @@ always ``False``, ``connection_events`` always empty). RB.2b adds an *optional*
 broker's answers become real — ``classify()`` can report ``will_enforce=True``
 for a proxy that is actually running, ``connection_events`` reflects what the
 proxy actually observed, and ``enforcement_status()`` can genuinely reach
-``PROVEN`` (the injected probe's positive half connects *through* the proxy).
+``PROVEN`` once :meth:`LocalEgressBroker.refresh_enforcement` has run (the
+injected probe's positive half connects *through* the proxy).
 With no proxy (the default), behavior is byte-for-byte RB.2a.
 
 Not registered as a ``doberman.egress_brokers`` entry point by this slice —
@@ -16,7 +17,6 @@ constructing this class has no effect on any decision until something opts in
 and RB.4 lands.
 """
 
-import asyncio
 import logging
 from collections.abc import Sequence
 
@@ -58,16 +58,34 @@ class LocalEgressBroker:
             # direct connector stays at EnforcementProbe's safe default
             # (no-network, raises); only a caller building a real deployment
             # opts into the real-network `_socket_connector` explicitly.
+            # `proxy.probe` is already `async def`; the lambda just binds the
+            # target and returns its coroutine for `EnforcementProbe.refresh`
+            # to await -- never call `asyncio.run()` here, this broker is
+            # reached from inside the proxy's own running event loop.
             target_host, target_port = probe_target
             self._probe = EnforcementProbe(
-                broker_probe=lambda: asyncio.run(proxy.probe(target_host, target_port))
+                broker_probe=lambda: proxy.probe(target_host, target_port)
             )
         else:
             self._probe = EnforcementProbe()
 
     def enforcement_status(self) -> EnforcementStatus:
-        """The cached two-sided enforcement-probe verdict; never blocks/raises."""
+        """The cached two-sided enforcement-probe verdict.
+
+        A pure cache read: no I/O, never blocks, never raises -- safe to call
+        from the decision path. Call :meth:`refresh_enforcement` (off the
+        decision path) to update the cache.
+        """
         return self._probe.status()
+
+    async def refresh_enforcement(self) -> EnforcementStatus:
+        """Run the two-sided enforcement probe and update the cached verdict.
+
+        Caller-driven -- never started automatically -- so whoever owns this
+        broker's proxy decides the refresh cadence (e.g. on startup and
+        periodically), off the decision path.
+        """
+        return await self._probe.refresh()
 
     def classify(self, action: SecurityObject) -> BrokerVerdict:
         """Prospective only: would ``action``'s destination be allowlisted?
