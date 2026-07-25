@@ -101,6 +101,10 @@ _REASON_DESCRIPTIONS: dict[str, str] = {
         "this entity recently connected to a destination its static egress classification "
         "did not predict"
     ),
+    "egress_broker_enforced": (
+        "a proven egress broker attested this destination is allowlisted and will enforce it "
+        "at the socket"
+    ),
 }
 
 # Fail at import time if a ReasonCode is ever added without a description — a
