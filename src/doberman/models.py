@@ -293,6 +293,12 @@ class ReasonCode(StrEnum):
     # combine() is raise-only, so this can never override a BLOCK/AUTH from any
     # other rule (secrets, trifecta floor, RB.3 divergence).
     egress_broker_enforced = "egress_broker_enforced"
+    # RB.5 — Paranoid mode only: a broker PROVEN to enforce egress attested this
+    # exact destination is NOT allowlisted and WILL be dropped at the socket, so
+    # ExternalDestinationRule hard-BLOCKs instead of its usual AUTH — the block is
+    # truthful (the broker really stops the packet), not merely advisory. Dormant
+    # without a broker in every mode, including paranoid (raise-only; ADR 0021).
+    egress_blocked_by_mode = "egress_blocked_by_mode"
 
 
 class GuardrailResult(BaseModel):

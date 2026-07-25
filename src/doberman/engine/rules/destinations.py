@@ -136,10 +136,10 @@ def _broker_grants_pass(verdict: BrokerVerdict | None) -> bool:
 def _raise_for_divergence(result: GuardrailResult) -> GuardrailResult:
     """RB.3: attach ``egress_route_divergence`` and ensure at least ``AUTH``.
 
-    Strictly raise-only — ``ExternalDestinationRule`` never itself returns
-    ``BLOCK``, so this only ever raises a ``PASS`` to ``AUTH`` or appends the
-    reason code to an already-``AUTH`` result. Never lowers a verdict/risk,
-    never grants ``PASS``.
+    Strictly raise-only — this only ever raises a ``PASS`` to ``AUTH``, or
+    appends the reason code to an already-``AUTH``/``BLOCK`` result (RB.5's
+    paranoid mode-gated hard block is the one case ``ExternalDestinationRule``
+    itself returns ``BLOCK``). Never lowers a verdict/risk, never grants ``PASS``.
     """
     if result.verdict is Verdict.PASS:
         return GuardrailResult(
@@ -342,6 +342,8 @@ class ExternalDestinationRule:
         if command_egress:
             if _broker_grants_pass(broker_verdict):
                 return self._pass_broker_enforced()
+            if self._mode_hard_blocks_egress(ctx, broker_verdict):
+                return self._block_egress_mode()
             return self._auth_egress(
                 "Shell, package, or git egress requires authentication because "
                 "static parsing cannot prove the runtime route."
@@ -378,6 +380,9 @@ class ExternalDestinationRule:
         if _broker_grants_pass(broker_verdict):
             return self._pass_broker_enforced()
 
+        if self._mode_hard_blocks_egress(ctx, broker_verdict):
+            return self._block_egress_mode()
+
         return self._auth_unknown(
             "Network destination is not on the trusted list; authentication required."
         )
@@ -396,6 +401,33 @@ class ExternalDestinationRule:
             risk=Risk.high,
             reason_codes=[ReasonCode.egress_requires_auth],
             explanation=explanation,
+        )
+
+    def _mode_hard_blocks_egress(
+        self, ctx: EvalContext, broker_verdict: BrokerVerdict | None
+    ) -> bool:
+        """RB.5: Paranoid-only, and only when a broker PROVEN to enforce egress
+        (``broker_verdict is not None`` — see :func:`consult_broker`) attests it
+        will itself drop this exact destination at the socket. Mirrors
+        :func:`_broker_grants_pass` with ``allowlisted`` flipped: same
+        ``will_enforce`` requirement, so the BLOCK is truthful, not advisory.
+        Dormant with no broker in every mode, including Paranoid (raise-only).
+        """
+        if broker_verdict is None or not broker_verdict.will_enforce:
+            return False
+        if broker_verdict.allowlisted:
+            return False
+        return thresholds_for(getattr(ctx, "mode", "balanced")).egress_hard_block
+
+    def _block_egress_mode(self) -> GuardrailResult:
+        return GuardrailResult(
+            verdict=Verdict.BLOCK,
+            risk=Risk.high,
+            reason_codes=[ReasonCode.egress_blocked_by_mode],
+            explanation=(
+                "Paranoid mode hard-blocks this destination because a proven egress "
+                "broker will itself drop it at the socket."
+            ),
         )
 
     def _pass_broker_enforced(self) -> GuardrailResult:

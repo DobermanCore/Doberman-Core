@@ -66,6 +66,14 @@ class ModeThresholds:
     #: of stepping up to AUTH. True only in strict/paranoid. Raise-only: it escalates
     #: an existing AUTH to a BLOCK and never touches Light/Balanced (ADR 0021).
     token_channel_hard_block: bool = False
+    #: Whether a non-allowlisted egress destination hard-BLOCKs instead of
+    #: stepping up to AUTH, when (and only when) a broker PROVEN to enforce
+    #: egress attests it will itself drop that exact destination at the socket.
+    #: True only in Paranoid. Raise-only: it escalates an existing AUTH to a
+    #: BLOCK; with no broker registered every mode — including Paranoid — is
+    #: byte-for-byte unchanged, since there is nothing enforcing the block
+    #: (RB.5; ADR 0021).
+    egress_hard_block: bool = False
 
 
 #: Per-mode thresholds. Stricter modes lower the bulk threshold (more AUTH);
@@ -103,6 +111,7 @@ MODES: dict[SecurityMode, ModeThresholds] = {
         abnormality_threshold=0.3,
         trifecta_hard_block=True,
         token_channel_hard_block=True,
+        egress_hard_block=True,
     ),
 }
 
