@@ -281,6 +281,13 @@ class ReasonCode(StrEnum):
     repeat_after_block = "repeat_after_block"
     turn_blocked_repeatedly = "turn_blocked_repeatedly"
 
+    # Feature RB — egress broker ground-truth reconciliation (RB.3). Never
+    # produced by static classification alone: only when a broker-observed
+    # connection for this entity, within a bounded recent window, diverged
+    # from this rule's static host-trust classification (retrospective only —
+    # never a pre-flight check of the pending action's own destination).
+    egress_route_divergence = "egress_route_divergence"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).

@@ -22,7 +22,9 @@ query parameters, or any embedded credential.
 """
 
 import ipaddress
+import logging
 from collections.abc import Iterable
+from datetime import timedelta
 from urllib.parse import urlsplit
 
 from doberman.egress.broker import EgressBroker, consult_broker
@@ -37,6 +39,13 @@ from doberman.models import (
     Verdict,
 )
 from doberman.policy.modes import thresholds_for
+
+logger = logging.getLogger("doberman.engine.rules.destinations")
+
+#: RB.3 — how far back a broker's observed connections are consulted for
+#: ground-truth reconciliation. Bounded and cheap: reuses the broker's own
+#: (already-bounded) event store; the rule holds no history of its own.
+_RECONCILIATION_WINDOW = timedelta(minutes=15)
 
 #: Destinations Doberman ships trusting. Overridable (F6 loads from policy).
 #: Registered domains only — subdomains are matched structurally.
@@ -100,6 +109,42 @@ def _registered_match(host: str, trusted: Iterable[str]) -> bool:
     return False
 
 
+def _is_egress_classified(action: SecurityObject) -> bool:
+    """True for the action types this rule (and RB.3 reconciliation) classify."""
+    return action.action_type in (
+        ActionType.shell_exec,
+        ActionType.package_install,
+        ActionType.git_op,
+        ActionType.network_request,
+    )
+
+
+def _raise_for_divergence(result: GuardrailResult) -> GuardrailResult:
+    """RB.3: attach ``egress_route_divergence`` and ensure at least ``AUTH``.
+
+    Strictly raise-only — ``ExternalDestinationRule`` never itself returns
+    ``BLOCK``, so this only ever raises a ``PASS`` to ``AUTH`` or appends the
+    reason code to an already-``AUTH`` result. Never lowers a verdict/risk,
+    never grants ``PASS``.
+    """
+    if result.verdict is Verdict.PASS:
+        return GuardrailResult(
+            verdict=Verdict.AUTH,
+            risk=Risk.medium,
+            reason_codes=[ReasonCode.egress_route_divergence],
+            explanation=(
+                "This entity recently connected to a destination its static egress "
+                "classification did not predict; authentication required."
+            ),
+        )
+    return GuardrailResult(
+        verdict=result.verdict,
+        risk=result.risk,
+        reason_codes=[*result.reason_codes, ReasonCode.egress_route_divergence],
+        explanation=result.explanation,
+    )
+
+
 def _extract_destination(action: SecurityObject) -> str | None:
     """The network or command-egress destination this rule classifies."""
     if action.action_type is ActionType.network_request:
@@ -149,6 +194,19 @@ class ExternalDestinationRule:
     verdict versus the static-only baseline. A broker verdict starts
     influencing the outcome at RB.4.
 
+    RB.3: separately, :meth:`evaluate` also performs RETROSPECTIVE
+    ground-truth reconciliation — never a pre-flight check of the pending
+    action's own destination (a forward proxy only learns that at CONNECT
+    time, after this decision). It asks the broker what this entity's
+    connections actually showed a moment ago
+    (:meth:`~doberman.egress.broker.EgressBroker.connection_events`) and, if
+    any of them diverged from this rule's static host-trust classification,
+    RAISES the verdict :meth:`evaluate` was already going to return. This is
+    strictly raise-only: it can step a ``PASS`` up to ``AUTH`` and attach
+    ``egress_route_divergence``, but it never lowers a verdict/risk and never
+    grants ``PASS``. No broker, no entity id, or a broker whose
+    ``connection_events`` raises → no signal → behavior identical to today.
+
     ``load_broker`` defaults to **False**. This rule is rebuilt from scratch
     on every :class:`~doberman.engine.objective.ObjectiveGuardrail`
     construction, and the host hooks (``doberman.hosthooks.claude_code`` /
@@ -179,6 +237,45 @@ class ExternalDestinationRule:
             self._broker = None
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
+        """Static classification, then RB.3's raise-only retrospective check.
+
+        The static result (unchanged from RB.1) is computed first; ground-
+        truth reconciliation only ever raises it — see the class docstring.
+        """
+        result = self._evaluate_static(action, ctx)
+        if _is_egress_classified(action) and self._has_route_divergence(action, ctx):
+            return _raise_for_divergence(result)
+        return result
+
+    def _has_route_divergence(self, action: SecurityObject, ctx: EvalContext) -> bool:
+        """RB.3: has this entity's broker-observed egress, within the bounded
+        recent window, shown a host this rule's own static classification
+        would not have trusted?
+
+        RETROSPECTIVE only — never re-examines ``action``'s own destination
+        (a forward proxy only learns that at CONNECT time, after this
+        decision; see the module docstring in ``doberman.egress.broker``).
+        Fail-closed to "no signal": no broker, no entity id, or a broker
+        whose ``connection_events`` raises all return ``False`` — dormant
+        without a broker means byte-for-byte unchanged behavior.
+        """
+        if self._broker is None:
+            return False
+        entity = ctx.metadata.get("entity_id") if isinstance(ctx.metadata, dict) else None
+        if not entity:
+            return False
+        end = action.ts
+        start = end - _RECONCILIATION_WINDOW
+        try:
+            events = self._broker.connection_events(entity, (start, end))
+        except Exception:  # noqa: BLE001 — a raising broker is no signal, never a crash
+            logger.debug("egress broker raised in connection_events(); treating as no signal")
+            return False
+        return any(
+            not _registered_match(_decode_host(event.host), self._trusted) for event in events
+        )
+
+    def _evaluate_static(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         metadata = action.metadata if isinstance(action.metadata, dict) else {}
         command_egress = action.action_type in (
             ActionType.shell_exec,

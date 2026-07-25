@@ -97,6 +97,10 @@ _REASON_DESCRIPTIONS: dict[str, str] = {
     "anomalous_token_pattern": "the token pattern in the payload was anomalous",
     "multi_step_exfil": "this action is part of a multi-step pattern that looks like exfiltration",
     "confirmed_exfil": ("a secret read earlier in this session reappeared in an outbound payload"),
+    "egress_route_divergence": (
+        "this entity recently connected to a destination its static egress classification "
+        "did not predict"
+    ),
 }
 
 # Fail at import time if a ReasonCode is ever added without a description — a
