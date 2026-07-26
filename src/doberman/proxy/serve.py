@@ -64,5 +64,7 @@ async def serve_stdio(downstream: StdioServerParameters, *, repo_root: str = "."
                 ]
             )
             async with stdio_server() as (agent_read, agent_write):
-                logger.info("ready — proxying tool calls to the agent over stdio")
+                # ASCII only: this line lands in whatever stderr the client gave us, and a
+                # non-UTF-8 capture turns the em-dash into a replacement char in their log.
+                logger.info("ready - proxying tool calls to the agent over stdio")
                 await proxy.run(agent_read, agent_write, proxy.create_initialization_options())

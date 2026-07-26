@@ -64,6 +64,10 @@ doberman serve --path ~/my-project -- npx -y @modelcontextprotocol/server-filesy
 
 Doberman communicates over **stdio** — it spawns your tool server as a managed subprocess and speaks standard MCP. Your agent sees one server entry; the real tool server runs silently behind it.
 
+> **You don't run `doberman serve` yourself, and it doesn't start your agent** — your agent's MCP
+> client spawns it, using the config in step 3. Typed bare into a terminal it just blocks on stdin
+> waiting for a client to speak MCP, which looks like a hang; it prints one line saying so.
+
 ### 3. Point your agent at Doberman
 
 Replace your agent's existing MCP server entry with the Doberman-wrapped version.
