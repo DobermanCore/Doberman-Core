@@ -48,6 +48,16 @@ _SUB_FONT = ("Segoe UI", 9)
 _MONO_FONT = ("Consolas", 10)
 _BUTTON_FONT = ("Segoe UI Semibold", 10)
 
+#: How long one dialog waits for the human before it gives up and denies.
+#:
+#: ``mainloop()`` blocks until something calls ``quit()``, so an unanswered
+#: dialog used to hang the agent's tool call for ever — and silence is exactly
+#: the "nobody is here" case that must resolve to a denial (fail closed).
+#: Kept well below :data:`doberman.auth.challenge.DEFAULT_CHALLENGE_TIMEOUT_S`
+#: so the dialog closes itself — visibly, and releasing its Tk root — before the
+#: outer challenge deadline has to abandon the thread.
+DEFAULT_DIALOG_TIMEOUT_S = 120.0
+
 
 class PrompterUnavailableError(RuntimeError):
     """The prompter's human channel cannot be opened at all (no display, no GUI).
@@ -239,11 +249,14 @@ def _populate_code(root: Any, message: str, answer: dict) -> None:
     entry.focus_set()
 
 
-def _run_dialog(message: str, *, want_code: bool) -> Any:
+def _run_dialog(
+    message: str, *, want_code: bool, timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S
+) -> Any:
     """Open one themed dialog, block until the human decides, and clean up.
 
     Closing the window (WM_DELETE_WINDOW) leaves the answer unset, which resolves
-    to the deny default — there is no path where silence approves.
+    to the deny default — there is no path where silence approves. The timeout
+    exits by the same door: it only ends the loop, so the unset answer denies.
     """
     root = _open_root()
     try:
@@ -252,6 +265,8 @@ def _run_dialog(message: str, *, want_code: bool) -> Any:
         populate = _populate_code if want_code else _populate_confirm
         populate(root, message, answer)
         root.protocol("WM_DELETE_WINDOW", root.quit)
+        if timeout_s > 0:
+            root.after(int(timeout_s * 1000), root.quit)
         _center_on_screen(root)
         root.mainloop()
         return answer.get("value", None if want_code else False)
@@ -259,14 +274,14 @@ def _run_dialog(message: str, *, want_code: bool) -> Any:
         root.destroy()
 
 
-def _confirm_dialog(message: str) -> bool:
-    """Show the yes/no challenge dialog. Closing the window is "no" (deny)."""
-    return bool(_run_dialog(message, want_code=False))
+def _confirm_dialog(message: str, *, timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S) -> bool:
+    """Show the yes/no challenge dialog. Closing the window (or silence) is "no"."""
+    return bool(_run_dialog(message, want_code=False, timeout_s=timeout_s))
 
 
-def _code_dialog(message: str) -> str | None:
-    """Show the masked one-time-code dialog. Cancel/close returns ``None``."""
-    return _run_dialog(message, want_code=True)
+def _code_dialog(message: str, *, timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S) -> str | None:
+    """Show the masked one-time-code dialog. Cancel/close/silence returns ``None``."""
+    return _run_dialog(message, want_code=True, timeout_s=timeout_s)
 
 
 class GuiPrompter:
@@ -275,18 +290,25 @@ class GuiPrompter:
     Raises :class:`PrompterUnavailableError` when no display exists so a fallback
     chain can try the terminal instead; any other failure (cancel, blank code)
     raises and the provider denies (fail closed).
+
+    ``timeout_s`` bounds how long each dialog waits for the human; ``0`` disables
+    the bound and is for tests only — a live prompter with no timeout is the
+    AN-4 hang (see :data:`DEFAULT_DIALOG_TIMEOUT_S`).
     """
 
+    def __init__(self, *, timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S) -> None:
+        self._timeout_s = timeout_s
+
     def confirm(self, message: str) -> bool:
-        return _confirm_dialog(message)
+        return _confirm_dialog(message, timeout_s=self._timeout_s)
 
     def read_code(self, message: str) -> str:
-        """Read a one-time code via a masked dialog. Cancel/blank → raise (deny).
+        """Read a one-time code via a masked dialog. Cancel/blank/silence → raise (deny).
 
-        An empty code must never reach the verifier, so cancel and whitespace-only
-        entries raise instead of returning ``""``.
+        An empty code must never reach the verifier, so cancel, timeout, and
+        whitespace-only entries raise instead of returning ``""``.
         """
-        code = _code_dialog(message)
+        code = _code_dialog(message, timeout_s=self._timeout_s)
         if code is None or not code.strip():
             raise EOFError("no code entered in the auth dialog")
         return code.strip()
