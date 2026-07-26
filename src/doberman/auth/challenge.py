@@ -31,6 +31,7 @@ wall-clock deadline on every challenge and denies when it expires.
 import contextvars
 import logging
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Protocol
@@ -44,10 +45,17 @@ logger = logging.getLogger("doberman.auth.challenge")
 #: Hard wall-clock ceiling on ONE challenge, whichever channel it runs on.
 #:
 #: Sized above the worst-case *legitimate* fallback chain (dashboard 90s →
-#: elicitation 300s → GUI 120s → terminal), so it never preempts a channel a
-#: human is actually using. It bites only when nobody answers anywhere — the
-#: case where denying is the correct outcome regardless.
-DEFAULT_CHALLENGE_TIMEOUT_S = 600.0
+#: elicitation 300s → GUI 120s → terminal) run **twice**, because a
+#: ``two_factor``/``role_elevation`` tier dispatches the whole chain once for
+#: ``confirm()`` and again for ``read_code()``
+#: (:meth:`~doberman.auth.provider.LocalAuthProvider._run_tier`) under this one
+#: budget. Sizing it for a single pass would let a human who approved the
+#: confirm late in the budget be cut off mid-TOTP-entry — manufacturing a denial
+#: of an action someone was actively approving, on the highest-risk tiers.
+#: It therefore bites only when nobody answers anywhere, where denying is the
+#: correct outcome regardless. ``test_the_default_deadline_exceeds_the_worst_case_channel_chain``
+#: pins the arithmetic.
+DEFAULT_CHALLENGE_TIMEOUT_S = 1200.0
 
 #: :attr:`AuthResult.method` (and the decision log's ``auth_result``) when the
 #: deadline expired. Deliberately distinct from ``"denied"`` (a human said no)
@@ -176,10 +184,10 @@ def current_challenge() -> tuple[Decision, SecurityObject, AuthTier] | None:
 
 
 def _run_with_deadline(
-    call: Any,
+    call: Callable[[], AuthResult],
     *,
     timeout_s: float,
-    on_timeout: Any,
+    on_timeout: Callable[[], AuthResult],
     label: str,
 ) -> AuthResult:
     """Run ``call`` on a daemon worker; give up and deny after ``timeout_s``.
@@ -196,6 +204,18 @@ def _run_with_deadline(
     **daemon**: on expiry we abandon it. Its answer is discarded — an approval
     that arrives after the deadline is never honoured — and it can never hold up
     interpreter exit.
+
+    Two known limits, both pre-existing and deliberately not widened here:
+
+    * A ``BaseException`` from the worker is re-raised verbatim, and every caller
+      catches only ``Exception`` — so a registered provider that raises
+      ``SystemExit`` still escapes the fail-closed handlers. Converting that to a
+      denial is a behavior change worth its own decision, not a side effect of
+      this one.
+    * An abandoned worker keeps running its channel to completion, so a late
+      answer can still touch state the challenge itself no longer reads (notably
+      the TOTP lockout counter). It cannot approve the action — the result is
+      discarded here — but it is not a clean kill.
     """
     box: dict[str, Any] = {}
     # Copy the caller's context so `_current_challenge` (set just above) reaches

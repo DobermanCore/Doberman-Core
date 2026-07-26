@@ -44,8 +44,14 @@ from doberman.models import (
 
 _NOW = datetime(2026, 7, 26, tzinfo=timezone.utc)
 
-#: Short enough to keep the suite fast, long enough not to race a loaded CI box.
+#: For tests that DELIBERATELY hit the deadline — short so the suite stays fast.
 _FAST = 0.3
+
+#: For tests that must NOT hit the deadline. Deliberately generous: each of those
+#: spawns a thread and round-trips through the provider, and a 300ms budget on a
+#: loaded CI box could expire on its own — producing exactly the spurious timeout
+#: denial those tests exist to rule out. Never reuse `_FAST` for them.
+_GENEROUS = 30.0
 
 
 def _action(action_id: str = "act-an4") -> SecurityObject:
@@ -126,7 +132,9 @@ def test_a_timeout_is_distinguishable_from_a_human_denial():
         def read_code(self, message: str) -> str:  # noqa: ARG002
             raise EOFError("no code")
 
-    denied = run_auth_challenge(_auth_decision(), _action(), prompter=_SaysNo(), timeout_s=_FAST)
+    denied = run_auth_challenge(
+        _auth_decision(), _action(), prompter=_SaysNo(), timeout_s=_GENEROUS
+    )
     prompter = HangingPrompter()
     try:
         timed_out = run_auth_challenge(
@@ -161,7 +169,9 @@ def test_the_deadline_does_not_disturb_a_prompt_answer():
         def read_code(self, message: str) -> str:  # noqa: ARG002
             return "123456"
 
-    result = run_auth_challenge(_auth_decision(), _action(), prompter=_SaysYes(), timeout_s=_FAST)
+    result = run_auth_challenge(
+        _auth_decision(), _action(), prompter=_SaysYes(), timeout_s=_GENEROUS
+    )
     assert result.approved is True
     assert result.tier is AuthTier.local_auth  # sensitive_path_access floors the tier here
     assert result.method != TIMEOUT_METHOD
@@ -180,7 +190,7 @@ def test_a_raised_error_still_propagates_not_swallowed_by_the_worker():
     provider_mod.active_provider = lambda: _BoomProvider()
     try:
         with pytest.raises(RuntimeError, match="provider exploded"):
-            run_auth_challenge(_auth_decision(), _action(), timeout_s=_FAST)
+            run_auth_challenge(_auth_decision(), _action(), timeout_s=_GENEROUS)
     finally:
         provider_mod.active_provider = original
 
@@ -198,7 +208,7 @@ def test_the_challenge_contextvar_reaches_the_worker_thread():
         def read_code(self, message: str) -> str:  # noqa: ARG002
             return "123456"
 
-    run_auth_challenge(_auth_decision(), _action(), prompter=_Peeking(), timeout_s=_FAST)
+    run_auth_challenge(_auth_decision(), _action(), prompter=_Peeking(), timeout_s=_GENEROUS)
     assert len(seen) == 1
     challenge = seen[0]
     assert challenge is not None, "the worker thread lost the challenge ContextVar"
@@ -222,11 +232,20 @@ def test_the_abandoned_worker_is_a_daemon_so_it_cannot_block_exit():
 
 
 def test_the_default_deadline_exceeds_the_worst_case_channel_chain():
-    """The bound must never preempt a channel a human is legitimately still using."""
+    """The bound must never preempt a channel a human is legitimately still using.
+
+    The chain is dispatched **twice** for a ``two_factor``/``role_elevation`` tier —
+    ``LocalAuthProvider._run_tier`` calls ``confirm()`` and then ``read_code()``, both
+    under this one budget. Sizing the deadline for a single pass would cut off a human
+    who approved the confirm late in the budget while they were typing their TOTP code,
+    manufacturing a denial of an action they were actively approving — on the highest-risk
+    tiers. Hence the ``* 2``: it is the whole reason this constant is not 600s.
+    """
     from doberman.auth.dashboard_prompter import DEFAULT_TIMEOUT_S as DASH_S
     from doberman.auth.elicitation_prompter import ANSWER_TIMEOUT_S as ELICIT_S
 
-    assert DEFAULT_CHALLENGE_TIMEOUT_S > DASH_S + ELICIT_S + gui_prompter.DEFAULT_DIALOG_TIMEOUT_S
+    one_pass = DASH_S + ELICIT_S + gui_prompter.DEFAULT_DIALOG_TIMEOUT_S
+    assert DEFAULT_CHALLENGE_TIMEOUT_S > one_pass * 2
 
 
 # --- the GUI dialog's own bound ------------------------------------------------------
