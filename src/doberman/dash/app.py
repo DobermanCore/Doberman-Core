@@ -235,11 +235,25 @@ _HTML_SHELL = """<!doctype html>
         off: "badge badge-block"
       };
 
+      var TOKEN_KEY = "doberman-dash-token";
       var params = new URLSearchParams(window.location.search);
       var token = params.get("token") || "";
+      // The token is stripped from the address bar below, so a reload re-fetches
+      // a URL that no longer carries it. Hand it to sessionStorage (per-tab,
+      // dies with the tab) so refreshing this tab doesn't strand the page
+      // permanently unauthenticated with no way back but restarting the CLI.
+      // Wrapped because sessionStorage throws outright in some privacy modes -
+      // there we simply degrade to the old memory-only behavior.
+      try {
+        if (token) {
+          window.sessionStorage.setItem(TOKEN_KEY, token);
+        } else {
+          token = window.sessionStorage.getItem(TOKEN_KEY) || "";
+        }
+      } catch (e) { /* no storage: this page load still works, a reload won't */ }
       // Strip the token from the URL/history immediately so it never lingers
-      // in browser history, a referrer header, or a screen share. It is kept
-      // only in this closure's memory for the life of the page.
+      // in browser history, a referrer header, or a screen share. A brand-new
+      // tab has no sessionStorage of its own, so it still needs the printed link.
       params.delete("token");
       var clean = window.location.pathname
         + (params.toString() ? "?" + params.toString() : "");
@@ -255,16 +269,29 @@ _HTML_SHELL = """<!doctype html>
 
       fetch("/api/health", { headers: { "Authorization": "Bearer " + token } })
         .then(function (res) {
-          if (!res.ok) { throw new Error("status " + res.status); }
+          if (!res.ok) {
+            var httpError = new Error("status " + res.status);
+            httpError.status = res.status;
+            throw httpError;
+          }
           return res.json();
         })
         .then(function () {
           dot.className = "dot ok";
           label.textContent = "connected";
         })
-        .catch(function () {
+        .catch(function (err) {
           dot.className = "dot err";
-          label.textContent = "not connected";
+          // A rejected token is the one failure a human can actually fix, and
+          // only by reopening the link THIS run printed - so say that instead
+          // of a dead-end "not connected", and drop the stale token so the next
+          // load doesn't silently retry it.
+          if (err && err.status === 401) {
+            try { window.sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+            label.textContent = "not authorized - reopen the link printed by doberman dash";
+          } else {
+            label.textContent = "not connected";
+          }
         });
 
       function renderStats(s) {
