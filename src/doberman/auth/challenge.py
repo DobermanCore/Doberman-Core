@@ -18,15 +18,50 @@ SECURITY: the challenge always names the exact action and reason — never a
 generic "enter 2FA". Any timeout, input error, or denial yields a non-approved
 :class:`AuthResult` (fail closed). A hard block (``BLOCK``) never reaches here:
 :func:`select_tier` rejects a non-``AUTH`` decision.
+
+That fail-closed guarantee is enforced by :data:`DEFAULT_CHALLENGE_TIMEOUT_S`,
+not by exception handling alone. An ``except`` clause only catches a prompter
+that *raises*; a prompter that blocks forever — a GUI dialog nobody closes, a
+``readline`` on an unattended terminal — never returns and never raises, so no
+handler can fire and the agent's tool call hangs indefinitely. **An indefinite
+block is not a denial.** :func:`run_auth_challenge` therefore imposes a hard
+wall-clock deadline on every challenge and denies when it expires.
 """
 
 import contextvars
+import logging
+import threading
+from collections.abc import Callable
+from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from doberman.models import Decision, ReasonCode, Risk, SecurityObject, Verdict
+
+logger = logging.getLogger("doberman.auth.challenge")
+
+#: Hard wall-clock ceiling on ONE challenge, whichever channel it runs on.
+#:
+#: Sized above the worst-case *legitimate* fallback chain (dashboard 90s →
+#: elicitation 300s → GUI 120s → terminal) run **twice**, because a
+#: ``two_factor``/``role_elevation`` tier dispatches the whole chain once for
+#: ``confirm()`` and again for ``read_code()``
+#: (:meth:`~doberman.auth.provider.LocalAuthProvider._run_tier`) under this one
+#: budget. Sizing it for a single pass would let a human who approved the
+#: confirm late in the budget be cut off mid-TOTP-entry — manufacturing a denial
+#: of an action someone was actively approving, on the highest-risk tiers.
+#: It therefore bites only when nobody answers anywhere, where denying is the
+#: correct outcome regardless. ``test_the_default_deadline_exceeds_the_worst_case_channel_chain``
+#: pins the arithmetic.
+DEFAULT_CHALLENGE_TIMEOUT_S = 1200.0
+
+#: :attr:`AuthResult.method` (and the decision log's ``auth_result``) when the
+#: deadline expired. Deliberately distinct from ``"denied"`` (a human said no)
+#: and ``"error"`` (a channel failed): an audit must be able to tell silence
+#: apart from refusal, because they call for different operator responses.
+TIMEOUT_METHOD = "timeout"
 
 
 class AuthTier(StrEnum):
@@ -148,12 +183,73 @@ def current_challenge() -> tuple[Decision, SecurityObject, AuthTier] | None:
     return _current_challenge.get()
 
 
+def _run_with_deadline(
+    call: Callable[[], AuthResult],
+    *,
+    timeout_s: float,
+    on_timeout: Callable[[], AuthResult],
+    label: str,
+) -> AuthResult:
+    """Run ``call`` on a daemon worker; give up and deny after ``timeout_s``.
+
+    The deadline lives here rather than inside each prompter for two reasons.
+    First, more than one built-in channel can block without end (``GuiPrompter``'s
+    ``mainloop``, ``TtyPrompter``'s ``readline`` on a terminal nobody is at), and a
+    guarantee re-implemented per channel is one new channel away from being false.
+    Second, both the prompter and the provider are **plugin seams** — anything
+    registered through ``doberman.auth_providers`` runs here too, and core cannot
+    audit code it never imports. A single deadline at the seam covers all of it.
+
+    Python cannot kill a thread blocked in native code, so the worker is a
+    **daemon**: on expiry we abandon it. Its answer is discarded — an approval
+    that arrives after the deadline is never honoured — and it can never hold up
+    interpreter exit.
+
+    Two known limits, both pre-existing and deliberately not widened here:
+
+    * A ``BaseException`` from the worker is re-raised verbatim, and every caller
+      catches only ``Exception`` — so a registered provider that raises
+      ``SystemExit`` still escapes the fail-closed handlers. Converting that to a
+      denial is a behavior change worth its own decision, not a side effect of
+      this one.
+    * An abandoned worker keeps running its channel to completion, so a late
+      answer can still touch state the challenge itself no longer reads (notably
+      the TOTP lockout counter). It cannot approve the action — the result is
+      discarded here — but it is not a clean kill.
+    """
+    box: dict[str, Any] = {}
+    # Copy the caller's context so `_current_challenge` (set just above) reaches
+    # the worker: DashboardPrompter reads it and falls back when it is missing.
+    ctx = contextvars.copy_context()
+
+    def _worker() -> None:
+        try:
+            box["result"] = ctx.run(call)
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller's thread
+            box["error"] = exc
+
+    worker = threading.Thread(target=_worker, name=f"doberman-auth-{label}", daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        logger.warning(
+            "auth challenge unanswered after %.0fs (action %s); denying (fail closed)",
+            timeout_s,
+            label,
+        )
+        return on_timeout()
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
 def run_auth_challenge(
     decision: Decision,
     action: SecurityObject,
     *,
     prompter: Prompter | None = None,
     at: AwareDatetime | None = None,
+    timeout_s: float = DEFAULT_CHALLENGE_TIMEOUT_S,
 ) -> AuthResult:
     """Select the tier and run the challenge through the active provider.
 
@@ -162,12 +258,29 @@ def run_auth_challenge(
     it never alters the decision's verdict or the required tier. With nothing
     installed, the local provider runs (CLI confirm + TOTP). Lazy-imports the
     provider to avoid an import cycle (challenge defines the types it consumes).
+
+    Returns within ``timeout_s`` no matter what the channel does: an unanswered
+    challenge yields a non-approved result with ``method`` set to
+    :data:`TIMEOUT_METHOD`. See :func:`_run_with_deadline`.
     """
     from doberman.auth.provider import active_provider
 
     tier = select_tier(decision)
     token = _current_challenge.set((decision, action, tier))
     try:
-        return active_provider().authenticate(decision, action, tier, prompter=prompter, at=at)
+        return _run_with_deadline(
+            lambda: active_provider().authenticate(
+                decision, action, tier, prompter=prompter, at=at
+            ),
+            timeout_s=timeout_s,
+            on_timeout=lambda: AuthResult(
+                approved=False,
+                tier=tier,
+                method=TIMEOUT_METHOD,
+                at=at or datetime.now(timezone.utc),
+                action_id=action.id,
+            ),
+            label=action.id,
+        )
     finally:
         _current_challenge.reset(token)

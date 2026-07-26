@@ -33,14 +33,14 @@ from doberman.auth.gui_prompter import (
 
 @pytest.mark.parametrize("answer", [True, False])
 def test_confirm_returns_the_dialog_answer(monkeypatch, answer):
-    monkeypatch.setattr(gui_prompter, "_confirm_dialog", lambda _msg: answer)
+    monkeypatch.setattr(gui_prompter, "_confirm_dialog", lambda _msg, **_kw: answer)
     assert GuiPrompter().confirm("Approve THIS exact action?") is answer
 
 
 def test_confirm_passes_the_exact_challenge_message(monkeypatch):
     seen: list[str] = []
 
-    def _dialog(message: str) -> bool:
+    def _dialog(message: str, **_kw) -> bool:
         seen.append(message)
         return True
 
@@ -50,19 +50,19 @@ def test_confirm_passes_the_exact_challenge_message(monkeypatch):
 
 
 def test_read_code_returns_stripped_code(monkeypatch):
-    monkeypatch.setattr(gui_prompter, "_code_dialog", lambda _msg: "  123456 \n")
+    monkeypatch.setattr(gui_prompter, "_code_dialog", lambda _msg, **_kw: "  123456 \n")
     assert GuiPrompter().read_code("Enter your 2FA code") == "123456"
 
 
 def test_read_code_raises_on_cancel_so_provider_denies(monkeypatch):
     # Cancelling / closing the dialog returns None — never pass "" to the verifier.
-    monkeypatch.setattr(gui_prompter, "_code_dialog", lambda _msg: None)
+    monkeypatch.setattr(gui_prompter, "_code_dialog", lambda _msg, **_kw: None)
     with pytest.raises(EOFError):
         GuiPrompter().read_code("Enter your 2FA code")
 
 
 def test_read_code_raises_on_blank_entry(monkeypatch):
-    monkeypatch.setattr(gui_prompter, "_code_dialog", lambda _msg: "   ")
+    monkeypatch.setattr(gui_prompter, "_code_dialog", lambda _msg, **_kw: "   ")
     with pytest.raises(EOFError):
         GuiPrompter().read_code("Enter your 2FA code")
 
@@ -76,7 +76,7 @@ def test_never_touches_std_streams(monkeypatch):
 
     monkeypatch.setattr("sys.stdin", _Explode())
     monkeypatch.setattr("sys.stdout", _Explode())
-    monkeypatch.setattr(gui_prompter, "_confirm_dialog", lambda _msg: True)
+    monkeypatch.setattr(gui_prompter, "_confirm_dialog", lambda _msg, **_kw: True)
     assert GuiPrompter().confirm("Approve?") is True
 
 
@@ -121,6 +121,12 @@ class _FakeRoot:
         self.bindings: dict = {}
         self.geometries: list[str] = []
         self.close_on_mainloop = False
+        self.scheduled: list[int] = []
+
+    def after(self, delay_ms, callback):  # noqa: ARG002 — the timeout never fires here
+        # The dialog now schedules its own deny-on-silence bound; these tests
+        # exercise the answered paths, so record it and leave it unfired.
+        self.scheduled.append(delay_ms)
 
     def attributes(self, name, value):
         self.attrs[name] = value

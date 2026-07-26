@@ -25,7 +25,13 @@ from datetime import datetime, timezone
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, TextContent
 
-from doberman.auth.challenge import AuthTier, Prompter, run_auth_challenge
+from doberman.auth.challenge import (
+    TIMEOUT_METHOD,
+    AuthResult,
+    AuthTier,
+    Prompter,
+    run_auth_challenge,
+)
 from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import load_active_role, load_enforcement, load_mode, load_preferences
 from doberman.egress.artifact import ArtifactPinStore, ArtifactVerdict
@@ -554,6 +560,7 @@ async def _handle_auth(
     # Off the event loop: the challenge blocks for a human, and an elicitation
     # answer arrives over the very session this loop services — waiting in-loop
     # would deadlock it (and freeze the proxy during GUI/TTY prompts too).
+    auth_result: AuthResult | None = None
     try:
         auth_result = await asyncio.to_thread(
             run_auth_challenge, decision, action, prompter=AUTH_PROMPTER
@@ -566,7 +573,13 @@ async def _handle_auth(
         approved = auth_result.approved and auth_result.action_id == action.id
     await _learn_from_auth(action, decision, approved, eid)
     if not approved:
-        await _persist(decision, action, auth_result="denied", eid=eid)
+        # An expired challenge and a human "no" both deny — but only the log can
+        # tell them apart, and they call for different operator responses (an
+        # unwatched approval channel vs. a rejected action).
+        timed_out = auth_result is not None and auth_result.method == TIMEOUT_METHOD
+        await _persist(
+            decision, action, auth_result=TIMEOUT_METHOD if timed_out else "denied", eid=eid
+        )
         return _verdict_result(decision)
 
     # A satisfied role elevation grants a narrow, temporary permission first.
