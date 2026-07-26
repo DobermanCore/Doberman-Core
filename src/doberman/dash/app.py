@@ -113,7 +113,7 @@ _HTML_SHELL = """<!doctype html>
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 2rem; min-height: 100vh;
+    margin: 0 auto; padding: 2rem 2rem 3rem; min-height: 100vh; max-width: 1080px;
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--bg); color: var(--ink);
   }
@@ -161,26 +161,42 @@ _HTML_SHELL = """<!doctype html>
   }
   #feed li:last-child { border-bottom: none; }
   #feed li .detail { color: var(--ink-dim); overflow-wrap: anywhere; }
+  #pending-list .badge { font-size: .76rem; padding: .25rem .55rem; }
   #pending-list li {
-    padding: .7rem .8rem; margin-bottom: .6rem;
-    border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
-    font-size: .8rem;
+    padding: 1rem 1.1rem; margin-bottom: .7rem;
+    border: 1px solid var(--auth); border-left: 3px solid var(--auth);
+    border-radius: 8px; background: var(--surface); font-size: .85rem;
+    box-shadow: 0 0 0 1px rgba(210, 153, 34, .07), 0 10px 28px -14px rgba(210, 153, 34, .55);
+    animation: pending-arrive .28s ease-out both;
+  }
+  @keyframes pending-arrive {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #pending-list li { animation: none; }
   }
   #pending-list:not(:empty) ~ #pending-empty { display: none; }
-  #pending-list .row-header { display: flex; align-items: center; gap: .5rem; margin-bottom: .4rem; flex-wrap: wrap; }
-  #pending-list .row-header .detail { color: var(--ink-dim); }
-  #pending-list .row-explanation { margin: .4rem 0; color: var(--ink-dim); }
+  #pending-list .row-header { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
+  #pending-list .row-header .detail { color: var(--ink); font-family: var(--mono); font-size: .82rem; }
+  #pending-list > li > .detail {
+    color: var(--auth); font-family: var(--mono); font-size: .84rem; font-weight: 600;
+  }
+  #pending-list .row-explanation { margin: .45rem 0 .8rem; color: var(--ink); opacity: .82; max-width: 68ch; }
   #pending-list input[type="text"] {
-    font-family: var(--mono); font-size: .85rem; padding: .3rem .5rem; margin-right: .4rem;
-    width: 8rem; background: var(--bg); color: var(--ink); border: 1px solid var(--border); border-radius: 4px;
+    font-family: var(--mono); font-size: .95rem; padding: .45rem .6rem; margin-right: .5rem;
+    letter-spacing: .12em; width: 9rem; background: var(--bg); color: var(--ink); border: 1px solid var(--border); border-radius: 4px;
   }
   #pending-list button {
-    font: inherit; font-size: .78rem; font-weight: 600; padding: .35rem .8rem; margin-right: .4rem;
+    font: inherit; font-size: .82rem; font-weight: 600; padding: .45rem 1rem; margin-right: .45rem;
+    transition: background .12s ease;
     border: 1px solid var(--border); border-radius: 4px; background: transparent; color: inherit;
     cursor: pointer;
   }
   #pending-list button.approve { border-color: var(--pass); color: var(--pass); }
   #pending-list button.deny { border-color: var(--block); color: var(--block); }
+  #pending-list button.approve:hover { background: var(--pass-bg); }
+  #pending-list button.deny:hover { background: var(--block-bg); }
 </style>
 </head>
 <body>
