@@ -138,6 +138,25 @@ def _configure_stderr_logging(level: int = logging.INFO) -> None:
         root.addHandler(logging.StreamHandler(sys.stderr))
 
 
+#: Shown once, only to a human at a terminal, before `serve` blocks on stdin.
+#: Run bare, the proxy logs two lines and then goes silent forever waiting for a
+#: client's JSON-RPC — indistinguishable from a hang, and easy to read as "serve
+#: is supposed to start my agent and didn't". It starts nothing: an MCP client
+#: spawns *it*. Never write this to stdout; stdout IS the MCP channel.
+_SERVE_WAITING_HINT = (
+    "waiting for an MCP client to connect on stdin - this command does not start your agent. "
+    "Register it once (`claude mcp add doberman -- doberman serve -- <your tool server>`), then "
+    "start the agent separately. For Claude Code, `doberman setup` instead wires hooks that gate "
+    "every tool call with no MCP reconfig."
+)
+
+
+def _stderr_is_tty() -> bool:
+    """Whether a human is watching stderr. A seam: a CLI test runner replaces
+    ``sys.stderr`` with a non-tty capture, so this is the patch point."""
+    return sys.stderr.isatty()
+
+
 @app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     help="Run Doberman as an MCP proxy in front of a downstream MCP tool server.",
@@ -156,6 +175,9 @@ def serve(
 
     Point your agent's MCP config at this instead of the real server. AUTH prompts appear on
     your terminal; with no terminal attached (headless) an AUTH action is denied (fail closed).
+
+    This does not launch your agent - the agent's MCP client spawns this process. Run bare in a
+    terminal it just waits on stdin for a client.
     """
     # Imported here, not at module scope, so non-serve CLI commands (`--help`,
     # `log`, `status`, `scan`, ...) don't pay the cost of loading the subjective
@@ -171,6 +193,8 @@ def serve(
         raise typer.Exit(code=2)
     params = StdioServerParameters(command=downstream_argv[0], args=downstream_argv[1:])
     _configure_stderr_logging()
+    if _stderr_is_tty():  # a human ran it; a client-spawned process gets a pipe
+        typer.echo(f"doberman: {_SERVE_WAITING_HINT}", err=True)
     try:
         asyncio.run(serve_stdio(params, repo_root=path))
     except Exception as exc:  # noqa: BLE001 - surface a clean stderr error, never a raw traceback
