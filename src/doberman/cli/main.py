@@ -638,6 +638,39 @@ def twofa_setup(
     typer.echo("This secret is stored locally with owner-only permissions and is never committed.")
 
 
+@twofa_app.command("remove")
+def twofa_remove() -> None:
+    """Remove TOTP enrollment, proving possession of the factor being dropped.
+
+    Losing a possession factor weakens Doberman, so this needs your current 2FA
+    code — the same rate-limited check that gates a rotation. Removal is
+    deliberately not delegable to the password: whoever drops 2FA must hold it.
+    """
+    if not totp.is_enrolled():
+        typer.echo("error: 2FA is not enrolled; nothing to remove", err=True)
+        raise typer.Exit(code=1)
+    prompter = CliPrompter()
+    if not prompter.confirm(
+        "Remove 2FA? Policy weakenings will then be gated by your local password instead"
+    ):
+        typer.echo("aborted; 2FA is unchanged", err=True)
+        raise typer.Exit(code=1)
+    current_code = prompter.read_code("Current 2FA code")
+    try:
+        totp.unenroll(current_code=current_code)
+    except RuntimeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("2FA removed. Delete the Doberman entry in your authenticator app too.")
+    if not password.is_enrolled():
+        typer.echo(
+            "warning: no possession factor is enrolled now, so every policy weakening "
+            "will be denied — run `doberman password set` (or `doberman 2fa setup`) to "
+            "restore one.",
+            err=True,
+        )
+
+
 @app.command()
 def revoke(
     elevation_id: str = typer.Argument(..., help="Id of the elevation to revoke."),
