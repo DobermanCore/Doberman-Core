@@ -251,6 +251,28 @@ _ENTROPY_TOKEN = re.compile(r"^[A-Za-z0-9+/=_\-]+$")
 # that does fire is still fingerprinted.
 _HASH_LIKE_HEX = re.compile(r"[0-9a-fA-F]{40,}")
 
+# An identifier or relative path — ``DEFAULT_CHALLENGE_TIMEOUT_S``,
+# ``migrations/0002_add_last_login``, ``fix/auth/challenge-deadline-fail-closed``
+# — is a run of ordinary words joined by separators. It clears the length floor
+# and, because the separators add symbol variety, the entropy floor too, so the
+# WEAK path flagged it as a possible secret. Measured in the field at roughly a
+# 6:1 false-positive ratio, which is the click-through-fatigue failure mode: it
+# trains a human to approve without reading and so devalues every GENUINE prompt.
+#
+# Relief for this already existed but was conditioned on a LEADING ``/`` (see
+# ``_token_looks_like_weak_secret``), which is an arbitrary line — a relative
+# path is exactly as non-credential as an absolute one, and a bare identifier
+# has no slash at all.
+#
+# The discriminator is SHAPE, not a threshold: a token is exempt only when it
+# decomposes entirely into short, purely-alphabetic or purely-numeric segments.
+# A credential does not have that shape. Base64/base64url/hex/JWT segments are
+# long and mix letters with digits, so they fail ``_WORD_SEGMENT`` and are still
+# judged whole — no secret can be fragmented below the length floor and dropped.
+_WORD_SEGMENT = re.compile(r"^(?:[A-Za-z]+|[0-9]+)$")
+_SEGMENT_SPLIT = re.compile(r"[/_.\-]")
+_MAX_WORD_SEGMENT_LEN = 20
+
 # Bounds for the encoded-exfil decoder: avoid decode bombs / runaway recursion.
 # One decode layer only (no recursive base64 peeling), bounded token count/size.
 _DECODE_MAX_TOKENS = 64  # at most N candidate tokens decoded per scan
@@ -330,6 +352,19 @@ def contains_strong_secret(text: str) -> bool:
     return bool(text) and _strong_secret_in_text(text)
 
 
+def _looks_like_identifier_or_path(token: str) -> bool:
+    """Is this token a separator-joined run of ordinary words (not a credential)?
+
+    Requires at least two segments and EVERY segment to be short and either
+    all-alphabetic or all-numeric. ``a3f5-9c2e-...`` (hex, mixed classes) and a
+    base64 blob both fail, so this only ever exempts identifier/path shapes.
+    """
+    segments = [seg for seg in _SEGMENT_SPLIT.split(token) if seg]
+    if len(segments) < 2:
+        return False
+    return all(len(seg) <= _MAX_WORD_SEGMENT_LEN and _WORD_SEGMENT.match(seg) for seg in segments)
+
+
 def _token_looks_like_weak_secret(token: str) -> bool:
     """Judge a single candidate token for the high-entropy heuristic.
 
@@ -361,6 +396,8 @@ def _token_looks_like_weak_secret(token: str) -> bool:
         # value (after the last '='), so a high-entropy RHS is still caught.
         return _token_looks_like_weak_secret(token.rsplit("=", 1)[-1])
     if _is_benign_fixture_token(token):
+        return False
+    if _looks_like_identifier_or_path(token):
         return False
     if token.startswith("/"):
         return any(_looks_high_entropy_secret(segment) for segment in token.split("/"))
