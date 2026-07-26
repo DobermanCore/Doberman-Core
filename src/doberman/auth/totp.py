@@ -211,6 +211,30 @@ def enroll(
     return pyotp.TOTP(secret).provisioning_uri(name=account, issuer_name=issuer)
 
 
+def unenroll(*, current_code: str) -> None:
+    """Delete the stored TOTP secret after proving possession of it.
+
+    Dropping a possession factor is a **weakening**, so it is gated on a valid
+    ``current_code`` proved through the rate-limited :func:`verify` — not a
+    direct pyotp check — so repeated wrong-code removal attempts trip the same
+    persisted lockout as any other auth attempt (symmetric with rotation in
+    :func:`enroll`). Not enrolled, a wrong code, or an active lockout all leave
+    the enrollment intact and raise.
+    """
+    path = _secret_path()
+    if not is_enrolled():
+        raise RuntimeError("TOTP is not enrolled; nothing to remove")
+    if not verify(str(current_code)):
+        raise RuntimeError("a valid current 2FA code is required to remove TOTP")
+    try:
+        path.unlink()
+    except OSError as exc:
+        # Fail closed: the factor is still enrolled, so say so rather than
+        # letting a caller believe it was dropped.
+        raise RuntimeError("could not remove the TOTP secret file") from exc
+    _clear_lockout(path)
+
+
 def reset_attempts() -> None:
     """Clear the persisted consecutive-failure/lockout state for the active
     secret file (future ``doberman 2fa reset-lockout`` calls this)."""

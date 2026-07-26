@@ -196,6 +196,17 @@ doberman password set   # always-available minimum for mode/prefs lowerings
 doberman 2fa setup      # optional TOTP; required instead of the password once enrolled
 ```
 
+Rotating or dropping TOTP both need the code you currently hold, so a lost authenticator
+can't be swapped out by anyone who merely reaches your shell:
+
+```bash
+doberman 2fa setup --force   # rotate to a new secret (proves the current code first)
+doberman 2fa remove          # unenroll; weakenings fall back to the password afterwards
+```
+
+Removing the last possession factor is allowed but fails *closed*: with neither TOTP nor a
+password enrolled, every policy weakening is denied until you enroll one again.
+
 ### 4. Check it's healthy — `doberman doctor`
 
 One read-only self-check that answers *"is Doberman actually wired up and healthy?"* — host hooks, config, the decision DB, 2FA, the enforcement dial + strictness mode, and the fingerprint key:
