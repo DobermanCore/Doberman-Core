@@ -183,7 +183,7 @@ _HTML_SHELL = """<!doctype html>
     color: var(--auth); font-family: var(--mono); font-size: .84rem; font-weight: 600;
   }
   #pending-list .row-explanation { margin: .45rem 0 .8rem; color: var(--ink); opacity: .82; max-width: 68ch; }
-  #pending-list input[type="text"] {
+  #pending-list input {
     font-family: var(--mono); font-size: .95rem; padding: .45rem .6rem; margin-right: .5rem;
     letter-spacing: .12em; width: 9rem; background: var(--bg); color: var(--ink); border: 1px solid var(--border); border-radius: 4px;
   }
@@ -369,7 +369,20 @@ _HTML_SHELL = """<!doctype html>
         }).catch(function () { /* network hiccup — next poll retries */ });
       }
 
+      var lastPendingKey = null;
+
       function renderPending(rows) {
+        // A queued approval is IMMUTABLE once written (id / tier / risk / reason
+        // codes are fixed at write time and `/api/pending` re-serializes the same
+        // allow-list), so only the SET can change - a row arrives or it leaves.
+        // Rebuilding an unchanged set on every poll destroyed and recreated the
+        // TOTP <input>, throwing away focus and any digits already typed. At a 2s
+        // poll that makes a 6-digit code effectively impossible to enter, and the
+        // approval TTL is only 120s. Skip the rebuild when the id set is identical.
+        var key = rows.map(function (row) { return row.id; }).join(",");
+        if (key === lastPendingKey) { return; }
+        lastPendingKey = key;
+
         // The empty state is CSS-only (`#pending-list:not(:empty) ~
         // #pending-empty`) - clearing to no children is enough to reveal it.
         pendingList.textContent = "";
@@ -406,7 +419,10 @@ _HTML_SHELL = """<!doctype html>
           var totpInput = null;
           if (row.needs_totp) {
             totpInput = document.createElement("input");
-            totpInput.type = "text";
+            // A masked field: this is a live second factor, and the dashboard is
+            // exactly the screen that gets screen-shared and recorded.
+            totpInput.type = "password";
+            totpInput.inputMode = "numeric";
             totpInput.placeholder = "TOTP code";
             totpInput.autocomplete = "off";
             li.appendChild(totpInput);

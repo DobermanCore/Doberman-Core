@@ -120,3 +120,23 @@ def test_feed_timestamp_renders_compact_not_full_iso(tmp_path):
     # in `doberman log` / the TUI.
     assert ".slice(11, 19)" in html
     assert '" @ " + row.ts;' not in html
+
+
+def test_pending_list_is_not_rebuilt_when_the_queue_is_unchanged(tmp_path):
+    """The 2s poll used to rebuild every card, destroying the focused TOTP input
+    and any digits already typed. A queued approval is immutable once written, so
+    an unchanged id set must short-circuit before the list is cleared."""
+    html = _index_html(tmp_path)
+    assert "lastPendingKey" in html
+    assert 'var key = rows.map(function (row) { return row.id; }).join(",");' in html
+    # The guard must come BEFORE the clear, or it does nothing.
+    assert html.index("if (key === lastPendingKey) { return; }") < html.index(
+        'pendingList.textContent = "";'
+    )
+
+
+def test_the_totp_field_is_masked(tmp_path):
+    """It is a live second factor and this screen gets shared and recorded."""
+    html = _index_html(tmp_path)
+    assert 'totpInput.type = "password";' in html
+    assert 'totpInput.type = "text";' not in html
