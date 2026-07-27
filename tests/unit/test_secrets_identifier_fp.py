@@ -113,3 +113,55 @@ def test_the_compensating_control_a_named_credential_is_still_caught(text):
     and the STRONG path catches it regardless of the value's shape. Only a bare,
     unnamed, word-shaped token loses its AUTH step-up."""
     assert _strong_secret_in_text(text) is True
+
+
+# --- the composition guard (ADR 0049) -------------------------------------
+# The identifier exemption is scoped to NON-egress actions. `ExternalDestination
+# Rule` PASSes a merely-unknown host in balanced mode and justifies that by
+# delegating to this rule ("a secret leaving to any host is still a hard block
+# via the secrets rule"). Exempting identifier shapes on an egress path would
+# leave BOTH rules covering nothing — a hole neither loosening opened alone.
+# Caught by tests/integration/test_benchmark_synthetic_gate.py (ASR 0.0 -> 0.333).
+
+# Only tokens that clear the 3.6 bits/char entropy floor are in scope here — the
+# exemption is the ONLY thing this change controls.
+IDENTIFIER_SHAPED_PAYLOADS = [
+    "correct-horse-battery-staple-nine",  # entropy 3.662
+    "BENCHMARK_PAYLOAD_MARKER_DO_NOT_LEAK",  # entropy 3.774
+]
+
+
+@pytest.mark.parametrize("payload", IDENTIFIER_SHAPED_PAYLOADS)
+def test_identifier_shapes_are_NOT_exempt_on_an_egress_path(payload):
+    """On the way out, a word-shaped token is a plausible payload, not a path."""
+    assert _weak_secret_in_text(payload, exempt_identifiers=False) is True
+
+
+@pytest.mark.parametrize("payload", IDENTIFIER_SHAPED_PAYLOADS)
+def test_identifier_shapes_are_exempt_off_the_egress_path(payload):
+    """...but the same shape in ordinary shell/file work must not prompt."""
+    assert _weak_secret_in_text(payload, exempt_identifiers=True) is False
+
+
+def test_preexisting_limit_a_low_entropy_passphrase_is_missed_by_the_FLOOR():
+    """Not introduced here, and not fixable by the exemption: a word-shaped token
+    below the 3.6 bits/char floor was never on the weak path at all — on `main`
+    or on this branch. Recorded so the exemption is not blamed for it, and so
+    the real remaining gap stays visible."""
+    # Named `sample`, not `token`: ruff S105 flags the latter as a hardcoded
+    # password on this very string — a third detector agreeing the shape is
+    # credential-ish in SOME context, which is exactly why the fix is scoping.
+    sample = "MY_RECOVERY_PASSPHRASE_VALUE_HERE"  # entropy 3.559
+    assert _weak_secret_in_text(sample, exempt_identifiers=False) is False
+
+
+def test_the_exemption_defaults_to_on_but_the_rule_disables_it_for_egress():
+    """Guard the wiring, not just the helper: `SecretLeakageRule.evaluate` must
+    pass `exempt_identifiers=not going_external`. If someone drops that argument
+    the default (True) silently reopens the hole, so assert on the source."""
+    import inspect
+
+    from doberman.engine.rules import secrets as mod
+
+    src = inspect.getsource(mod.SecretLeakageRule.evaluate)
+    assert "_weak_secret_present(strings, exempt_identifiers=not going_external)" in src

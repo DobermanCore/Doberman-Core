@@ -365,7 +365,7 @@ def _looks_like_identifier_or_path(token: str) -> bool:
     return all(len(seg) <= _MAX_WORD_SEGMENT_LEN and _WORD_SEGMENT.match(seg) for seg in segments)
 
 
-def _token_looks_like_weak_secret(token: str) -> bool:
+def _token_looks_like_weak_secret(token: str, *, exempt_identifiers: bool = True) -> bool:
     """Judge a single candidate token for the high-entropy heuristic.
 
     ``/`` is a base64 value char, so an *absolute* filesystem path
@@ -394,17 +394,19 @@ def _token_looks_like_weak_secret(token: str) -> bool:
         # trailing-only) is not a single secret — the name part inflates entropy and
         # over-flags benign config like ``cfg_path=/usr/local/bin`` (#56). Judge the
         # value (after the last '='), so a high-entropy RHS is still caught.
-        return _token_looks_like_weak_secret(token.rsplit("=", 1)[-1])
+        return _token_looks_like_weak_secret(
+            token.rsplit("=", 1)[-1], exempt_identifiers=exempt_identifiers
+        )
     if _is_benign_fixture_token(token):
         return False
-    if _looks_like_identifier_or_path(token):
+    if exempt_identifiers and _looks_like_identifier_or_path(token):
         return False
     if token.startswith("/"):
         return any(_looks_high_entropy_secret(segment) for segment in token.split("/"))
     return _looks_high_entropy_secret(token)
 
 
-def _weak_secret_in_text(text: str) -> bool:
+def _weak_secret_in_text(text: str, *, exempt_identifiers: bool = True) -> bool:
     """Low-confidence signal: a long, token-shaped, high-entropy string.
 
     "Weak" evidence can step up to AUTH but NEVER drives a BLOCK by itself — a
@@ -415,7 +417,7 @@ def _weak_secret_in_text(text: str) -> bool:
         return False
     sample = text[:_SCAN_MAX_CHARS]
     for token in re.findall(r"[A-Za-z0-9+/=_\-]{%d,}" % _ENTROPY_MIN_LEN, sample):
-        if _token_looks_like_weak_secret(token):
+        if _token_looks_like_weak_secret(token, exempt_identifiers=exempt_identifiers):
             return True
     return False
 
@@ -560,9 +562,21 @@ def _strong_secret_present(strings: Iterable[str]) -> bool:
     return False
 
 
-def _weak_secret_present(strings: Iterable[str]) -> bool:
-    """Any WEAK secret signal (AUTH only, never BLOCK): a high-entropy token."""
-    return any(_weak_secret_in_text(text) for text in strings)
+def _weak_secret_present(strings: Iterable[str], *, exempt_identifiers: bool = True) -> bool:
+    """Any WEAK secret signal (AUTH only, never BLOCK): a high-entropy token.
+
+    ``exempt_identifiers`` MUST be ``False`` for an action that sends data out.
+    The identifier/path exemption exists to stop ordinary shell and file work
+    from prompting; on an egress path the same shape is a plausible payload
+    (a hyphen- or underscore-joined passphrase or recovery phrase), and
+    ``ExternalDestinationRule`` explicitly delegates that case here — in
+    balanced mode it PASSes a merely-unknown host precisely because "a secret
+    leaving to any host is still a hard block via the secrets rule". Exempting
+    identifiers on egress would leave BOTH rules covering nothing.
+    """
+    return any(
+        _weak_secret_in_text(text, exempt_identifiers=exempt_identifiers) for text in strings
+    )
 
 
 #: Cap on how many detected secret tokens we fingerprint per action.
@@ -731,7 +745,7 @@ class SecretLeakageRule:
         #    base64 fragments, so the host-hook output scan treats this code as
         #    pass-through (still recorded + tainted), never a hard block of a read.
         #    The engine step-up (proxy / pre-hook egress) is unchanged.
-        if _weak_secret_present(strings):
+        if _weak_secret_present(strings, exempt_identifiers=not going_external):
             return GuardrailResult(
                 verdict=Verdict.AUTH,
                 risk=Risk.high,
