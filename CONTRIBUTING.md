@@ -11,7 +11,9 @@ invariants.
 git clone https://github.com/fu351/Doberman-Core.git
 cd Doberman-Core
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate  # Unix/macOS
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+# Windows Command Prompt: .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
