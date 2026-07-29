@@ -7,6 +7,7 @@ agent, verify it, and explore the health check, dashboard, and TUI. New here? Th
 **Contents**
 
 - [Install](#1-install)
+- [Troubleshooting: wrong or stale `doberman` on PATH](#path-troubleshooting)
 - [MCP proxy - wrap any tool server](#mcp-proxy) - Claude Desktop, Cursor, Codex, any MCP client
 - [Claude Code hooks](#claude-code-hooks) - gate every tool call, no MCP reconfig
 - [OpenClaw](#openclaw)
@@ -40,6 +41,128 @@ pip install -e ".[dev]"
 ```
 
 Either way you get the `doberman` CLI on your PATH. (Maintainers: see [`RELEASING.md`](../RELEASING.md).)
+
+<a name="path-troubleshooting"></a>
+
+### Troubleshooting: wrong or stale `doberman` on PATH
+
+If `doberman` behaves unexpectedly — missing a command you just added, using an
+old version, or ignoring changes from your dev install — the shell may be
+resolving a *different* `doberman` executable than the one in your active
+virtual environment. This is common when you have more than one installation
+method in play (global `pip`, `pipx`, and one or more venvs).
+
+This section only lists and compares what's already on your PATH. It does not
+modify PATH, uninstall anything, or touch your environments.
+
+**List every `doberman` executable currently resolvable.**
+
+Run the command for your shell. Each one lists **all** matches, not just the
+first — this matters because the *first* result is the one actually being run.
+
+```powershell
+# PowerShell
+Get-Command -All doberman
+```
+
+```cmd
+:: Command Prompt (cmd.exe)
+where.exe doberman
+```
+
+```bash
+# Unix-like shells (bash/zsh/etc.)
+which -a doberman
+# or, more portable:
+command -v doberman
+```
+
+If more than one path is listed, the first one in the output is the one your
+shell will actually invoke when you type `doberman`.
+
+**Compare the resolved executable against your active virtual environment.**
+
+With your intended venv activated, check where Python thinks it's installed
+and compare it to what step 1 found.
+
+```bash
+# Unix-like shells
+python -c "import sys; print(sys.prefix)"
+command -v doberman
+```
+
+```powershell
+# PowerShell / Command Prompt
+python -c "import sys; print(sys.prefix)"
+Get-Command doberman
+```
+
+If `sys.prefix` doesn't match the directory the resolved `doberman` lives in
+(e.g. it's not under `.venv/bin` or `.venv/Scripts`), a different install is
+shadowing your venv's copy.
+
+**Inspect common install locations safely.**
+
+These only report information — they don't remove or modify anything.
+
+```bash
+# Check a pip-installed copy inside a venv (Unix-like shells)
+.venv/bin/pip show doberman-core
+```
+
+```powershell
+# Same, on Windows
+.venv\Scripts\pip show doberman-core
+```
+
+```bash
+# Check a pipx-installed copy (any shell with pipx on PATH)
+pipx list
+```
+
+`pipx list` shows every pipx-managed package and the interpreter it's pinned
+to, including any global `doberman` install that could be shadowing your venv.
+
+```bash
+# See which python/pip your shell defaults to (Unix-like shells)
+which -a python python3 pip pip3
+```
+
+```powershell
+# PowerShell
+Get-Command -All python, pip
+```
+
+```cmd
+:: Command Prompt
+where.exe python
+where.exe pip
+```
+
+**Remediation (non-destructive).**
+
+Pick whichever fits your workflow — none of these require editing PATH or
+removing anything:
+
+- **Re-activate the intended virtual environment** in the current shell
+  session, then re-run step 1 to confirm it now resolves first:
+
+  ```bash
+  source .venv/bin/activate        # Unix-like shells
+  .venv\Scripts\activate           # Windows (cmd or PowerShell)
+  ```
+
+- **Invoke the venv's executable explicitly**, bypassing PATH resolution
+  entirely:
+
+  ```bash
+  ./.venv/bin/doberman --version        # Unix-like shells
+  .venv\Scripts\doberman.exe --version  # Windows
+  ```
+
+- **Open a new shell/terminal window** if you recently activated or
+  deactivated an environment — some shells cache the resolved path for the
+  current session (`hash -r` in bash clears this without restarting).
 
 <a name="mcp-proxy"></a>
 
