@@ -205,6 +205,17 @@ def serve(
 @app.command()
 def scan(
     path: str = typer.Option(".", "--path", "-p", help="Repository root to scan."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Suppress human-readable stdout (exit code unchanged; useful for CI).",
+    ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit one deterministic JSON document on stdout instead of the risk map.",
+    ),
 ) -> None:
     """Show a read-only risk map of the agent's capabilities and sensitive surface.
 
@@ -212,7 +223,26 @@ def scan(
     Tool-derived capabilities require a live proxy session and are omitted here.
     """
     capabilities = rate_capabilities(enumerate_capabilities(tools=[], repo_root=path))
-    typer.echo(render_risk_map(capabilities))
+    if as_json:
+        # Stable schema for scripts/editor integrations (#178).
+        payload = {
+            "version": 1,
+            "path": path,
+            "capabilities": [
+                {
+                    "name": c.name,
+                    "category": c.category,
+                    "present": c.present,
+                    "risk": (c.risk.value if c.risk is not None else None),
+                    "evidence": list(c.evidence),
+                }
+                for c in sorted(capabilities, key=lambda x: (x.category, x.name))
+            ],
+        }
+        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return
+    if not quiet:
+        typer.echo(render_risk_map(capabilities))
 
 
 @app.command()
@@ -499,6 +529,11 @@ def status(
 @app.command()
 def doctor(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit one JSON document on stdout; health exit codes are unchanged.",
+    ),
 ) -> None:
     """Run a read-only health self-check and print a green/red checklist.
 
@@ -514,12 +549,32 @@ def doctor(
     marks = {CheckStatus.OK: "[ ok ]", CheckStatus.WARN: "[warn]", CheckStatus.FAIL: "[FAIL]"}
 
     results = run_checks(path)
+    failures = critical_failures(results)
+    if as_json:
+        payload = {
+            "version": 1,
+            "path": path,
+            "ok": not failures,
+            "checks": [
+                {
+                    "name": r.name,
+                    "status": r.status.value if hasattr(r.status, "value") else str(r.status),
+                    "detail": r.detail,
+                }
+                for r in results
+            ],
+            "critical_failures": [f.name for f in failures],
+        }
+        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        if failures:
+            raise typer.Exit(code=1)
+        return
+
     typer.echo("Doberman doctor")
     typer.echo("=" * 32)
     for result in results:
         typer.echo(f"{marks[result.status]} {result.name}: {result.detail}")
 
-    failures = critical_failures(results)
     typer.echo("")
     if failures:
         typer.echo(
