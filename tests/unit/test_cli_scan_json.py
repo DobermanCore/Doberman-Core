@@ -26,7 +26,9 @@ def _caps() -> list[Capability]:
         ),
         # Sorts before "dotenv_visible" by name but after it by category, so a
         # name-only sort and the documented (category, name) sort disagree here.
-        Capability(name="aws_cli", category="tool", present=True, evidence=("aws",), risk=Risk.high),
+        Capability(
+            name="aws_cli", category="tool", present=True, evidence=("aws",), risk=Risk.high
+        ),
     ]
 
 
