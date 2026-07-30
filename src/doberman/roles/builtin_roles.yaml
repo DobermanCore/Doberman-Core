@@ -34,6 +34,12 @@ roles:
       - "src/server/**"
       - "infra/**"
       - ".github/workflows/**"
+      - ".gitlab-ci.yml"
+      - "jenkinsfile"
+      - "jenkinsfile.*"
+      - ".circleci/**"
+      - "azure-pipelines.yml"
+      - "azure-pipelines.yaml"
     blocked: []
   backend:
     description: "Backend / API / service work. Frontend assets and CI are out of scope."
@@ -47,6 +53,12 @@ roles:
       - "frontend/**"
       - "infra/**"
       - ".github/workflows/**"
+      - ".gitlab-ci.yml"
+      - "jenkinsfile"
+      - "jenkinsfile.*"
+      - ".circleci/**"
+      - "azure-pipelines.yml"
+      - "azure-pipelines.yaml"
     blocked: []
   fullstack:
     description: "Frontend and backend. Infra and CI still escalate."
@@ -61,6 +73,12 @@ roles:
     suspicious:
       - "infra/**"
       - ".github/workflows/**"
+      - ".gitlab-ci.yml"
+      - "jenkinsfile"
+      - "jenkinsfile.*"
+      - ".circleci/**"
+      - "azure-pipelines.yml"
+      - "azure-pipelines.yaml"
     blocked: []
   devops:
     description: "Infrastructure, CI/CD, deployment. Application source is out of scope."
@@ -90,6 +108,12 @@ roles:
       - "frontend/**"
       - "infra/**"
       - ".github/workflows/**"
+      - ".gitlab-ci.yml"
+      - "jenkinsfile"
+      - "jenkinsfile.*"
+      - ".circleci/**"
+      - "azure-pipelines.yml"
+      - "azure-pipelines.yaml"
     blocked: []
   test:
     description: "Tests and fixtures. Production source escalates."
