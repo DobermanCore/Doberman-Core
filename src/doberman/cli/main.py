@@ -885,6 +885,11 @@ def memory(
 def policy_history(
     last: int = typer.Option(20, "--last", "-n", help="Show the most recent N changes."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Print redacted ledger rows as a JSON array (machine-readable).",
+    ),
 ) -> None:
     """Show the append-only policy-change ledger (newest first).
 
@@ -893,6 +898,10 @@ def policy_history(
     the before->after states, the classification, and how it was approved.
     """
     rows = asyncio.run(read_policy_changes(path, limit=max(0, last)))
+    if as_json:
+        # Same redacted row dicts the human view uses (no raw paths/secrets).
+        typer.echo(json.dumps(rows, default=str))
+        return
     if not rows:
         typer.echo("(no policy changes recorded yet)")
         return
