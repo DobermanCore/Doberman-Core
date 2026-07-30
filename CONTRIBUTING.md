@@ -33,13 +33,63 @@ CI also verifies that `doberman-core` builds and tests without the private
 enterprise package installed, then runs the same ruff, import-linter, pytest,
 and secret-scan workflow.
 
+## Choosing targeted tests
+
+While developing a small, focused change, you can run only the tests related to
+the area you're working on for faster feedback. Before marking a pull request
+ready for review, always run the complete verification suite listed above.
+
+### Common change areas
+
+| Change area | Suggested command |
+| --- | --- |
+| CLI | `pytest tests/unit/test_cli_help.py` |
+| Discovery / scan | `pytest tests/unit/test_discovery_scan.py` |
+| Policy / engine rules | `pytest tests/unit/test_objective_guardrail.py` |
+| Storage / logging | `pytest tests/unit/test_audit_sink.py` |
+| Proxy | `pytest tests/integration/test_proxy_passthrough.py` |
+| Host hooks | `pytest tests/unit/test_hosthook_control_plane.py` |
+| Docs-only changes | Preview the rendered Markdown when possible, then run the full verification suite before opening a PR. |
+
+### Run a single test file
+
+```bash
+pytest tests/unit/test_discovery_scan.py
+```
+
+### Run a single test
+
+```bash
+pytest tests/unit/test_discovery_scan.py::test_scan_is_depth_bounded
+```
+
+### Run tests by keyword
+
+```bash
+pytest -k scan
+```
+
+This runs only tests whose names or node IDs match the given keyword.
+
+### Before opening a pull request
+
+Targeted tests are useful while iterating, but they do **not** replace the full
+verification process. Before marking a pull request ready for review, run:
+
+```bash
+ruff check .
+ruff format --check .
+lint-imports
+pytest --cov=doberman --cov-report=term-missing --cov-fail-under=80
+```
+
 ## Architecture in five lines
 
 1. A tool call enters Doberman through the MCP proxy or host-hook path.
 2. The call is normalized into a `SecurityObject`.
 3. The decision engine runs objective and adaptive guardrails.
 4. Guardrail verdicts merge through raise-only `combine()`.
-5. The execution gate returns PASS / AUTH / BLOCK: allow, authenticate, or block.
+5. The execution gate returns PASS / AUTH /BLOCK: allow, authenticate, or block.
 
 ## Invariants
 
