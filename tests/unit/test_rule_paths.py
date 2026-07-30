@@ -227,3 +227,48 @@ def test_missing_repo_root_still_evaluates(tmp_path, monkeypatch):
     # path still blocks.
     result = RULE.evaluate(_action(".env"), EvalContext())
     assert result.verdict is Verdict.BLOCK
+
+
+# --- Trailing dot/space padding (Windows treats these as insignificant) ------
+
+
+@pytest.mark.parametrize(
+    "padded_path",
+    [
+        ".env ",
+        ".env  ",
+        "certs/server.pem.",
+        "deploy/tls.key ",
+        "packages/app/.env ",
+    ],
+)
+def test_trailing_dot_or_space_padded_protected_path_is_blocked(tmp_path, padded_path):
+    # Windows silently strips trailing dots/spaces when a file is opened, so
+    # e.g. ".env " and ".env" are the same on-disk file — the matcher must
+    # treat them the same.
+    result = RULE.evaluate(_action(padded_path), _ctx(tmp_path))
+    assert result.verdict is Verdict.BLOCK, padded_path
+    assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_padded_directory_component_is_caught(tmp_path):
+    # The padding is on a DIRECTORY component (not just the leaf filename).
+    result = RULE.evaluate(_action(".circleci /config.yml"), _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_path_access in result.reason_codes
+
+
+def test_dot_space_normalization_is_raise_only(tmp_path):
+    # Everything that already blocked/authed/passed still does.
+    assert RULE.evaluate(_action(".env"), _ctx(tmp_path)).verdict is Verdict.BLOCK
+    assert RULE.evaluate(_action(".ENV"), _ctx(tmp_path)).verdict is Verdict.BLOCK
+    assert RULE.evaluate(_action("a/b/../../.env"), _ctx(tmp_path)).verdict is Verdict.BLOCK
+    assert RULE.evaluate(_action("backend/auth/session.ts"), _ctx(tmp_path)).verdict is Verdict.AUTH
+    assert RULE.evaluate(_action("frontend/Button.tsx"), _ctx(tmp_path)).verdict is Verdict.PASS
+
+
+def test_interior_dot_or_space_in_benign_path_still_passes(tmp_path):
+    # Only TRAILING padding is normalized; an interior dot/space is a real
+    # part of a benign filename.
+    assert RULE.evaluate(_action("docs/my notes.md"), _ctx(tmp_path)).verdict is Verdict.PASS
+    assert RULE.evaluate(_action("src/a.b.c.ts"), _ctx(tmp_path)).verdict is Verdict.PASS

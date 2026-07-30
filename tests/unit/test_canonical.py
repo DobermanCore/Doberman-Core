@@ -106,3 +106,62 @@ def test_unusable_root_never_raises():
 def test_resolved_is_absolute(tmp_path):
     result = canonicalize("src/x.py", root=tmp_path)
     assert os.path.isabs(result.resolved)
+
+
+# --- Trailing dot/space normalization ---------------------------------------
+# Windows treats trailing dots/spaces in a filename as insignificant and
+# strips them when the file is opened, so ".env " and ".env." are the SAME
+# on-disk file as ".env" — the matching form must collapse them the same way.
+
+
+def test_trailing_space_is_stripped_from_matching_form(tmp_path):
+    result = canonicalize(".env ", root=tmp_path)
+    assert not result.escapes_root
+    assert result.relposix == ".env"
+
+
+def test_multiple_trailing_spaces_are_stripped(tmp_path):
+    result = canonicalize(".env  ", root=tmp_path)
+    assert not result.escapes_root
+    assert result.relposix == ".env"
+
+
+def test_trailing_dot_is_stripped_from_matching_form(tmp_path):
+    result = canonicalize("certs/server.pem.", root=tmp_path)
+    assert not result.escapes_root
+    assert result.relposix == "certs/server.pem"
+
+
+def test_nested_trailing_space_component_is_stripped(tmp_path):
+    result = canonicalize("packages/app/.env ", root=tmp_path)
+    assert not result.escapes_root
+    assert result.relposix == "packages/app/.env"
+
+
+def test_padded_directory_component_is_stripped(tmp_path):
+    # The padding is on a DIRECTORY component, not just the leaf filename.
+    result = canonicalize(".circleci /config.yml", root=tmp_path)
+    assert not result.escapes_root
+    assert result.relposix == ".circleci/config.yml"
+
+
+def test_resolved_field_is_left_unnormalized(tmp_path):
+    # The case-preserving `resolved` field is for display/forensics only and
+    # must not be touched by the matching-form normalization.
+    result = canonicalize(".env ", root=tmp_path)
+    assert result.resolved.endswith(".env ")
+
+
+def test_component_that_is_only_dots_and_spaces_fails_closed(tmp_path):
+    # A component with no safe reduced form (e.g. "..." or " . ") must not be
+    # silently dropped or emptied — conservatively flag it as an escape.
+    for hostile in ("foo/... /bar", "foo/...", "foo/ . /bar"):
+        result = canonicalize(hostile, root=tmp_path)
+        assert result.escapes_root is True, hostile
+
+
+def test_interior_dot_and_space_are_unaffected(tmp_path):
+    # Only TRAILING dots/spaces are stripped; interior ones are a real part
+    # of a benign filename and must survive untouched.
+    assert canonicalize("docs/my notes.md", root=tmp_path).relposix == "docs/my notes.md"
+    assert canonicalize("src/a.b.c.ts", root=tmp_path).relposix == "src/a.b.c.ts"

@@ -18,6 +18,12 @@ Guarantees:
 * Matching is **case-insensitive** by default (``relposix`` is lower-cased),
   because case-preserving filesystems (Windows, macOS default) would otherwise
   let ``.ENV`` slip past a ``.env`` rule.
+* Each component of the matching form has trailing spaces and dots stripped,
+  on every platform — Windows silently strips them when a filename is opened,
+  so ``.env `` and ``.env.`` are the same on-disk file as ``.env`` and must
+  match the same rule. A component that strips to nothing (e.g. ``"..."``) has
+  no safe reduced form, so the whole result is conservatively flagged
+  ``escapes_root=True`` rather than matched with a dropped/empty component.
 
 This module performs **no filesystem writes** and never raises on hostile
 input — on any failure it returns a conservative ``escapes_root=True`` result
@@ -112,10 +118,34 @@ def canonicalize(path: str, *, root: str | os.PathLike[str]) -> CanonicalPath:
     if rel is None:
         relposix = ""
     else:
-        # Normalize to forward slashes and lower-case for case-insensitive
-        # matching. PurePosixPath gives us a stable separator on every OS.
-        relposix = PurePosixPath(*rel.parts).as_posix().lower()
-        if relposix == ".":
+        # Strip trailing spaces/dots from each component before matching:
+        # Windows treats them as insignificant and drops them when a file is
+        # opened (``.env `` and ``.env.`` land on the real ``.env``), and
+        # ``Path.resolve()`` only normalizes that away for a component that
+        # already exists on disk — the not-yet-created case (the one that
+        # matters for a write/create) falls back to lexical resolution, which
+        # preserves the padding. Applied on every OS: on POSIX a padded name
+        # is technically a distinct file, but treating it as the same one
+        # costs at most a spurious AUTH, never a missed BLOCK.
+        normalized_parts = []
+        unmatchable = False
+        for part in rel.parts:
+            stripped = part.rstrip(" .")
+            if not stripped:
+                # A component made entirely of dots/spaces (e.g. "...") has no
+                # safe reduced form. Don't drop or empty it — fail closed.
+                unmatchable = True
+                break
+            normalized_parts.append(stripped)
+
+        if unmatchable:
             relposix = ""
+            escapes = True
+        else:
+            # Normalize to forward slashes and lower-case for case-insensitive
+            # matching. PurePosixPath gives us a stable separator on every OS.
+            relposix = PurePosixPath(*normalized_parts).as_posix().lower()
+            if relposix == ".":
+                relposix = ""
 
     return CanonicalPath(resolved=resolved_str, relposix=relposix, escapes_root=escapes)
