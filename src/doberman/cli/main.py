@@ -709,6 +709,12 @@ def revoke(
         raise typer.Exit(code=1)
 
 
+# Columns from ``_DECISION_COLUMNS`` that ``log --jsonl`` emits in addition to the
+# six fields the human view shows. Every one is already redacted at write time by
+# ``build_record`` — no raw target, argument, or secret reaches the table at all.
+_JSONL_EXTRA_COLUMNS = ("id", "agent_role", "risk")
+
+
 @app.command()
 def log(
     last: int = typer.Option(20, "--last", "-n", help="Show the most recent N decisions."),
@@ -742,18 +748,10 @@ def log(
                 "reason_codes": reasons,
                 "auth_result": row.get("auth_result"),
             }
-            # Include other redacted columns if present, excluding raw JSON blobs.
-            for key, val in row.items():
-                if key in record or key.endswith("_json") or key in {"reason_codes_json"}:
-                    continue
-                if key in {
-                    "id",
-                    "agent_role",
-                    "tool_name",
-                    "final_risk",
-                    "explanation",
-                }:
-                    record[key] = val
+            # Include other redacted columns if present. This is an allowlist on
+            # purpose: a column added to the decisions table later must be opted
+            # in here deliberately, rather than leaking into the stream by default.
+            record.update({key: row[key] for key in _JSONL_EXTRA_COLUMNS if key in row})
             typer.echo(json.dumps(record, sort_keys=True, separators=(",", ":"), default=str))
         return
     if not rows:
