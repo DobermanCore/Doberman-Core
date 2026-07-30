@@ -84,7 +84,6 @@ roles:
     description: "Infrastructure, CI/CD, deployment. Application source is out of scope."
     allowed:
       - "infra/**"
-      - ".github/workflows/**"
       - "deploy/**"
       - "docker/**"
       - "**/dockerfile"

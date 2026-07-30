@@ -10,6 +10,7 @@ from doberman.roles.roles import RoleBoundary, RoleDefinition, classify, load_bu
 
 ROLES = load_builtin_roles()
 FRONTEND = ROLES["frontend"]
+DEVOPS = ROLES["devops"]
 
 
 def test_allowed_path_classifies_allowed(tmp_path):
@@ -50,3 +51,29 @@ def test_traversal_is_canonicalized_before_matching(tmp_path):
 
 def test_case_insensitive_matching(tmp_path):
     assert classify(FRONTEND, "FRONTEND/Button.TSX", root=str(tmp_path)) is RoleBoundary.allowed
+
+
+def test_devops_ci_configs_escalate_for_every_ci_system(tmp_path):
+    # devops no longer gets a free pass on GitHub Actions while the other four
+    # CI systems escalate — all five must resolve the same way (suspicious).
+    ci_paths = [
+        ".github/workflows/ci.yml",
+        ".gitlab-ci.yml",
+        "Jenkinsfile",
+        ".circleci/config.yml",
+        "azure-pipelines.yml",
+    ]
+    for path in ci_paths:
+        assert classify(DEVOPS, path, root=str(tmp_path)) is RoleBoundary.suspicious, path
+
+
+def test_devops_owned_infra_paths_remain_allowed(tmp_path):
+    # The regression that matters: removing the CI glob must not touch devops's
+    # genuinely-owned paths.
+    owned_paths = [
+        "infra/main.tf",
+        "deploy/run.sh",
+        "docker/Dockerfile",
+    ]
+    for path in owned_paths:
+        assert classify(DEVOPS, path, root=str(tmp_path)) is RoleBoundary.allowed, path
