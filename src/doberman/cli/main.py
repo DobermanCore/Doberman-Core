@@ -709,10 +709,21 @@ def revoke(
         raise typer.Exit(code=1)
 
 
+# Columns from ``_DECISION_COLUMNS`` that ``log --jsonl`` emits in addition to the
+# six fields the human view shows. Every one is already redacted at write time by
+# ``build_record`` — no raw target, argument, or secret reaches the table at all.
+_JSONL_EXTRA_COLUMNS = ("id", "agent_role", "risk")
+
+
 @app.command()
 def log(
     last: int = typer.Option(20, "--last", "-n", help="Show the most recent N decisions."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    jsonl: bool = typer.Option(
+        False,
+        "--jsonl",
+        help="Emit one redacted JSON object per line (no headings; empty if none).",
+    ),
 ) -> None:
     """Show the recent redacted decision log (newest first).
 
@@ -720,6 +731,29 @@ def log(
     the auth outcome. No raw target, argument, or secret is ever stored or shown.
     """
     rows = asyncio.run(read_decisions(path, limit=max(0, last)))
+    if jsonl:
+        for row in rows:
+            # Decode structured fields; keep only the redacted representation.
+            try:
+                reasons = json.loads(row.get("reason_codes_json") or "[]")
+            except json.JSONDecodeError:
+                reasons = []
+            if not isinstance(reasons, list):
+                reasons = []
+            record = {
+                "ts": row.get("ts"),
+                "final_verdict": row.get("final_verdict"),
+                "action_type": row.get("action_type"),
+                "target_path_class": row.get("target_path_class"),
+                "reason_codes": reasons,
+                "auth_result": row.get("auth_result"),
+            }
+            # Include other redacted columns if present. This is an allowlist on
+            # purpose: a column added to the decisions table later must be opted
+            # in here deliberately, rather than leaking into the stream by default.
+            record.update({key: row[key] for key in _JSONL_EXTRA_COLUMNS if key in row})
+            typer.echo(json.dumps(record, sort_keys=True, separators=(",", ":"), default=str))
+        return
     if not rows:
         typer.echo("(no decisions recorded yet)")
         return
