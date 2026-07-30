@@ -78,14 +78,45 @@ DEFAULT_BLOCKED_GLOBS: tuple[str, ...] = (
     *CONTROL_PLANE_GLOBS,
 )
 
+#: Continuous-integration / delivery pipeline definitions across the common
+#: hosted and self-managed systems (not just GitHub Actions). A write here can
+#: silently reconfigure the pipeline that builds, tests, signs, or deploys the
+#: repo — an agent rewriting CI config to, say, exfiltrate a deploy secret or
+#: disable a required check is exactly the high-leverage change that warrants a
+#: human in the loop. These are SENSITIVE (AUTH), consistent with how GitHub
+#: Actions workflows have always been treated; adding a system here only ever
+#: adds step-ups (raise-only) and never loosens an existing verdict. Globs are
+#: lower-cased to match the canonical (lower-cased) relposix, so ``Jenkinsfile``
+#: is written ``jenkinsfile`` and still matches the real capitalized file.
+CICD_CONFIG_GLOBS: tuple[str, ...] = (
+    # GitHub Actions.
+    ".github/workflows/**",
+    "**/.github/workflows/**",
+    # GitLab CI.
+    ".gitlab-ci.yml",
+    "**/.gitlab-ci.yml",
+    # Jenkins (root or nested ``Jenkinsfile`` and its ``.suffix`` variants).
+    "jenkinsfile",
+    "**/jenkinsfile",
+    "jenkinsfile.*",
+    "**/jenkinsfile.*",
+    # CircleCI.
+    ".circleci/**",
+    "**/.circleci/**",
+    # Azure Pipelines.
+    "azure-pipelines.yml",
+    "azure-pipelines.yaml",
+    "**/azure-pipelines.yml",
+    "**/azure-pipelines.yaml",
+)
+
 #: Paths that are sensitive: allowed, but only after authentication.
 DEFAULT_SENSITIVE_GLOBS: tuple[str, ...] = (
     "backend/auth/**",
     "**/backend/auth/**",
     "infra/**",
     "**/infra/**",
-    ".github/workflows/**",
-    "**/.github/workflows/**",
+    *CICD_CONFIG_GLOBS,
     "migrations/**",
     "**/migrations/**",
     "**/*.tfstate",

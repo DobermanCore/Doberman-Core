@@ -9,7 +9,10 @@ the raw path.
 
 from datetime import datetime, timezone
 
+import pytest
+
 from doberman.engine.rules.paths import (
+    CICD_CONFIG_GLOBS,
     DEFAULT_BLOCKED_GLOBS,
     DEFAULT_SENSITIVE_GLOBS,
     ProtectedPathRule,
@@ -105,6 +108,79 @@ def test_batch_with_only_sensitive_member_is_auth(tmp_path):
     )
     result = RULE.evaluate(action, _ctx(tmp_path))
     assert result.verdict is Verdict.AUTH
+
+
+# --- CI/CD pipeline config across systems, not just GitHub Actions -----------
+
+
+@pytest.mark.parametrize(
+    "cicd_path",
+    [
+        # GitHub Actions (the original coverage — still AUTH).
+        ".github/workflows/release.yml",
+        "packages/app/.github/workflows/ci.yaml",
+        # GitLab CI.
+        ".gitlab-ci.yml",
+        "services/api/.gitlab-ci.yml",
+        # Jenkins (root, nested, and .suffix variants; real file is capitalized).
+        "Jenkinsfile",
+        "ci/Jenkinsfile",
+        "Jenkinsfile.release",
+        # CircleCI.
+        ".circleci/config.yml",
+        "sub/.circleci/config.yml",
+        # Azure Pipelines.
+        "azure-pipelines.yml",
+        "azure-pipelines.yaml",
+        "infra/azure-pipelines.yml",
+    ],
+)
+def test_cicd_config_requires_auth(tmp_path, cicd_path):
+    # Editing any CI/CD pipeline definition steps up to authentication — the
+    # pipeline builds/tests/signs/deploys the repo, so an agent rewrite is a
+    # human-in-the-loop moment on every supported system, not only GitHub.
+    result = RULE.evaluate(_action(cicd_path), _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH, cicd_path
+    assert ReasonCode.sensitive_path_access in result.reason_codes
+
+
+def test_cicd_config_step_up_is_raise_only_over_benign_lookalikes(tmp_path):
+    # The globs are specific enough not to swallow ordinary source: a file that
+    # merely mentions a CI tool's name in an unrelated path still passes.
+    for benign in (
+        "docs/jenkins-migration-guide.md",  # not a Jenkinsfile
+        "src/circleci_client.py",  # not the .circleci/ dir
+        "config/azure-pipelines-notes.txt",  # not azure-pipelines.yml
+    ):
+        result = RULE.evaluate(_action(benign), _ctx(tmp_path))
+        assert result.verdict is Verdict.PASS, benign
+
+
+def test_cicd_globs_are_part_of_the_sensitive_set():
+    # The CI/CD set is folded into the default sensitive globs (raise-only:
+    # these paths previously PASSed silently and now step up to AUTH).
+    assert set(_sanitize_globs(CICD_CONFIG_GLOBS)) <= set(_sanitize_globs(DEFAULT_SENSITIVE_GLOBS))
+
+
+@pytest.mark.parametrize(
+    "padded_path",
+    [
+        "./.gitlab-ci.yml",
+        "a/../.gitlab-ci.yml",
+        "a\\..\\.gitlab-ci.yml",  # mixed/Windows separators
+        "./azure-pipelines.yml",
+        "a/../Jenkinsfile",
+        "sub/../.circleci/config.yml",
+    ],
+)
+def test_cicd_config_bypass_via_non_canonical_path_is_still_caught(tmp_path, padded_path):
+    # A non-canonical spelling (relative-dot prefix, traversal, or backslash
+    # separators) must still canonicalize to the real sensitive target and
+    # AUTH — proven through the real ProtectedPathRule -> canonicalize() path,
+    # not a reimplemented matcher.
+    result = RULE.evaluate(_action(padded_path), _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH, padded_path
+    assert ReasonCode.sensitive_path_access in result.reason_codes
 
 
 def test_non_path_action_abstains(tmp_path):
