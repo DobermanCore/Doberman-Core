@@ -3,7 +3,7 @@
 Shipped history for Doberman. Planned work lives on the [roadmap](README.md#roadmap) and the
 [project board](https://github.com/users/fu351/projects/5); exact per-commit detail is in the
 [git log](https://github.com/fu351/Doberman-Core/commits/main) and
-[releases](https://github.com/fu351/Doberman-Core/releases) (latest: **v0.16.0**, adds raise-only static egress classification).
+[releases](https://github.com/fu351/Doberman-Core/releases) (latest: **v0.17.0**, adds the runtime egress broker — enforcement-gated egress PASS, velocity signals, and post-fetch artifact verification).
 
 ## Shipped
 - Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense (classify strengthen/weaken, possession-factor-gated permanent weakening, append-only ledger, **enforce/monitor/off enforcement dial — now consumed by the decision path (discretionary verdicts soften; the objective floor stays live), softening now gated behind the same possession-factor check as a policy weakening (TOTP if enrolled else password, fails closed with neither — no confirm-only fallback) + a ledger-verified tamper clamp**, **strictness `mode` and SL5 `prefs` now use the corrected 2FA-or-password gate: password is the minimum factor, optional TOTP takes precedence when enrolled, neither enrolled fails closed, and raising stays frictionless**) · universal subjective layer (SL1–SL9)
