@@ -205,6 +205,12 @@ def serve(
 @app.command()
 def scan(
     path: str = typer.Option(".", "--path", "-p", help="Repository root to scan."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Suppress the risk map on stdout (exit code unchanged; useful for CI gates).",
+    ),
 ) -> None:
     """Show a read-only risk map of the agent's capabilities and sensitive surface.
 
@@ -212,7 +218,8 @@ def scan(
     Tool-derived capabilities require a live proxy session and are omitted here.
     """
     capabilities = rate_capabilities(enumerate_capabilities(tools=[], repo_root=path))
-    typer.echo(render_risk_map(capabilities))
+    if not quiet:
+        typer.echo(render_risk_map(capabilities))
 
 
 @app.command()
