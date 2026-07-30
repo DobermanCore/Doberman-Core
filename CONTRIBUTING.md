@@ -41,15 +41,15 @@ ready for review, always run the complete verification suite listed above.
 
 ### Common change areas
 
-| Change area | Suggested command |
-| --- | --- |
-| CLI | `pytest tests/unit/test_cli_help.py` |
-| Discovery / scan | `pytest tests/unit/test_discovery_scan.py` |
-| Policy / engine rules | `pytest tests/unit/test_objective_guardrail.py` |
-| Storage / logging | `pytest tests/unit/test_audit_sink.py` |
-| Proxy | `pytest tests/integration/test_proxy_passthrough.py` |
-| Host hooks | `pytest tests/unit/test_hosthook_control_plane.py` |
-| Docs-only changes | Preview the rendered Markdown when possible, then run the full verification suite before opening a PR. |
+| Change area           | Suggested command                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------ |
+| CLI                   | `pytest tests/unit/test_cli_help.py`                                                                   |
+| Discovery / scan      | `pytest tests/unit/test_discovery_scan.py`                                                             |
+| Policy / engine rules | `pytest tests/unit/test_objective_guardrail.py`                                                        |
+| Storage / logging     | `pytest tests/unit/test_audit_sink.py`                                                                 |
+| Proxy                 | `pytest tests/integration/test_proxy_passthrough.py`                                                   |
+| Host hooks            | `pytest tests/unit/test_hosthook_control_plane.py`                                                     |
+| Docs-only changes     | Preview the rendered Markdown when possible, then run the full verification suite before opening a PR. |
 
 ### Run a single test file
 
@@ -120,18 +120,18 @@ metadata, classifications, and fingerprints are fine; raw secrets are not.
 
 Every open issue carries a `level-1` through `level-10` label — a difficulty ladder:
 
-| Level | What it demands |
-|---|---|
-| 1 | Docs/Markdown only. Needs git and a text editor, no Python. |
-| 2 | Mechanical: catalogue or transcribe what the code already does. Reads Python. |
-| 3 | Write a self-contained test, or add a flag following an existing sibling pattern. |
-| 4 | Touches a contract (redaction, reason codes). Needs one invariant understood. |
-| 5 | Multi-site change or cross-module test. Understand a subsystem, change no behaviour. |
-| 6 | Tooling/CI/packaging, or a new extension example. Expect unfamiliar failures. |
-| 7 | Additive engine change (new rule/detector/storage policy). Raise-only by construction. |
-| 8 | Modifies existing risk classification. Needs maintainer design sign-off first. |
-| 9 | Complete an extension seam: interface, registry, tests and docs. |
-| 10 | New subsystem, multi-week. Design discussion before any code. |
+| Level | What it demands                                                                        |
+| ----- | -------------------------------------------------------------------------------------- |
+| 1     | Docs/Markdown only. Needs git and a text editor, no Python.                            |
+| 2     | Mechanical: catalogue or transcribe what the code already does. Reads Python.          |
+| 3     | Write a self-contained test, or add a flag following an existing sibling pattern.      |
+| 4     | Touches a contract (redaction, reason codes). Needs one invariant understood.          |
+| 5     | Multi-site change or cross-module test. Understand a subsystem, change no behaviour.   |
+| 6     | Tooling/CI/packaging, or a new extension example. Expect unfamiliar failures.          |
+| 7     | Additive engine change (new rule/detector/storage policy). Raise-only by construction. |
+| 8     | Modifies existing risk classification. Needs maintainer design sign-off first.         |
+| 9     | Complete an extension seam: interface, registry, tests and docs.                       |
+| 10    | New subsystem, multi-week. Design discussion before any code.                          |
 
 The ladder is meant to be climbed: finish a level-N issue, and a level-(N+1) issue in the same
 area is the natural next step. Where an issue depends on another, it names that prerequisite.
