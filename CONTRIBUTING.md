@@ -68,9 +68,32 @@ metadata, classifications, and fingerprints are fine; raw secrets are not.
 
 ## Pick a first task
 
+Every open issue carries a `level-1` through `level-10` label — a difficulty ladder:
+
+| Level | What it demands |
+|---|---|
+| 1 | Docs/Markdown only. Needs git and a text editor, no Python. |
+| 2 | Mechanical: catalogue or transcribe what the code already does. Reads Python. |
+| 3 | Write a self-contained test, or add a flag following an existing sibling pattern. |
+| 4 | Touches a contract (redaction, reason codes). Needs one invariant understood. |
+| 5 | Multi-site change or cross-module test. Understand a subsystem, change no behaviour. |
+| 6 | Tooling/CI/packaging, or a new extension example. Expect unfamiliar failures. |
+| 7 | Additive engine change (new rule/detector/storage policy). Raise-only by construction. |
+| 8 | Modifies existing risk classification. Needs maintainer design sign-off first. |
+| 9 | Complete an extension seam: interface, registry, tests and docs. |
+| 10 | New subsystem, multi-week. Design discussion before any code. |
+
+The ladder is meant to be climbed: finish a level-N issue, and a level-(N+1) issue in the same
+area is the natural next step. Where an issue depends on another, it names that prerequisite.
+
+Commenting on an issue claims it. Level-8 and above additionally expect a design comment, agreed
+with a maintainer, before any code.
+
 Start with the
 [`good first issue`](https://github.com/fu351/Doberman-Core/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 or
 [`help wanted`](https://github.com/fu351/Doberman-Core/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
-labels. Good first PRs are usually narrow docs, tests, or guardrail hardening
-changes with a clear issue to close.
+labels to find level-1/2/3 work, or browse a specific rung directly, e.g.
+[`level-1`](https://github.com/fu351/Doberman-Core/labels/level-1) (swap the number for any level
+1-10). Good first PRs are usually narrow docs, tests, or guardrail hardening changes with a clear
+issue to close.
