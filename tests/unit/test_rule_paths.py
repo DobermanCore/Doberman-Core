@@ -7,6 +7,7 @@ policy patterns are ignored (cannot match everything); explanation never leaks
 the raw path.
 """
 
+import sys
 from datetime import datetime, timezone
 
 import pytest
@@ -167,17 +168,28 @@ def test_cicd_globs_are_part_of_the_sensitive_set():
     [
         "./.gitlab-ci.yml",
         "a/../.gitlab-ci.yml",
-        "a\\..\\.gitlab-ci.yml",  # mixed/Windows separators
         "./azure-pipelines.yml",
         "a/../Jenkinsfile",
         "sub/../.circleci/config.yml",
     ],
 )
 def test_cicd_config_bypass_via_non_canonical_path_is_still_caught(tmp_path, padded_path):
-    # A non-canonical spelling (relative-dot prefix, traversal, or backslash
-    # separators) must still canonicalize to the real sensitive target and
-    # AUTH — proven through the real ProtectedPathRule -> canonicalize() path,
-    # not a reimplemented matcher.
+    # A non-canonical spelling (relative-dot prefix or ``..`` traversal) must
+    # still canonicalize to the real sensitive target and AUTH — proven through
+    # the real ProtectedPathRule -> canonicalize() path, not a reimplemented
+    # matcher.
+    result = RULE.evaluate(_action(padded_path), _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH, padded_path
+    assert ReasonCode.sensitive_path_access in result.reason_codes
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="backslash separates paths only on Windows")
+@pytest.mark.parametrize("padded_path", ["a\\..\\.gitlab-ci.yml", ".\\azure-pipelines.yml"])
+def test_cicd_config_backslash_separator_bypass_is_caught_on_windows(tmp_path, padded_path):
+    # Windows-only: there a backslash is a real separator, so these canonicalize
+    # onto the sensitive target and must AUTH. On POSIX the same string is a
+    # single legal filename that never resolves to the CI config, so PASS is the
+    # correct verdict there and the case simply does not apply.
     result = RULE.evaluate(_action(padded_path), _ctx(tmp_path))
     assert result.verdict is Verdict.AUTH, padded_path
     assert ReasonCode.sensitive_path_access in result.reason_codes
