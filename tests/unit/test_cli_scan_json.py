@@ -24,6 +24,9 @@ def _caps() -> list[Capability]:
             evidence=(".env",),
             risk=Risk.medium,
         ),
+        # Sorts before "dotenv_visible" by name but after it by category, so a
+        # name-only sort and the documented (category, name) sort disagree here.
+        Capability(name="aws_cli", category="tool", present=True, evidence=("aws",), risk=Risk.high),
     ]
 
 
@@ -36,8 +39,9 @@ def test_scan_json_is_one_document_and_sorted(tmp_path):
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["version"] == 1
-    names = [c["name"] for c in payload["capabilities"]]
-    assert names == sorted(names, key=lambda n: n) or True  # category-primary sort
+    # docs/CLI.md promises "sorted by (category, name)" — assert that exact key.
+    pairs = [(c["category"], c["name"]) for c in payload["capabilities"]]
+    assert pairs == sorted(pairs), f"capabilities not sorted by (category, name): {pairs}"
     assert all("evidence" in c for c in payload["capabilities"])
     # deterministic separators / keys
     with (
