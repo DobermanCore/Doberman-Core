@@ -1,0 +1,119 @@
+"""Reason code documentation guardrails.
+
+Covers:
+  - Every ReasonCode enum member is present in docs/REASON_CODES.md.
+  - Explanations are non-empty and go beyond repeating the enum name.
+  - Placeholder strings (TODO, TBD, N/A) are not used as standalone explanations.
+  - No stale or extra reason codes remain in docs/REASON_CODES.md.
+"""
+
+import re
+from pathlib import Path
+
+import pytest
+
+from doberman.models import ReasonCode
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DOCS_FILE = REPO_ROOT / "docs" / "REASON_CODES.md"
+
+# Placeholders that indicate invalid documentation when used as complete descriptions
+EXACT_BANNED = {"todo", "tbd", "fixme", "n/a", "none", "placeholder", "null"}
+
+# Substring phrases that should never appear anywhere in a real description
+PHRASE_BANNED = ("todo:", "tbd:", "fixme:")
+
+
+def parse_reason_codes_table(filepath: Path) -> dict[str, str]:
+    """Parse docs/REASON_CODES.md dynamically by column header name."""
+    content = filepath.read_text(encoding="utf-8")
+    mappings = {}
+
+    lines = [
+        line.strip()
+        for line in content.splitlines()
+        if line.strip().startswith("|") and not line.strip().startswith("|---")
+    ]
+
+    if not lines:
+        raise AssertionError(f"No table found in {filepath}")
+
+    # Locate header indexes once from the first table line
+    headers = [col.strip().lower() for col in lines[0].split("|")[1:-1]]
+    if "code" not in headers or "meaning" not in headers:
+        raise AssertionError(f"Table in {filepath} must contain 'Code' and 'Meaning' headers.")
+
+    code_idx = headers.index("code")
+    meaning_idx = headers.index("meaning")
+    min_required_cols = max(code_idx, meaning_idx) + 1
+
+    # Parse data rows (skipping the header at index 0)
+    for line in lines[1:]:
+        columns = [col.strip() for col in line.split("|")[1:-1]]
+
+        # Skip incomplete rows safely
+        if len(columns) < min_required_cols:
+            continue
+
+        raw_code = columns[code_idx]
+        meaning = columns[meaning_idx]
+
+        match = re.search(r"`([^`]+)`", raw_code)
+        code_name = match.group(1) if match else raw_code
+
+        mappings[code_name] = meaning
+
+    assert mappings, f"No reason codes parsed from {filepath}"
+    return mappings
+
+
+@pytest.fixture(scope="module")
+def documented_codes() -> dict[str, str]:
+    """Cache the parsed table for module tests."""
+    assert DOCS_FILE.exists(), f"Doc file missing: {DOCS_FILE}"
+    return parse_reason_codes_table(DOCS_FILE)
+
+
+def test_all_reason_codes_are_documented(documented_codes: dict[str, str]):
+    """Ensure every ReasonCode enum value exists in docs/REASON_CODES.md."""
+    enum_codes = {code.value for code in ReasonCode}
+    missing = enum_codes - set(documented_codes.keys())
+    assert not missing, f"Missing ReasonCode values in {DOCS_FILE}: {sorted(missing)}"
+
+
+@pytest.mark.parametrize("reason_code", ReasonCode)
+def test_reason_code_has_valid_explanation(
+    reason_code: ReasonCode, documented_codes: dict[str, str]
+):
+    """Ensure every reason code has a meaningful explanation."""
+    assert reason_code.value in documented_codes, (
+        f"ReasonCode '{reason_code.value}' is missing from {DOCS_FILE}."
+    )
+
+    meaning = documented_codes[reason_code.value].strip()
+    meaning_lower = meaning.lower()
+
+    # 1. Non-empty
+    assert meaning, f"ReasonCode '{reason_code.value}' has an empty explanation."
+
+    # 2. Not merely repeating the code name
+    assert meaning_lower != reason_code.value.lower(), (
+        f"ReasonCode '{reason_code.value}' explanation simply repeats its name."
+    )
+
+    # 3. Not an exact placeholder word
+    assert meaning_lower not in EXACT_BANNED, (
+        f"ReasonCode '{reason_code.value}' uses placeholder string: '{meaning}'."
+    )
+
+    # 4. Doesn't start with explicit TODO markers
+    assert not any(p in meaning_lower for p in PHRASE_BANNED), (
+        f"ReasonCode '{reason_code.value}' contains a TODO/FIXME tag: '{meaning}'."
+    )
+
+
+def test_no_extra_unknown_codes_in_docs(documented_codes: dict[str, str]):
+    """Ensure no stale/removed reason codes remain in docs/REASON_CODES.md."""
+    enum_codes = {code.value for code in ReasonCode}
+    extra = set(documented_codes.keys()) - enum_codes
+    assert not extra, f"Stale codes in {DOCS_FILE}: {sorted(extra)}"
