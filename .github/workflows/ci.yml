@@ -49,6 +49,22 @@ jobs:
       - name: Architecture & repo boundaries
         run: lint-imports
       - run: pytest --cov=doberman --cov-report=term-missing --cov-fail-under=80
+  package-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip build
+      - run: python -m build
+      - name: Install wheel into a clean environment
+        run: |
+          python -m venv /tmp/wheel-env
+          /tmp/wheel-env/bin/pip install dist/*.whl
+      - name: Smoke test — CLI entry point works standalone
+        run: /tmp/wheel-env/bin/doberman --version
   secret-scan:
     runs-on: ubuntu-latest
     steps:
