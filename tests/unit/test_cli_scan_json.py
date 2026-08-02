@@ -80,3 +80,20 @@ def test_scan_default_not_json(tmp_path):
         pass
     else:
         raise AssertionError("default scan should not be raw JSON")
+
+def test_scan_json_wins_over_quiet(tmp_path):
+    """`--json` still prints JSON when combined with `--quiet` (#225)."""
+    with (
+        patch("doberman.cli.main.enumerate_capabilities", return_value=_caps()),
+        patch("doberman.cli.main.rate_capabilities", side_effect=lambda c: c),
+    ):
+        both = runner.invoke(app, ["scan", "--path", str(tmp_path), "--json", "--quiet"])
+        json_only = runner.invoke(app, ["scan", "--path", str(tmp_path), "--json"])
+    assert both.exit_code == json_only.exit_code == 0
+    payload = json.loads(both.stdout)
+    assert payload["version"] == 1
+    assert isinstance(payload["capabilities"], list)
+    # Quiet must not suppress machine-readable output.
+    assert both.stdout.strip() != ""
+    assert json.loads(both.stdout) == json.loads(json_only.stdout)
+
