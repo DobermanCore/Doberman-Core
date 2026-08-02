@@ -65,6 +65,14 @@ jobs:
           /tmp/wheel-env/bin/pip install dist/*.whl
       - name: Smoke test — CLI entry point works standalone
         run: /tmp/wheel-env/bin/doberman --version
+      # `--version` only proves the modules shipped: it never reads package DATA.
+      # builtin_roles.yaml is loaded lazily (roles.py), so dropping it from the
+      # wheel would leave the check above green while every role lookup crashes.
+      - name: Smoke test — bundled package data ships in the wheel
+        run: >
+          /tmp/wheel-env/bin/python -c
+          "from doberman.roles.roles import load_builtin_roles;
+          assert load_builtin_roles(), 'builtin_roles.yaml missing from the wheel'"
   secret-scan:
     runs-on: ubuntu-latest
     steps:
