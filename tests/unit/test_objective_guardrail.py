@@ -7,10 +7,13 @@ raises; and the documented combination cases (secret-exfil BLOCK beats a path
 AUTH, etc.).
 """
 
+import itertools
 from datetime import datetime, timezone
 
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.models import (
+    RISK_ORDER,
+    VERDICT_ORDER,
     ActionType,
     EvalContext,
     GuardrailResult,
@@ -159,3 +162,33 @@ def test_extra_rules_are_run_alongside_builtins():
     action = _action(ActionType.file_write, target="frontend/Button.tsx")
     # The benign edit would PASS on built-ins, but the extra rule raises it.
     assert g.evaluate(action, _ctx(path="frontend/Button.tsx")).verdict is Verdict.AUTH
+
+
+# Exhaustive raise only sweep of reduction loop, issue #188
+def _fixed_result(verdict, risk):
+    if verdict is Verdict.PASS:
+        return GuardrailResult(verdict=verdict, risk=risk)
+    return GuardrailResult(
+        verdict=verdict,
+        risk=risk,
+        reason_codes=[ReasonCode.unknown_tool],
+        explanation=f"{verdict} stub for testing.",
+    )
+
+
+_ALL_RESULTS = [_fixed_result(v, r) for v in Verdict for r in Risk]
+
+
+def test_reduction_loop_is_exhaustively_raise_only():
+    action, ctx = _action(), _ctx()
+    for length in (1, 2, 3):
+        for combo in itertools.product(_ALL_RESULTS, repeat=length):
+            guardrail = ObjectiveGuardrail(
+                rules=[FixedRule(result) for result in combo], load_plugins=False
+            )
+            out = guardrail.evaluate(action, ctx)
+            combo_desc = [(r.verdict, r.risk) for r in combo]
+            max_verdict_rank = max(VERDICT_ORDER[r.verdict] for r in combo)
+            max_risk_rank = max(RISK_ORDER[r.risk] for r in combo)
+            assert VERDICT_ORDER[out.verdict] >= max_verdict_rank, combo_desc
+            assert RISK_ORDER[out.risk] >= max_risk_rank, combo_desc
