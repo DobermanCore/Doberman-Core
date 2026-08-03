@@ -48,7 +48,7 @@ jobs:
       - run: ruff format --check .
       - name: Architecture & repo boundaries
         run: lint-imports
-      - run: pytest --cov=doberman --cov-report=term-missing --cov-fail-under=80
+      - run: pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=80
   package-smoke-test:
     runs-on: ubuntu-latest
     steps:
