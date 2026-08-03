@@ -25,6 +25,8 @@ Entry point: `doberman` (Typer). All commands accept `--help`.
 | `--quiet` / `-q` | `scan` | No human map; exit code preserved |
 | `--path` / `-p` | most commands | Repository root (default `.`) |
 
+When both are passed, `--json` wins over `--quiet`: machine-readable JSON is still emitted.
+
 ### `doberman scan --json` schema
 
 ```json
