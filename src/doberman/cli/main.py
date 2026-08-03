@@ -989,7 +989,7 @@ def policy_history(
     rows = asyncio.run(read_policy_changes(path, limit=max(0, last)))
     if as_json:
         # Same redacted row dicts the human view uses (no raw paths/secrets).
-        typer.echo(json.dumps(rows, default=str))
+        typer.echo(json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str))
         return
     if not rows:
         typer.echo("(no policy changes recorded yet)")
