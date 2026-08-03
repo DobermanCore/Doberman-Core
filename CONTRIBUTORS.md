@@ -12,8 +12,16 @@ testing, or ideas. Thank you. 🐕
 
 In alphabetical order by handle (ordering is not a ranking):
 
+- [@averyquinnhq](https://github.com/averyquinnhq)
 - [@Bestpart-Irene](https://github.com/Bestpart-Irene)
+- [@harshitagrawal2O](https://github.com/harshitagrawal2O)
+- [@jasperdingg](https://github.com/jasperdingg)
 - **Lee Sang Hoon** — [@leemeo3](https://github.com/leemeo3)
+- [@navaneethsankar07](https://github.com/navaneethsankar07)
+- [@QY-25123](https://github.com/QY-25123)
+- [@Shihasz](https://github.com/Shihasz)
+- [@snowyukitty](https://github.com/snowyukitty)
+- [@stevenmini2019](https://github.com/stevenmini2019)
 - [@Tian-Tan](https://github.com/Tian-Tan)
 
 The living list of everyone who has landed a commit is always on the
