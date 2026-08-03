@@ -12,6 +12,7 @@ testing, or ideas. Thank you. 🐕
 
 In alphabetical order by handle (ordering is not a ranking):
 
+- [@AshSgDe29071999](https://github.com/AshSgDe29071999)
 - [@averyquinnhq](https://github.com/averyquinnhq)
 - [@Bestpart-Irene](https://github.com/Bestpart-Irene)
 - [@harshitagrawal2O](https://github.com/harshitagrawal2O)
