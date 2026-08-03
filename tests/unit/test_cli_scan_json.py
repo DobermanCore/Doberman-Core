@@ -81,6 +81,7 @@ def test_scan_default_not_json(tmp_path):
     else:
         raise AssertionError("default scan should not be raw JSON")
 
+
 def test_scan_json_wins_over_quiet(tmp_path):
     """`--json` still prints JSON when combined with `--quiet` (#225)."""
     with (
@@ -96,4 +97,3 @@ def test_scan_json_wins_over_quiet(tmp_path):
     # Quiet must not suppress machine-readable output.
     assert both.stdout.strip() != ""
     assert json.loads(both.stdout) == json.loads(json_only.stdout)
-
