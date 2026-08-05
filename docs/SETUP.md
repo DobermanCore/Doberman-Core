@@ -1,18 +1,56 @@
 # Doberman - Setup Guide
 
 The complete guide to running Doberman in front of your coding agent - install, wire it to your
-agent, verify it, and explore the health check, dashboard, and TUI. New here? The
-[README Quick Start](../README.md#quick-start) has the 30-second version.
+agent, verify it, and explore the health check, dashboard, and TUI.
+
+> **This doc vs. the README:** the [README Quick Start](../README.md#quick-start) is the
+> 30-second version - one table, one command, done. Come here for the full walkthrough,
+> every flag and optional extra, and troubleshooting.
+
+## At a glance
+
+Three steps, about 5 minutes, identical on **macOS, Linux, and Windows**:
+
+| Step | Command | Guide |
+|---|---|---|
+| 1. Install | `pip install doberman-core` | [§1](#1-install) |
+| 2. Wrap or hook | `doberman setup` (Claude Code) or `doberman serve -- <your server>` (MCP proxy) | [§2](#2-wrap-your-tool-server-with-doberman) / [Claude Code hooks](#claude-code-hooks) |
+| 3. Verify | `doberman doctor` | [§4](#4-check-its-healthy--doberman-doctor) |
+
+```
+ your agent                     doberman                      real tool
+ (Claude Code,      tool     ┌───────────────┐    allowed    (filesystem, shell,
+  Cursor, Codex,   call ──▶  │  normalize  →  │  ─────────▶   APIs, other MCP
+  OpenClaw, ...)              │  decide  →     │               servers)
+                              │  PASS/AUTH/    │
+                              │  BLOCK         │
+                              └───────────────┘
+```
+
+Two ways to sit Doberman on that path - pick the one that matches your agent:
+
+- **MCP proxy** (any MCP client): your agent's config points at `doberman serve -- <your
+  server>` instead of the server directly. See [§2](#2-wrap-your-tool-server-with-doberman).
+- **Claude Code hooks** (no MCP reconfig): a `PreToolUse`/`PostToolUse` hook calls `doberman
+  hook pre`/`post` around every built-in *and* MCP tool call. See
+  [Claude Code hooks](#claude-code-hooks).
+
+The install command itself (`pip install doberman-core`) doesn't change by OS. OS-specific
+commands only show up in the [PATH troubleshooting appendix](#appendix-wrong-or-stale-doberman-on-path)
+if `doberman` ever resolves to the wrong executable.
 
 **Contents**
 
-- [Install](#1-install)
-- [Troubleshooting: wrong or stale `doberman` on PATH](#path-troubleshooting)
-- [MCP proxy - wrap any tool server](#mcp-proxy) - Claude Desktop, Cursor, Codex, any MCP client
+- [1. Install](#1-install)
+- [2. Wrap your tool server with Doberman](#2-wrap-your-tool-server-with-doberman) (MCP proxy) - Claude Desktop, Cursor, Codex, any MCP client
+- [3. Point your agent at Doberman](#3-point-your-agent-at-doberman)
 - [Claude Code hooks](#claude-code-hooks) - gate every tool call, no MCP reconfig
 - [OpenClaw](#openclaw)
-- [Check it's healthy - `doberman doctor`](#4-check-its-healthy--doberman-doctor)
-- [Dashboard, TUI, scan & demo](#6-dashboard-preview)
+- [4. Check it's healthy - `doberman doctor`](#4-check-its-healthy--doberman-doctor)
+- [5. Scan (optional)](#5-scan-optional)
+- [6. Dashboard (preview)](#6-dashboard-preview)
+- [Try the demo](#try-the-demo)
+- [Appendix: wrong or stale `doberman` on PATH](#appendix-wrong-or-stale-doberman-on-path)
 
 ---
 
@@ -40,129 +78,9 @@ cd Doberman-Core
 pip install -e ".[dev]"
 ```
 
-Either way you get the `doberman` CLI on your PATH. (Maintainers: see [`RELEASING.md`](../RELEASING.md).)
-
-<a name="path-troubleshooting"></a>
-
-### Troubleshooting: wrong or stale `doberman` on PATH
-
-If `doberman` behaves unexpectedly — missing a command you just added, using an
-old version, or ignoring changes from your dev install — the shell may be
-resolving a *different* `doberman` executable than the one in your active
-virtual environment. This is common when you have more than one installation
-method in play (global `pip`, `pipx`, and one or more venvs).
-
-This section only lists and compares what's already on your PATH. It does not
-modify PATH, uninstall anything, or touch your environments.
-
-**List every `doberman` executable currently resolvable.**
-
-Run the command for your shell. Each one lists **all** matches, not just the
-first — this matters because the *first* result is the one actually being run.
-
-```powershell
-# PowerShell
-Get-Command -All doberman
-```
-
-```cmd
-:: Command Prompt (cmd.exe)
-where.exe doberman
-```
-
-```bash
-# Unix-like shells (bash/zsh/etc.)
-which -a doberman
-# or, more portable:
-command -v doberman
-```
-
-If more than one path is listed, the first one in the output is the one your
-shell will actually invoke when you type `doberman`.
-
-**Compare the resolved executable against your active virtual environment.**
-
-With your intended venv activated, check where Python thinks it's installed
-and compare it to what step 1 found.
-
-```bash
-# Unix-like shells
-python -c "import sys; print(sys.prefix)"
-command -v doberman
-```
-
-```powershell
-# PowerShell / Command Prompt
-python -c "import sys; print(sys.prefix)"
-Get-Command doberman
-```
-
-If `sys.prefix` doesn't match the directory the resolved `doberman` lives in
-(e.g. it's not under `.venv/bin` or `.venv/Scripts`), a different install is
-shadowing your venv's copy.
-
-**Inspect common install locations safely.**
-
-These only report information — they don't remove or modify anything.
-
-```bash
-# Check a pip-installed copy inside a venv (Unix-like shells)
-.venv/bin/pip show doberman-core
-```
-
-```powershell
-# Same, on Windows
-.venv\Scripts\pip show doberman-core
-```
-
-```bash
-# Check a pipx-installed copy (any shell with pipx on PATH)
-pipx list
-```
-
-`pipx list` shows every pipx-managed package and the interpreter it's pinned
-to, including any global `doberman` install that could be shadowing your venv.
-
-```bash
-# See which python/pip your shell defaults to (Unix-like shells)
-which -a python python3 pip pip3
-```
-
-```powershell
-# PowerShell
-Get-Command -All python, pip
-```
-
-```cmd
-:: Command Prompt
-where.exe python
-where.exe pip
-```
-
-**Remediation (non-destructive).**
-
-Pick whichever fits your workflow — none of these require editing PATH or
-removing anything:
-
-- **Re-activate the intended virtual environment** in the current shell
-  session, then re-run step 1 to confirm it now resolves first:
-
-  ```bash
-  source .venv/bin/activate        # Unix-like shells
-  .venv\Scripts\activate           # Windows (cmd or PowerShell)
-  ```
-
-- **Invoke the venv's executable explicitly**, bypassing PATH resolution
-  entirely:
-
-  ```bash
-  ./.venv/bin/doberman --version        # Unix-like shells
-  .venv\Scripts\doberman.exe --version  # Windows
-  ```
-
-- **Open a new shell/terminal window** if you recently activated or
-  deactivated an environment — some shells cache the resolved path for the
-  current session (`hash -r` in bash clears this without restarting).
+Either way you get the `doberman` CLI on your PATH, the same on macOS, Linux, and Windows.
+(Maintainers: see [`RELEASING.md`](../RELEASING.md).) If `doberman` ever behaves unexpectedly
+after install, see the [PATH troubleshooting appendix](#appendix-wrong-or-stale-doberman-on-path).
 
 <a name="mcp-proxy"></a>
 
@@ -220,7 +138,14 @@ claude mcp add doberman -- doberman serve -- npx -y @modelcontextprotocol/server
 
 ### Enforce via Claude Code hooks (no MCP reconfig)
 
-The proxy above protects the tools you route *through* Doberman. To make Doberman gate **every** tool call your Claude Code agent makes — built-ins (`Bash`, `Edit`, `Write`, …) *and* any MCP tool — without rewiring your MCP config, run it as a Claude Code [`PreToolUse` hook](https://code.claude.com/docs/en/hooks). The harness calls Doberman *before* each tool call, and Doberman answers **allow / deny** — and a sensitive action opens Doberman's own in-session approval dialog (confirm / TOTP 2FA), so the agent can't bypass it by simply not "asking to use Doberman":
+The proxy above protects the tools you route *through* Doberman. To make Doberman gate **every**
+tool call your Claude Code agent makes — built-ins (`Bash`, `Edit`, `Write`, …) *and* any MCP
+tool — without rewiring your MCP config, run it as a Claude Code
+[`PreToolUse` hook](https://code.claude.com/docs/en/hooks):
+
+- The harness calls Doberman *before* each tool call, and Doberman answers **allow / deny**.
+- A sensitive action opens Doberman's own in-session approval dialog (confirm / TOTP 2FA), so
+  the agent can't bypass it by simply not "asking to use Doberman".
 
 ```jsonc
 // .claude/settings.json (this project) or ~/.claude/settings.json (all projects)
@@ -247,11 +172,40 @@ The proxy above protects the tools you route *through* Doberman. To make Doberma
 }
 ```
 
-`doberman hook pre` reads the tool call on stdin, runs Doberman's deterministic **objective floor** (path confinement, destructive commands, external-destination & secret-exfil, smuggled-token channels), and returns a decision: a routine action passes silently (Doberman is raise-only — it never strips the harness's own prompts), a sensitive one **opens Doberman's own approval dialog** — a topmost confirm / TOTP-2FA prompt bound to that exact action (approve and the single call is `allow`ed; decline, or no GUI/terminal channel is available, and it's `deny`ed, fail-closed) — and a dangerous one is blocked (`deny`) with a redaction-safe reason.
+**What `doberman hook pre` does** — reads the tool call on stdin, runs Doberman's deterministic
+**objective floor** (path confinement, destructive commands, external-destination & secret-exfil,
+smuggled-token channels), and returns a decision:
 
-`doberman hook post` runs *after* a tool executes: it scans the tool's **output** for credential-like material — so a `Read`/`Bash`/MCP call that *returns* a **recognizable credential** (a known key shape, a PEM block, or a secret file's contents) is **blocked from reaching the model** (the secret is never echoed). A merely **high-entropy** token with no known credential shape (a hash, a UUID, a base64 fragment) is *not* blocked — that heuristic false-positives on ordinary output, so it passes through to keep normal reads working — but it is still **recorded and taints the session**, so the multi-step floor below still catches a later read-then-send. Each call is recorded — plus a sticky per-session **taint** marker when secret-like material enters context — in a local, redacted decision history. That taint powers a **multi-step exfiltration floor**: the *pre*-hook raises an egress (web/network/MCP) in a session that has already accessed a secret — `ask` (light/balanced) or a hard `deny` (strict/paranoid) — catching read-secret-then-send-it exfil that no single-call rule can see. And when an outbound value *exactly* matches (by keyed-HMAC fingerprint) a secret that entered the session earlier, that **confirmed** read-then-send is a hard `deny` in **every** mode — even `light`. Both handlers **fail closed** and are import-light, so they add minimal latency to each call.
+- a routine action passes silently (Doberman is raise-only — it never strips the harness's own prompts);
+- a sensitive one **opens Doberman's own approval dialog** — a topmost confirm / TOTP-2FA prompt
+  bound to that exact action (approve and the single call is `allow`ed; decline, or no GUI/terminal
+  channel is available, and it's `deny`ed, fail-closed);
+- a dangerous one is blocked (`deny`) with a redaction-safe reason.
 
-Both hooks' decisions land in the same local, redacted history: `doberman log` now shows `PreToolUse` AUTH/BLOCK outcomes alongside `PostToolUse` ones, and `doberman status` reports the installed version, which `settings.json` file(s) have the hooks wired in, and the last 5 recorded decisions.
+**What `doberman hook post` does** — runs *after* a tool executes, scanning its **output** for
+credential-like material:
+
+- a `Read`/`Bash`/MCP call that *returns* a **recognizable credential** (a known key shape, a PEM
+  block, or a secret file's contents) is **blocked from reaching the model** (the secret is never
+  echoed);
+- a merely **high-entropy** token with no known credential shape (a hash, a UUID, a base64
+  fragment) is *not* blocked — that heuristic false-positives on ordinary output, so it passes
+  through to keep normal reads working — but it is still **recorded and taints the session**, so
+  the multi-step floor below still catches a later read-then-send.
+
+Each call is recorded — plus a sticky per-session **taint** marker when secret-like material
+enters context — in a local, redacted decision history. That taint powers a **multi-step
+exfiltration floor**: the *pre*-hook raises an egress (web/network/MCP) in a session that has
+already accessed a secret — `ask` (light/balanced) or a hard `deny` (strict/paranoid) — catching
+read-secret-then-send-it exfil that no single-call rule can see. And when an outbound value
+*exactly* matches (by keyed-HMAC fingerprint) a secret that entered the session earlier, that
+**confirmed** read-then-send is a hard `deny` in **every** mode — even `light`. Both handlers
+**fail closed** and are import-light, so they add minimal latency to each call.
+
+Both hooks' decisions land in the same local, redacted history: `doberman log` now shows
+`PreToolUse` AUTH/BLOCK outcomes alongside `PostToolUse` ones, and `doberman status` reports the
+installed version, which `settings.json` file(s) have the hooks wired in, and the last 5 recorded
+decisions.
 
 **Or let Doberman write it for you** — no hand-editing JSON:
 
@@ -304,7 +258,19 @@ doberman tui
 
 The LLM is a **narrator, never a judge** — it only rewords a verdict Doberman already made from the redacted metadata above; it can never change a decision. It's strictly opt-in (installed *and* keyed *and* flagged, all three), and any failure — missing key, no network, timeout, bad response — silently falls back to the offline template, so the TUI never blocks on it or crashes because of it. There is no `doberman explain` command; the TUI and `doberman log` are the only surfaces for this.
 
-**Doberman protects its own hooks.** Once installed, the agent can't quietly remove them: a write/edit to `.claude/settings.json` (the hook-install file) is **blocked**, and other `.claude/` changes require authentication — so the agent can't disable enforcement by editing the harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own `.doberman/` control plane. The protection holds **through the shell** too — a Bash command that writes/deletes the config (`echo > .claude/settings.json`, `rm -rf .doberman`) or runs `doberman uninstall-hooks` is blocked, not just the `Write`/`Edit` tools. The same shell-layer block extends to every posture- and auth-mutating Doberman verb — `mode`, `prefs`, `enforcement`, `2fa`, `password`, `revoke` — treated as control-plane tampering and blocked fail-closed, while read/utility verbs (`status`, `doctor`, `log`, `scan`, `review`) stay allowed.
+**Doberman protects its own hooks.** Once installed, the agent can't quietly remove them:
+
+- a write/edit to `.claude/settings.json` (the hook-install file) is **blocked**, and other
+  `.claude/` changes require authentication — so the agent can't disable enforcement by editing
+  the harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own
+  `.doberman/` control plane.
+- The protection holds **through the shell** too — a Bash command that writes/deletes the config
+  (`echo > .claude/settings.json`, `rm -rf .doberman`) or runs `doberman uninstall-hooks` is
+  blocked, not just the `Write`/`Edit` tools.
+- The same shell-layer block extends to every posture- and auth-mutating Doberman verb —
+  `mode`, `prefs`, `enforcement`, `2fa`, `password`, `revoke` — treated as
+  control-plane tampering and blocked fail-closed, while read/utility verbs (`status`, `doctor`,
+  `log`, `scan`, `review`) stay allowed.
 
 **Easiest of all — `doberman setup`:** an interactive wizard that picks your alertness mode, tunes your guardrails, and wires the hooks in one step:
 
@@ -409,3 +375,131 @@ doberman demo --path .          # add --fast to skip the pacing delay between sc
 Each scenario prints one line (verdict, reason codes, explanation — never the raw tool arguments or
 any synthetic secret used to trip a rule), then a summary table. Exit code is `0` only if every
 scenario matched its expected verdict, so `doberman demo` doubles as a smoke test of the engine itself.
+
+---
+
+## Appendix: wrong or stale `doberman` on PATH
+
+<details>
+<summary>Expand only if <code>doberman</code> is misbehaving — missing a command you just added,
+running an old version, or ignoring changes from your dev install.</summary>
+
+If `doberman` behaves unexpectedly — missing a command you just added, using an
+old version, or ignoring changes from your dev install — the shell may be
+resolving a *different* `doberman` executable than the one in your active
+virtual environment. This is common when you have more than one installation
+method in play (global `pip`, `pipx`, and one or more venvs).
+
+This section only lists and compares what's already on your PATH. It does not
+modify PATH, uninstall anything, or touch your environments.
+
+**1. List every `doberman` executable currently resolvable.**
+
+Run the command for your shell. Each one lists **all** matches, not just the
+first — this matters because the *first* result is the one actually being run.
+
+```powershell
+# PowerShell
+Get-Command -All doberman
+```
+
+```cmd
+:: Command Prompt (cmd.exe)
+where.exe doberman
+```
+
+```bash
+# Unix-like shells (bash/zsh/etc.)
+which -a doberman
+# or, more portable:
+command -v doberman
+```
+
+If more than one path is listed, the first one in the output is the one your
+shell will actually invoke when you type `doberman`.
+
+**2. Compare the resolved executable against your active virtual environment.**
+
+With your intended venv activated, check where Python thinks it's installed
+and compare it to what step 1 found.
+
+```bash
+# Unix-like shells
+python -c "import sys; print(sys.prefix)"
+command -v doberman
+```
+
+```powershell
+# PowerShell / Command Prompt
+python -c "import sys; print(sys.prefix)"
+Get-Command doberman
+```
+
+If `sys.prefix` doesn't match the directory the resolved `doberman` lives in
+(e.g. it's not under `.venv/bin` or `.venv/Scripts`), a different install is
+shadowing your venv's copy.
+
+**3. Inspect common install locations safely.**
+
+These only report information — they don't remove or modify anything.
+
+```bash
+# Check a pip-installed copy inside a venv (Unix-like shells)
+.venv/bin/pip show doberman-core
+```
+
+```powershell
+# Same, on Windows
+.venv\Scripts\pip show doberman-core
+```
+
+```bash
+# Check a pipx-installed copy (any shell with pipx on PATH)
+pipx list
+```
+
+`pipx list` shows every pipx-managed package and the interpreter it's pinned
+to, including any global `doberman` install that could be shadowing your venv.
+
+```bash
+# See which python/pip your shell defaults to (Unix-like shells)
+which -a python python3 pip pip3
+```
+
+```powershell
+# PowerShell
+Get-Command -All python, pip
+```
+
+```cmd
+:: Command Prompt
+where.exe python
+where.exe pip
+```
+
+**4. Remediation (non-destructive).**
+
+Pick whichever fits your workflow — none of these require editing PATH or
+removing anything:
+
+- **Re-activate the intended virtual environment** in the current shell
+  session, then re-run step 1 to confirm it now resolves first:
+
+  ```bash
+  source .venv/bin/activate        # Unix-like shells
+  .venv\Scripts\activate           # Windows (cmd or PowerShell)
+  ```
+
+- **Invoke the venv's executable explicitly**, bypassing PATH resolution
+  entirely:
+
+  ```bash
+  ./.venv/bin/doberman --version        # Unix-like shells
+  .venv\Scripts\doberman.exe --version  # Windows
+  ```
+
+- **Open a new shell/terminal window** if you recently activated or
+  deactivated an environment — some shells cache the resolved path for the
+  current session (`hash -r` in bash clears this without restarting).
+
+</details>
