@@ -1319,9 +1319,11 @@ def setup(
     )
 
 
-@app.command()
-def dashboard() -> None:
+@app.command("session-summary")
+def session_summary() -> None:
     """Print the device-global session-guard summary and exit.
+
+    Formerly ``doberman dashboard``.
 
     Reads the lifetime rollup at ``~/.doberman/metrics.db`` (every decision on
     this device, across all repos/sessions, increments it - see
@@ -1337,6 +1339,12 @@ def dashboard() -> None:
     except Exception:  # noqa: BLE001, S110 — a dashboard must never break session start
         pass
     raise typer.Exit(0)
+
+
+@app.command("dashboard", hidden=True)
+def dashboard() -> None:
+    """Run the deprecated alias for ``doberman session-summary``."""
+    session_summary()
 
 
 @app.command()

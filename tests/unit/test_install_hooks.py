@@ -79,9 +79,9 @@ class TestMergeDobermanHooks:
         assert PRE_COMMAND in _pre_commands(result)
         assert POST_COMMAND in _post_commands(result)
 
-    def test_session_start_dashboard_entry_added(self):
+    def test_session_start_session_summary_entry_added(self):
         result = merge_doberman_hooks({})
-        assert DASHBOARD_COMMAND in _session_start_commands(result)
+        assert _session_start_commands(result) == ["doberman session-summary"]
 
     def test_session_start_idempotent_no_duplicates(self):
         once = merge_doberman_hooks({})
@@ -173,6 +173,20 @@ class TestRemoveDobermanHooks:
         assert _count_doberman(result, "PreToolUse") == 0
         assert _count_doberman(result, "PostToolUse") == 0
         assert _count_doberman(result, "SessionStart") == 0
+
+    def test_removes_old_and_new_session_start_entries(self):
+        settings = {
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "doberman dashboard"}]},
+                    {"hooks": [{"type": "command", "command": "doberman session-summary"}]},
+                ]
+            }
+        }
+
+        result = remove_doberman_hooks(settings)
+
+        assert "hooks" not in result
 
     def test_preserves_model_key(self):
         settings = self._settings_with_both_and_other()

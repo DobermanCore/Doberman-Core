@@ -32,6 +32,7 @@ CLI_HELP_TARGETS = (
     ("install-hooks",),
     ("uninstall-hooks",),
     ("setup",),
+    ("session-summary",),
     ("dashboard",),
     ("version",),
     ("2fa",),
@@ -85,3 +86,10 @@ def test_cli_help_renders_without_a_traceback(command_path):
     assert result.exit_code == 0, result.output
     assert _expected_usage(command_path) in normalized_output
     assert "Traceback" not in result.output
+
+
+def test_dashboard_alias_is_hidden_from_root_help():
+    root_command = get_command(app)
+
+    assert root_command.commands["session-summary"].hidden is False
+    assert root_command.commands["dashboard"].hidden is True

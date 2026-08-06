@@ -176,7 +176,12 @@ class TestRecordDecisionRollupWiring:
 
 
 class TestDashboardCLI:
-    def test_exits_zero_on_empty_store(self):
+    def test_session_summary_exits_zero_and_prints_panel(self):
+        result = runner.invoke(cli_module.app, ["session-summary"])
+        assert result.exit_code == 0, result.output
+        assert "No activity" in result.output
+
+    def test_dashboard_alias_exits_zero_on_empty_store(self):
         result = runner.invoke(cli_module.app, ["dashboard"])
         assert result.exit_code == 0, result.output
         assert "No activity" in result.output
