@@ -64,6 +64,19 @@ def verdict_label(verdict: Verdict) -> str:
     return typer.style(padded, **_VERDICT_STYLES.get(verdict, {}))
 
 
+def verdict_label_str(value: str) -> str:
+    """Like :func:`verdict_label`, but for a verdict already read back as a plain string
+    (e.g. a DB row's ``final_verdict``).
+
+    An unrecognized value (corrupt row, future verdict) never raises — it is padded to
+    the same fixed width and returned uncolored, so a log/status viewer can't crash on it.
+    """
+    try:
+        return verdict_label(Verdict(value))
+    except ValueError:
+        return f"{value:<{_LABEL_WIDTH}}"
+
+
 def wrap_detail(text: str, indent: int = 4, width: int | None = None) -> list[str]:
     """Wrap ``text`` to a sane terminal width, indented ``indent`` spaces.
 

@@ -102,9 +102,10 @@ Doberman now reviews every tool call your agent makes. Confirm it with `doberman
 real verdicts with `doberman demo`. Everything else - MCP-proxy wiring, the dashboard, TUI, scan,
 and 2FA - is in the **[Setup Guide](docs/SETUP.md)**.
 
-Verdicts are colour-coded in a terminal (`BLOCK` red, `AUTH` amber, `PASS` green) and explanations
-wrap to your terminal width. Colour is dropped automatically when output is piped or redirected, and
-honours [`NO_COLOR`](https://no-color.org) when that variable is set to a non-empty value.
+Verdicts are colour-coded everywhere they're shown (`BLOCK` red, `AUTH` amber, `PASS` green) —
+`review`, `status`, `log`, the TUI, and `demo`, which also wraps its explanations to your terminal
+width. Colour is dropped automatically when output is piped or redirected, and honours
+[`NO_COLOR`](https://no-color.org) when that variable is set to a non-empty value.
 
 ---
 
