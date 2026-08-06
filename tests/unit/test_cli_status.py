@@ -99,6 +99,43 @@ def test_status_shows_recent_decisions(tmp_path):
     assert "destructive_command" in result.stdout
 
 
+def test_status_reports_missed_challenges(tmp_path):
+    root = str(tmp_path)
+    _seed_block(root)
+    rows_now = datetime.now(timezone.utc)
+    objective = GuardrailResult(
+        verdict=Verdict.AUTH,
+        risk=Risk.medium,
+        reason_codes=[ReasonCode.unknown_external_destination],
+        explanation="authentication required",
+    )
+    decision = Decision(
+        action_id="act-status-timeout",
+        final_verdict=Verdict.AUTH,
+        final_risk=Risk.medium,
+        objective=objective,
+        reason_codes=[ReasonCode.unknown_external_destination],
+        explanation="authentication required",
+        decided_at=rows_now,
+    )
+    action = SecurityObject(
+        id="act-status-timeout",
+        ts=rows_now,
+        agent_role="cli",
+        action_type=ActionType.network_request,
+        tool_name="fetch",
+        target="https://example.invalid",
+    )
+    asyncio.run(
+        record_decision(decision, action, repo_root=root, auth_result="timeout", now=rows_now)
+    )
+
+    result = runner.invoke(app, ["status", "--path", root])
+
+    assert result.exit_code == 0
+    assert "warning: 1 challenge(s) auto-denied in the last 24h - see doberman log" in result.output
+
+
 def test_status_never_crashes_with_no_db_and_no_settings(tmp_path):
     result = runner.invoke(app, ["status", "--path", str(tmp_path)])
     assert result.exit_code == 0
