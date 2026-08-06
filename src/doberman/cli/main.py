@@ -594,8 +594,7 @@ def hook_pre() -> None:
     objective floor (no numpy/scipy/river), so it adds minimal latency to every
     tool call, and fails closed (deny) on any malformed input or engine error.
 
-    Wire it into Claude Code's settings (a later slice adds `doberman
-    install-hooks` to do this for you).
+    Wire it into Claude Code's settings (or run ``doberman install-hooks``).
     """
     # This process's stdout IS the harness's hook channel (it parses our JSON), so
     # pin every doberman.* log to stderr and strip any stdout handler first - a
@@ -630,8 +629,7 @@ def hook_post() -> None:
     Runs only the fast deterministic objective floor (no numpy/scipy/river),
     fails closed on any malformed input or engine error.
 
-    Wire it into Claude Code's settings (a later slice adds `doberman
-    install-hooks` to do this for you).
+    Wire it into Claude Code's settings (or run ``doberman install-hooks``).
     """
     _configure_stderr_logging()
     from doberman.hosthooks.claude_code import run_post_hook
