@@ -113,6 +113,11 @@ def test_shell_totp_input_has_aria_label():
     assert 'totpInput.setAttribute("aria-label", "TOTP code")' in app_module._HTML_SHELL
 
 
+def test_shell_approve_requires_arm_then_confirm():
+    assert "Confirm approve" in app_module._HTML_SHELL
+    assert "armTimer" in app_module._HTML_SHELL
+
+
 def test_shell_has_no_side_stripe():
     assert "border-left: 3px" not in app_module._HTML_SHELL
 
