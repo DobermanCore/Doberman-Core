@@ -881,8 +881,7 @@ def dash(
     ``--path`` (default: the current repo), plus an interactive AUTH
     approve/deny queue: a challenge on the decision path engages this
     dashboard only while it is running (see the heartbeat below), and falls
-    back to the terminal/GUI otherwise. Requires the optional 'dash' extra;
-    polish lands in a later slice.
+    back to the terminal/GUI otherwise. Requires the optional 'dash' extra.
     """
     try:
         import uvicorn

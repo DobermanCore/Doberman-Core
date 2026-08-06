@@ -438,8 +438,19 @@ _HTML_SHELL = """<!doctype html>
           approveBtn.type = "button";
           approveBtn.className = "approve";
           approveBtn.textContent = "Approve";
+          var armTimer = null;
           approveBtn.addEventListener("click", function () {
-            resolveApproval(row.id, "approved", totpInput ? totpInput.value : null, li);
+            if (approveBtn.dataset.armed === "1") {
+              clearTimeout(armTimer);
+              resolveApproval(row.id, "approved", totpInput ? totpInput.value : null, li);
+              return;
+            }
+            approveBtn.dataset.armed = "1";
+            approveBtn.textContent = "Confirm approve";
+            armTimer = setTimeout(function () {
+              approveBtn.dataset.armed = "";
+              approveBtn.textContent = "Approve";
+            }, 3000);
           });
           li.appendChild(approveBtn);
 
