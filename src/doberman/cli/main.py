@@ -41,6 +41,7 @@ from doberman.policy.drift import (
 )
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
+from doberman.render import verdict_label, verdict_label_str
 from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
 from doberman.storage.taint import entity_scope, read_taint
@@ -271,7 +272,7 @@ def review(
         if not item.applicable:
             tags.append("N/A - capability absent")
         suffix = f"  ({', '.join(tags)})" if tags else ""
-        typer.echo(f"{box} {item.verdict.value:<5} {item.id}{suffix}")
+        typer.echo(f"{box} {verdict_label(item.verdict)} {item.id}{suffix}")
     typer.echo(f"\nMode: {doc.mode}")
 
     if yes:
@@ -523,7 +524,7 @@ def status(
     else:
         for row in rows:
             reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
-            typer.echo(f"  {row['ts']}  {row['final_verdict']:<5}  {reasons}")
+            typer.echo(f"  {row['ts']}  {verdict_label_str(row['final_verdict'])}  {reasons}")
 
 
 @app.command()
@@ -819,7 +820,7 @@ def log(
         reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
         auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
         typer.echo(
-            f"{row['ts']}  {row['final_verdict']:<5} {row['action_type']:<13} "
+            f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<13} "
             f"{target}  [{reasons}]{auth}"
         )
 

@@ -39,6 +39,13 @@ from doberman.storage.log import read_decisions
 
 _EMPTY_PLACEHOLDER = "(no decisions recorded yet)"
 _COLUMNS = ("ts", "verdict", "action_type", "target_path_class", "reason codes")
+#: Verdict cell color, matching doberman.render's palette. Unknown/corrupt values
+#: (not a real Verdict) get no style rather than raising.
+_VERDICT_STYLES = {
+    "BLOCK": "bold red",
+    "AUTH": "bold yellow",
+    "PASS": "green",
+}
 #: Debounce before the (possibly network-bound) enrichment worker starts, so
 #: holding an arrow key skims rows without firing a request per keypress.
 _EXPLAIN_DEBOUNCE_S = 0.3
@@ -118,10 +125,13 @@ class DecisionExplainerApp(App[None]):
             return
         for row in self._rows:
             # Text() cells render literally — no Rich-markup interpretation of
-            # row-derived strings.
+            # row-derived strings. The style= kwarg is applied structurally by
+            # Rich, not parsed out of the string, so a crafted value still can't
+            # spoof a color it wasn't assigned.
+            verdict_str = str(row.get("final_verdict") or "-")
             table.add_row(
                 Text(str(row.get("ts") or "-")),
-                Text(str(row.get("final_verdict") or "-")),
+                Text(verdict_str, style=_VERDICT_STYLES.get(verdict_str)),
                 Text(str(row.get("action_type") or "-")),
                 Text(str(row.get("target_path_class") or "-")),
                 Text(_reason_codes_text(row)),
