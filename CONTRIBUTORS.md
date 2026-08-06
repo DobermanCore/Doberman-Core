@@ -21,6 +21,7 @@ In alphabetical order by handle (ordering is not a ranking):
 - [@navaneethsankar07](https://github.com/navaneethsankar07)
 - [@QY-25123](https://github.com/QY-25123)
 - [@Shihasz](https://github.com/Shihasz)
+- [@slegarraga](https://github.com/slegarraga)
 - [@snowyukitty](https://github.com/snowyukitty)
 - [@stevenmini2019](https://github.com/stevenmini2019)
 - [@Tian-Tan](https://github.com/Tian-Tan)
