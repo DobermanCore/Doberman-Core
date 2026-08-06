@@ -25,6 +25,7 @@ import json
 from datetime import datetime, timezone
 
 import pytest
+from mcp.types import CallToolResult, EmbeddedResource, TextContent, TextResourceContents
 
 from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.models import ReasonCode
@@ -175,3 +176,114 @@ async def test_gated_output_still_consumes_a_single_use_elevation(
         ("fs_delete", {"path": "backend/api.ts"}),
         ("fs_delete", {"path": "backend/api.ts"}),
     ]
+
+
+# ---------------------------------------------------------------------------
+# CRIT-2 / CRIT-3: the output scan must cover every channel a secret can ride —
+# an *error* result's payload (CRIT-2) and the non-``TextContent`` channels
+# ``structuredContent`` / ``EmbeddedResource`` (CRIT-3), not just plain text
+# blocks on a success result. Each of these would sail past the gate before the
+# fix, delivering the secret to the model.
+# ---------------------------------------------------------------------------
+
+
+def _error_result(text: str) -> CallToolResult:
+    """A downstream *error* result carrying ``text`` — the channel CRIT-2 covers."""
+    return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+
+
+def _structured_result(payload: dict, *, text: str = "ok") -> CallToolResult:
+    """A success result whose secret (if any) lives ONLY in ``structuredContent``."""
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structuredContent=payload,
+        isError=False,
+    )
+
+
+def _embedded_resource_result(text: str) -> CallToolResult:
+    """A success result whose secret lives ONLY inside an ``EmbeddedResource``."""
+    return CallToolResult(
+        content=[
+            EmbeddedResource(
+                type="resource",
+                resource=TextResourceContents(uri="file:///cfg.txt", text=text),
+            )
+        ],
+        isError=False,
+    )
+
+
+def _dump(result: CallToolResult) -> str:
+    """The whole returned result serialized — a leak in ANY field trips this."""
+    return json.dumps(result.model_dump(mode="json"), default=str)
+
+
+async def test_secret_in_error_result_is_still_gated():
+    # CRIT-2: a downstream ERROR can still carry a secret in its payload. If the
+    # scan only ran on clean results, the secret would ride the error straight to
+    # the model. The gate must replace the whole error with the synthetic BLOCK.
+    session = _FakeSession({"fs_read": _error_result(_SYNTHETIC_AWS_KEY)})
+
+    result = await executor.decide_and_execute(session, "fs_read", {"path": "cfg.txt"})
+
+    assert result.isError
+    assert "blocked by policy" in result.content[0].text
+    assert ReasonCode.sensitive_secret_access.value in result.content[0].text
+    assert _SYNTHETIC_AWS_KEY not in _dump(result)
+    assert session.calls == [("fs_read", {"path": "cfg.txt"})]
+    rows = await _rows()
+    assert len(rows) == 1
+    assert rows[0]["final_verdict"] == "BLOCK"
+    assert rows[0]["auth_result"] == "blocked"
+    assert _SYNTHETIC_AWS_KEY not in json.dumps(rows)
+    assert _SYNTHETIC_AWS_KEY.encode() not in db_path(executor.REPO_ROOT).read_bytes()
+
+
+async def test_secret_in_structured_content_is_gated():
+    # CRIT-3: a secret returned via structuredContent (no text block carries it)
+    # must be scanned — flattening only TextContent would miss it entirely.
+    session = _FakeSession({"fs_read": _structured_result({"api_key": _SYNTHETIC_AWS_KEY})})
+
+    result = await executor.decide_and_execute(session, "fs_read", {"path": "cfg.json"})
+
+    assert result.isError
+    assert "blocked by policy" in result.content[0].text
+    assert ReasonCode.sensitive_secret_access.value in result.content[0].text
+    assert _SYNTHETIC_AWS_KEY not in _dump(result)
+    rows = await _rows()
+    assert len(rows) == 1
+    assert rows[0]["final_verdict"] == "BLOCK"
+    assert _SYNTHETIC_AWS_KEY not in json.dumps(rows)
+
+
+async def test_secret_in_embedded_resource_is_gated():
+    # CRIT-3: a secret inside an EmbeddedResource's text (e.g. a returned file
+    # resource) must be scanned too, not just bare text blocks.
+    session = _FakeSession({"fs_read": _embedded_resource_result(_SYNTHETIC_AWS_KEY)})
+
+    result = await executor.decide_and_execute(session, "fs_read", {"path": "cfg.txt"})
+
+    assert result.isError
+    assert "blocked by policy" in result.content[0].text
+    assert ReasonCode.sensitive_secret_access.value in result.content[0].text
+    assert _SYNTHETIC_AWS_KEY not in _dump(result)
+    rows = await _rows()
+    assert len(rows) == 1
+    assert rows[0]["final_verdict"] == "BLOCK"
+
+
+async def test_benign_structured_content_flows_unchanged():
+    # The broader scan must not over-block ordinary structured output — a clean
+    # structuredContent payload passes through untouched, still attached.
+    payload = {"status": "ok", "count": 3}
+    session = _FakeSession({"fs_read": _structured_result(payload, text="done")})
+
+    result = await executor.decide_and_execute(session, "fs_read", {"path": "cfg.json"})
+
+    assert not result.isError
+    assert result.content[0].text == "done"
+    assert result.structuredContent == payload
+    rows = await _rows()
+    assert len(rows) == 1
+    assert rows[0]["final_verdict"] == "PASS"
