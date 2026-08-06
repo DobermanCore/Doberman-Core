@@ -141,6 +141,43 @@ def test_bulk_delete_at_threshold_requires_auth():
     assert ReasonCode.bulk_operation in result.reason_codes
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm data/app.db",
+        "rm ./prod.sqlite3",
+        "rm cache.sqlite",
+        "rm config/server.key",
+        "rm .env",
+        "rm .env.local",
+        "rm -f secrets.db",
+        "rm -rf data/app.db",
+    ],
+)
+def test_unrecoverable_gitignored_data_delete_requires_auth(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command", ["rm src/main.py", "rm README.md", "rm notes.txt", "rm build.log"]
+)
+def test_recoverable_file_delete_passes(command):
+    assert _cmd(command).verdict is Verdict.PASS
+
+
+def test_unrecoverable_data_gate_never_lowers_block():
+    assert _cmd("rm -rf /").verdict is Verdict.BLOCK
+    assert _cmd("rm .doberman/agent.key").verdict is Verdict.BLOCK
+
+
+def test_unrecoverable_data_auth_explanation_does_not_echo_operand():
+    result = _cmd("rm data/app.db")
+    assert "app.db" not in result.explanation.lower()
+    assert "data/" not in result.explanation.lower()
+
+
 def test_small_delete_passes():
     assert _cmd("rm a.txt").verdict is Verdict.PASS
     assert _cmd("rm -f one.log two.log").verdict is Verdict.PASS

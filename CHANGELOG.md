@@ -7,6 +7,8 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.17.1)
 
+- **Security fix:** deleting an unrecoverable, gitignored data file (local DB `*.db`/`*.sqlite*`, `.env`, `*.key`) now requires authentication instead of silently passing (AN-1) — narrow lexical gate on `rm` operands; directory deletes remain out of scope
+
 ## 0.17.1 — 2026-08-06
 
 - **New:** `doberman 2fa reset-lockout` clears the TOTP rate-limit lockout early, gated on your local password (never on the locked-out 2FA factor, which cannot verify itself). With no password enrolled it refuses and points to the self-recovering cooldown (UX-B).
