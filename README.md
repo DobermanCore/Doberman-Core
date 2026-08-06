@@ -85,6 +85,9 @@ dashboard, and health checks - lives in the **[Setup Guide](docs/SETUP.md)**.
 pip install doberman-core
 ```
 
+After installing, run `doberman --install-completion` to enable shell tab
+completion.
+
 | Your agent | How Doberman plugs in | Get started |
 |---|---|---|
 | **Claude Code** | Hooks - gate every built-in *and* MCP tool call *(recommended)* | `doberman setup` -> [guide](docs/SETUP.md#claude-code-hooks) |

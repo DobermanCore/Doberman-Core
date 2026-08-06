@@ -72,7 +72,6 @@ _ensure_encode_safe_stdio()
 app = typer.Typer(
     help="Doberman - adaptive authorization layer for coding agents.",
     no_args_is_help=True,
-    add_completion=False,
 )
 
 twofa_app = typer.Typer(help="Two-factor (TOTP) enrollment.", no_args_is_help=True)
