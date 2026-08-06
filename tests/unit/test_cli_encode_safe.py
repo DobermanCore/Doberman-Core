@@ -12,11 +12,20 @@ a box-drawing rule, an emoji) there raised ``UnicodeEncodeError`` and crashed
 import io
 import sys
 
+import pyotp
 from typer.testing import CliRunner
 
+from doberman.auth import totp
 from doberman.cli.main import _ensure_encode_safe_stdio, app
 
 runner = CliRunner()
+
+
+def _current_code() -> str:
+    """A code for the live enrollment on the real clock (same as test_2fa_remove)."""
+    secret = totp._read_secret()
+    assert secret is not None
+    return pyotp.TOTP(secret).now()
 
 
 def test_encode_safe_stdio_prevents_cp1252_crash(monkeypatch):
@@ -51,3 +60,35 @@ def test_setup_yes_output_is_ascii_and_cp1252_safe(tmp_path):
     assert result.exit_code == 0, result.output
     assert result.output.isascii(), f"non-ASCII in setup output: {result.output!r}"
     result.output.encode("cp1252")
+
+
+def test_2fa_remove_warning_is_ascii_and_cp1252_safe():
+    # The 2fa remove path warns when no possession factor remains; that warning
+    # used an em-dash and must stay ASCII like the rest of onboarding.
+    totp.enroll()
+
+    result = runner.invoke(app, ["2fa", "remove"], input=f"y\n{_current_code()}\n")
+
+    assert result.exit_code == 0, result.output
+    assert "will be denied" in result.stderr
+    output = result.output + result.stderr
+    assert output.isascii(), f"non-ASCII in 2fa remove output: {output!r}"
+    output.encode("cp1252")  # raises if any char is not cp1252-encodable
+
+
+def test_setup_bad_mode_choice_error_is_ascii_and_cp1252_safe(tmp_path):
+    # An out-of-range numeric mode choice surfaces parse_mode_choice's error
+    # message (which used an en-dash); it must be ASCII too. Since #266 the
+    # wizard re-prompts instead of dying, so feed a valid choice after the
+    # invalid one and let the run complete.
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="9\nbalanced\nn\nn\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "choose 1-4 or type a mode name" in result.output
+    output = result.output + result.stderr
+    assert output.isascii(), f"non-ASCII in setup error output: {output!r}"
+    output.encode("cp1252")  # raises if any char is not cp1252-encodable
