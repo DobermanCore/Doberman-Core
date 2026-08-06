@@ -43,6 +43,7 @@ def test_importing_doberman_never_pulls_in_dash_or_starlette():
 
 from starlette.testclient import TestClient  # noqa: E402
 
+from doberman.dash import app as app_module  # noqa: E402
 from doberman.dash.app import create_app  # noqa: E402
 
 _TOKEN = "test-dash-token-0123456789"  # noqa: S105 - fixture value, not a real secret
@@ -102,3 +103,30 @@ def test_dash_binds_localhost_only():
     # Assert the constant the `dash` command passes to uvicorn.run - never
     # actually bind a socket in a test.
     assert cli_main._DASH_HOST == "127.0.0.1"
+
+
+def test_shell_pending_list_is_polite_live_region():
+    assert 'id="pending-list" aria-live="polite"' in app_module._HTML_SHELL
+
+
+def test_shell_totp_input_has_aria_label():
+    assert 'totpInput.setAttribute("aria-label", "TOTP code")' in app_module._HTML_SHELL
+
+
+def test_shell_has_no_side_stripe():
+    assert "border-left: 3px" not in app_module._HTML_SHELL
+
+
+def test_shell_light_mode_retunes_verdict_colors():
+    # the light block must override the verdict tokens, not just bg/ink
+    light = app_module._HTML_SHELL.split("prefers-color-scheme: light", 1)[1].split("}")[0]
+    for var in ("--pass:", "--auth:", "--block:", "--neutral:"):
+        assert var in light
+
+
+def test_shell_titles_pending_count():
+    assert "document.title = (rows.length" in app_module._HTML_SHELL
+
+
+def test_shell_renders_pending_expiry():
+    assert "expires " in app_module._HTML_SHELL

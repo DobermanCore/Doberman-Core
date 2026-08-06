@@ -104,11 +104,11 @@ _HTML_SHELL = """<!doctype html>
   }
   @media (prefers-color-scheme: light) {
     :root {
-      --bg: #f7f7f8;
-      --surface: #ffffff;
-      --border: #dde1e6;
-      --ink: #111;
-      --ink-dim: #5b6572;
+      --bg: #f7f7f8; --surface: #ffffff; --border: #dde1e6; --ink: #111; --ink-dim: #5b6572;
+      --pass: #1a7f37;  --pass-bg: rgba(26, 127, 55, .12);
+      --auth: #9a6700;  --auth-bg: rgba(154, 103, 0, .12);
+      --block: #cf222e; --block-bg: rgba(207, 34, 46, .12);
+      --neutral: #57606a; --neutral-bg: rgba(87, 96, 106, .12);
     }
   }
   * { box-sizing: border-box; }
@@ -164,9 +164,9 @@ _HTML_SHELL = """<!doctype html>
   #pending-list .badge { font-size: .76rem; padding: .25rem .55rem; }
   #pending-list li {
     padding: 1rem 1.1rem; margin-bottom: .7rem;
-    border: 1px solid var(--auth); border-left: 3px solid var(--auth);
+    border: 1px solid var(--auth);
     border-radius: 8px; background: var(--surface); font-size: .85rem;
-    box-shadow: 0 0 0 1px rgba(210, 153, 34, .07), 0 10px 28px -14px rgba(210, 153, 34, .55);
+    box-shadow: 0 4px 8px -4px rgba(210, 153, 34, .4);
     animation: pending-arrive .28s ease-out both;
   }
   @keyframes pending-arrive {
@@ -208,7 +208,7 @@ _HTML_SHELL = """<!doctype html>
   </div>
   <div id="stats">stats loading...</div>
   <h2>Pending approvals</h2>
-  <ul id="pending-list"></ul>
+  <ul id="pending-list" aria-live="polite"></ul>
   <div id="pending-empty" class="empty-state">No pending approvals right now.</div>
   <h2>Recent decisions</h2>
   <ul id="feed"></ul>
@@ -404,6 +404,11 @@ _HTML_SHELL = """<!doctype html>
           summary.textContent = row.action_type +
             " " + (row.target_path_class || "-") + " (tier: " + row.tier + ")";
           header.appendChild(summary);
+
+          var expiry = document.createElement("span");
+          expiry.className = "detail";
+          expiry.textContent = "expires " + (String(row.expires_at || "").slice(11, 19) || "-") + " UTC";
+          header.appendChild(expiry);
           li.appendChild(header);
 
           var reasons = document.createElement("div");
@@ -425,6 +430,7 @@ _HTML_SHELL = """<!doctype html>
             totpInput.inputMode = "numeric";
             totpInput.placeholder = "TOTP code";
             totpInput.autocomplete = "off";
+            totpInput.setAttribute("aria-label", "TOTP code");
             li.appendChild(totpInput);
           }
 
@@ -448,6 +454,7 @@ _HTML_SHELL = """<!doctype html>
 
           pendingList.appendChild(li);
         });
+        document.title = (rows.length ? "(" + rows.length + ") " : "") + "Doberman Dashboard";
       }
 
       function refreshPending() {
