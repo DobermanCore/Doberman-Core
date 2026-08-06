@@ -39,6 +39,13 @@ _MIN_WRAP_WIDTH = 60
 _MAX_WRAP_WIDTH = 120
 
 
+def deadline_note(seconds: float) -> str:
+    """'auto-denies in 2m if unanswered' - human-scale, ASCII-only."""
+    mins = int(seconds // 60)
+    span = f"{mins}m" if mins else f"{int(seconds)}s"
+    return f"auto-denies in {span} if unanswered"
+
+
 def supports_color() -> bool:
     """False if ``NO_COLOR`` is set to a non-empty value; else Click/Typer's own TTY check.
 
