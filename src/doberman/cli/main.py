@@ -767,6 +767,36 @@ def twofa_remove() -> None:
         )
 
 
+@twofa_app.command("reset-lockout")
+def twofa_reset_lockout() -> None:
+    """Clear the TOTP lockout early, proving possession with your password.
+
+    Too many wrong 2FA codes lock further attempts for a short cooldown. That
+    window self-recovers, so this is a convenience: prove you own this machine
+    and retry now instead of waiting. It is gated on your password, not 2FA - a
+    locked-out factor cannot verify itself, and someone who tripped the lockout
+    by guessing codes must not be able to lift it. Clearing the counter never
+    disables the rate limiter: fresh wrong codes lock it again.
+    """
+    if not totp.is_enrolled():
+        typer.echo("error: 2FA is not enrolled; there is no lockout to reset", err=True)
+        raise typer.Exit(code=1)
+    if not password.is_enrolled():
+        typer.echo(
+            "error: clearing the 2FA lockout needs your local password, but none is "
+            "enrolled. The lockout clears itself after a short cooldown - wait it out, "
+            "or run `doberman password set` to enable an early reset next time.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    current_password = CliPrompter().read_code("Doberman password")
+    if not password.verify(current_password):
+        typer.echo("error: incorrect password; the 2FA lockout is unchanged", err=True)
+        raise typer.Exit(code=1)
+    totp.reset_attempts()
+    typer.echo("2FA lockout cleared. You can enter a fresh code now.")
+
+
 @app.command()
 def revoke(
     elevation_id: str = typer.Argument(..., help="Id of the elevation to revoke."),
