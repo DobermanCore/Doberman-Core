@@ -160,6 +160,7 @@ def _stderr_is_tty() -> bool:
 
 
 @app.command(
+    rich_help_panel="Advanced",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     help="Run Doberman as an MCP proxy in front of a downstream MCP tool server.",
 )
@@ -204,7 +205,7 @@ def serve(
         raise typer.Exit(code=1) from exc
 
 
-@app.command()
+@app.command(rich_help_panel="Advanced")
 def scan(
     path: str = typer.Option(".", "--path", "-p", help="Repository root to scan."),
     quiet: bool = typer.Option(
@@ -247,7 +248,7 @@ def scan(
         typer.echo(render_risk_map(capabilities))
 
 
-@app.command()
+@app.command(rich_help_panel="Policy")
 def review(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
     yes: bool = typer.Option(
@@ -317,7 +318,7 @@ def _apply_mode_change(
     return save_mode(name, path)
 
 
-@app.command()
+@app.command(rich_help_panel="Policy")
 def mode(
     name: str = typer.Argument(None, help="Mode to set (light/balanced/strict/paranoid)."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
@@ -345,7 +346,7 @@ def mode(
 _ENFORCEMENT_STATES = ("enforce", "monitor", "off")
 
 
-@app.command()
+@app.command(rich_help_panel="Policy")
 def enforcement(
     state: str = typer.Argument(None, help="Enforcement state to set (enforce/monitor/off)."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
@@ -402,7 +403,7 @@ def enforcement(
     typer.echo(f"enforcement set to {new}")
 
 
-@app.command()
+@app.command(rich_help_panel="Policy")
 def prefs(
     dimension: str = typer.Argument(
         None, help=f"Preference dimension to set ({', '.join(DIMENSIONS)})."
@@ -465,7 +466,7 @@ def _hook_install_states(path: str) -> list[tuple[str, str, bool]]:
     return hook_install_states(path)
 
 
-@app.command()
+@app.command(rich_help_panel="Daily")
 def status(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
@@ -545,7 +546,7 @@ def status(
         )
 
 
-@app.command()
+@app.command(rich_help_panel="Getting started")
 def doctor(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
     as_json: bool = typer.Option(
@@ -767,7 +768,7 @@ def twofa_remove() -> None:
         )
 
 
-@app.command()
+@app.command(rich_help_panel="Auth")
 def revoke(
     elevation_id: str = typer.Argument(..., help="Id of the elevation to revoke."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
@@ -787,7 +788,7 @@ def revoke(
 _JSONL_EXTRA_COLUMNS = ("id", "agent_role", "risk")
 
 
-@app.command()
+@app.command(rich_help_panel="Daily")
 def log(
     last: int = typer.Option(20, "--last", "-n", help="Show the most recent N decisions."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
@@ -841,7 +842,7 @@ def log(
         )
 
 
-@app.command()
+@app.command(rich_help_panel="Daily")
 def tui(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
@@ -867,7 +868,7 @@ _DASH_HOST = "127.0.0.1"
 _DASH_DEFAULT_PORT = 8642
 
 
-@app.command()
+@app.command(rich_help_panel="Daily")
 def dash(
     port: int = typer.Option(_DASH_DEFAULT_PORT, "--port", help="Port to bind the dashboard to."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root to report on."),
@@ -915,7 +916,7 @@ def dash(
     uvicorn.run(create_app(token, path), host=_DASH_HOST, port=port)
 
 
-@app.command()
+@app.command(rich_help_panel="Daily")
 def demo(
     path: str = typer.Option(".", "--path", "-p", help="Repository root to log decisions against."),
     mode: str = typer.Option(
@@ -961,7 +962,7 @@ def demo(
         raise typer.Exit(code=1)
 
 
-@app.command()
+@app.command(rich_help_panel="Policy")
 def memory(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
@@ -986,7 +987,7 @@ def memory(
     typer.echo(f"Distinct secrets seen (count only, never stored): {summary['secrets_seen']}")
 
 
-@app.command("policy-history")
+@app.command("policy-history", rich_help_panel="Policy")
 def policy_history(
     last: int = typer.Option(20, "--last", "-n", help="Show the most recent N changes."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
@@ -1021,7 +1022,7 @@ def policy_history(
         )
 
 
-@app.command("install-hooks")
+@app.command("install-hooks", rich_help_panel="Getting started")
 def install_hooks(
     global_: bool = typer.Option(
         False, "--global", "-g", help="Install into ~/.claude/settings.json (user-wide)."
@@ -1072,7 +1073,7 @@ def install_hooks(
     typer.echo("The session dashboard will print at the start of every session.")
 
 
-@app.command("uninstall-hooks")
+@app.command("uninstall-hooks", rich_help_panel="Getting started")
 def uninstall_hooks(
     global_: bool = typer.Option(
         False, "--global", "-g", help="Remove from ~/.claude/settings.json (user-wide)."
@@ -1135,7 +1136,7 @@ def uninstall_hooks(
     typer.echo("Doberman hooks removed.")
 
 
-@app.command()
+@app.command(rich_help_panel="Getting started")
 def setup(
     yes: bool = typer.Option(False, "--yes", "-y", help="Accept all defaults with no prompts."),
     mode_name: str = typer.Option(
@@ -1331,7 +1332,7 @@ def dashboard() -> None:
     session_summary()
 
 
-@app.command()
+@app.command(rich_help_panel="Advanced")
 def version() -> None:
     """Print the installed Doberman version."""
     typer.echo(__version__)
