@@ -28,15 +28,16 @@ POST_MATCHER = "Bash|Edit|Write|NotebookEdit|WebFetch|WebSearch|Read|Glob|Grep|m
 #: Command registered as the PostToolUse hook.
 POST_COMMAND = "doberman hook post"
 
-#: Command registered as the SessionStart hook (prints the session dashboard).
-DASHBOARD_COMMAND = "doberman dashboard"
+#: Command registered as the SessionStart hook (prints the session summary).
+DASHBOARD_COMMAND = "doberman session-summary"
 
 #: Sentinel substring used to detect Doberman-owned hook entries.
 _DOBERMAN_MARKER = "doberman hook "
 
 #: SessionStart entries use a different command shape (`doberman hook `
-#: doesn't match `doberman dashboard`), so they need their own marker.
+#: doesn't match the summary commands), so they need their own markers.
 _DASHBOARD_MARKER = "doberman dashboard"
+_SESSION_SUMMARY_MARKER = "doberman session-summary"
 
 _PRE_ENTRY: dict[str, Any] = {
     "matcher": PRE_MATCHER,
@@ -64,7 +65,9 @@ def _is_doberman_group(group: dict[str, Any]) -> bool:
     """Return True if *any* hook command in this matcher group belongs to Doberman."""
     for h in group.get("hooks", []):
         cmd = h.get("command", "")
-        if isinstance(cmd, str) and (_DOBERMAN_MARKER in cmd or _DASHBOARD_MARKER in cmd):
+        if isinstance(cmd, str) and (
+            _DOBERMAN_MARKER in cmd or _DASHBOARD_MARKER in cmd or _SESSION_SUMMARY_MARKER in cmd
+        ):
             return True
     return False
 

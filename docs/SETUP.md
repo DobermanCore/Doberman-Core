@@ -240,7 +240,7 @@ The proxy above protects the tools you route *through* Doberman. To make Doberma
     ],
     "SessionStart": [
       {
-        "hooks": [{ "type": "command", "command": "doberman dashboard" }]
+        "hooks": [{ "type": "command", "command": "doberman session-summary" }]
       }
     ]
   }
@@ -270,7 +270,7 @@ doberman uninstall-hooks          # remove only Doberman's entries (leaves your 
 
 [OpenClaw](https://docs.openclaw.ai) agents route through Doberman via a small local plugin instead of a hook-pack (OpenClaw's `before_tool_call` event is only reachable from a typed plugin hook). It spawns `doberman hook openclaw` per call — same fail-closed, deterministic objective floor as the Claude Code hook — and maps the verdict to OpenClaw's own primitives: `allow` is a no-op, `block` is terminal, and `auth` delegates to OpenClaw's own `/approve` flow (the gateway has no interactive terminal of its own for Doberman's local challenge dialog). See [`adapters/openclaw/README.md`](../adapters/openclaw/README.md) for install steps and the mandatory "verify it's live" canary check — OpenClaw has shipped bugs where plugin hooks silently never fire, so that check isn't optional.
 
-**Session dashboard.** `install-hooks` also wires a `SessionStart` hook that runs `doberman dashboard` — a print-and-exit (never interactive, never blocking) summary of a **device-global, lifetime rollup**: every decision Doberman makes, across every repo and session on this machine, increments a tiny counter at `~/.doberman/metrics.db` (verdict class + count only — no path, no reason code, no per-action detail). It shows total interceptions and the PASS/AUTH/BLOCK split:
+**Session summary.** `install-hooks` also wires a `SessionStart` hook that runs `doberman session-summary` — a print-and-exit (never interactive, never blocking) summary of a **device-global, lifetime rollup**: every decision Doberman makes, across every repo and session on this machine, increments a tiny counter at `~/.doberman/metrics.db` (verdict class + count only — no path, no reason code, no per-action detail). The former `doberman dashboard` command remains as a hidden compatibility alias. It shows total interceptions and the PASS/AUTH/BLOCK split:
 
 ```
 +------------------------------------------+
@@ -284,7 +284,7 @@ doberman uninstall-hooks          # remove only Doberman's entries (leaves your 
 +------------------------------------------+
 ```
 
-Run it any time with `doberman dashboard`. Output is plain ASCII (no box-drawing runes or emoji) so it always renders on a legacy Windows console, and the command always exits `0` and never raises — a dashboard must never break a session start.
+Run it any time with `doberman session-summary`. Output is plain ASCII (no box-drawing runes or emoji) so it always renders on a legacy Windows console, and the command always exits `0` and never raises — a session summary must never break a session start.
 
 **Decision-transparency TUI.** `doberman log` prints the raw redacted rows; `doberman tui` browses the same rows interactively and adds a plain-language "why" for whichever row is highlighted — the verdict, the decided layer, and its reason codes turned into a sentence, using only that row's already-redacted data (never a raw path, argument, or secret). Arrow keys navigate, `r` reloads, `q` quits:
 
