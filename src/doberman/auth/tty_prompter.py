@@ -14,6 +14,9 @@ raises so the provider denies rather than defaulting to "yes".
 import sys
 from typing import TextIO
 
+from doberman.auth.challenge import DEFAULT_CHALLENGE_TIMEOUT_S
+from doberman.render import deadline_note
+
 #: Replies that count as approval for a yes/no confirm (case-insensitive).
 _AFFIRMATIVE = frozenset({"y", "yes"})
 
@@ -60,13 +63,13 @@ class TtyPrompter:
         return code
 
     @staticmethod
-    def _ask(prompt: str) -> str:
+    def _ask(prompt: str, *, timeout_s: float = DEFAULT_CHALLENGE_TIMEOUT_S) -> str:
         # Open a fresh handle per prompt (don't cache): a terminal that was unavailable or
         # closed earlier may be usable now, and per-call opens keep concurrent challenges
         # independent. AUTH challenges are effectively serialized by the human anyway.
         read_handle, write_handle = _open_tty()
         try:
-            write_handle.write(prompt)
+            write_handle.write(f"{prompt.rstrip()} [{deadline_note(timeout_s)}] ")
             write_handle.flush()
             line = read_handle.readline()
         finally:

@@ -28,6 +28,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from doberman.auth.challenge import Prompter
+from doberman.render import deadline_note
 
 #: Window title for every challenge dialog.
 _TITLE = "Doberman — authorization required"
@@ -180,6 +181,15 @@ def _build_header_and_message(root: Any, message: str) -> None:
         padx=12,
         pady=10,
     ).pack(fill="both", expand=True)
+    tk.Label(
+        panel,
+        text=deadline_note(DEFAULT_DIALOG_TIMEOUT_S),
+        font=_SUB_FONT,
+        fg=_MUTED,
+        bg=_PANEL,
+        anchor="w",
+        padx=12,
+    ).pack(fill="x", pady=(0, 10))
 
 
 def _populate_confirm(root: Any, message: str, answer: dict) -> None:

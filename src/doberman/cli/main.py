@@ -12,12 +12,13 @@ import json
 import logging
 import secrets
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import typer
 
 from doberman import __version__
 from doberman.auth import password, totp
+from doberman.auth.challenge import TIMEOUT_METHOD
 from doberman.auth.provider import CliPrompter
 from doberman.config import (
     load_active_role,
@@ -526,6 +527,23 @@ def status(
             reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
             typer.echo(f"  {row['ts']}  {verdict_label_str(row['final_verdict'])}  {reasons}")
 
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    missed_challenges = 0
+    for row in asyncio.run(read_decisions(path, limit=200)):
+        if row.get("auth_result") != TIMEOUT_METHOD:
+            continue
+        try:
+            occurred_at = datetime.fromisoformat(row["ts"])
+            if occurred_at.tzinfo is not None and occurred_at >= cutoff:
+                missed_challenges += 1
+        except (TypeError, ValueError):
+            continue
+    if missed_challenges:
+        typer.echo(
+            f"warning: {missed_challenges} challenge(s) auto-denied in the last 24h - "
+            "see doberman log"
+        )
+
 
 @app.command()
 def doctor(
@@ -595,8 +613,7 @@ def hook_pre() -> None:
     objective floor (no numpy/scipy/river), so it adds minimal latency to every
     tool call, and fails closed (deny) on any malformed input or engine error.
 
-    Wire it into Claude Code's settings (a later slice adds `doberman
-    install-hooks` to do this for you).
+    Wire it into Claude Code's settings (or run ``doberman install-hooks``).
     """
     # This process's stdout IS the harness's hook channel (it parses our JSON), so
     # pin every doberman.* log to stderr and strip any stdout handler first - a
@@ -631,8 +648,7 @@ def hook_post() -> None:
     Runs only the fast deterministic objective floor (no numpy/scipy/river),
     fails closed on any malformed input or engine error.
 
-    Wire it into Claude Code's settings (a later slice adds `doberman
-    install-hooks` to do this for you).
+    Wire it into Claude Code's settings (or run ``doberman install-hooks``).
     """
     _configure_stderr_logging()
     from doberman.hosthooks.claude_code import run_post_hook
