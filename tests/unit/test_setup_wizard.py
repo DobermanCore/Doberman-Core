@@ -96,9 +96,9 @@ def test_yes_mode_paranoid(tmp_path: Path) -> None:
 
 
 def test_yes_mode_invalid_exits_nonzero(tmp_path: Path) -> None:
-    """``setup --yes --mode bogus`` exits with a non-zero code."""
+    """``setup --yes --mode bogus`` keeps the flag path's hard usage error."""
     result = runner.invoke(app, ["setup", "--yes", "--mode", "bogus", "--path", str(tmp_path)])
-    assert result.exit_code != 0
+    assert result.exit_code == 2
 
 
 def test_yes_no_prompts(tmp_path: Path) -> None:
@@ -140,15 +140,17 @@ def test_interactive_balanced_project_scope(tmp_path: Path) -> None:
     Input sequence (newlines terminate each prompt):
     - mode choice: "balanced"
     - tune prefs: "n"
-    - profile: "coding"
     - global install: "n"
     """
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="balanced\nn\ncoding\nn\n",
+        input="balanced\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
+    assert "Agent profile" not in result.output
+    assert "What does this agent mostly do?" not in result.output
+    assert "Profile:" not in result.output
     assert load_mode(str(tmp_path)) == "balanced"
     s = _settings(tmp_path)
     assert PRE_COMMAND in _doberman_commands(s, "PreToolUse")
@@ -160,7 +162,7 @@ def test_interactive_numeric_mode_choice(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="3\nn\ncoding\nn\n",
+        input="3\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     assert load_mode(str(tmp_path)) == "strict"
@@ -168,16 +170,59 @@ def test_interactive_numeric_mode_choice(tmp_path: Path) -> None:
 
 def test_interactive_tune_prefs(tmp_path: Path) -> None:
     """Tuning prefs in interactive mode persists custom weights."""
-    # Input: mode=balanced, tune=y, confidentiality=0.9, others keep defaults, profile=coding, global=n
+    # Input: mode=balanced, tune=y, confidentiality=0.9, others keep defaults, global=n
     weight_inputs = "\n".join(["0.9", "", "", ""])  # conf=0.9, rest = keep default
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input=f"balanced\ny\n{weight_inputs}\ncoding\nn\n",
+        input=f"balanced\ny\n{weight_inputs}\nn\n",
     )
     assert result.exit_code == 0, result.output
     prefs = load_preferences(str(tmp_path))
     assert prefs.confidentiality == pytest.approx(0.9)
+
+
+def test_setup_reprompts_on_bad_mode(tmp_path: Path) -> None:
+    """A mistyped interactive mode warns and re-prompts instead of exiting."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="blanced\nbalanced\nn\nn\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "unknown mode" in result.output
+    assert "try again" in result.output
+
+
+def test_setup_explains_each_tuned_dimension(tmp_path: Path) -> None:
+    """Each advanced tuning prompt is preceded by its plain-English meaning."""
+    from doberman.hosthooks import setup as setup_helpers
+    from doberman.policy.preferences import DIMENSIONS
+
+    expected = {
+        "confidentiality": "How strongly to step up for sensitive data or external destinations.",
+        "reversibility": "How strongly to step up for actions that are difficult to undo.",
+        "interruption_tolerance": (
+            "How willing you are to be asked before risky actions; higher means more prompts."
+        ),
+        "blast_radius": "How strongly to step up for actions that affect many targets.",
+    }
+    descriptions = getattr(setup_helpers, "DIMENSION_DESCRIPTIONS", {})
+    assert descriptions == expected
+    assert tuple(descriptions) == DIMENSIONS
+
+    weight_inputs = "\n".join(["", "", "", ""])
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input=f"balanced\ny\n{weight_inputs}\nn\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    for dimension, description in expected.items():
+        assert description in result.output
+        assert result.output.index(description) < result.output.index(f"  {dimension} [0.50]")
 
 
 def test_interactive_global_flag_overrides_prompt(
@@ -237,8 +282,10 @@ def test_parse_mode_choice_invalid() -> None:
 
     with pytest.raises(ValueError):
         parse_mode_choice("ultra")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
         parse_mode_choice("9")
+    assert "choose 1-4" in str(exc_info.value)
+    assert str(exc_info.value).isascii()
     with pytest.raises(ValueError):
         parse_mode_choice("0")
 

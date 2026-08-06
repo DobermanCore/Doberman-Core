@@ -21,8 +21,15 @@ MODE_DESCRIPTIONS: dict[SecurityMode, str] = {
     SecurityMode.paranoid: ("Maximum step-ups; very low thresholds. For high-risk environments."),
 }
 
-#: Profile options presented to the user (informational only — not persisted).
-PROFILE_CHOICES: tuple[str, ...] = ("coding", "mail-or-workflow", "browsing", "other")
+#: Plain-English meaning of each preference dimension shown during tuning.
+DIMENSION_DESCRIPTIONS: dict[str, str] = {
+    "confidentiality": "How strongly to step up for sensitive data or external destinations.",
+    "reversibility": "How strongly to step up for actions that are difficult to undo.",
+    "interruption_tolerance": (
+        "How willing you are to be asked before risky actions; higher means more prompts."
+    ),
+    "blast_radius": "How strongly to step up for actions that affect many targets.",
+}
 
 
 def mode_menu_lines() -> list[str]:
@@ -46,7 +53,7 @@ def parse_mode_choice(raw: str) -> SecurityMode:
         if 0 <= idx < len(modes):
             return modes[idx]
         raise ValueError(
-            f"choose 1–{len(modes)} or type a mode name "
+            f"choose 1-{len(modes)} or type a mode name "
             f"({', '.join(m.value for m in SecurityMode)})"
         )
     # Named

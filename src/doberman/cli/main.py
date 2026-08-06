@@ -1144,7 +1144,11 @@ def setup(
         resolve_settings_path,
         write_settings,
     )
-    from doberman.hosthooks.setup import PROFILE_CHOICES, mode_menu_lines, parse_mode_choice
+    from doberman.hosthooks.setup import (
+        DIMENSION_DESCRIPTIONS,
+        mode_menu_lines,
+        parse_mode_choice,
+    )
     from doberman.policy.preferences import vector_for
 
     # ------------------------------------------------------------------
@@ -1177,12 +1181,13 @@ def setup(
         for line in mode_menu_lines():
             typer.echo(line)
         typer.echo("")
-        raw = typer.prompt("Choose a mode (name or number)", default="balanced")
-        try:
-            chosen_mode = parse_mode_choice(raw)
-        except ValueError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(2) from exc
+        while True:
+            raw = typer.prompt("Choose a mode (name or number)", default="balanced")
+            try:
+                chosen_mode = parse_mode_choice(raw)
+                break
+            except ValueError as exc:
+                typer.echo(f"  {exc} - try again")
 
     # Save the chosen mode. First-run onboarding establishes the initial posture
     # freely (establish_ok); a re-run over an existing policy still gates a
@@ -1221,6 +1226,7 @@ def setup(
         typer.echo("Enter a weight in [0, 1] for each dimension (press Enter to keep current):")
         for dim in DIMENSIONS:
             current = getattr(vector, dim)
+            typer.echo(f"  {DIMENSION_DESCRIPTIONS[dim]}")
             raw_w = typer.prompt(f"  {dim} [{current:.2f}]", default=str(current))
             try:
                 vector = vector.with_weight(dim, float(raw_w))
@@ -1232,24 +1238,7 @@ def setup(
         save_preferences(preset_vector, path)
 
     # ------------------------------------------------------------------
-    # d. Profile (informational only - no persistence)
-    # ------------------------------------------------------------------
-    profile_answer: str | None = None
-    if not yes:
-        typer.echo("")
-        typer.echo("-- Agent profile (informational) -----------------------")
-        typer.echo(
-            "This helps you think about your setup. "
-            "Doberman infers the app type automatically at runtime."
-        )
-        choices_str = " / ".join(PROFILE_CHOICES)
-        profile_answer = typer.prompt(
-            f"What does this agent mostly do? [{choices_str}]",
-            default="coding",
-        )
-
-    # ------------------------------------------------------------------
-    # e. Hook installation scope
+    # d. Hook installation scope
     # ------------------------------------------------------------------
     if global_:
         scope = "global"
@@ -1281,7 +1270,7 @@ def setup(
         raise typer.Exit(1) from exc
 
     # ------------------------------------------------------------------
-    # f. Summary
+    # e. Summary
     # ------------------------------------------------------------------
     typer.echo("")
     typer.echo("-- Setup complete ------------------------------------------")
@@ -1289,8 +1278,6 @@ def setup(
     typer.echo(
         f"Prefs:      {'custom (tuned)' if tune_prefs else 'preset defaults for ' + chosen_mode.value}"
     )
-    if profile_answer is not None:
-        typer.echo(f"Profile:    {profile_answer} (noted - not persisted; inferred at runtime)")
     typer.echo(f"Hooks:      written to {settings_path}")
     typer.echo("")
     typer.echo("Doberman is now active.")
