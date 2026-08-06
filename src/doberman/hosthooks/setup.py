@@ -46,7 +46,7 @@ def parse_mode_choice(raw: str) -> SecurityMode:
         if 0 <= idx < len(modes):
             return modes[idx]
         raise ValueError(
-            f"choose 1–{len(modes)} or type a mode name "
+            f"choose 1-{len(modes)} or type a mode name "
             f"({', '.join(m.value for m in SecurityMode)})"
         )
     # Named

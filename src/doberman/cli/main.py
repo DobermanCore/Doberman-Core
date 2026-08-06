@@ -745,7 +745,7 @@ def twofa_remove() -> None:
     if not password.is_enrolled():
         typer.echo(
             "warning: no possession factor is enrolled now, so every policy weakening "
-            "will be denied — run `doberman password set` (or `doberman 2fa setup`) to "
+            "will be denied - run `doberman password set` (or `doberman 2fa setup`) to "
             "restore one.",
             err=True,
         )
