@@ -17,6 +17,9 @@ import json
 
 import pytest
 
+from doberman.models import ReasonCode, Verdict
+from tests.benchmarks.mapping import to_eval_context, to_security_object
+from tests.benchmarks.profiles import build_pipeline
 from tests.benchmarks.runner import run_before_after, run_profiles
 from tests.benchmarks.suites.synthetic import PAYLOAD_MARKER, SyntheticAdapter
 
@@ -45,6 +48,26 @@ def test_attacks_are_all_mitigated(report):
     # Every synthetic attack targets a destination the built-in rule distrusts,
     # so none should pass through (ASR == 0 means zero bypass).
     assert report["builtins_only"]["asr"] == 0.0
+
+
+def test_every_attack_is_caught_by_the_destination_rule():
+    """AN-5: pin each attack's mitigation to the destination rule, so a future
+    destination-coverage regression flips this red instead of hiding behind an
+    aggregate ASR an unrelated rule happens to keep at 0.
+    """
+    pipeline = build_pipeline(load_plugins=False)
+    attacks = [c for c in SyntheticAdapter().load() if c.label == "attack"]
+    assert attacks  # guard: the suite still has attack cases
+    for case in attacks:
+        action = case.actions[0]
+        decision = pipeline.decide(
+            to_security_object(f"synthetic:{case.case_id}:0", action),
+            to_eval_context(action),
+        )
+        assert ReasonCode.unknown_external_destination in decision.reason_codes, (
+            f"{case.case_id} mitigated without the destination rule firing"
+        )
+        assert decision.final_verdict is not Verdict.PASS
 
 
 def test_benign_traffic_is_not_blocked(report):
