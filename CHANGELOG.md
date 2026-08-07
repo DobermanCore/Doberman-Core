@@ -3,9 +3,11 @@
 Shipped history for Doberman. Planned work lives on the [roadmap](README.md#roadmap) and the
 [project board](https://github.com/users/fu351/projects/5); exact per-commit detail is in the
 [git log](https://github.com/fu351/Doberman-Core/commits/main) and
-[releases](https://github.com/fu351/Doberman-Core/releases) (latest: **v0.17.0**, adds the runtime egress broker — enforcement-gated egress PASS, velocity signals, and post-fetch artifact verification).
+[releases](https://github.com/fu351/Doberman-Core/releases) (latest: **v0.17.1**, a UX + machine-readable-output polish wave — clearer verdict rendering, auth-deadline visibility, and `--json`/`--jsonl` output across the read-only CLI commands).
 
-## Unreleased (merged since v0.17.0)
+## Unreleased (merged since v0.17.1)
+
+## 0.17.1 — 2026-08-06
 
 - **UX fix wave** (from the 2026-08-05 UX audit + critique; all shipped 2026-08-06): every verdict-printing surface now routes through the shared render layer — color when the terminal supports it, `NO_COLOR`/pipe-safe, fixed-width labels that never shift alignment (#252) · dash light mode re-tuned to AA contrast on the verdict badges, pending approvals announced via a polite live region + a tab-title count, TOTP input properly labeled, side-stripe dropped (#261) · every AUTH channel now states its auto-deny deadline (TTY prompt, GUI dialog, dash card expiry) and `doberman status` surfaces challenges auto-denied in the last 24h (#265) · the setup wizard re-prompts on a mistyped mode instead of exiting and losing every answer (the `--mode` flag path keeps its hard usage error), explains each preference dimension inline, and drops the asked-then-discarded profile question (#266) · **`doberman dashboard` is renamed `doberman session-summary`** — the old name survives as a hidden permanent alias so existing SessionStart hooks keep working, `install-hooks` writes the new name, and `uninstall-hooks` recognizes both (#267) · the dash Approve control is arm-then-confirm (first click arms, second within 3s resolves; Deny stays single-click — denying is the safe direction) (#268)
 - **Docs:** README states the defense-in-depth disclaimer once and drops the SEO keyword footer (thanks @slegarraga, #264, closes #257) · stale "a later slice adds `install-hooks`" hook help replaced with a pointer to the real command (thanks @AshSgDe29071999, #263, closes #253)
