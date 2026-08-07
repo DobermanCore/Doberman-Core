@@ -19,6 +19,7 @@ Contracts under test:
 * ``GuiPrompter``'s dialog schedules its own bound and denies when it fires.
 """
 
+import asyncio
 import threading
 from datetime import datetime, timezone
 
@@ -190,6 +191,75 @@ def test_a_raised_error_still_propagates_not_swallowed_by_the_worker():
     provider_mod.active_provider = lambda: _BoomProvider()
     try:
         with pytest.raises(RuntimeError, match="provider exploded"):
+            run_auth_challenge(_auth_decision(), _action(), timeout_s=_GENEROUS)
+    finally:
+        provider_mod.active_provider = original
+
+
+def test_a_systemexit_from_the_provider_denies_instead_of_escaping():
+    """AN-4b: a provider raising a *non-Exception* BaseException must fail closed.
+
+    A registered ``AuthProvider`` (a plugin seam) that raises ``SystemExit`` used to be
+    re-raised verbatim past every caller's ``except Exception`` — so no fail-closed
+    handler fired and the action was neither approved nor denied. The seam now converts
+    it to a denial, tagged ``"error"``: never a silent escape, never a spurious approval.
+    """
+
+    class _ExitingProvider:
+        def authenticate(self, *_a, **_k):
+            raise SystemExit(2)
+
+    import doberman.auth.provider as provider_mod
+
+    original = provider_mod.active_provider
+    provider_mod.active_provider = lambda: _ExitingProvider()
+    try:
+        result = run_auth_challenge(_auth_decision(), _action(), timeout_s=_GENEROUS)
+    finally:
+        provider_mod.active_provider = original
+    assert result.approved is False  # fail closed — not a silent escape
+    assert result.method == "error"  # distinct from a timeout and from a human "no"
+    assert result.action_id == "act-an4"  # still bound to THIS action
+
+
+def test_an_arbitrary_baseexception_from_the_provider_denies():
+    """Fail-closed cannot depend on enumerating exception types: a plugin may raise any
+    ``BaseException`` subclass it likes and it must still resolve to a denial."""
+
+    class _Sneaky(BaseException):
+        pass
+
+    class _SneakyProvider:
+        def authenticate(self, *_a, **_k):
+            raise _Sneaky("not an Exception subclass")
+
+    import doberman.auth.provider as provider_mod
+
+    original = provider_mod.active_provider
+    provider_mod.active_provider = lambda: _SneakyProvider()
+    try:
+        result = run_auth_challenge(_auth_decision(), _action(), timeout_s=_GENEROUS)
+    finally:
+        provider_mod.active_provider = original
+    assert result.approved is False
+    assert result.method == "error"
+
+
+def test_a_cooperative_cancellation_still_propagates():
+    """Denying a plugin's ``SystemExit`` must not also swallow a genuine
+    ``CancelledError``: asyncio cancellation is cooperative and has to reach the event
+    loop, never a denial."""
+
+    class _CancelledProvider:
+        def authenticate(self, *_a, **_k):
+            raise asyncio.CancelledError()
+
+    import doberman.auth.provider as provider_mod
+
+    original = provider_mod.active_provider
+    provider_mod.active_provider = lambda: _CancelledProvider()
+    try:
+        with pytest.raises(asyncio.CancelledError):
             run_auth_challenge(_auth_decision(), _action(), timeout_s=_GENEROUS)
     finally:
         provider_mod.active_provider = original
