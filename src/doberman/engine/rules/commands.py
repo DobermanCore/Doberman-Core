@@ -499,6 +499,37 @@ def _segment_targets_control_plane(tokens: list[str], root: str) -> bool:
     return False
 
 
+def _control_plane_in_windows_form(command: str, root: str) -> bool:
+    """True if the command names the control plane using ``\\`` separators.
+
+    :func:`shlex.split` in POSIX mode treats ``\\`` as an **escape character**, so
+    ``rm .doberman\\policies.yaml`` tokenizes to ``.dobermanpolicies.yaml`` — the
+    separators are consumed before any path check runs, and the token matches no
+    glob. Every control-plane guarantee in this module was therefore reachable on
+    Windows just by spelling the path the way Windows spells it.
+
+    Re-scan a separator-normalized copy of the raw command so the Windows form is
+    caught too. This is **scan-only**: these tokens never reach verb
+    classification, operand counting, or the bulk-delete threshold, so the pass
+    can only ever add a control-plane BLOCK — it can never change what a command
+    is understood to *do*, and never lowers a verdict.
+
+    Normalizing is safe for a genuine POSIX escape (``rm my\\ file.txt`` becomes
+    the harmless tokens ``my/`` and ``file.txt``) because only control-plane glob
+    matching consumes the result.
+    """
+    if "\\" not in command:
+        return False
+    normalized = command.replace("\\", "/")
+    try:
+        tokens = shlex.split(normalized, comments=True, posix=True)
+    except ValueError:
+        # Unbalanced quoting: fall back to a crude split rather than give up —
+        # the caller still treats an unparseable command as ambiguous.
+        tokens = [t for t in re.split(r"[\s'\"`(){}\[\],;]+", normalized) if t]
+    return _segment_targets_control_plane(tokens, root)
+
+
 def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResult | None:
     """BLOCK obvious control-plane or destructive interpreter one-liners."""
     if not tokens or tokens[0] not in _INTERPRETERS:
@@ -750,6 +781,18 @@ class DestructiveCommandRule:
 
     def _classify_line(self, command: str, bulk_threshold: int, root: str) -> GuardrailResult:
         worst: GuardrailResult = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
+
+        # Checked against the RAW command, before shlex: POSIX tokenization eats
+        # the `\` separators, so a Windows-spelled control-plane path never
+        # survives to the per-segment scan below. _normalize_windows_backslashes
+        # only fires on Windows-verb trigger words, so a POSIX verb with a
+        # backslash-spelled path (`rm .doberman\policies.yaml`) needs this check.
+        if _control_plane_in_windows_form(command, root):
+            return _block_control_plane(
+                "Shell command targets Doberman's own control plane "
+                "(.doberman/ state or the .claude/ host-hook config)."
+            )
+
         pending, saw_unparseable, _ = walk_command(_normalize_windows_backslashes(command))
         processed = 0
         while pending and processed < _MAX_COMMAND_SEGMENTS:
