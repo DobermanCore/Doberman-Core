@@ -38,6 +38,7 @@ CLI_HELP_TARGETS = (
     ("2fa",),
     ("2fa", "setup"),
     ("2fa", "remove"),
+    ("2fa", "reset-lockout"),
     ("password",),
     ("password", "set"),
     ("hook",),
