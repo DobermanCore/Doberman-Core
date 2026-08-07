@@ -34,6 +34,7 @@ from doberman.demo import format_outcome_line, format_summary_table, run_demo
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
+    _verify_possession_factor,
     apply_change,
     apply_enforcement_change,
     apply_preferences_change,
@@ -45,7 +46,7 @@ from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.render import verdict_label, verdict_label_str
 from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
-from doberman.storage.taint import entity_scope, read_taint
+from doberman.storage.taint import clear_taint, entity_scope, read_taint
 
 
 def _ensure_encode_safe_stdio() -> None:
@@ -83,6 +84,12 @@ password_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(password_app, name="password")
+
+taint_app = typer.Typer(
+    help="Sticky session-taint recovery (gated - requires an enrolled possession factor).",
+    no_args_is_help=True,
+)
+app.add_typer(taint_app, name="taint")
 
 hook_app = typer.Typer(
     help="Host-harness integration hooks (e.g. Claude Code PreToolUse/PostToolUse).",
@@ -795,6 +802,53 @@ def twofa_reset_lockout() -> None:
         raise typer.Exit(code=1)
     totp.reset_attempts()
     typer.echo("2FA lockout cleared. You can enter a fresh code now.")
+
+
+@taint_app.command("clear")
+def taint_clear(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Clear this repo's sticky session taint — a gated recovery action.
+
+    Reading a secret taints a session for the rest of it (by design — a timed
+    reset would just be a bypass an attacker waits out), and in strict/paranoid
+    that raises every later egress to AUTH or BLOCK. This is the explicit,
+    human-only escape hatch: it requires an enrolled possession factor (2FA if
+    set up, otherwise your Doberman password) and clears BOTH taint stores for
+    this repo. There is no confirm-only path and no silent timer.
+    """
+    if not totp.is_enrolled() and not password.is_enrolled():
+        typer.echo(
+            "error: clearing taint requires an enrolled possession factor - "
+            "run `doberman 2fa setup` or `doberman password set` first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    prompter = CliPrompter()
+    try:
+        approved, method = _verify_possession_factor(prompter, action_label="clearing taint")
+    except Exception:  # noqa: BLE001 — any input/EOF/timeout error denies the clear
+        # `_verify_possession_factor` does not guard its own prompt; its other
+        # caller (`_run_weaken_gate`) wraps it for exactly this reason. A
+        # non-interactive stdin raises rather than returning, and an unguarded
+        # raise here would be a traceback, not a denial.
+        approved, method = False, "denied"
+    if not approved:
+        typer.echo(f"taint clear denied ({method}); unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        taint_rows, fingerprint_rows = asyncio.run(clear_taint(path))
+    except Exception as exc:  # noqa: BLE001 — never report success on a failed clear
+        typer.echo(f"error: taint clear failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(
+        f"Taint cleared ({taint_rows} record(s), {fingerprint_rows} fingerprint(s)). "
+        "This session's memory of a secret being read is gone; egress in this repo "
+        "returns to the mode default until something taints it again."
+    )
 
 
 @app.command(rich_help_panel="Auth")

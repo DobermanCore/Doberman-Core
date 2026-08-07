@@ -304,7 +304,7 @@ doberman tui
 
 The LLM is a **narrator, never a judge** — it only rewords a verdict Doberman already made from the redacted metadata above; it can never change a decision. It's strictly opt-in (installed *and* keyed *and* flagged, all three), and any failure — missing key, no network, timeout, bad response — silently falls back to the offline template, so the TUI never blocks on it or crashes because of it. There is no `doberman explain` command; the TUI and `doberman log` are the only surfaces for this.
 
-**Doberman protects its own hooks.** Once installed, the agent can't quietly remove them: a write/edit to `.claude/settings.json` (the hook-install file) is **blocked**, and other `.claude/` changes require authentication — so the agent can't disable enforcement by editing the harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own `.doberman/` control plane. The protection holds **through the shell** too — a Bash command that writes/deletes the config (`echo > .claude/settings.json`, `rm -rf .doberman`) or runs `doberman uninstall-hooks` is blocked, not just the `Write`/`Edit` tools. The same shell-layer block extends to every posture- and auth-mutating Doberman verb — `mode`, `prefs`, `enforcement`, `2fa`, `password`, `revoke` — treated as control-plane tampering and blocked fail-closed, while read/utility verbs (`status`, `doctor`, `log`, `scan`, `review`) stay allowed.
+**Doberman protects its own hooks.** Once installed, the agent can't quietly remove them: a write/edit to `.claude/settings.json` (the hook-install file) is **blocked**, and other `.claude/` changes require authentication — so the agent can't disable enforcement by editing the harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own `.doberman/` control plane. The protection holds **through the shell** too — a Bash command that writes/deletes the config (`echo > .claude/settings.json`, `rm -rf .doberman`) or runs `doberman uninstall-hooks` is blocked, not just the `Write`/`Edit` tools. The same shell-layer block extends to every posture- and auth-mutating Doberman verb — `mode`, `prefs`, `enforcement`, `2fa`, `password`, `revoke`, `taint` — treated as control-plane tampering and blocked fail-closed, while read/utility verbs (`status`, `doctor`, `log`, `scan`, `review`) stay allowed.
 
 **Easiest of all — `doberman setup`:** an interactive wizard that picks your alertness mode, tunes your guardrails, and wires the hooks in one step:
 
@@ -333,6 +333,13 @@ doberman 2fa remove          # unenroll; weakenings fall back to the password af
 
 Removing the last possession factor is allowed but fails *closed*: with neither TOTP nor a
 password enrolled, every policy weakening is denied until you enroll one again.
+
+The same enrolled factor also gates the one other recovery action: a secret read taints a
+session for the rest of it, and in strict/paranoid that raises later egress to AUTH or BLOCK
+with no automatic reset. If that's expected and you want the repo's egress back to the mode
+default, `doberman taint clear` wipes both taint stores after the same TOTP-or-password check —
+still fails closed with neither factor enrolled, and a denied or failed check leaves everything
+untouched.
 
 ### 4. Check it's healthy — `doberman doctor`
 

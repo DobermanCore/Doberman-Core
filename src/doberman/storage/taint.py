@@ -168,3 +168,29 @@ async def match_secret_fingerprint(repo_root: str, scope: str, fingerprints: lis
                 return await cur.fetchone() is not None
     except Exception:  # noqa: BLE001 — a read failure must never crash a decision
         return False
+
+
+async def clear_taint(repo_root: str) -> tuple[int, int]:
+    """Wipe ALL sticky taint for this repo's DB — both ``session_taint`` and
+    ``session_secret_fingerprints`` — and return ``(taint_rows_cleared,
+    fingerprint_rows_cleared)``.
+
+    This is the deliberate, human-gated recovery path (``doberman taint clear``):
+    the DB is already per-repo (``.doberman/doberman.db``), so there is no
+    narrower scope to target — every row in both tables belongs to this repo.
+    Clearing only ``session_taint`` would leave ``session_secret_fingerprints``
+    armed, so ``_outbound_matches_recorded_secret`` would still hard-BLOCK the
+    next egress — both tables must go together.
+
+    INVERSION from every other function in this module: reads above fail closed
+    to empty/``False`` and writes are best-effort, because a storage hiccup must
+    never *fabricate* or *clear* taint on its own. A *deliberate* clear is the
+    opposite risk — reporting success on a failed clear would tell the caller
+    protection is restored when it isn't — so this raises on any storage error
+    instead of swallowing it; the CLI must not report success on a failure.
+    """
+    async with open_db(repo_root) as conn:
+        taint_cur = await conn.execute("DELETE FROM session_taint")
+        fingerprint_cur = await conn.execute("DELETE FROM session_secret_fingerprints")
+        await conn.commit()
+        return taint_cur.rowcount, fingerprint_cur.rowcount
