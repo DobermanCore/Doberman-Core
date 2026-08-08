@@ -22,6 +22,7 @@ Entry point: `doberman` (Typer). All commands accept `--help`.
 | Flag | Commands | Notes |
 |------|----------|-------|
 | `--json` | `scan`, `doctor`, `policy-history` | One JSON document on stdout |
+| `--jsonl` | `log` | One redacted decision object per line (empty if none) |
 | `--quiet` / `-q` | `scan` | No human map; exit code preserved |
 | `--path` / `-p` | most commands | Repository root (default `.`) |
 
@@ -47,9 +48,15 @@ When both are passed, `--json` wins over `--quiet`: machine-readable JSON is sti
 
 Capabilities are sorted by `(category, name)` for deterministic output.
 
+Each capability's `evidence` list is capped at **10** entries in discovery. The human-readable risk map shows only the first **3** of those entries per capability — so `doberman scan` and `doberman scan --json` can legitimately differ in how much evidence they display for the same capability.
+
 ### `doberman doctor --json`
 
 Emits `{version, path, ok, checks[], critical_failures[]}`. Exit code is still non-zero when critical checks fail.
+
+### `doberman log --jsonl`
+
+Emits one redacted JSON object per decision line (newest first). Columns are an allowlist of already-redacted fields (`ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id` / `agent_role` / `risk` when present). Empty output when there are no rows.
 
 ## Examples
 
@@ -59,6 +66,7 @@ doberman scan --json | jq '.capabilities[] | select(.present)'
 doberman scan --quiet; echo $?
 doberman doctor --json | jq .ok
 doberman policy-history --json | jq 'length'
+doberman log --jsonl | jq -c 'select(.final_verdict=="block")'
 ```
 
 See also [SETUP.md](SETUP.md) and the root README.
