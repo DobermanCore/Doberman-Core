@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from doberman.auth.challenge import AuthResult, AuthTier
+from doberman.auth.challenge import TIMEOUT_METHOD, AuthResult, AuthTier
 from doberman.auth.gui_prompter import PrompterUnavailableError
 from doberman.hosthooks import claude_code
 from doberman.hosthooks.claude_code import run_pre_hook
@@ -153,3 +153,46 @@ def test_pass_abstains_without_touching_the_prompter(cwd, monkeypatch):
 
     monkeypatch.setattr(claude_code, "AUTH_PROMPTER", _Boom())
     assert _pre("WebSearch", {"query": "python list comprehension"}, cwd) is None
+
+
+def test_timed_out_auth_denies_with_expired_no_response_hint(cwd, monkeypatch):
+    # A challenge that reaches its deadline unanswered (AN-4a, ADR 0046) is denied, and
+    # the message says the request *expired* — distinct from a human refusal — so the
+    # log and the user can tell silence from "no". Fail-closed either way.
+    def _timed_out(decision, action, *, prompter=None, at=None):
+        return AuthResult(
+            approved=False,
+            tier=AuthTier.local_auth,
+            method=TIMEOUT_METHOD,
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    monkeypatch.setattr(claude_code, "AUTH_PROMPTER", _Approve())
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _timed_out)
+    out = _out(_pre(*_AUTH_CALL, cwd))
+    assert out["permissionDecision"] == "deny"
+    reason = out["permissionDecisionReason"]
+    assert "expired" in reason.lower()  # the timeout wording, not the plain refusal one
+    assert "retry" in reason.lower()
+
+
+def test_timed_out_two_factor_still_names_the_setup_command(cwd, monkeypatch):
+    # The timeout branch must keep the same actionable 2FA-enrollment hint the refusal
+    # branch carries — a timed-out un-enrolled 2FA action still dead-ends without it.
+    def _timed_out(decision, action, *, prompter=None, at=None):
+        return AuthResult(
+            approved=False,
+            tier=AuthTier.two_factor,
+            method=TIMEOUT_METHOD,
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    monkeypatch.setattr(claude_code, "AUTH_PROMPTER", _Approve())
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _timed_out)
+    out = _out(_pre("Bash", {"command": 'bash -c "echo hi"'}, cwd))
+    assert out["permissionDecision"] == "deny"
+    reason = out["permissionDecisionReason"]
+    assert "expired" in reason.lower()
+    assert "doberman 2fa setup" in reason

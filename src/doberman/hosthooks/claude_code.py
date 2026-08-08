@@ -204,7 +204,7 @@ def _resolve_auth(decision: Decision, action: SecurityObject) -> dict[str, Any]:
         # Imported + built here (not at module scope) so the PASS/BLOCK hot path stays
         # light, and inside the try so a construction failure (e.g. no tkinter) also
         # fails closed with the actionable channel-error message.
-        from doberman.auth.challenge import run_auth_challenge
+        from doberman.auth.challenge import TIMEOUT_METHOD, run_auth_challenge
 
         prompter = AUTH_PROMPTER if AUTH_PROMPTER is not None else _default_auth_prompter()
         result = run_auth_challenge(decision, action, prompter=prompter)
@@ -219,7 +219,12 @@ def _resolve_auth(decision: Decision, action: SecurityObject) -> dict[str, Any]:
             f"{reason} Approved via Doberman's action-bound authentication ({result.method}).",
         )
     return _hook_output(
-        "deny", _auth_denied_reason(decision, channel_error=result.method == "error")
+        "deny",
+        _auth_denied_reason(
+            decision,
+            channel_error=result.method == "error",
+            timed_out=result.method == TIMEOUT_METHOD,
+        ),
     )
 
 
@@ -233,10 +238,12 @@ def _default_auth_prompter() -> Prompter:
     return FallbackPrompter([GuiPrompter(), TtyPrompter()])
 
 
-def _auth_denied_reason(decision: Decision, *, channel_error: bool) -> str:
+def _auth_denied_reason(decision: Decision, *, channel_error: bool, timed_out: bool = False) -> str:
     """A denied-AUTH message that names how to actually complete the approval
     (issues #65/#67). Redaction-safe; adds the exact 2FA-enrollment command when an
-    un-enrolled 2FA tier is why the action can't be authenticated."""
+    un-enrolled 2FA tier is why the action can't be authenticated. A timeout gets its
+    own next-step wording so the log/message distinguishes silence from a refusal
+    (AN-4a, ADR 0046)."""
     reason = _format_reason(decision, "AUTH")
     if channel_error:
         tail = (
@@ -244,6 +251,16 @@ def _auth_denied_reason(decision: Decision, *, channel_error: bool) -> str:
             "terminal channel). Approve from an interactive session, or run the action "
             "yourself outside the hooked Claude Code session."
         )
+    elif timed_out:
+        tail = (
+            "Next step: the approval request expired with no response (auto-denied "
+            "after the deadline) — retry the action to reopen Doberman's approval dialog."
+        )
+        if _needs_unenrolled_2fa(decision):
+            tail += (
+                " This action needs 2FA, which isn't set up yet — run "
+                "`doberman 2fa setup`, then retry."
+            )
     else:
         tail = (
             "Next step: authentication was not completed — retry the action to reopen "
