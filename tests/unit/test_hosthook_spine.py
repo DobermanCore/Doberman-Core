@@ -57,9 +57,6 @@ def test_identical_action_identical_verdict_across_hosts(tmp_path):
 
 
 def test_spine_never_imports_heavy_modules():
-    import sys
-
-    assert "doberman.proxy.executor" not in sys.modules or True  # see Step 3 test below
     import doberman.hosthooks.spine as mod
 
     src = open(mod.__file__, encoding="utf-8").read()
