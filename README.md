@@ -140,6 +140,15 @@ That last assertion is the **chokepoint property** the whole project hangs on.
 
 > **Note on the test fixtures:** the rest of the integration suite deliberately uses an *in-process* fake downstream ([`tests/fixtures/fake_tool_server.py`](tests/fixtures/fake_tool_server.py)) that records every call it executes — recording is how the tests prove a blocked action reached *nothing*. It is a test fixture, not the runtime. `doberman serve` always spawns and talks to the real server you give it after `--`.
 
+### Protocol compatibility
+
+Doberman's proxy speaks MCP as pinned in `pyproject.toml` (`mcp>=1.27,<2`). The MCP
+2026-07-28 revision (RC) removes protocol-level session identity (SEP-2575); Doberman's
+cross-call protections (taint ledger, read-vs-send fingerprints, decision log) key off
+repo-local identity, never the protocol session, and are regression-tested stateless
+(`tests/integration/test_stateless_identity.py`). "Supports 2026-07-28" will be claimed
+only once the spec finalizes and the pinned SDK adopts it.
+
 ---
 
 ## Turn gate
