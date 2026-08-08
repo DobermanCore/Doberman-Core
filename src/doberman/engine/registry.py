@@ -66,6 +66,10 @@ ADJUDICATOR_GROUP = "doberman.adjudicators"
 #: long-lived proxy singleton opts in — see :func:`discover_egress_brokers`
 #: for the memoization that also keeps a repeated opted-in construction cheap.
 EGRESS_BROKER_GROUP = "doberman.egress_brokers"
+#: Async challenge backends (issue #144) register here; resolved by the auth layer.
+#: Lets hosted/push-based approval channels (Slack, e-mail, etc.) supply a custom
+#: backend without importing core's synchronous prompter chain.
+ASYNC_CHALLENGE_BACKEND_GROUP = "doberman.async_challenge_backends"
 
 
 def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
