@@ -18,6 +18,7 @@ In alphabetical order by handle (ordering is not a ranking):
 - [@harshitagrawal2O](https://github.com/harshitagrawal2O)
 - [@jasperdingg](https://github.com/jasperdingg)
 - **Lee Sang Hoon** — [@leemeo3](https://github.com/leemeo3)
+- [@Maqbool61](https://github.com/Maqbool61)
 - [@navaneethsankar07](https://github.com/navaneethsankar07)
 - [@QY-25123](https://github.com/QY-25123)
 - [@Shihasz](https://github.com/Shihasz)
