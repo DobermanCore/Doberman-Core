@@ -73,7 +73,6 @@ _ensure_encode_safe_stdio()
 app = typer.Typer(
     help="Doberman - adaptive authorization layer for coding agents.",
     no_args_is_help=True,
-    add_completion=False,
 )
 
 twofa_app = typer.Typer(help="Two-factor (TOTP) enrollment.", no_args_is_help=True)
@@ -762,10 +761,40 @@ def twofa_remove() -> None:
     if not password.is_enrolled():
         typer.echo(
             "warning: no possession factor is enrolled now, so every policy weakening "
-            "will be denied — run `doberman password set` (or `doberman 2fa setup`) to "
+            "will be denied - run `doberman password set` (or `doberman 2fa setup`) to "
             "restore one.",
             err=True,
         )
+
+
+@twofa_app.command("reset-lockout")
+def twofa_reset_lockout() -> None:
+    """Clear the TOTP lockout early, proving possession with your password.
+
+    Too many wrong 2FA codes lock further attempts for a short cooldown. That
+    window self-recovers, so this is a convenience: prove you own this machine
+    and retry now instead of waiting. It is gated on your password, not 2FA - a
+    locked-out factor cannot verify itself, and someone who tripped the lockout
+    by guessing codes must not be able to lift it. Clearing the counter never
+    disables the rate limiter: fresh wrong codes lock it again.
+    """
+    if not totp.is_enrolled():
+        typer.echo("error: 2FA is not enrolled; there is no lockout to reset", err=True)
+        raise typer.Exit(code=1)
+    if not password.is_enrolled():
+        typer.echo(
+            "error: clearing the 2FA lockout needs your local password, but none is "
+            "enrolled. The lockout clears itself after a short cooldown - wait it out, "
+            "or run `doberman password set` to enable an early reset next time.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    current_password = CliPrompter().read_code("Doberman password")
+    if not password.verify(current_password):
+        typer.echo("error: incorrect password; the 2FA lockout is unchanged", err=True)
+        raise typer.Exit(code=1)
+    totp.reset_attempts()
+    typer.echo("2FA lockout cleared. You can enter a fresh code now.")
 
 
 @app.command(rich_help_panel="Auth")
@@ -913,7 +942,10 @@ def dash(
 
     token = secrets.token_urlsafe(32)
     typer.echo(f"Dashboard: http://{_DASH_HOST}:{port}/?token={token}")
-    uvicorn.run(create_app(token, path), host=_DASH_HOST, port=port)
+    # access_log=False: the single-use token rides in the URL query string, so
+    # uvicorn's request access log would write it verbatim into a log line.
+    # Disable it so the bearer token never lands in a log.
+    uvicorn.run(create_app(token, path), host=_DASH_HOST, port=port, access_log=False)
 
 
 @app.command(rich_help_panel="Daily")
@@ -1134,6 +1166,14 @@ def uninstall_hooks(
     write_settings(settings_path, cleaned)
     typer.echo(f"wrote {settings_path}")
     typer.echo("Doberman hooks removed.")
+    typer.echo("")
+    typer.echo("What remains (manual, optional cleanup):")
+    typer.echo("  .doberman/              policy, decision log, taint state")
+    typer.echo("  ~/.doberman/metrics.db  device metrics")
+    typer.echo("  password / 2FA enrollment")
+    typer.echo(
+        "These are not removed automatically; delete them only if you no longer use Doberman."
+    )
 
 
 @app.command(rich_help_panel="Getting started")
@@ -1300,7 +1340,7 @@ def setup(
     typer.echo("Restart your Claude Code session to pick up the hooks.")
     typer.echo(
         "Next steps: `doberman password set`  |  `doberman 2fa setup` (optional)  |  "
-        "`doberman status`"
+        "`doberman status`  |  `doberman uninstall-hooks` (exit)"
     )
 
 

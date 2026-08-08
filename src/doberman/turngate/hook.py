@@ -26,7 +26,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from doberman.auth.challenge import Prompter, run_auth_challenge
+from doberman.auth.challenge import TIMEOUT_METHOD, AuthResult, Prompter, run_auth_challenge
 from doberman.engine.decision_engine import TurnGuardrail, decide_turn
 from doberman.models import (
     ActionType,
@@ -107,6 +107,26 @@ def _pass_decision(turn: TurnObject, when: datetime) -> Decision:
     return _decision_from_result(turn, passed, when)
 
 
+def _auth_result_label(result: AuthResult, *, approved: bool) -> str:
+    """The ``auth_result`` recorded for a challenge, keeping a silent timeout distinct
+    from a human refusal (AN-4a).
+
+    An expired-unanswered challenge is a different operational event from one a human
+    declined; collapsing both to ``"denied"`` hides exactly the distinction ADR 0046
+    (the wall-clock deadline) exists to record.
+    """
+    if approved:
+        return "approved"
+    return "timeout" if result.method == TIMEOUT_METHOD else "denied"
+
+
+_AUTH_NOTES = {
+    "approved": "auth approved",
+    "timeout": "auth timed out (auto-denied)",
+    "denied": "auth denied",
+}
+
+
 async def _enforce(
     turn: TurnObject,
     decision: Decision,
@@ -127,15 +147,15 @@ async def _enforce(
     if decision.final_verdict is Verdict.AUTH:
         result = run_auth_challenge(decision, _synthetic_action(turn), prompter=prompter, at=when)
         approved = result.approved and result.action_id == turn.id
+        label = _auth_result_label(result, approved=approved)
         await record_turn_decision(
             turn,
             decision,
             repo_root=repo_root,
             stage="turn_auth",
-            auth_result="approved" if approved else "denied",
+            auth_result=label,
         )
-        note = "auth approved" if approved else "auth denied"
-        return TurnGateOutcome(approved, Verdict.AUTH, decision, note)
+        return TurnGateOutcome(approved, Verdict.AUTH, decision, _AUTH_NOTES[label])
 
     await record_turn_decision(turn, decision, repo_root=repo_root, stage="turn_pass")
     return TurnGateOutcome(True, Verdict.PASS, decision, "released")
@@ -178,10 +198,12 @@ async def _handle_repeat(
         explanation="Resubmission of a blocked turn was not approved; blocked.",
     )
     decision = _decision_from_result(turn, reblock, when)
+    label = _auth_result_label(result, approved=False)
     await record_turn_decision(
-        turn, decision, repo_root=repo_root, stage="turn_repeat_denied", auth_result="denied"
+        turn, decision, repo_root=repo_root, stage="turn_repeat_denied", auth_result=label
     )
-    return TurnGateOutcome(False, Verdict.BLOCK, decision, "repeat denied (blocked)")
+    note = "repeat timed out (blocked)" if label == "timeout" else "repeat denied (blocked)"
+    return TurnGateOutcome(False, Verdict.BLOCK, decision, note)
 
 
 def _fail_to_human(turn: TurnObject, when: datetime) -> Decision:
