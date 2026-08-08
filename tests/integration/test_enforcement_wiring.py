@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import pytest
 
 from doberman.config import resolve_enforcement_sync, save_policy
-from doberman.hosthooks import claude_code
+from doberman.hosthooks import spine
 from doberman.hosthooks.claude_code import run_pre_hook
 from doberman.models import Decision, GuardrailResult, ReasonCode, Risk, Verdict
 from doberman.policy.checklist import recommend_policy
@@ -43,7 +43,7 @@ def _permission(out):
 
 
 def _force_state(monkeypatch, state):
-    monkeypatch.setattr(claude_code, "resolve_enforcement_sync", lambda _root: state)
+    monkeypatch.setattr(spine, "resolve_enforcement_sync", lambda _root: state)
 
 
 def _fake_discretionary_auth(reason: ReasonCode):
@@ -92,11 +92,9 @@ def test_secret_egress_floor_still_live_when_softened(cwd, monkeypatch, state):
 )
 def test_discretionary_auth_dispatch_honors_dial(cwd, monkeypatch, state, expect_abstain):
     _force_state(monkeypatch, state)
-    monkeypatch.setattr(
-        claude_code, "decide", _fake_discretionary_auth(ReasonCode.sensitive_path_access)
-    )
+    monkeypatch.setattr(spine, "decide", _fake_discretionary_auth(ReasonCode.sensitive_path_access))
     # keep the taint floor inert so the decision under test is purely discretionary
-    monkeypatch.setattr(claude_code, "apply_taint_floor", lambda _a, decision, *a, **k: decision)
+    monkeypatch.setattr(spine, "apply_taint_floor", lambda _a, decision, *a, **k: decision)
 
     out = _pre("Write", {"file_path": "app.py", "content": "x"}, cwd)
 
@@ -115,10 +113,8 @@ def _rows(cwd):
 
 def test_monitor_records_the_would_have_verdict(cwd, monkeypatch):
     _force_state(monkeypatch, "monitor")
-    monkeypatch.setattr(
-        claude_code, "decide", _fake_discretionary_auth(ReasonCode.sensitive_path_access)
-    )
-    monkeypatch.setattr(claude_code, "apply_taint_floor", lambda _a, decision, *a, **k: decision)
+    monkeypatch.setattr(spine, "decide", _fake_discretionary_auth(ReasonCode.sensitive_path_access))
+    monkeypatch.setattr(spine, "apply_taint_floor", lambda _a, decision, *a, **k: decision)
 
     assert _pre("Write", {"file_path": "app.py", "content": "x"}, cwd) is None
     rows = _rows(cwd)
@@ -129,10 +125,8 @@ def test_monitor_records_the_would_have_verdict(cwd, monkeypatch):
 
 def test_off_does_not_record_the_would_have(cwd, monkeypatch):
     _force_state(monkeypatch, "off")
-    monkeypatch.setattr(
-        claude_code, "decide", _fake_discretionary_auth(ReasonCode.sensitive_path_access)
-    )
-    monkeypatch.setattr(claude_code, "apply_taint_floor", lambda _a, decision, *a, **k: decision)
+    monkeypatch.setattr(spine, "decide", _fake_discretionary_auth(ReasonCode.sensitive_path_access))
+    monkeypatch.setattr(spine, "apply_taint_floor", lambda _a, decision, *a, **k: decision)
 
     assert _pre("Write", {"file_path": "app.py", "content": "x"}, cwd) is None
     assert _rows(cwd) == [], "off does not evaluate the discretionary layer, so it stays silent"

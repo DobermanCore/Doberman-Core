@@ -43,13 +43,11 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
-from doberman.config import load_active_role, load_mode, resolve_enforcement_sync
+from doberman.config import load_active_role
 from doberman.engine.decision_engine import PASS_STUB, decide, max_risk
 from doberman.engine.objective import ObjectiveGuardrail
-from doberman.engine.taint_floor import apply_taint_floor
+from doberman.hosthooks import spine
 from doberman.models import Decision, EvalContext, ReasonCode, Risk, SecurityObject, Verdict
-from doberman.policy.drift import acted_verdict
-from doberman.policy.modes import DEFAULT_MODE
 from doberman.proxy.normalize import normalize
 
 if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth stack
@@ -301,20 +299,10 @@ def _deny(reason: str = _FAILSAFE_REASON) -> dict[str, Any]:
     return _hook_output("deny", reason)
 
 
-def _resolve_root_and_mode(cwd: object) -> tuple[str, str]:
-    """Resolve ``(repo_root, strictness_mode)`` from a hook payload's ``cwd``.
-
-    #51: with a valid ``cwd`` we read the project's saved mode. With a
-    missing/empty/invalid ``cwd`` we must NOT fall back to ``load_mode(".")`` —
-    that reads whatever ``.doberman/policies.yaml`` happens to sit in the hook
-    process's working directory (a *different* project's policy, or none), which
-    can silently apply a **weaker** mode than the real project's (e.g. Light when
-    the project is Strict). Fail safe: use the recommended default mode instead.
-    ``repo_root`` keeps the ``"."`` fallback for storage scoping (unchanged).
-    """
-    if isinstance(cwd, str) and cwd:
-        return cwd, load_mode(cwd)
-    return ".", DEFAULT_MODE.value
+# Back-compat aliases: the flow moved to hosthooks.spine (W1.0a). The post-hook
+# path and existing tests still call these names.
+_resolve_root_and_mode = spine.resolve_root_and_mode
+_record_history_decision = spine.record_history
 
 
 def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -342,59 +330,22 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             if not isinstance(value, str) or not value.strip():
                 return _deny()
 
-        cwd = payload.get("cwd")
-        repo_root, mode = _resolve_root_and_mode(cwd)
-        raw_session = payload.get("session_id")
-        session_id = raw_session if isinstance(raw_session, str) and raw_session else None
-
         canonical, args = to_normalize_input(tool_name, tool_input)
-        action = normalize(canonical, args)
-        # The objective rules inspect the UN-redacted call via metadata['raw_arguments']
-        # (in-memory only, never logged). This is the real tool-call decision path, so
-        # the active role rides along too (parity with proxy.executor._build_ctx) — a
-        # repo with no .doberman/role.yaml still gets role=None (no-op, opt-in only).
-        ctx = EvalContext(
-            role=load_active_role(repo_root),
-            mode=mode,
-            metadata={"raw_arguments": args, "repo_root": repo_root},
+        result = spine.evaluate_action(
+            canonical, args, cwd=payload.get("cwd"), raw_session_id=payload.get("session_id")
         )
-        decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
-        # HK.5.2 / 5.2b: taint-primary multi-step floor — raise an egress the
-        # per-call floor judged clean when the session already accessed a secret,
-        # and hard-BLOCK when an outbound value is a CONFIRMED read secret.
-        decision = apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)
-        # F10: honor the enforcement dial (Option A). monitor/off soften a
-        # DISCRETIONARY AUTH/BLOCK to observe-only; the objective floor
-        # (secrets / exfil / taint / destructive / role / policy / trifecta) stays
-        # live in every state. Resolve through the ledger-verified clamp — never
-        # read PolicyDoc.enforcement directly (a hand-edit is caught + clamped).
-        enforcement = resolve_enforcement_sync(repo_root)
-        acted = acted_verdict(decision, enforcement)
-        if acted is Verdict.PASS:
-            # A would-be AUTH/BLOCK softened by MONITOR is history-worthy: record
-            # the ORIGINAL (truthful) decision — real verdict, outcome "executed"
-            # (a synthetic allow) — so `doberman log` / the TUI shows what would
-            # have happened but was let through. `off` softens the same way but is
-            # the silent, non-recording state (evaluated, not acted on, not logged).
-            # A genuine PASS is never recorded here either (PreToolUse fires on
-            # every call — a DB write per pass would flood the log for no value).
-            if enforcement == "monitor" and decision.final_verdict is not Verdict.PASS:
-                _record_pre_history(
-                    decision,
-                    action,
-                    repo_root,
-                    session_id,
-                    {"hookSpecificOutput": {"permissionDecision": "allow"}},
-                )
-            return None  # raise-only: abstain, leaving the harness's native flow intact
-        if acted is Verdict.AUTH:
+        if result.acted is Verdict.PASS:
+            return None  # raise-only; monitor history already recorded by the spine
+        if result.acted is Verdict.AUTH:
             # Run Doberman's own action-bound challenge so the human can actually
             # approve in-session (issues #65/#67) — not just be told to.
-            result = _resolve_auth(decision, action)
+            hook_result = _resolve_auth(result.decision, result.action)
         else:
-            result = _decision_payload(decision)  # BLOCK → deny
-        _record_pre_history(decision, action, repo_root, session_id, result)
-        return result
+            hook_result = _decision_payload(result.decision)  # BLOCK -> deny
+        _record_pre_history(
+            result.decision, result.action, result.repo_root, result.session_id, hook_result
+        )
+        return hook_result
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
         return _deny()
 
@@ -669,39 +620,6 @@ def _record_blocked_post_history(
         )
         _record_history_decision(decision, action, repo_root, session_id, auth_result="blocked")
     except Exception:  # noqa: BLE001,S110 — history must never break the block path
-        pass
-
-
-def _record_history_decision(
-    decision: Decision,
-    action: SecurityObject,
-    repo_root: str,
-    session_id: str | None,
-    *,
-    auth_result: str,
-) -> None:
-    """Best-effort: persist one decision row to the local decision log.
-
-    Shared by both hooks: the PostToolUse output-scan path (clean pass-through and
-    a block) and the PreToolUse gate (an AUTH's resolved outcome, or a BLOCK).
-    Wrapped so a storage failure can never raise into — or alter — either hook's
-    return value (strictly best-effort; see module docstring).
-    """
-    import asyncio  # lazy import keeps the module scope light
-
-    from doberman.storage.log import record_decision  # lazy import
-
-    try:
-        asyncio.run(
-            record_decision(
-                decision,
-                action,
-                repo_root=repo_root,
-                auth_result=auth_result,
-                session_id=session_id,
-            )
-        )
-    except Exception:  # noqa: BLE001,S110 — history must never break the execution path
         pass
 
 
