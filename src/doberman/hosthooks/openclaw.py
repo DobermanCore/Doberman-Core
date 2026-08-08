@@ -73,14 +73,8 @@ import json
 from typing import Any
 
 from doberman.branding import DOG
-from doberman.config import load_active_role, load_mode, resolve_enforcement_sync
-from doberman.engine.decision_engine import PASS_STUB, decide
-from doberman.engine.objective import ObjectiveGuardrail
-from doberman.engine.taint_floor import apply_taint_floor
-from doberman.models import Decision, EvalContext, Risk, SecurityObject, Verdict
-from doberman.policy.drift import acted_verdict
-from doberman.policy.modes import DEFAULT_MODE
-from doberman.proxy.normalize import normalize
+from doberman.hosthooks import spine
+from doberman.models import Decision, Risk, SecurityObject, Verdict
 
 #: Tool names that carry no path/command/network surface to gate at all - an
 #: internal status call, never a mutation, execution, or egress. Deliberately
@@ -197,20 +191,8 @@ def _verdict_auth(decision: Decision) -> dict[str, Any]:
     }
 
 
-def _resolve_root_and_mode(cwd: object) -> tuple[str, str]:
-    """Resolve ``(repo_root, strictness_mode)`` from the hook payload's ``cwd``.
-
-    Mirrors ``claude_code._resolve_root_and_mode``: a missing/invalid ``cwd``
-    must NOT fall back to ``load_mode(".")`` (a different project's policy, or
-    none - possibly weaker than the real project's). OpenClaw's ``before_tool_call``
-    exposes no working-directory field of its own (confirmed absent from the
-    published event/context docs); the plugin shim sends ``process.cwd()`` on a
-    best-effort basis, so this still resolves real per-project policy when the
-    gateway happens to run from the project root, and falls back safely otherwise.
-    """
-    if isinstance(cwd, str) and cwd:
-        return cwd, load_mode(cwd)
-    return ".", DEFAULT_MODE.value
+# Back-compat alias: the flow moved to hosthooks.spine (W1.0a).
+_resolve_root_and_mode = spine.resolve_root_and_mode
 
 
 def _record_history(
@@ -229,24 +211,10 @@ def _record_history(
     (unlike the Claude Code hook) it is not recorded here - recording it would
     need a second round-trip through ``onResolution``, out of scope for this
     slice (see ``adapters/openclaw/README.md``). Wrapped in a broad except - a
-    recording failure must never affect the hook's return value.
+    recording failure must never affect the hook's return value (delegates to
+    hosthooks.spine, W1.0a — see that module for the actual best-effort write).
     """
-    import asyncio  # lazy import keeps the module scope light
-
-    from doberman.storage.log import record_decision  # lazy import
-
-    try:
-        asyncio.run(
-            record_decision(
-                decision,
-                action,
-                repo_root=repo_root,
-                auth_result=auth_result,
-                session_id=session_id,
-            )
-        )
-    except Exception:  # noqa: BLE001,S110 — history must never break the hook path
-        pass
+    spine.record_history(decision, action, repo_root, session_id, auth_result=auth_result)
 
 
 def evaluate_before_tool_call(payload: dict[str, Any]) -> dict[str, Any]:
@@ -288,38 +256,24 @@ def evaluate_before_tool_call(payload: dict[str, Any]) -> dict[str, Any]:
         ):
             return _verdict_block(_FAILSAFE_REASON)
 
-        repo_root, mode = _resolve_root_and_mode(payload.get("cwd"))
-        raw_session = payload.get("session_id")
-        session_id = raw_session if isinstance(raw_session, str) and raw_session else None
-
-        action = normalize(canonical, args)
-        # The objective rules inspect the UN-redacted call via
-        # metadata['raw_arguments'] (in-memory only, never logged). The active
-        # role rides along too (parity with the Claude Code hook / proxy).
-        ctx = EvalContext(
-            role=load_active_role(repo_root),
-            mode=mode,
-            metadata={"raw_arguments": args, "repo_root": repo_root},
+        result = spine.evaluate_action(
+            canonical, args, cwd=payload.get("cwd"), raw_session_id=payload.get("session_id")
         )
-        decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
-        decision = apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)
-        enforcement = resolve_enforcement_sync(repo_root)
-        acted = acted_verdict(decision, enforcement)
-
-        if acted is Verdict.PASS:
-            if enforcement == "monitor" and decision.final_verdict is not Verdict.PASS:
-                # A would-be AUTH/BLOCK softened by MONITOR is history-worthy:
-                # record the ORIGINAL (truthful) decision, outcome "executed"
-                # (a synthetic allow) - matches claude_code's monitor branch.
-                _record_history(decision, action, repo_root, session_id, auth_result="executed")
-            return _VERDICT_ALLOW  # raise-only: let OpenClaw's native flow continue
-        if acted is Verdict.AUTH:
-            return _verdict_auth(decision)  # delegate to OpenClaw's own /approve flow
-        result = _verdict_block(
-            f"{_format_reason(decision, decision.final_verdict.name)} {_NEXT_STEP}"
+        if result.acted is Verdict.PASS:
+            return _VERDICT_ALLOW  # raise-only; monitor history recorded by the spine
+        if result.acted is Verdict.AUTH:
+            return _verdict_auth(result.decision)  # delegate to OpenClaw's /approve flow
+        out = _verdict_block(
+            f"{_format_reason(result.decision, result.decision.final_verdict.name)} {_NEXT_STEP}"
         )
-        _record_history(decision, action, repo_root, session_id, auth_result="blocked")
-        return result
+        _record_history(
+            result.decision,
+            result.action,
+            result.repo_root,
+            result.session_id,
+            auth_result="blocked",
+        )
+        return out
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
         return _verdict_block(_FAILSAFE_REASON)
 
