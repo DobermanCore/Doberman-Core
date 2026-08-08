@@ -1165,6 +1165,14 @@ def uninstall_hooks(
     write_settings(settings_path, cleaned)
     typer.echo(f"wrote {settings_path}")
     typer.echo("Doberman hooks removed.")
+    typer.echo("")
+    typer.echo("What remains (manual, optional cleanup):")
+    typer.echo("  .doberman/              policy, decision log, taint state")
+    typer.echo("  ~/.doberman/metrics.db  device metrics")
+    typer.echo("  password / 2FA enrollment")
+    typer.echo(
+        "These are not removed automatically; delete them only if you no longer use Doberman."
+    )
 
 
 @app.command()
@@ -1331,7 +1339,7 @@ def setup(
     typer.echo("Restart your Claude Code session to pick up the hooks.")
     typer.echo(
         "Next steps: `doberman password set`  |  `doberman 2fa setup` (optional)  |  "
-        "`doberman status`"
+        "`doberman status`  |  `doberman uninstall-hooks` (exit)"
     )
 
 
