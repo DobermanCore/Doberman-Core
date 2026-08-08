@@ -29,6 +29,7 @@ SECURITY: the explanation names the *category* of danger, never echoes the
 command string or its arguments.
 """
 
+import fnmatch
 import posixpath
 import re
 import shlex
@@ -249,6 +250,25 @@ def _count_delete_operands(tokens: list[str]) -> int:
     return len([t for t in tokens[1:] if not t.startswith("-")])
 
 
+# Gitignored, unrecoverable-by-git data whose deletion git cannot undo: local
+# databases and secret/key material. Matched lexically on the operand basename.
+_UNRECOVERABLE_DELETE_GLOBS = ("*.db", "*.sqlite", "*.sqlite3", "*.key", ".env", ".env.*")
+
+
+def _rm_targets_unrecoverable_data(tokens: list[str]) -> bool:
+    """``rm`` whose operand basename matches an unrecoverable, gitignored data
+    file (local DB / secret / key)."""
+    # ponytail: lexical glob on operands only — no filesystem or git access in the
+    # decision path. Catches file targets; a directory operand (rm -rf data/) cannot
+    # be classified lexically and is deliberately out of scope (deferred — see ADR).
+    operands = [t for t in tokens[1:] if not t.startswith("-")]
+    return any(
+        fnmatch.fnmatch(posixpath.basename(op.strip().strip("'\"")), pattern)
+        for op in operands
+        for pattern in _UNRECOVERABLE_DELETE_GLOBS
+    )
+
+
 def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) -> bool:
     """``git push`` with a force flag targeting a protected branch."""
     if len(tokens) < 2 or tokens[0] != "git" or "push" not in tokens:
@@ -413,6 +433,12 @@ def _segment_verdict(
         return _auth(
             ReasonCode.bulk_operation,
             "Bulk delete at or above the configured threshold; authentication required.",
+        )
+    if cmd == "rm" and _rm_targets_unrecoverable_data(tokens):
+        return _auth(
+            ReasonCode.destructive_command,
+            "Deleting an unrecoverable, gitignored data file (local database, "
+            "secret, or key); authentication required.",
         )
     if cmd == "git" and _git_is_history_rewrite(tokens):
         return _auth(
