@@ -28,6 +28,7 @@ block is not a denial.** :func:`run_auth_challenge` therefore imposes a hard
 wall-clock deadline on every challenge and denies when it expires.
 """
 
+import asyncio
 import contextvars
 import logging
 import threading
@@ -205,17 +206,18 @@ def _run_with_deadline(
     that arrives after the deadline is never honoured — and it can never hold up
     interpreter exit.
 
-    Two known limits, both pre-existing and deliberately not widened here:
+    A ``BaseException`` from the worker is re-raised verbatim on the caller's
+    thread. :func:`run_auth_challenge` (the sole caller) converts a *non-cooperative*
+    one — ``SystemExit`` or any other non-``Exception`` ``BaseException`` a plugin
+    provider might raise — into a fail-closed denial there, so it can never escape
+    past a caller's ``except Exception``. ``asyncio.CancelledError`` alone still
+    propagates (cancellation is cooperative). See ADR 0064.
 
-    * A ``BaseException`` from the worker is re-raised verbatim, and every caller
-      catches only ``Exception`` — so a registered provider that raises
-      ``SystemExit`` still escapes the fail-closed handlers. Converting that to a
-      denial is a behavior change worth its own decision, not a side effect of
-      this one.
-    * An abandoned worker keeps running its channel to completion, so a late
-      answer can still touch state the challenge itself no longer reads (notably
-      the TOTP lockout counter). It cannot approve the action — the result is
-      discarded here — but it is not a clean kill.
+    One known limit remains, pre-existing and deliberately not widened here: an
+    abandoned worker keeps running its channel to completion, so a late answer can
+    still touch state the challenge itself no longer reads (notably the TOTP lockout
+    counter). It cannot approve the action — the result is discarded here — but it is
+    not a clean kill.
     """
     box: dict[str, Any] = {}
     # Copy the caller's context so `_current_challenge` (set just above) reaches
@@ -281,6 +283,32 @@ def run_auth_challenge(
                 action_id=action.id,
             ),
             label=action.id,
+        )
+    except asyncio.CancelledError:
+        raise  # cooperative cancellation must reach the event loop, never a denial
+    except BaseException as exc:  # noqa: BLE001 — fail closed on ANY non-cooperative BaseException
+        if isinstance(exc, Exception):
+            raise  # a regular error keeps propagating to the caller's own `except Exception`
+        # A non-``Exception`` BaseException (``SystemExit``, or a plugin provider's own
+        # BaseException subclass) would slip past every caller's ``except Exception`` and
+        # escape the fail-closed path entirely. Deny it here, at the one provider seam —
+        # tagged ``"error"`` so the audit tells it apart from a timeout or a human "no".
+        # ADR 0064; Prime Directive 1 (fail closed) is why this catch is this broad.
+        # ponytail: a BaseExceptionGroup wrapping a CancelledError also denies here rather
+        # than unwrapping to re-raise — the worker ran on a daemon thread whose result is
+        # discarded, so there is no live coroutine to cancel cooperatively; a fail-closed
+        # deny is the correct outcome, not an unwrap TODO.
+        logger.warning(
+            "auth challenge worker raised %s (action %s); denying (fail closed)",
+            type(exc).__name__,
+            action.id,
+        )
+        return AuthResult(
+            approved=False,
+            tier=tier,
+            method="error",
+            at=at or datetime.now(timezone.utc),
+            action_id=action.id,
         )
     finally:
         _current_challenge.reset(token)
