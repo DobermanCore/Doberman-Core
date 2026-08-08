@@ -227,6 +227,10 @@ Set it with **`doberman enforcement <enforce|monitor|off>`** (no argument prints
 
 The adaptive layer's four SL5 "care" weights (`confidentiality`, `reversibility`, `interruption_tolerance`, `blast_radius`, each in `[0, 1]`) tune how readily *discretionary* behavioral signals step up — the objective hard-block floor never moves. Show the active vector with `doberman prefs`, set one weight with `doberman prefs <dimension> <value>`. The same permanent-lowering rule as `mode` applies: **lowering** a weight requires TOTP if enrolled, otherwise the local Doberman password; with neither factor it fails closed, and confirmation alone never suffices. **Raising** a weight is a strengthen and always applies immediately. Every attempt, approved or denied, is recorded in the append-only ledger.
 
+### Recovering from sticky taint — `doberman taint clear`
+
+Reading a secret taints a session for the rest of it, by design — a timed reset would just be a bypass an attacker waits out. In Strict/Paranoid that means a single legitimate secret read can raise every later egress in that repo to AUTH or BLOCK, with no in-band way to reset it. `doberman taint clear` is the explicit, human-only escape hatch: it requires an enrolled possession factor (TOTP if enrolled, otherwise the local Doberman password) and, once verified, wipes **both** taint stores for the current repo — the accumulated-taint ledger and the read-vs-send fingerprint match. There is no confirm-only path, no `--scope`/`--session` narrowing, and a denied or failed gate leaves every row untouched. Because `taint` is already a control-plane-blocked subcommand, a mediated agent can never shell out to run this itself — it only runs from your own terminal.
+
 ---
 
 ## Who is this for?

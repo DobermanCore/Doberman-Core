@@ -45,6 +45,8 @@ CLI_HELP_TARGETS = (
     ("hook", "pre"),
     ("hook", "post"),
     ("hook", "openclaw"),
+    ("taint",),
+    ("taint", "clear"),
 )
 
 runner = CliRunner()
