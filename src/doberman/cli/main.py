@@ -942,7 +942,10 @@ def dash(
 
     token = secrets.token_urlsafe(32)
     typer.echo(f"Dashboard: http://{_DASH_HOST}:{port}/?token={token}")
-    uvicorn.run(create_app(token, path), host=_DASH_HOST, port=port)
+    # access_log=False: the single-use token rides in the URL query string, so
+    # uvicorn's request access log would write it verbatim into a log line.
+    # Disable it so the bearer token never lands in a log.
+    uvicorn.run(create_app(token, path), host=_DASH_HOST, port=port, access_log=False)
 
 
 @app.command()

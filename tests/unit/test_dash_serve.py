@@ -105,6 +105,26 @@ def test_dash_binds_localhost_only():
     assert cli_main._DASH_HOST == "127.0.0.1"
 
 
+def test_dash_disables_uvicorn_access_log(monkeypatch, tmp_path):
+    # The single-use bearer token rides in the URL query string, so uvicorn's
+    # default request access log would write it into a log line
+    # (`GET /?token=<secret> ...`). The `dash` command must disable the access
+    # log so the token never lands in a log. Never bind a real socket: capture
+    # the uvicorn.run call and stub the heartbeat side effect.
+    import uvicorn
+
+    from doberman.cli.main import app as cli_app
+
+    captured: dict = {}
+    monkeypatch.setattr(uvicorn, "run", lambda _app, **kwargs: captured.update(kwargs))
+    monkeypatch.setattr("doberman.storage.heartbeat.touch_heartbeat", lambda _path: None)
+
+    result = runner.invoke(cli_app, ["dash", "--port", "0", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert captured.get("access_log") is False
+
+
 def test_shell_pending_list_is_polite_live_region():
     assert 'id="pending-list" aria-live="polite"' in app_module._HTML_SHELL
 
