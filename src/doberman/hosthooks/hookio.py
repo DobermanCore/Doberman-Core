@@ -35,7 +35,7 @@ FAILSAFE_REASON = DOG + " Doberman: failing closed — could not evaluate this a
 #: fallback for any reason without a more specific hint below.
 _BLOCK_NEXT_STEP = (
     "Next step: this BLOCK has no in-session override. If this is trusted "
-    "administrative recovery work, run it outside the hooked Claude Code session."
+    "administrative recovery work, run it outside the hooked agent session."
 )
 #: Reason-specific BLOCK next steps (issues #65/#67: adapt the guidance to the actual
 #: block). An exfiltration block is not "recovery work to run elsewhere" — it stays
@@ -174,7 +174,7 @@ def _auth_denied_reason(decision: Decision, *, channel_error: bool, timed_out: b
         tail = (
             "Next step: Doberman's approval dialog could not be shown (no GUI or "
             "terminal channel). Approve from an interactive session, or run the action "
-            "yourself outside the hooked Claude Code session."
+            "yourself outside the hooked agent session."
         )
     elif timed_out:
         tail = (
