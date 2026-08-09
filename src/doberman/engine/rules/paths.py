@@ -59,6 +59,22 @@ CONTROL_PLANE_GLOBS: tuple[str, ...] = (
     "**/.claude",
     "**/.claude/settings.json",
     "**/.claude/settings.local.json",
+    # The Codex CLI control plane (W1.3): its hook config (both scopes),
+    # ``config.toml`` (it configures hooks, trust, AND the sandbox), the ``.codex``
+    # dir itself, and the plugin dirs that can carry plugin-bundled hooks. Editing
+    # or deleting any of these lets the agent unhook, un-trust, or reconfigure its
+    # own leash — so they are hard-blocked, mirroring the ``.claude`` split. The
+    # rest of ``.codex/**`` is SENSITIVE (AUTH), below.
+    ".codex",
+    ".codex/hooks.json",
+    ".codex/config.toml",
+    ".codex/plugins",
+    ".codex/plugins/**",
+    "**/.codex",
+    "**/.codex/hooks.json",
+    "**/.codex/config.toml",
+    "**/.codex/plugins",
+    "**/.codex/plugins/**",
 )
 
 #: Paths that are NEVER allowed without going through the human-approved path.
@@ -126,6 +142,11 @@ DEFAULT_SENSITIVE_GLOBS: tuple[str, ...] = (
     # hard-blocked (checked first); everything else under .claude/ → AUTH.
     ".claude/**",
     "**/.claude/**",
+    # The rest of the Codex control directory: harness configuration -> AUTH.
+    # hooks.json / config.toml / the plugin dirs above are hard-blocked (checked
+    # first); everything else under .codex/ warrants authentication.
+    ".codex/**",
+    "**/.codex/**",
 )
 
 #: Used as the repo root when the context does not supply one. ".": the process
