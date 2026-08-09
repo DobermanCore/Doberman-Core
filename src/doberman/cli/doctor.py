@@ -65,16 +65,65 @@ def _safe_check(name: str, critical: bool, fn):
 
 def _check_hooks(path: str) -> CheckResult:
     from doberman.hosthooks.install import hook_install_states
+    from doberman.hosthooks.install_codex import codex_hook_install_states
 
     installed = [scope for scope, _p, ok in hook_install_states(path) if ok]
+    installed += [f"codex:{scope}" for scope, _p, ok in codex_hook_install_states(path) if ok]
     if installed:
         return CheckResult("Host hooks", CheckStatus.OK, f"installed ({', '.join(installed)})")
     return CheckResult(
         "Host hooks",
         CheckStatus.FAIL,
-        "not installed in any scope — run `doberman install-hooks`",
+        "not installed in any scope — run `doberman install-hooks` (add `--host codex` for Codex)",
         critical=True,
     )
+
+
+def _check_codex_version() -> CheckResult:
+    """Report the installed Codex CLI version against the adapter's supported
+    range. Always **non-critical** (WARN, never FAIL): a newer or absent Codex is
+    not "Doberman may not be protecting you" — Codex support is opt-in."""
+    import subprocess
+
+    from doberman.hosthooks.codex import SUPPORTED_CODEX_RANGE
+
+    try:
+        # noqa on the argv line: fixed argv, no shell; `codex` is intentionally a
+        # PATH lookup (the CLI is installed globally, not at a fixed path).
+        proc = subprocess.run(  # noqa: S603
+            ["codex", "--version"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except OSError:  # FileNotFoundError (codex not on PATH) is an OSError subclass
+        return CheckResult(
+            "Codex CLI", CheckStatus.WARN, "not found (only needed for `--host codex`)"
+        )
+    except subprocess.SubprocessError:
+        return CheckResult("Codex CLI", CheckStatus.WARN, "version could not be determined")
+
+    import re
+
+    match = re.search(r"(\d+\.\d+\.\d+)", proc.stdout or proc.stderr or "")
+    if not match:
+        return CheckResult("Codex CLI", CheckStatus.WARN, "version string not recognized")
+    version = match.group(1)
+    low, high = SUPPORTED_CODEX_RANGE
+    if _version_tuple(low) <= _version_tuple(version) < _version_tuple(high):
+        return CheckResult("Codex CLI", CheckStatus.OK, f"{version} (supported)")
+    return CheckResult(
+        "Codex CLI",
+        CheckStatus.WARN,
+        f"{version} outside tested range [{low}, {high}) — adapter may need an update",
+    )
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(p) for p in v.split("."))
+    except ValueError:
+        return (0,)
 
 
 def _check_config(path: str) -> CheckResult:
@@ -189,6 +238,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("Enforcement", False, lambda: _check_enforcement(path)),
         _safe_check("2FA", False, _check_2fa),
         _safe_check("Fingerprint key", False, _check_fingerprint_key),
+        _safe_check("Codex CLI", False, _check_codex_version),
     ]
 
 

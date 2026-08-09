@@ -187,6 +187,13 @@ def run_codex_pre(stdin_text: str) -> str | None:
 
     A payload that does not parse to a JSON object is denied: an unidentifiable
     call fails closed rather than slipping through.
+
+    **Single-flight (W1.2):** when both install channels are wired, Codex fires
+    this hook twice for one tool call. The first invocation records its answer
+    under a keyed marker; the second replays it byte-for-byte instead of
+    re-evaluating (avoiding a doubled AUTH prompt / history row / taint bump). A
+    missing/expired/unavailable marker just means a full evaluation — never a
+    skipped one.
     """
     try:
         payload = json.loads(stdin_text)
@@ -194,5 +201,15 @@ def run_codex_pre(stdin_text: str) -> str | None:
         return json.dumps(hookio.deny(_EVENT))
     if not isinstance(payload, dict):
         return json.dumps(hookio.deny(_EVENT))
+
+    from doberman.hosthooks import singleflight
+
+    key = singleflight.event_key(payload)
+    prior = singleflight.replay(key)
+    if prior is not None:
+        return prior or None  # "" -> abstain (print nothing); else replay the JSON
+
     out = evaluate_pre(payload)
-    return json.dumps(out) if out is not None else None
+    text = json.dumps(out) if out is not None else None
+    singleflight.record(key, text)
+    return text

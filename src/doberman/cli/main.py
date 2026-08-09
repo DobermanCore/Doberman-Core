@@ -1133,22 +1133,35 @@ def policy_history(
 @app.command("install-hooks", rich_help_panel="Getting started")
 def install_hooks(
     global_: bool = typer.Option(
-        False, "--global", "-g", help="Install into ~/.claude/settings.json (user-wide)."
+        False,
+        "--global",
+        "-g",
+        help="Install into the user-wide file (Claude: ~/.claude; Codex: ~/.codex).",
     ),
     local: bool = typer.Option(
-        False, "--local", help="Install into .claude/settings.local.json (project-local)."
+        False, "--local", help="Install into .claude/settings.local.json (Claude only)."
     ),
+    host: str = typer.Option("claude", "--host", help="Which host to wire: claude | codex."),
     path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print what would change; write nothing."
     ),
 ) -> None:
-    """Wire Doberman's PreToolUse and PostToolUse hooks into a Claude Code settings.json.
+    """Wire Doberman's hooks into a host so every tool call is gated before it runs.
 
-    Idempotent - safe to run more than once.  Default scope is the project-level
-    ``.claude/settings.json``; use ``--global`` for the user-wide file or
-    ``--local`` for ``.claude/settings.local.json``.
+    Idempotent - safe to run more than once. Claude Code (default): PreToolUse +
+    PostToolUse + SessionStart into a ``settings.json`` (``--global`` user-wide,
+    ``--local`` project-local, else project ``.claude/settings.json``). Codex CLI
+    (``--host codex``): a PreToolUse hook into a ``hooks.json`` (``--global`` ->
+    ``~/.codex/hooks.json``, else ``<repo>/.codex/hooks.json``).
     """
+    if host == "codex":
+        _install_codex(global_=global_, local=local, path=path, dry_run=dry_run)
+        return
+    if host != "claude":
+        typer.echo(f"error: unknown --host {host!r}; expected 'claude' or 'codex'.", err=True)
+        raise typer.Exit(2)
+
     from doberman.hosthooks.install import (
         load_settings,
         merge_doberman_hooks,
@@ -1181,24 +1194,119 @@ def install_hooks(
     typer.echo("The session dashboard will print at the start of every session.")
 
 
+def _install_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> None:
+    """`install-hooks --host codex`: wire ``doberman hook codex-pre`` into a
+    Codex hooks.json. ``--global`` -> ``~/.codex/hooks.json`` (user), else
+    ``<repo>/.codex/hooks.json`` (repo). ``--local`` has no Codex equivalent."""
+    if local:
+        typer.echo(
+            "error: --local has no Codex equivalent; use --global (user) or the default (repo).",
+            err=True,
+        )
+        raise typer.Exit(2)
+    from doberman.hosthooks.install import load_settings, write_settings
+    from doberman.hosthooks.install_codex import merge_codex_hooks, resolve_codex_hooks_path
+
+    scope = "user" if global_ else "repo"
+    hooks_path = resolve_codex_hooks_path(scope, path)
+
+    try:
+        current = load_settings(hooks_path)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    merged = merge_codex_hooks(current)
+
+    if dry_run:
+        typer.echo(f"[dry-run] target: {hooks_path}")
+        typer.echo("[dry-run] would add:")
+        typer.echo("  PreToolUse -> doberman hook codex-pre")
+        return
+
+    write_settings(hooks_path, merged)
+    typer.echo(f"wrote {hooks_path}")
+    typer.echo("Doberman will now gate Codex's tool calls in this scope.")
+    typer.echo("")
+    typer.echo("Codex requires you to TRUST this hook before it runs:")
+    typer.echo("  run a Codex command and approve the hook when prompted, or launch with")
+    typer.echo("  --dangerously-bypass-hook-trust only if you already vet the hook source.")
+    typer.echo("Verify it's live: ask Codex to `cat .env` and confirm it is blocked.")
+
+
+def _uninstall_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> None:
+    """`uninstall-hooks --host codex`: remove Doberman's Codex hook group."""
+    if local:
+        typer.echo("error: --local has no Codex equivalent.", err=True)
+        raise typer.Exit(2)
+    from doberman.hosthooks.install import _is_doberman_group, load_settings, write_settings
+    from doberman.hosthooks.install_codex import remove_codex_hooks, resolve_codex_hooks_path
+
+    scope = "user" if global_ else "repo"
+    hooks_path = resolve_codex_hooks_path(scope, path)
+
+    try:
+        current = load_settings(hooks_path)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    hooks_section = current.get("hooks") or {}
+    had_doberman = any(
+        _is_doberman_group(g)
+        for groups in hooks_section.values()
+        if isinstance(groups, list)
+        for g in groups
+    )
+    if not had_doberman:
+        typer.echo("No Doberman Codex hooks found - nothing to remove.")
+        return
+
+    cleaned = remove_codex_hooks(current)
+    if dry_run:
+        typer.echo(f"[dry-run] target: {hooks_path}")
+        typer.echo("[dry-run] would remove:  PreToolUse -> doberman hook codex-pre")
+        return
+
+    write_settings(hooks_path, cleaned)
+    typer.echo(f"wrote {hooks_path}")
+    typer.echo("Doberman Codex hooks removed.")
+    typer.echo(
+        "Note: a plugin-bundled hook (if installed) is removed by removing the plugin "
+        "(`codex plugin remove`), not by this command."
+    )
+
+
 @app.command("uninstall-hooks", rich_help_panel="Getting started")
 def uninstall_hooks(
     global_: bool = typer.Option(
-        False, "--global", "-g", help="Remove from ~/.claude/settings.json (user-wide)."
+        False,
+        "--global",
+        "-g",
+        help="Remove from the user-wide file (Claude: ~/.claude; Codex: ~/.codex).",
     ),
     local: bool = typer.Option(
-        False, "--local", help="Remove from .claude/settings.local.json (project-local)."
+        False, "--local", help="Remove from .claude/settings.local.json (Claude only)."
     ),
+    host: str = typer.Option("claude", "--host", help="Which host to unwire: claude | codex."),
     path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print what would change; write nothing."
     ),
 ) -> None:
-    """Remove Doberman's PreToolUse and PostToolUse hooks from a Claude Code settings.json.
+    """Remove Doberman's hooks from a host.
 
     Idempotent - safe to run even when hooks are not present.  Non-Doberman hooks
-    and every other setting are left untouched.
+    and every other setting are left untouched. ``--host codex`` removes the Codex
+    hook group instead of the Claude Code hooks.
     """
+    if host == "codex":
+        _uninstall_codex(global_=global_, local=local, path=path, dry_run=dry_run)
+        return
+    if host != "claude":
+        typer.echo(f"error: unknown --host {host!r}; expected 'claude' or 'codex'.", err=True)
+        raise typer.Exit(2)
+
     from doberman.hosthooks.install import (
         _is_doberman_group,
         load_settings,
