@@ -1,0 +1,12 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000002",
+  "turn_id": "00000000-0000-0000-0000-0000000000a2",
+  "transcript_path": null,
+  "cwd": "/repo/placeholder",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-5.6-sol",
+  "permission_mode": "default",
+  "tool_name": "apply_patch",
+  "tool_input": {"command": "*** Begin Patch\n*** Add File: note.txt\n+hello\n*** End Patch"},
+  "tool_use_id": "exec-00000000-0000-0000-0000-0000000000b2"
+}

@@ -693,6 +693,28 @@ def hook_openclaw() -> None:
     raise typer.Exit(0)
 
 
+@hook_app.command("codex-pre")
+def hook_codex_pre() -> None:
+    """Codex CLI PreToolUse hook - gate one tool call (allow / ask / deny).
+
+    Reads the Codex hook payload as JSON on stdin and writes the hook decision
+    as JSON to stdout (nothing on a PASS - Doberman is raise-only). Codex's hook
+    layer is a Claude Code compatibility shim, so this shares the same decision
+    spine and deny shape as ``hook pre``; it runs only the fast deterministic
+    objective floor (no numpy/scipy/river) and fails closed on any malformed
+    input or engine error.
+
+    Wire it in with ``doberman install-hooks --host codex`` (a later slice).
+    """
+    _configure_stderr_logging()
+    from doberman.hosthooks.codex import run_codex_pre
+
+    out = run_codex_pre(sys.stdin.read())
+    if out is not None:
+        sys.stdout.write(out + "\n")
+    raise typer.Exit(0)
+
+
 @password_app.command("set")
 def password_set(
     force: bool = typer.Option(

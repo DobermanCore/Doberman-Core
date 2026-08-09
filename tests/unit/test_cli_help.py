@@ -45,6 +45,7 @@ CLI_HELP_TARGETS = (
     ("hook", "pre"),
     ("hook", "post"),
     ("hook", "openclaw"),
+    ("hook", "codex-pre"),
     ("taint",),
     ("taint", "clear"),
 )
