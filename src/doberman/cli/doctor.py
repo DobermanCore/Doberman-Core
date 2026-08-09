@@ -82,21 +82,36 @@ def _check_hooks(path: str) -> CheckResult:
 def _check_codex_version() -> CheckResult:
     """Report the installed Codex CLI version against the adapter's supported
     range. Always **non-critical** (WARN, never FAIL): a newer or absent Codex is
-    not "Doberman may not be protecting you" — Codex support is opt-in."""
+    not "Doberman may not be protecting you" — Codex support is opt-in.
+
+    Windows regression (live-tested): a bare ``["codex", "--version"]`` argv
+    cannot resolve npm's ``codex.cmd`` shim — Windows ``CreateProcess`` does not
+    apply ``PATHEXT`` to a bare command name the way a shell does — so this
+    reported a false "not found" on a box where ``codex`` ran fine from a
+    terminal. Resolving via :func:`shutil.which` first (it *does* apply
+    ``PATHEXT``) fixes this on every platform, POSIX included.
+    """
+    import shutil
     import subprocess
 
     from doberman.hosthooks.codex import SUPPORTED_CODEX_RANGE
 
+    resolved = shutil.which("codex")
+    if resolved is None:
+        return CheckResult(
+            "Codex CLI", CheckStatus.WARN, "not found (only needed for `--host codex`)"
+        )
+
     try:
-        # noqa on the argv line: fixed argv, no shell; `codex` is intentionally a
-        # PATH lookup (the CLI is installed globally, not at a fixed path).
+        # noqa on the argv line: fixed argv (from shutil.which, not user input), no
+        # shell. Timeout raised from 2s -> 5s: the npm shim is a colder start.
         proc = subprocess.run(  # noqa: S603
-            ["codex", "--version"],  # noqa: S607
+            [resolved, "--version"],
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=5,
         )
-    except OSError:  # FileNotFoundError (codex not on PATH) is an OSError subclass
+    except OSError:  # resolved path became unreachable between the which() and run()
         return CheckResult(
             "Codex CLI", CheckStatus.WARN, "not found (only needed for `--host codex`)"
         )
