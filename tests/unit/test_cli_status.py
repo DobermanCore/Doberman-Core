@@ -7,11 +7,13 @@ placeholder lines.
 """
 
 import asyncio
+import json
 from datetime import datetime, timezone
 
 from typer.testing import CliRunner
 
 from doberman import __version__
+from doberman.auth import totp
 from doberman.cli.main import app
 from doberman.hosthooks.install import (
     merge_doberman_hooks,
@@ -159,3 +161,83 @@ def test_status_shows_no_taint_by_default(tmp_path):
     result = runner.invoke(app, ["status", "--path", str(tmp_path)])
     assert result.exit_code == 0
     assert "Taint: (none)" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# #258 — status --json + sectioned text; secret never leaks
+# ---------------------------------------------------------------------------
+
+_EXPECTED_STATUS_KEYS = {
+    "version",
+    "path",
+    "doberman_version",
+    "role",
+    "mode",
+    "prefs",
+    "prefs_preset",
+    "policy",
+    "twofa",
+    "password",
+    "elevations",
+    "taint",
+    "hooks",
+    "recent_decisions",
+    "missed_challenges_24h",
+}
+
+
+def test_status_json_parses_with_expected_keys(tmp_path):
+    result = runner.invoke(app, ["status", "--path", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["version"] == 1
+    assert payload["path"] == str(tmp_path)
+    assert set(payload) == _EXPECTED_STATUS_KEYS
+    assert isinstance(payload["prefs"], dict)
+    assert isinstance(payload["elevations"], list)
+    assert isinstance(payload["hooks"], list)
+    assert isinstance(payload["recent_decisions"], list)
+    assert isinstance(payload["taint"], dict)
+    assert isinstance(payload["twofa"], bool)
+    assert isinstance(payload["password"], bool)
+    assert isinstance(payload["missed_challenges_24h"], int)
+    # deterministic separators / keys (mirror scan --json)
+    again = runner.invoke(app, ["status", "--path", str(tmp_path), "--json"])
+    assert again.stdout == result.stdout
+
+
+def test_status_text_has_blank_line_section_breaks(tmp_path):
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    # Each major block is separated by a blank line so the dump scans as sections.
+    assert "\n\nRole:" in result.stdout
+    assert "\n\nMode:" in result.stdout
+    assert "\n\nPrefs:" in result.stdout
+    assert "\n\nPolicy:" in result.stdout
+    assert "\n\n2FA:" in result.stdout
+    assert "\n\nPassword:" in result.stdout
+    assert "\n\nElevations:" in result.stdout
+    assert "\n\nTaint:" in result.stdout
+    assert "\n\nHooks:" in result.stdout
+    assert "\n\nRecent decisions:" in result.stdout
+
+
+def test_status_never_leaks_enrolled_secret_in_either_view(tmp_path):
+    """A synthetic TOTP secret seeded into state must never appear in text or JSON."""
+    totp.enroll()
+    secret = totp._read_secret()
+    assert secret is not None and len(secret) >= 8
+
+    text = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert text.exit_code == 0, text.output
+    assert secret not in text.stdout
+    assert secret not in text.output
+
+    js = runner.invoke(app, ["status", "--path", str(tmp_path), "--json"])
+    assert js.exit_code == 0, js.output
+    assert secret not in js.stdout
+    payload = json.loads(js.stdout)
+    # Enrollment is reported as a boolean, never the secret material.
+    assert payload["twofa"] is True
+    dumped = json.dumps(payload)
+    assert secret not in dumped
