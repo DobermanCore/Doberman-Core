@@ -266,6 +266,10 @@ Doberman is **defense-in-depth, not airtight** — no single rule is a guarantee
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, CI checks, project
 invariants, and the PR workflow.
 
+CI also runs `python scripts/check_markdown_links.py`, a deterministic offline check for
+repository-local Markdown links and heading anchors. It skips external URLs and fenced code
+blocks and never makes network requests.
+
 **Come say hi.** Questions, ideas, a rule pack to share, or an attack you caught in the wild?
 [**Join the pack on Discord →**](https://discord.gg/Sfy5XGNqty) — it's where the roadmap gets shaped.
 

@@ -11,7 +11,7 @@ agent, verify it, and explore the health check, dashboard, and TUI. New here? Th
 - [MCP proxy - wrap any tool server](#mcp-proxy) - Claude Desktop, Cursor, Codex, any MCP client
 - [Claude Code hooks](#claude-code-hooks) - gate every tool call, no MCP reconfig
 - [OpenClaw](#openclaw)
-- [Check it's healthy - `doberman doctor`](#4-check-its-healthy--doberman-doctor)
+- [Check it's healthy - `doberman doctor`](#4-check-its-healthy-doberman-doctor)
 - [Dashboard, TUI, scan & demo](#6-dashboard-preview)
 
 ---
