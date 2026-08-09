@@ -83,6 +83,7 @@ def test_strong_credential_output_still_blocked(cwd):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.guarantee("output-secret-scan", host="claude-code")
 def test_secret_string_response_is_blocked(cwd):
     secret = _SYNTHETIC_SECRET
     out = _post(

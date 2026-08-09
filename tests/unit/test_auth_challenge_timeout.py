@@ -111,6 +111,7 @@ class HangingPrompter:
 # --- the core contract --------------------------------------------------------------
 
 
+@pytest.mark.guarantee("auth-deadline", host="claude-code")
 def test_a_blocked_prompter_denies_within_the_deadline():
     """The AN-4 regression: silence resolves to a denial instead of hanging for ever."""
     prompter = HangingPrompter()
@@ -123,6 +124,7 @@ def test_a_blocked_prompter_denies_within_the_deadline():
         prompter.release.set()  # never leave the worker parked on the event
 
 
+@pytest.mark.guarantee("timeout-vs-deny-logging", host="claude-code")
 def test_a_timeout_is_distinguishable_from_a_human_denial():
     """The audit log must not read an unwatched channel as "the human said no"."""
 

@@ -12,6 +12,8 @@ AUTHs a weak secret (a named credential would already BLOCK on a single call), s
 
 import asyncio
 
+import pytest
+
 from doberman.config import save_mode
 from doberman.hosthooks.claude_code import evaluate_post, evaluate_pre
 from doberman.storage.taint import (
@@ -52,6 +54,7 @@ def _hso(out):
     return out["hookSpecificOutput"]
 
 
+@pytest.mark.guarantee("read-vs-send-fingerprint-block", host="claude-code")
 def test_read_then_send_same_secret_is_confirmed_block_in_balanced(tmp_path):
     _read_secret(tmp_path, _SECRET, session_id="s1")
     out = _egress(tmp_path, _SECRET, session_id="s1")

@@ -9,6 +9,8 @@ import json
 import logging
 from datetime import datetime, timezone
 
+import pytest
+
 from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.engine.decision_engine import StaticGuardrail
 from doberman.models import GuardrailResult, ReasonCode, Risk, Verdict
@@ -64,6 +66,7 @@ async def test_pass_forwards_and_records():
         assert fake.calls == [("fs_write", {"path": "a.txt", "content": "x"})]
 
 
+@pytest.mark.guarantee("destructive-command-gate", host="mcp-proxy")
 async def test_block_returns_error_and_nothing_recorded(monkeypatch):
     monkeypatch.setattr(executor, "DEFAULT_OBJECTIVE", BLOCKING)
     async with proxied_session() as (fake, agent):

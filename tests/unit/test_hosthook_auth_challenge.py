@@ -98,6 +98,7 @@ def test_unavailable_channel_denies_with_dialog_hint(cwd, monkeypatch):
     assert "could not be shown" in out["permissionDecisionReason"]
 
 
+@pytest.mark.guarantee("auth-action-bound", host="claude-code")
 def test_approval_is_bound_to_the_action_id(cwd, monkeypatch):
     # A result whose action_id is for a DIFFERENT call must never be honored, even
     # though it is "approved" — the single-use approval is bound to one action.

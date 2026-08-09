@@ -73,6 +73,8 @@ Those three verdicts aren't advice a model can talk its way past — each is enf
 - **Fail closed** — any error, uncertainty, or unhandled case denies the action. There is no path to a tool around the decision engine. *Including silence:* an approval prompt nobody answers is bounded by a hard deadline (2 minutes for the desktop dialog, 20 minutes as the whole-challenge backstop) and resolves to a **denial**, logged distinctly as `timeout` rather than `denied` — an indefinite block is not a denial, and unattended is exactly how agents usually run.
 - **Raise-only learning** — guardrails and adaptive learning can auto-*tighten*, never silently loosen. Every permanent policy weakening requires explicit, possession-factor-gated, audited human approval (TOTP if enrolled, otherwise the local Doberman password).
 
+**Which guarantee holds on which host?** The [parity matrix](docs/PARITY.md) maps each protection to each host Doberman fronts (Claude Code · Codex · MCP proxy · OpenClaw). Every ✅ links to the CI test that proves it; ◻ cells are open, contributor-sized work (labeled `parity`), and the matrix is regenerated from the tests on every build, so it can't drift from what's actually proven.
+
 ---
 
 ## Quick Start

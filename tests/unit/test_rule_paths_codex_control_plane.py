@@ -58,6 +58,7 @@ def _ctx(root):
 
 
 @pytest.mark.parametrize("path", BLOCKED_CODEX)
+@pytest.mark.guarantee("control-plane-self-protection", host="codex")
 def test_codex_control_plane_write_is_blocked(path, tmp_path):
     result = RULE.evaluate(_action(path), _ctx(tmp_path))
     assert result.verdict is Verdict.BLOCK

@@ -75,6 +75,7 @@ def _ok_result(text: str) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], isError=False)
 
 
+@pytest.mark.guarantee("secret-egress-taint-floor", host="mcp-proxy")
 async def test_cross_call_exfil_blocked_in_strict_mode():
     # Call 1: a local read whose result carries a secret. Nothing in the
     # request itself is secret-shaped, so the PRE-execution decision is PASS

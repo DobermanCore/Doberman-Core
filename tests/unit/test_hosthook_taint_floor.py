@@ -12,6 +12,8 @@ the PostToolUse hook records, then assert the PreToolUse decision.
 
 import asyncio
 
+import pytest
+
 from doberman.config import save_mode
 from doberman.hosthooks.claude_code import evaluate_post, evaluate_pre
 from doberman.storage.taint import TAINT_SECRET_ACCESS, entity_scope, record_taints
@@ -56,6 +58,7 @@ def test_tainted_session_egress_is_authed_in_balanced(tmp_path):
     assert "multi_step_exfil" in _reason(out)
 
 
+@pytest.mark.guarantee("secret-egress-taint-floor", host="claude-code")
 def test_tainted_session_egress_is_blocked_in_strict(tmp_path):
     # Strict: the same tainted-session egress is a hard BLOCK (no auth recourse) —
     # mirrors the lethal-trifecta hard block (ADR 0021).
