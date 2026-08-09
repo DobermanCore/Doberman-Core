@@ -41,16 +41,25 @@ from collections.abc import Sequence
 from doberman.engine.decision_engine import Guardrail, combine
 from doberman.engine.detectors import BUILTIN_DETECTOR_TYPES
 from doberman.engine.registry import discover_detectors
+
+# Re-exported from the models-only leaf module: the objective-rules package now
+# shares the same predicate without importing this ML-heavy module. The names
+# stay importable from here so existing callers/tests that do
+# ``from doberman.engine.subjective import trifecta_fires`` (or the frozensets)
+# keep resolving.
+from doberman.engine.trifecta import (  # noqa: F401 — re-export for back-compat
+    TRIFECTA_DESTINATIONS,
+    TRIFECTA_PROVENANCE,
+    TRIFECTA_TARGETS,
+    trifecta_fires,
+)
 from doberman.models import (
     Algebra,
-    DestinationClass,
     EvalContext,
     GuardrailResult,
-    Provenance,
     ReasonCode,
     Risk,
     SecurityObject,
-    TargetClass,
     Verdict,
 )
 from doberman.policy.modes import thresholds_for
@@ -65,24 +74,6 @@ from doberman.subjective.infer import is_unclassified, sensitivity
 logger = logging.getLogger("doberman.engine.subjective")
 
 _PASS = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
-
-#: The lethal-trifecta members (Willison 2025): private data + untrusted
-#: content + external communication. NOT tunable by presets, weights, revealed
-#: learning, scope tokens, or the step-up budget.
-TRIFECTA_TARGETS = frozenset({TargetClass.sensitive, TargetClass.secret})
-TRIFECTA_PROVENANCE = frozenset({Provenance.untrusted_data, Provenance.mixed})
-TRIFECTA_DESTINATIONS = frozenset(
-    {DestinationClass.known_external, DestinationClass.unknown_external}
-)
-
-
-def trifecta_fires(algebra: Algebra) -> bool:
-    """True when the action carries the full lethal-trifecta co-occurrence."""
-    return (
-        algebra.target_class in TRIFECTA_TARGETS
-        and algebra.provenance in TRIFECTA_PROVENANCE
-        and algebra.destination_class in TRIFECTA_DESTINATIONS
-    )
 
 
 def _isolate(detector: Guardrail, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:

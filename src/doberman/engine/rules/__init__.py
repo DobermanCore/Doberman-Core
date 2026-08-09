@@ -20,6 +20,7 @@ from doberman.engine.rules.policy_source import PolicySourceRule
 from doberman.engine.rules.role_boundary import RoleBoundaryRule
 from doberman.engine.rules.secrets import SecretLeakageRule
 from doberman.engine.rules.token_channels import TokenChannelRule
+from doberman.engine.rules.trifecta_floor import TrifectaFloorRule
 
 #: The built-in rule set, in a stable order. ``ObjectiveGuardrail`` instantiates
 #: these with their defaults; F6 will later override the policy lists. The role
@@ -34,6 +35,7 @@ BUILTIN_RULE_TYPES = (
     RoleBoundaryRule,
     PolicySourceRule,
     TokenChannelRule,
+    TrifectaFloorRule,
 )
 
 __all__ = [
@@ -46,4 +48,5 @@ __all__ = [
     "RoleBoundaryRule",
     "SecretLeakageRule",
     "TokenChannelRule",
+    "TrifectaFloorRule",
 ]
