@@ -40,6 +40,19 @@ def test_benign_shell_abstains(tmp_path):
     assert codex.evaluate_pre(payload) is None  # raise-only: abstain on PASS
 
 
+def test_windows_powershell_delete_is_gated(tmp_path):
+    # Codex on Windows runs Bash tool calls through PowerShell; the destructive-
+    # command rule's POSIX-only vocabulary (rm/dd/mkfs/git) previously let
+    # `Remove-Item` pass unmediated (live-test finding). An unrecoverable-data
+    # target (.env) must not abstain — it needs a decision, not silence.
+    payload = _load("pre_bash.json")
+    payload["cwd"] = str(tmp_path)
+    payload["tool_input"]["command"] = "Remove-Item .env"
+    out = codex.evaluate_pre(payload)
+    assert out is not None, "a Windows destructive delete must not abstain"
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 @pytest.mark.parametrize("bad", ["", "not json", "[1,2]", '"str"', "123"])
 def test_malformed_stdin_fails_closed(bad):
     out = codex.run_codex_pre(bad)

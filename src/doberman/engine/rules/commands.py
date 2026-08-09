@@ -85,6 +85,11 @@ _TRANSPARENT_WRAPPERS = {"sudo", "nice", "ionice", "nohup", "time", "env", "comm
 # Shells that take an opaque "-c <payload>" we cannot statically vet.
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 
+# PowerShell / cmd.exe: same "opaque inline payload" problem as _SHELLS, but a
+# different flag vocabulary (-Command/-EncodedCommand, /c) — see _opaque_shell_payload.
+_WINDOWS_SHELLS = {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}
+_CMD_SHELLS = {"cmd", "cmd.exe"}
+
 # Non-shell interpreters whose inline payloads can directly mutate files.
 _INTERPRETERS = {"python", "python3", "py", "node", "nodejs", "deno", "bun", "perl", "ruby"}
 _INLINE_CODE_FLAGS = {"-c", "-e", "--eval", "-p", "--print"}
@@ -105,6 +110,17 @@ _MAX_COMMAND_SEGMENTS = 256
 # Any shell expansion can construct a destination at runtime. The shared walk
 # reports the fact; consumers decide whether it matters for their rule.
 _DYNAMIC_SHELL = re.compile(r"\$\(|`|\$(?:\{|[A-Za-z_])")
+
+# Whole-word trigger for _normalize_windows_backslashes: any command naming one
+# of these Windows verbs/shells (or `rm`, whose own unrecoverable-data check also
+# needs a backslash-separated operand intact) gets `\` -> `/` before tokenization.
+_WINDOWS_PATH_TRIGGER_RE = re.compile(
+    r"(?i)\b(?:"
+    r"rm|remove-item|ri|rmdir|del|erase|rd|clear-content|clc|"
+    r"powershell(?:\.exe)?|pwsh(?:\.exe)?|cmd(?:\.exe)?|"
+    r"format-volume|clear-disk|format"
+    r")\b"
+)
 
 
 def _strip_substitutions(segment: str) -> tuple[str, list[str]]:
@@ -204,6 +220,25 @@ def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
     return segments, ambiguous, bool(_DYNAMIC_SHELL.search(command))
 
 
+def _normalize_windows_backslashes(command: str) -> str:
+    """``\\`` is a Windows path separator, but shlex (POSIX mode, used below) treats
+    it as an escape character — it silently eats ``foo\\.env`` -> ``foo.env`` or
+    raises ``ValueError`` on a trailing ``C:\\``. A line naming a Windows verb/shell
+    (see ``_WINDOWS_PATH_TRIGGER_RE``) gets every backslash flipped to ``/`` before
+    tokenization so a Windows path survives intact.
+
+    ponytail: a whole-line, word-triggered flip rather than per-segment/per-operand
+    surgery — simplest fix that passes the live-tested Windows commands, and a no-op
+    (verified against the existing POSIX test suite) unless both a trigger word and a
+    literal backslash are present. Known ceiling: a POSIX ``rm`` operand that
+    legitimately backslash-escapes a space or glob character (rare) would have that
+    escape flattened too; upgrade to a per-segment flip if that ever bites.
+    """
+    if _WINDOWS_PATH_TRIGGER_RE.search(command):
+        return command.replace("\\", "/")
+    return command
+
+
 def _argv_from_tokens(tokens: list[str]) -> list[str]:
     """Strip prefixes from an already parsed segment for command classification."""
     tokens = list(tokens)
@@ -225,9 +260,21 @@ def _argv(segment: str) -> list[str] | None:
     return _argv_from_tokens(tokens)
 
 
+#: A Windows drive root in any form a delete operand can arrive in: ``C:\``,
+#: ``C:/``, ``C:\*``, or the backslash-eaten ``C:*`` (see
+#: ``_normalize_windows_backslashes`` — normally already flipped to ``C:/``).
+_WINDOWS_ROOT_RE = re.compile(r"^[A-Za-z]:[/\\]?(\*)?$")
+
+
 def _is_root_or_home_target(arg: str) -> bool:
-    """True if an argument denotes ``/``, ``~``, or a whole-tree wildcard."""
-    normalized = posixpath.normpath(arg.strip().strip("'\""))
+    """True if an argument denotes ``/``, ``~``, a whole-tree wildcard, or a
+    Windows drive root / home-profile variable (``C:\\``, ``~``, ``$env:USERPROFILE``)."""
+    raw = arg.strip().strip("'\"")
+    if raw.lower() in {"~", "$home", "$env:userprofile"}:
+        return True
+    if _WINDOWS_ROOT_RE.match(raw):
+        return True
+    normalized = posixpath.normpath(raw.replace("\\", "/"))
     if normalized.startswith("//"):
         normalized = "/" + normalized.lstrip("/")
     return normalized in {"/", "~", "~/", "/*", "/.", "~/*", "*"} or normalized.startswith("/*")
@@ -255,6 +302,22 @@ def _count_delete_operands(tokens: list[str]) -> int:
 _UNRECOVERABLE_DELETE_GLOBS = ("*.db", "*.sqlite", "*.sqlite3", "*.key", ".env", ".env.*")
 
 
+def _unrecoverable_basename(operand: str) -> str:
+    """Basename of a delete operand, tolerant of Windows backslashes and a
+    leading ``.\\`` (normalized to ``/`` before ``posixpath.basename``)."""
+    return posixpath.basename(operand.strip().strip("'\"").replace("\\", "/"))
+
+
+def _any_operand_unrecoverable(operands: Iterable[str]) -> bool:
+    """True if any operand's basename matches an unrecoverable, gitignored data
+    file (local DB / secret / key). Shared by the ``rm`` and Windows delete paths."""
+    return any(
+        fnmatch.fnmatch(_unrecoverable_basename(op), pattern)
+        for op in operands
+        for pattern in _UNRECOVERABLE_DELETE_GLOBS
+    )
+
+
 def _rm_targets_unrecoverable_data(tokens: list[str]) -> bool:
     """``rm`` whose operand basename matches an unrecoverable, gitignored data
     file (local DB / secret / key)."""
@@ -262,11 +325,81 @@ def _rm_targets_unrecoverable_data(tokens: list[str]) -> bool:
     # decision path. Catches file targets; a directory operand (rm -rf data/) cannot
     # be classified lexically and is deliberately out of scope (deferred — see ADR).
     operands = [t for t in tokens[1:] if not t.startswith("-")]
-    return any(
-        fnmatch.fnmatch(posixpath.basename(op.strip().strip("'\"")), pattern)
-        for op in operands
-        for pattern in _UNRECOVERABLE_DELETE_GLOBS
-    )
+    return _any_operand_unrecoverable(operands)
+
+
+# --- Windows/PowerShell delete-verb coverage --------------------------------
+#
+# Codex/agents on Windows run tool commands through PowerShell or cmd.exe, whose
+# destructive-delete vocabulary (Remove-Item, del, rd, ...) is invisible to the
+# POSIX-only `rm` handling above. `_windows_delete_verdict` maps these verbs onto
+# the SAME severity ladder as `rm`'s own branches — not a second policy — and is
+# kept separate from the `rm` branches so this addition can never regress `rm`.
+
+#: Verbs that delete or wipe file content the Windows way.
+_WINDOWS_DELETE_VERBS = frozenset(
+    {"remove-item", "ri", "rmdir", "del", "erase", "rd", "clear-content", "clc"}
+)
+
+
+def _windows_delete_flag(token: str) -> tuple[bool, bool, bool]:
+    """Classify one Windows delete-verb argument: ``(is_flag, recursive, force)``.
+
+    PowerShell flags (``-Recurse``, ``-Force``, ...) abbreviate by prefix — ``-r``/
+    ``-f`` alone are valid PowerShell abbreviations too, so we match "is this body a
+    prefix of the canonical word" rather than the reverse. cmd.exe flags are the
+    fixed 1-2 char ``/s`` (recursive) / ``/q``, ``/f`` (force). Any other ``-``/``/``
+    -prefixed token (e.g. ``-Path``, whose value arrives as the next token) still
+    counts as a flag so it isn't miscounted as an operand — it just isn't Recurse/Force.
+    """
+    if token.startswith("-") and len(token) > 1:
+        body = token[1:].lower()
+        # ponytail: prefix-match against "recurse"/"force" only (not the full
+        # PowerShell parameter-disambiguation table) — over-classifying Force is
+        # raise-only (safe); a non-recurse/force switch (-Path, -Confirm, ...) is
+        # still correctly excluded from the operand count.
+        return True, "recurse".startswith(body), "force".startswith(body)
+    if token.startswith("/") and 1 <= len(token) - 1 <= 2:
+        body = token[1:].lower()
+        return True, body == "s", body in {"q", "f"}
+    return False, False, False
+
+
+def _windows_delete_flags_and_operands(tokens: list[str]) -> tuple[bool, bool, list[str]]:
+    """``(recursive, force, operands)`` for a Windows delete-verb argv."""
+    recursive = force = False
+    operands: list[str] = []
+    for token in tokens[1:]:
+        is_flag, r, f = _windows_delete_flag(token)
+        if is_flag:
+            recursive = recursive or r
+            force = force or f
+        else:
+            operands.append(token)
+    return recursive, force, operands
+
+
+def _windows_delete_verdict(tokens: list[str], bulk_threshold: int) -> GuardrailResult | None:
+    """Windows/PowerShell delete-verb classifier (Remove-Item/del/rd/...): recursive
+    + force at a root/home target -> BLOCK; bulk or unrecoverable-data operand ->
+    AUTH; otherwise ``None`` (not a recognized Windows delete verb, or benign)."""
+    if not tokens or tokens[0].lower() not in _WINDOWS_DELETE_VERBS:
+        return None
+    recursive, force, operands = _windows_delete_flags_and_operands(tokens)
+    if recursive and force and any(_is_root_or_home_target(op) for op in operands):
+        return _block("Recursive force-delete of a root/home/whole-tree target.")
+    if len(operands) >= bulk_threshold:
+        return _auth(
+            ReasonCode.bulk_operation,
+            "Bulk delete at or above the configured threshold; authentication required.",
+        )
+    if _any_operand_unrecoverable(operands):
+        return _auth(
+            ReasonCode.destructive_command,
+            "Deleting an unrecoverable, gitignored data file (local database, "
+            "secret, or key); authentication required.",
+        )
+    return None
 
 
 def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) -> bool:
@@ -296,8 +429,11 @@ def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) ->
     return not explicit_refs
 
 
-# Catastrophic non-rm commands (whole-disk wipes, fork bombs).
-_DISK_WIPE = re.compile(r"^(?:mkfs(?:\.\w+)?|shred|wipefs)$")
+# Catastrophic non-rm commands (whole-disk wipes, fork bombs). IGNORECASE covers
+# the Windows disk-wipe names (Format-Volume, Clear-Disk, format).
+_DISK_WIPE = re.compile(
+    r"^(?:mkfs(?:\.\w+)?|shred|wipefs|format-volume|clear-disk|format)$", re.IGNORECASE
+)
 
 
 def _is_doberman_control_cli(tokens: list[str]) -> bool:
@@ -428,6 +564,10 @@ def _segment_verdict(
     if ":(){" in "".join(tokens) or _looks_like_fork_bomb(tokens):
         return _block("Fork-bomb-style command.")
 
+    windows_delete = _windows_delete_verdict(tokens, bulk_threshold)
+    if windows_delete is not None:
+        return windows_delete
+
     # --- Risky but recoverable → AUTH ---
     if cmd == "rm" and _count_delete_operands(tokens) >= bulk_threshold:
         return _auth(
@@ -482,11 +622,37 @@ def _is_pipe_to_shell(tokens: list[str]) -> bool:
     return any(part in _SHELLS for part in tokens[1:])
 
 
-def _opaque_shell_payload(tokens: list[str]) -> bool:
-    """True if this is ``bash -c <payload>`` (or similar) we cannot vet."""
-    if not tokens or tokens[0] not in _SHELLS:
+def _is_powershell_command_flag(token: str) -> bool:
+    """``-Command``/``-c`` — PowerShell abbreviates parameter names by prefix,
+    case-insensitive."""
+    if not token.startswith("-") or len(token) < 2:
         return False
-    return "-c" in tokens or "--command" in tokens
+    return "command".startswith(token[1:].lower())
+
+
+def _is_powershell_encoded_flag(token: str) -> bool:
+    """``-EncodedCommand``/``-e`` — a base64 payload; never scanned (cannot
+    decode/vet it), so the caller keeps this an opaque AUTH with no body scan."""
+    if not token.startswith("-") or len(token) < 2:
+        return False
+    return "encodedcommand".startswith(token[1:].lower())
+
+
+def _opaque_shell_payload(tokens: list[str]) -> bool:
+    """True for ``bash -c <payload>``, PowerShell ``-Command``/``-EncodedCommand``,
+    or ``cmd /c <payload>`` — a payload we cannot (or must not) statically vet."""
+    if not tokens:
+        return False
+    head = tokens[0].lower()
+    if head in _SHELLS:
+        return "-c" in tokens or "--command" in tokens
+    if head in _WINDOWS_SHELLS:
+        return any(
+            _is_powershell_command_flag(t) or _is_powershell_encoded_flag(t) for t in tokens[1:]
+        )
+    if head in _CMD_SHELLS:
+        return any(t.lower() == "/c" for t in tokens[1:])
+    return False
 
 
 def _block(explanation: str) -> GuardrailResult:
@@ -577,7 +743,7 @@ class DestructiveCommandRule:
 
     def _classify_line(self, command: str, bulk_threshold: int, root: str) -> GuardrailResult:
         worst: GuardrailResult = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
-        pending, saw_unparseable, _ = walk_command(command)
+        pending, saw_unparseable, _ = walk_command(_normalize_windows_backslashes(command))
         processed = 0
         while pending and processed < _MAX_COMMAND_SEGMENTS:
             processed += 1
@@ -598,7 +764,9 @@ class DestructiveCommandRule:
                 # opaque AUTH can be raised to BLOCK if the body is e.g. rm -rf /.
                 payload = _payload_command(tokens)
                 if payload is not None:
-                    payload_segments, payload_ambiguous, _ = walk_command(payload)
+                    payload_segments, payload_ambiguous, _ = walk_command(
+                        _normalize_windows_backslashes(payload)
+                    )
                     pending.extend(payload_segments)
                     saw_unparseable = saw_unparseable or payload_ambiguous
                 continue
@@ -629,10 +797,18 @@ class DestructiveCommandRule:
 
 
 def _payload_command(tokens: list[str]) -> str | None:
-    """Pull the argument after ``-c`` for a bounded shared-command walk."""
+    """Pull the argument after ``-c``/``-Command``/``cmd /c`` for a bounded
+    shared-command walk. ``None`` for ``-EncodedCommand`` (base64 — cannot
+    decode/vet) so the caller skips body scanning and keeps the opaque AUTH."""
     for flag in ("-c", "--command"):
         if flag in tokens:
             idx = tokens.index(flag)
+            if idx + 1 < len(tokens):
+                return tokens[idx + 1]
+    for idx, token in enumerate(tokens):
+        if _is_powershell_encoded_flag(token):
+            return None
+        if _is_powershell_command_flag(token) or token.lower() == "/c":
             if idx + 1 < len(tokens):
                 return tokens[idx + 1]
     return None

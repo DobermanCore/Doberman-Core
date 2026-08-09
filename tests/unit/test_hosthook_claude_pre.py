@@ -121,7 +121,8 @@ def test_destructive_bash_is_denied(cwd):
 def test_block_reason_tells_user_there_is_no_in_session_override(cwd):
     reason = _reason(_pre("Bash", {"command": "rm -rf /"}, cwd))
     assert "no in-session override" in reason
-    assert "outside the hooked Claude Code session" in reason
+    # Host-neutral wording (hookio.py is shared across Claude Code and Codex).
+    assert "outside the hooked agent session" in reason
 
 
 def test_secret_access_bash_is_blocked_as_secret_egress(cwd):

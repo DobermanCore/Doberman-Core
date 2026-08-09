@@ -237,6 +237,48 @@ def test_doctor_fingerprint_key_tight_perms_ok(tmp_path, isolated_fingerprint_ke
 
 
 # ---------------------------------------------------------------------------
+# Codex CLI detection (Windows npm-shim regression, live-tested)
+# ---------------------------------------------------------------------------
+#
+# A bare `["codex", "--version"]` argv cannot resolve npm's `codex.cmd` shim on
+# Windows (CreateProcess doesn't apply PATHEXT to a bare name the way a shell
+# does) — `doberman doctor` reported a false "not found" WARN on a box where
+# `codex` ran fine from a terminal. `_check_codex_version` now resolves through
+# `shutil.which` (PATHEXT-aware) first.
+
+
+def test_codex_cli_resolved_via_shutil_which_reports_ok(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "C:\\fake\\codex.cmd" if name == "codex" else None
+    )
+
+    class _FakeProc:
+        stdout = "codex-cli 0.146.5\n"
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeProc())
+
+    results = run_checks(str(tmp_path))
+    codex_check = next(r for r in results if r.name == "Codex CLI")
+    assert codex_check.status is CheckStatus.OK
+    assert "0.146.5" in codex_check.detail
+
+
+def test_codex_cli_not_found_when_which_resolves_nothing(tmp_path, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    results = run_checks(str(tmp_path))
+    codex_check = next(r for r in results if r.name == "Codex CLI")
+    assert codex_check.status is CheckStatus.WARN
+    assert "not found" in codex_check.detail
+
+
+# ---------------------------------------------------------------------------
 # Read-only invariant: diagnosing never mutates state
 # ---------------------------------------------------------------------------
 
