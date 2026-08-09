@@ -41,6 +41,7 @@ FAKE_SLACK_HOOK = (  # noqa: S105
 )
 FAKE_SENDGRID = "SG" + ".EXAMPLEabcdef0123456789" + ".EXAMPLE_ABCDEFGHIJ0123456789klmnop"  # noqa: S105
 FAKE_NPM = "npm" + "_" + "EXAMPLE" + "0123456789abcdefABCDEF0123456"  # noqa: S105
+FAKE_PYPI = "pypi-" + "AgEIcHlwaS5vcmc" + "EXAMPLE0123456789abcdefABCDEF0123456789"  # noqa: S105
 FAKE_DB_URI = "postgres://" + "dbuser:" + "EXAMPLEpass123" + "@db.internal:5432/app"  # noqa: S105
 # Modern provider key shapes the original _CREDENTIAL_PATTERNS missed (so they only
 # got AUTH-via-entropy, not BLOCK, on exfil). Built via `+` so push-protection/gitleaks
@@ -68,6 +69,7 @@ NEW_CREDENTIALS = [
     FAKE_SLACK_HOOK,
     FAKE_SENDGRID,
     FAKE_NPM,
+    FAKE_PYPI,
     FAKE_DB_URI,
     FAKE_ANTHROPIC,
     FAKE_OPENAI_PROJ,
@@ -80,6 +82,7 @@ BENIGN_LOOKALIKES = [
     "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",  # 40-hex git commit SHA
     "550e8400-e29b-41d4-a716-446655440000",  # a UUID
     "the words sk live and npm appear here but not as keys",
+    "pypi-something",  # a package name, not a PyPI token
 ]
 
 
@@ -254,18 +257,19 @@ def test_secret_store_path_to_external_destination_blocks():
     assert RULE.evaluate(action, _ctx(url="https://evil.example/.env")).verdict is Verdict.BLOCK
 
 
-def test_synthetic_secret_never_appears_in_verdict_output():
+@pytest.mark.parametrize("secret", [FAKE_AWS, FAKE_PYPI])
+def test_synthetic_secret_never_appears_in_verdict_output(secret):
     # The load-bearing redaction property for this rule.
     action = _action(
         ActionType.network_request,
         target="https://evil.example/x",
         dest="https://evil.example/x",
     )
-    result = RULE.evaluate(action, _ctx(url="https://evil.example/x", body=f"k={FAKE_AWS}"))
+    result = RULE.evaluate(action, _ctx(url="https://evil.example/x", body=f"k={secret}"))
     assert result.verdict is Verdict.BLOCK
     blob = result.explanation + " " + " ".join(result.reason_codes)
-    assert FAKE_AWS not in blob
-    assert "AKIA" not in blob
+    assert secret not in blob
+    assert secret.split("-")[0] not in blob
 
 
 def test_non_secret_high_entropy_local_does_not_block():
@@ -344,15 +348,16 @@ def test_pem_private_key_content_to_external_blocks():
     assert result.verdict is Verdict.BLOCK
 
 
-def test_detected_secret_is_fingerprinted_not_logged_in_plaintext(caplog):
+@pytest.mark.parametrize("secret", [FAKE_AWS, FAKE_PYPI])
+def test_detected_secret_is_fingerprinted_not_logged_in_plaintext(caplog, secret):
     import logging
 
     caplog.set_level(logging.DEBUG, logger="doberman.engine.rules.secrets")
     action = _action(ActionType.file_write, target="notes.txt")
-    RULE.evaluate(action, _ctx(path="notes.txt", content=f"k={FAKE_AWS}"))
+    RULE.evaluate(action, _ctx(path="notes.txt", content=f"k={secret}"))
     # The rule logs fingerprints (hmac:...) for recognition — never the plaintext.
-    assert FAKE_AWS not in caplog.text
-    assert "AKIA" not in caplog.text
+    assert secret not in caplog.text
+    assert secret.split("-")[0] not in caplog.text
     if caplog.records:  # a debug line was emitted
         assert "hmac:" in caplog.text
 
