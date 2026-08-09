@@ -48,7 +48,10 @@ def _action_bucket(case: BenchmarkCase, index: int) -> Bucket | None:
 
 
 def _evaluate_case(
-    case: BenchmarkCase, suite_name: str, pipeline: DecidingPipeline
+    case: BenchmarkCase,
+    suite_name: str,
+    pipeline: DecidingPipeline,
+    mode: str | None = None,
 ) -> list[ActionOutcome]:
     """Decide every counting action in one case; raises propagate to the caller."""
     outcomes: list[ActionOutcome] = []
@@ -56,7 +59,9 @@ def _evaluate_case(
         bucket = _action_bucket(case, index)
         if bucket is None:
             continue
-        outcomes.append(_decide_one(suite_name, case.case_id, index, action, bucket, pipeline))
+        outcomes.append(
+            _decide_one(suite_name, case.case_id, index, action, bucket, pipeline, mode)
+        )
     return outcomes
 
 
@@ -67,10 +72,13 @@ def _decide_one(
     action: CandidateAction,
     bucket: Bucket,
     pipeline: DecidingPipeline,
+    mode: str | None = None,
 ) -> ActionOutcome:
     action_id = f"{suite_name}:{case_id}:{index}"
     security_object = to_security_object(action_id, action)
     ctx = to_eval_context(action)
+    if mode is not None:
+        ctx = ctx.model_copy(update={"mode": mode})
     decision = pipeline.decide(security_object, ctx)
     return ActionOutcome(
         bucket=bucket,
@@ -79,7 +87,9 @@ def _decide_one(
     )
 
 
-def run_suite(adapter: SuiteAdapter, pipeline: DecidingPipeline) -> SuiteReport:
+def run_suite(
+    adapter: SuiteAdapter, pipeline: DecidingPipeline, *, mode: str | None = None
+) -> SuiteReport:
     """Run every case from ``adapter`` through ``pipeline`` and aggregate.
 
     A case that raises while loading or evaluating is logged (by case id, never
@@ -88,7 +98,7 @@ def run_suite(adapter: SuiteAdapter, pipeline: DecidingPipeline) -> SuiteReport:
     outcomes: list[ActionOutcome] = []
     for case in adapter.load():
         try:
-            outcomes.extend(_evaluate_case(case, adapter.suite_name, pipeline))
+            outcomes.extend(_evaluate_case(case, adapter.suite_name, pipeline, mode))
         except Exception:  # noqa: BLE001 — isolate a bad case, keep measuring
             logger.warning(
                 "benchmark case %r in suite %r failed to evaluate; skipping",
@@ -98,7 +108,7 @@ def run_suite(adapter: SuiteAdapter, pipeline: DecidingPipeline) -> SuiteReport:
     return build_report(adapter.suite_name, pipeline.name, outcomes)
 
 
-def run_profiles(adapter: SuiteAdapter) -> dict:
+def run_profiles(adapter: SuiteAdapter, *, mode: str | None = None) -> dict:
     """Run both profiles and report each plus the plugin **uplift** delta.
 
     ``delta_asr`` = builtins_only ASR − with_plugins ASR (positive = plugins
@@ -106,8 +116,8 @@ def run_profiles(adapter: SuiteAdapter) -> dict:
     (positive = plugins added benign friction). With no plugins installed both
     deltas are 0.
     """
-    builtins = run_suite(adapter, build_pipeline(load_plugins=False))
-    with_plugins = run_suite(adapter, build_pipeline(load_plugins=True))
+    builtins = run_suite(adapter, build_pipeline(load_plugins=False), mode=mode)
+    with_plugins = run_suite(adapter, build_pipeline(load_plugins=True), mode=mode)
     return {
         "suite": adapter.suite_name,
         "builtins_only": builtins.to_dict(),
@@ -119,7 +129,9 @@ def run_profiles(adapter: SuiteAdapter) -> dict:
     }
 
 
-def run_before_after(adapter: SuiteAdapter, *, load_plugins: bool = False) -> dict:
+def run_before_after(
+    adapter: SuiteAdapter, *, load_plugins: bool = False, mode: str | None = None
+) -> dict:
     """Run the no-guardrail baseline (**before**) and a real Doberman pipeline
     (**after**), reporting each plus what the engine changed.
 
@@ -131,8 +143,8 @@ def run_before_after(adapter: SuiteAdapter, *, load_plugins: bool = False) -> di
     (BLOCK or AUTH), ``attacks_stopped_strict`` counts BLOCK only, and the two
     ``*_added`` fields are the benign friction the engine introduces.
     """
-    before = run_suite(adapter, PassthroughPipeline())
-    after = run_suite(adapter, build_pipeline(load_plugins=load_plugins))
+    before = run_suite(adapter, PassthroughPipeline(), mode=mode)
+    after = run_suite(adapter, build_pipeline(load_plugins=load_plugins), mode=mode)
     return {
         "suite": adapter.suite_name,
         "before": before.to_dict(),
