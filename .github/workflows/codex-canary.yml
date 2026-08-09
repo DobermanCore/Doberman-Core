@@ -1,0 +1,39 @@
+name: codex-canary
+
+# Live-Codex churn tripwire: installs the LATEST released Codex CLI and confirms
+# Doberman's hook still gates a destructive call. Upstream hook-API churn shows up
+# here as a red canary on a schedule, not as a user report. Inert until the repo
+# owner adds an OPENAI_API_KEY secret and sets the CODEX_CANARY_ENABLED variable.
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    # Off until the owner opts in (needs a Codex-auth secret). No secret => no run.
+    if: ${{ vars.CODEX_CANARY_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Install the latest released Codex CLI
+        run: npm install -g @openai/codex # ALWAYS latest — that is the point
+      - name: Live smoke (yellow-tolerant)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set +e
+          python tools/codex_canary/smoke.py
+          code=$?
+          if [ "$code" = "2" ]; then
+            echo "::warning::codex canary inconclusive (model refused / tool unavailable — not churn evidence)"
+            exit 0
+          fi
+          exit $code
