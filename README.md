@@ -91,7 +91,8 @@ completion.
 | Your agent | How Doberman plugs in | Get started |
 |---|---|---|
 | **Claude Code** | Hooks - gate every built-in *and* MCP tool call *(recommended)* | `doberman setup` -> [guide](docs/SETUP.md#claude-code-hooks) |
-| **Claude Desktop / Cursor / Codex** | MCP proxy - wrap your tool server | `doberman serve -- <your-server>` -> [guide](docs/SETUP.md#mcp-proxy) |
+| **Codex CLI** | Native PreToolUse hook *(experimental)* | `doberman install-hooks --host codex` |
+| **Claude Desktop / Cursor** | MCP proxy - wrap your tool server | `doberman serve -- <your-server>` -> [guide](docs/SETUP.md#mcp-proxy) |
 | **OpenClaw** | Native plugin adapter | [guide](docs/SETUP.md#openclaw) - [adapter](adapters/openclaw/README.md) |
 | **Any MCP-compatible agent** | MCP proxy | [guide](docs/SETUP.md#mcp-proxy) |
 
