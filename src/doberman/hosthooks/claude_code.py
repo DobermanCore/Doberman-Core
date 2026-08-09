@@ -98,6 +98,11 @@ _REQUIRED_FIELD: dict[str, str] = {
     "WebSearch": "query",
 }
 
+#: Public alias. Codex's hook layer is a Claude Code compatibility shim (same tool
+#: names + tool_input shape — see tests/fixtures/codex/), so ``hosthooks.codex``
+#: reuses this required-field map rather than duplicating it.
+REQUIRED_FIELD = _REQUIRED_FIELD
+
 _HOOK_EVENT = "PreToolUse"
 _FAILSAFE_REASON = hookio.FAILSAFE_REASON
 #: Back-compat re-export: the reason template moved to ``hookio`` with the rest of the
