@@ -1,0 +1,33 @@
+{
+  "name": "doberman",
+  "version": "0.1.0",
+  "description": "Gate every Codex tool call through Doberman's decision engine (allow / authenticate / block) before it runs.",
+  "author": { "name": "fu351", "url": "https://github.com/fu351/Doberman-Core" },
+  "homepage": "https://github.com/fu351/Doberman-Core",
+  "repository": "https://github.com/fu351/Doberman-Core",
+  "license": "Apache-2.0",
+  "keywords": [
+    "security",
+    "authorization",
+    "guardrails",
+    "agent-security",
+    "prompt-injection",
+    "data-exfiltration"
+  ],
+  "hooks": "./hooks.json",
+  "interface": {
+    "displayName": "Doberman",
+    "shortDescription": "Runtime authorization + guardrails for Codex tool calls",
+    "longDescription": "Doberman sits on Codex's tool-execution path and turns every tool call into an explicit allow / authenticate / block decision before it runs: destructive commands, secret exfiltration, protected-path and control-plane writes, and multi-step read-then-send exfil are stopped at the one place that counts. Fails closed, raise-only, local-first. The plugin bundles a PreToolUse hook; installing it (or `doberman install-hooks --host codex`) wires the same decision spine Doberman uses for Claude Code.",
+    "developerName": "fu351",
+    "category": "Developer Tools",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/fu351/Doberman-Core",
+    "defaultPrompt": [
+      "Try a destructive shell command and watch Doberman block it",
+      "Read a secret then try to send it out, and confirm the exfil is blocked"
+    ],
+    "brandColor": "#B31217",
+    "screenshots": []
+  }
+}
