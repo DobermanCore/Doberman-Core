@@ -6,6 +6,8 @@ cop"). The control-plane path rule (extended in HK.5.0, ADR 0024) makes that a
 BLOCK, and the hook turns a BLOCK into a Claude Code ``permissionDecision: "deny"``.
 """
 
+import pytest
+
 from doberman.hosthooks.claude_code import evaluate_pre
 
 
@@ -13,6 +15,7 @@ def _pre(tool_name, tool_input, cwd):
     return evaluate_pre({"tool_name": tool_name, "tool_input": tool_input, "cwd": str(cwd)})
 
 
+@pytest.mark.guarantee("control-plane-self-protection", host="claude-code")
 def test_pre_hook_denies_writing_claude_settings(tmp_path):
     out = _pre("Write", {"file_path": ".claude/settings.json", "content": "{}"}, tmp_path)
     assert out is not None

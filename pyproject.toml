@@ -79,6 +79,9 @@ include = [
 asyncio_mode = "auto"
 testpaths = ["tests", "tools"]   # tools/ holds rule-lab tooling + its co-located tests
 addopts = "-q"
+markers = [
+    "guarantee(name, host): claims a parity-matrix cell; collected by tools/parity (docs/PARITY.md)",
+]
 
 [tool.coverage.run]
 source = ["doberman"]

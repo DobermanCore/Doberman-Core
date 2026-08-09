@@ -4,6 +4,7 @@ import inspect
 from datetime import datetime, timezone
 
 import pyotp
+import pytest
 
 from doberman.auth import totp
 from doberman.policy.drift import Classification, apply_change
@@ -31,6 +32,7 @@ def _enrolled_code() -> str:
     return pyotp.TOTP(totp._read_secret()).now()
 
 
+@pytest.mark.guarantee("raise-only-drift", host="mcp-proxy")
 async def test_weaken_requires_2fa_and_shows_a_diff(tmp_path):
     code = _enrolled_code()
     prompter = ScriptedPrompter(confirm=True, code=code)

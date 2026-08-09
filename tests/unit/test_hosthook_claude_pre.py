@@ -113,6 +113,7 @@ def test_benign_edit_abstains(cwd):
     assert out is None
 
 
+@pytest.mark.guarantee("destructive-command-gate", host="claude-code")
 def test_destructive_bash_is_denied(cwd):
     assert _permission(_pre("Bash", {"command": "rm -rf /"}, cwd)) == "deny"
 

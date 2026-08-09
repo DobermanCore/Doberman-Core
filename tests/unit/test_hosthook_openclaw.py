@@ -110,6 +110,7 @@ def test_benign_exec_allows(cwd):
     assert _call("exec", {"command": "ls"}, cwd=cwd)["verdict"] == "allow"
 
 
+@pytest.mark.guarantee("destructive-command-gate", host="openclaw")
 def test_destructive_exec_is_blocked(cwd):
     out = _call("exec", {"command": "rm -rf /"}, cwd=cwd)
     assert out["verdict"] == "block"

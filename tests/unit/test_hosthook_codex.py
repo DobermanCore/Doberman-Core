@@ -22,6 +22,7 @@ def _load(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+@pytest.mark.guarantee("destructive-command-gate", host="codex")
 def test_dangerous_shell_is_denied(tmp_path):
     payload = _load("pre_bash.json")
     payload["cwd"] = str(tmp_path)
