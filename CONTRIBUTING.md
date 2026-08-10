@@ -25,6 +25,7 @@ Run these before opening a PR:
 ```bash
 ruff check .
 ruff format --check .
+python scripts/check_markdown_links.py
 lint-imports
 pytest --cov=doberman --cov-report=term-missing --cov-fail-under=80
 ```
@@ -82,6 +83,9 @@ ruff format --check .
 lint-imports
 pytest --cov=doberman --cov-report=term-missing --cov-fail-under=80
 ```
+
+The Markdown check is intentionally offline: it validates repository-local Markdown files and
+heading anchors, skips external URLs and fenced code blocks, and never makes network requests.
 
 ## Architecture in five lines
 

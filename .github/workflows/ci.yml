@@ -46,6 +46,8 @@ jobs:
           echo "ok: core has no enterprise dependency"
       - run: ruff check .
       - run: ruff format --check .
+      - name: Offline Markdown link check
+        run: python scripts/check_markdown_links.py
       - name: Architecture & repo boundaries
         run: lint-imports
       - run: pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=80
