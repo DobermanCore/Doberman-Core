@@ -48,6 +48,7 @@ tests/benchmarks/
 ├── metrics.py     # SuiteReport: ASR, asr_strict, FPR, hard_fpr
 ├── runner.py      # run_suite, run_profiles (builtins vs plugins), run_before_after (without vs with Doberman)
 ├── run.py         # CLI: python -m tests.benchmarks.run --suite <name> --profile both
+├── corpus.py       # validated JSONL corpus loader and adapter
 ├── suites/
 │   ├── synthetic.py   # built-in, deterministic, dependency-free (the CI gate)
 │   ├── agentdojo.py   # AgentDojo + AgentDyn adapters (on-demand; lazy `agentdojo` import)
@@ -56,6 +57,7 @@ tests/benchmarks/
 ```
 
 Tests: `tests/unit/test_benchmark_harness.py` (metrics/selector/isolation),
+`tests/unit/test_benchmark_corpus.py` (schema and category metrics),
 `tests/unit/test_benchmark_agentdojo.py` (the AgentDojo/AgentDyn mapping +
 redaction, with the `agentdojo` package faked), and
 `tests/integration/test_benchmark_synthetic_gate.py` (real-engine gate).
@@ -198,8 +200,23 @@ serialized report — keep that guarantee for your suite too.
 # from the repo root, in the project venv
 python -m tests.benchmarks.run --suite synthetic --profile both          # builtins vs plugins
 python -m tests.benchmarks.run --suite synthetic --profile before_after  # without vs with Doberman
+python -m tests.benchmarks.run --suite corpus --profile builtins_only     # 100 labelled rows
 python -m pytest tests/integration/test_benchmark_synthetic_gate.py      # the gate
 ```
+
+## Checked-in labelled corpus
+
+`tests/corpus/benchmark.jsonl` is a deterministic 100-row seed corpus. Every
+row has the explicit fields `id`, `kind`, `surfaces`, `payload`, `is_attack`,
+`expected_verdict_at_least`, `forbidden_verdict_at_least`, and `notes`. The
+loader rejects missing or extra fields, duplicate IDs, mismatched attack flags,
+and invalid verdict thresholds before evaluation. Rows are mapped to the real
+public action vocabulary, while `payload` remains in `raw_arguments` only.
+
+The corpus report adds `category_metrics` for injection, exfiltration, secrets,
+and benign rows. Each entry includes counts plus TPR (mitigated attacks / attack
+rows), FPR (non-PASS benign rows / benign rows), and precision (mitigated
+attacks / all positive decisions). The report remains redaction-safe.
 
 ---
 

@@ -57,6 +57,20 @@ pip install agentdojo            # pin the commit you ran; record it below
 python -m tests.benchmarks.run --suite agentdojo --profile before_after
 ```
 
+The checked-in labelled corpus is also deterministic and needs no external
+dataset:
+
+```bash
+python -m tests.benchmarks.run --suite corpus --profile builtins_only
+```
+
+It contains 100 JSONL rows under `tests/corpus/benchmark.jsonl`, split across
+command injection, network exfiltration, protected-file secrets, and benign
+traffic. The loader validates every row before the run. Reports add
+redaction-safe `category_metrics` with true-positive rate (TPR), false-positive
+rate (FPR), and precision for each category. Payloads stay in the evaluation
+context and are never serialized into the report.
+
 Numbers refresh **per release** as a documented release step (see
 [`RELEASING.md`](RELEASING.md)), not as a per-commit CI artifact.
 

@@ -5,6 +5,7 @@ CI. Real external suites (AgentDojo, AgentDyn, AgentSentry) are added as their
 own adapter modules here — see ``tests/benchmarks/README.md`` for the recipe.
 """
 
+from ..corpus import CorpusAdapter
 from .agentdojo import AgentDojoAdapter, AgentDynAdapter
 from .synthetic import SyntheticAdapter
 
@@ -16,6 +17,13 @@ BUILTIN_ADAPTERS = {
     "synthetic": SyntheticAdapter,
     "agentdojo": AgentDojoAdapter,
     "agentdyn": AgentDynAdapter,
+    "corpus": CorpusAdapter,
 }
 
-__all__ = ["BUILTIN_ADAPTERS", "AgentDojoAdapter", "AgentDynAdapter", "SyntheticAdapter"]
+__all__ = [
+    "BUILTIN_ADAPTERS",
+    "AgentDojoAdapter",
+    "AgentDynAdapter",
+    "CorpusAdapter",
+    "SyntheticAdapter",
+]

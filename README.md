@@ -175,9 +175,10 @@ A suite-agnostic harness scores Doberman as a **filter over labeled actions** an
 ```bash
 python -m tests.benchmarks.run --suite synthetic --profile both          # builtins vs plugins
 python -m tests.benchmarks.run --suite synthetic --profile before_after  # without vs with Doberman
+python -m tests.benchmarks.run --suite corpus --profile builtins_only     # labelled corpus + category metrics
 ```
 
-It reports two plugin profiles — `builtins_only` and `with_plugins` (built-ins plus any installed entry-point plugins) — and their uplift. The `before_after` profile adds a **no-guardrail baseline** (the unmediated tool path, where every attack executes) so you can read the engine's effect directly as `{before, after, delta}` — how many otherwise-executing attacks it stops vs. how much benign friction it adds. A deterministic synthetic suite gates in CI; map external task suites (**AgentDojo**, AgentDyn, AgentSentry, …) onto core's types with a small adapter — see [`tests/benchmarks/README.md`](tests/benchmarks/README.md).
+It reports two plugin profiles — `builtins_only` and `with_plugins` (built-ins plus any installed entry-point plugins) — and their uplift. The `before_after` profile adds a **no-guardrail baseline** (the unmediated tool path, where every attack executes) so you can read the engine's effect directly as `{before, after, delta}` — how many otherwise-executing attacks it stops vs. how much benign friction it adds. The deterministic `corpus` suite contains 100 schema-validated JSONL rows across injection, exfiltration, secrets, and benign traffic, and adds per-category TPR, FPR, and precision. A smaller synthetic suite still gates in CI; map external task suites (**AgentDojo**, AgentDyn, AgentSentry, …) onto core's types with a small adapter — see [`tests/benchmarks/README.md`](tests/benchmarks/README.md).
 
 > Reports hold counts, verdicts, and reason codes only — never payload text. ASR is reported alongside a stricter `asr_strict` (where only a hard `BLOCK` counts as mitigation): honest measurement, not a single headline number.
 

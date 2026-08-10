@@ -24,6 +24,7 @@ wire a real suite in.
 """
 
 from .adapter import BenchmarkCase, CandidateAction, SuiteAdapter
+from .corpus import CorpusAdapter, CorpusRow, load_corpus
 from .metrics import SuiteReport
 from .profiles import Pipeline, build_pipeline
 from .runner import run_profiles, run_suite
@@ -31,10 +32,13 @@ from .runner import run_profiles, run_suite
 __all__ = [
     "BenchmarkCase",
     "CandidateAction",
+    "CorpusAdapter",
+    "CorpusRow",
     "Pipeline",
     "SuiteAdapter",
     "SuiteReport",
     "build_pipeline",
+    "load_corpus",
     "run_profiles",
     "run_suite",
 ]

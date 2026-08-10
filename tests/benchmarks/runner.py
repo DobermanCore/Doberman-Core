@@ -56,7 +56,17 @@ def _evaluate_case(
         bucket = _action_bucket(case, index)
         if bucket is None:
             continue
-        outcomes.append(_decide_one(suite_name, case.case_id, index, action, bucket, pipeline))
+        outcomes.append(
+            _decide_one(
+                suite_name,
+                case.case_id,
+                index,
+                action,
+                bucket,
+                case.note or "uncategorized",
+                pipeline,
+            )
+        )
     return outcomes
 
 
@@ -66,6 +76,7 @@ def _decide_one(
     index: int,
     action: CandidateAction,
     bucket: Bucket,
+    category: str,
     pipeline: DecidingPipeline,
 ) -> ActionOutcome:
     action_id = f"{suite_name}:{case_id}:{index}"
@@ -76,6 +87,7 @@ def _decide_one(
         bucket=bucket,
         verdict=decision.final_verdict,
         reason_codes=tuple(decision.reason_codes),
+        category=category,
     )
 
 

@@ -52,6 +52,7 @@ class ActionOutcome:
     bucket: Bucket
     verdict: Verdict
     reason_codes: tuple[ReasonCode, ...] = ()
+    category: str = "uncategorized"
 
 
 def _safe_div(numerator: float | int, denominator: float | int) -> float:
@@ -105,6 +106,7 @@ class SuiteReport:
     benign_block: int  # false block
     reason_codes: dict[str, int] = field(default_factory=dict)
     verdict_histogram: dict[str, int] = field(default_factory=dict)
+    category_metrics: dict[str, dict[str, float | int]] = field(default_factory=dict)
 
     @property
     def asr(self) -> float:
@@ -240,6 +242,9 @@ class SuiteReport:
             },
             "verdict_histogram": dict(sorted(self.verdict_histogram.items())),
             "reason_codes": dict(sorted(self.reason_codes.items())),
+            "category_metrics": {
+                category: dict(values) for category, values in sorted(self.category_metrics.items())
+            },
         }
 
 
@@ -250,9 +255,11 @@ def build_report(suite: str, profile: str, outcomes: Iterable[ActionOutcome]) ->
     b_pass = b_auth = b_block = 0
     reasons: Counter[str] = Counter()
     verdicts: Counter[str] = Counter()
+    categories: dict[str, list[ActionOutcome]] = {}
 
     for outcome in outcomes:
         verdicts[outcome.verdict.value] += 1
+        categories.setdefault(outcome.category, []).append(outcome)
         if outcome.verdict is not Verdict.PASS:
             for code in outcome.reason_codes:
                 reasons[code.value] += 1
@@ -274,6 +281,20 @@ def build_report(suite: str, profile: str, outcomes: Iterable[ActionOutcome]) ->
             else:
                 b_block += 1
 
+    category_metrics: dict[str, dict[str, float | int]] = {}
+    for category, category_outcomes in categories.items():
+        attacks = [item for item in category_outcomes if item.bucket == "attack"]
+        benign = [item for item in category_outcomes if item.bucket == "benign"]
+        true_positive = sum(item.verdict is not Verdict.PASS for item in attacks)
+        false_positive = sum(item.verdict is not Verdict.PASS for item in benign)
+        category_metrics[category] = {
+            "n_attack": len(attacks),
+            "n_benign": len(benign),
+            "tpr": _safe_div(true_positive, len(attacks)),
+            "fpr": _safe_div(false_positive, len(benign)),
+            "precision": _safe_div(true_positive, true_positive + false_positive),
+        }
+
     return SuiteReport(
         suite=suite,
         profile=profile,
@@ -287,4 +308,5 @@ def build_report(suite: str, profile: str, outcomes: Iterable[ActionOutcome]) ->
         benign_block=b_block,
         reason_codes=dict(reasons),
         verdict_histogram=dict(verdicts),
+        category_metrics=category_metrics,
     )
