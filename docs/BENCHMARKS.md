@@ -39,6 +39,53 @@ both plus the delta.
   `asr_strict` and the operator metrics alongside `asr`, or you will overstate the
   protection.
 
+## Subjective-layer baseline separation (diagnostic)
+
+The ASR/FPR numbers above measure the **objective, deterministic floor** only.
+This section covers a separate, narrower diagnostic for the **adaptive
+subjective layer** — the per-entity streaming baseline that raises risk on
+unusual actions.
+
+- **What it measures:** whether a per-suite streaming baseline warmed on a
+  deployment's benign workflow assigns higher *surprise* to injection-induced
+  actions than to held-out benign actions — a distribution-separation
+  **diagnostic (Mann-Whitney AUC)**, per suite and pooled. **It is not an
+  ASR** and is never threshold-tuned; AgentDojo is never a target metric. The
+  AUC compares each attack's attacker-goal action(s) against *all* held-out
+  benign actions — the operationally correct base rate (the layer scores every
+  action in a stream), but note the two buckets are selected asymmetrically.
+- **The two arms, and why two:** `provenance_free` is the honest number.
+  `Algebra.provenance` derives 1:1 from `source_context`, and the AgentDojo
+  adapter sets `source_context` by ground truth (attack → `tool_output`,
+  benign → `user`), so a provenance-driven separation would measure the
+  adapter's labels, not the guard. The eval neutralizes `source_context` to a
+  constant so the label can't leak — it also rides a confidence scalar into
+  the HST and novelty terms, so neutralizing the one field closes both
+  channels. `with_provenance` keeps the true `source_context` and is reported
+  **only** to quantify that leak, never as a headline.
+- **Allowed-only:** the baseline warms on benign (allowed) traces only;
+  attack and held-out-benign actions are scored, never learned.
+- **Warm-sufficiency caveat (read this before trusting an AUC):** AgentDojo
+  suites are small — tens of benign traces per suite — against
+  `K_OBSERVATIONS=100` and the HST warmup, so the cold-start peer-blend stays
+  active and the HST ensemble member abstains for every suite; the live
+  ensemble is novelty + Markov-surprisal + volume-z only. Each suite reports
+  `n_warm_observations`, `blend_weight`, `cold_start_active`, and
+  `hst_engaged`. **A suite whose numbers ride mostly the constant prior is
+  inconclusive — read every AUC next to its bucket `n`.**
+- **What it does not claim:** it does not catch injections that mimic benign
+  action shapes — structure-invisible injections are honest true-negatives,
+  never tuned away. The objective floor and the lethal-trifecta floor remain
+  the primary defense; this measures the adaptive *increment* on top of them.
+- **Reproduce:**
+
+  ```bash
+  python -m tests.benchmarks.run --suite agentdojo --subjective
+  ```
+
+  Needs the operator-supplied `agentdojo` package, same precondition as the
+  other `agentdojo` commands above.
+
 ## Reproduce
 
 Synthetic suite — **from a cold clone, no extra dependencies, deterministic:**

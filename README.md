@@ -181,6 +181,8 @@ It reports two plugin profiles — `builtins_only` and `with_plugins` (built-ins
 
 > Reports hold counts, verdicts, and reason codes only — never payload text. ASR is reported alongside a stricter `asr_strict` (where only a hard `BLOCK` counts as mitigation): honest measurement, not a single headline number.
 
+A separate `--subjective` flag runs a distribution-separation diagnostic (Mann-Whitney AUC, not an ASR) over the adaptive subjective layer's per-suite baseline — see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md#subjective-layer-baseline-separation-diagnostic).
+
 Published results, methodology, and the reproduce commands — **failure cases before wins** — live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md); numbers refresh per release ([`docs/RELEASING.md`](docs/RELEASING.md)).
 
 ---
