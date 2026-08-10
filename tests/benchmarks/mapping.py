@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from doberman.models import EvalContext, SecurityObject
+from doberman.subjective.adapters import apply_adapters
+from doberman.subjective.infer import infer_algebra, infer_reversibility
 
 from .adapter import CandidateAction
 
@@ -23,9 +25,13 @@ def to_security_object(action_id: str, action: CandidateAction) -> SecurityObjec
 
     Only structural fields are carried; payload text rides in the
     ``EvalContext`` (see :func:`to_eval_context`), never in this object's
-    ``raw_args_redacted``.
+    ``raw_args_redacted``. The ``algebra`` + ``reversibility`` are populated by
+    the same generic inference the proxy runs in production (``proxy.normalize``)
+    so the benchmark exercises the real classification path instead of feeding
+    the engine a default all-unknown algebra. Inference never raises — a failure
+    leaves the conservative default in place.
     """
-    return SecurityObject(
+    base = SecurityObject(
         id=action_id,
         ts=BENCHMARK_TS,
         agent_role=action.agent_role,
@@ -35,6 +41,23 @@ def to_security_object(action_id: str, action: CandidateAction) -> SecurityObjec
         external_destination=action.external_destination,
         source_context=action.source_context,
     )
+    raw_arguments = dict(action.raw_arguments) if action.raw_arguments else {}
+    try:
+        algebra = apply_adapters(
+            infer_algebra(base, raw_arguments),
+            {"tool_name": action.tool_name, "arguments": raw_arguments},
+        )
+        return base.model_copy(
+            update={
+                "algebra": algebra,
+                "reversibility": infer_reversibility(base, raw_arguments),
+            }
+        )
+    except Exception:  # noqa: BLE001 — a benchmark case must never drop on an inference
+        # raise; keep the base object's conservative default algebra (matches the docstring
+        # and mirrors infer_algebra's own internal fail-safe). run_suite would otherwise
+        # skip the whole case, silently shrinking the measured corpus.
+        return base
 
 
 def to_eval_context(action: CandidateAction) -> EvalContext:

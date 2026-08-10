@@ -20,6 +20,17 @@ from .runner import run_before_after, run_profiles, run_suite
 from .suites import BUILTIN_ADAPTERS
 
 _PROFILES = ("both", "before_after", "builtins_only", "with_plugins")
+_MODES = ("light", "balanced", "strict", "paranoid")
+
+
+def _run_one(adapter, profile: str, mode: str | None) -> dict:
+    """Run one (profile, mode) combination and return its report dict."""
+    if profile == "both":
+        return run_profiles(adapter, mode=mode)
+    if profile == "before_after":
+        return run_before_after(adapter, mode=mode)
+    load_plugins = profile == "with_plugins"
+    return run_suite(adapter, build_pipeline(load_plugins=load_plugins), mode=mode).to_dict()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,6 +41,13 @@ def main(argv: list[str] | None = None) -> int:
         help=f"suite to run (registered: {', '.join(sorted(BUILTIN_ADAPTERS))})",
     )
     parser.add_argument("--profile", default="both", choices=_PROFILES)
+    parser.add_argument(
+        "--mode",
+        default=None,
+        choices=[*_MODES, "all"],
+        help="F6 strength-mode override; 'all' runs each mode and keys the report by "
+        "mode (default: the suite's per-case mode)",
+    )
     args = parser.parse_args(argv)
 
     adapter_cls = BUILTIN_ADAPTERS.get(args.suite)
@@ -39,13 +57,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     adapter = adapter_cls()
 
-    if args.profile == "both":
-        report: dict = run_profiles(adapter)
-    elif args.profile == "before_after":
-        report = run_before_after(adapter)
+    if args.mode == "all":
+        report: dict = {m: _run_one(adapter, args.profile, m) for m in _MODES}
     else:
-        load_plugins = args.profile == "with_plugins"
-        report = run_suite(adapter, build_pipeline(load_plugins=load_plugins)).to_dict()
+        report = _run_one(adapter, args.profile, args.mode)
 
     json.dump(report, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")

@@ -55,6 +55,9 @@ operator-supplied dependency so CI never depends on it, and vendors no suite dat
 ```bash
 pip install agentdojo            # pin the commit you ran; record it below
 python -m tests.benchmarks.run --suite agentdojo --profile before_after
+
+# sweep every F6 strength mode at once (or one: --mode strict) — report keyed by mode
+python -m tests.benchmarks.run --suite agentdojo --profile before_after --mode all
 ```
 
 Numbers refresh **per release** as a documented release step (see
