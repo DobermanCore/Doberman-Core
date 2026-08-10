@@ -472,68 +472,22 @@ def _hook_install_states(path: str) -> list[tuple[str, str, bool]]:
     return hook_install_states(path)
 
 
-@app.command(rich_help_panel="Daily")
-def status(
-    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
-) -> None:
-    """Show the active role, security mode, policy summary, hook install state,
-    taint state, and the most recent decisions."""
+def _status_payload(path: str) -> dict:
+    """Collect the same redacted data the text and JSON status views share.
+
+    Nothing secret-shaped is included: enrollment is a boolean, elevations carry
+    ids/scopes/expiry only, decisions carry ts/verdict/reason codes only.
+    """
     role = load_active_role(path)
     doc = load_policy(path)
-    typer.echo("Doberman status")
-    typer.echo("=" * 32)
-    typer.echo(f"Version: {__version__}")
-    typer.echo(f"Role:   {role.name if role else '(none - role enforcement off)'}")
-    typer.echo(f"Mode:   {load_mode(path)}  (of: {', '.join(m.value for m in SecurityMode)})")
     vector = load_preferences(path)
-    typer.echo(
-        "Prefs:  "
-        + "  ".join(f"{name}={getattr(vector, name):.2f}" for name in DIMENSIONS)
-        + f"  (preset: {preset_name(vector) or 'custom'})"
-    )
-    if doc is None:
-        typer.echo("Policy: (none saved - run `doberman review --yes`)")
-    else:
-        enabled = sum(1 for it in doc.items if it.enabled)
-        typer.echo(f"Policy: {enabled}/{len(doc.items)} items enabled")
-
-    twofa_status = "yes" if totp.is_enrolled() else "no"
-    typer.echo(f"2FA:    {twofa_status} (optional; run `doberman 2fa setup`)")
-    password_status = "yes" if password.is_enrolled() else "no (run `doberman password set`)"
-    typer.echo(f"Password: {password_status}")
-
+    mode = load_mode(path)
+    twofa = totp.is_enrolled()
+    password_enrolled = password.is_enrolled()
     grants = asyncio.run(active_elevations(path, datetime.now(timezone.utc)))
-    if not grants:
-        typer.echo("Elevations: (none active)")
-    else:
-        typer.echo(f"Elevations: {len(grants)} active")
-        for grant in grants:
-            kind = "single-use" if grant.single_use else "reusable"
-            typer.echo(
-                f"  {grant.id}  {grant.scope_glob}  "
-                f"(expires {grant.expires_at.isoformat()}; {kind})"
-            )
-
     taints = asyncio.run(read_taint(path, entity_scope(path)))
-    if not taints:
-        typer.echo("Taint: (none)")
-    else:
-        typer.echo(f"Taint: {', '.join(f'{kind}={count}' for kind, count in taints.items())}")
-
-    typer.echo("Hooks:")
-    for scope, settings_path, installed in _hook_install_states(path):
-        state = "installed" if installed else "not installed"
-        typer.echo(f"  {scope:<8} {settings_path}  [{state}]")
-
-    typer.echo("Recent decisions:")
-    rows = asyncio.run(read_decisions(path, limit=5))
-    if not rows:
-        typer.echo("  (no decisions recorded yet)")
-    else:
-        for row in rows:
-            reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
-            typer.echo(f"  {row['ts']}  {verdict_label_str(row['final_verdict'])}  {reasons}")
-
+    hook_states = _hook_install_states(path)
+    recent_rows = asyncio.run(read_decisions(path, limit=5))
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     missed_challenges = 0
     for row in asyncio.run(read_decisions(path, limit=200)):
@@ -545,11 +499,153 @@ def status(
                 missed_challenges += 1
         except (TypeError, ValueError):
             continue
-    if missed_challenges:
-        typer.echo(
-            f"warning: {missed_challenges} challenge(s) auto-denied in the last 24h - "
-            "see doberman log"
+
+    policy: dict | None
+    if doc is None:
+        policy = None
+    else:
+        enabled = sum(1 for it in doc.items if it.enabled)
+        policy = {"enabled": enabled, "total": len(doc.items)}
+
+    recent_decisions: list[dict] = []
+    for row in recent_rows:
+        try:
+            reasons = json.loads(row["reason_codes_json"] or "[]")
+        except json.JSONDecodeError:
+            reasons = []
+        recent_decisions.append(
+            {
+                "ts": row["ts"],
+                "final_verdict": row["final_verdict"],
+                "reason_codes": reasons,
+            }
         )
+
+    return {
+        "version": 1,
+        "path": path,
+        "doberman_version": __version__,
+        "role": role.name if role else None,
+        "mode": mode,
+        "prefs": {name: getattr(vector, name) for name in DIMENSIONS},
+        "prefs_preset": preset_name(vector) or "custom",
+        "policy": policy,
+        "twofa": twofa,
+        "password": password_enrolled,
+        "elevations": [
+            {
+                "id": grant.id,
+                "scope_glob": grant.scope_glob,
+                "expires_at": grant.expires_at.isoformat(),
+                "single_use": grant.single_use,
+            }
+            for grant in grants
+        ],
+        "taint": dict(taints) if taints else {},
+        "hooks": [
+            {"scope": scope, "path": settings_path, "installed": installed}
+            for scope, settings_path, installed in hook_states
+        ],
+        "recent_decisions": recent_decisions,
+        "missed_challenges_24h": missed_challenges,
+    }
+
+
+def _render_status_text(payload: dict) -> None:
+    """Human view: one blank line between each status block."""
+    modes = ", ".join(m.value for m in SecurityMode)
+    typer.echo("Doberman status")
+    typer.echo("=" * 32)
+    typer.echo(f"Version: {payload['doberman_version']}")
+    typer.echo("")
+
+    role = payload["role"]
+    typer.echo(f"Role:   {role if role else '(none - role enforcement off)'}")
+    typer.echo("")
+
+    typer.echo(f"Mode:   {payload['mode']}  (of: {modes})")
+    typer.echo("")
+
+    prefs = payload["prefs"]
+    typer.echo(
+        "Prefs:  "
+        + "  ".join(f"{name}={prefs[name]:.2f}" for name in DIMENSIONS)
+        + f"  (preset: {payload['prefs_preset']})"
+    )
+    typer.echo("")
+
+    policy = payload["policy"]
+    if policy is None:
+        typer.echo("Policy: (none saved - run `doberman review --yes`)")
+    else:
+        typer.echo(f"Policy: {policy['enabled']}/{policy['total']} items enabled")
+    typer.echo("")
+
+    twofa_status = "yes" if payload["twofa"] else "no"
+    typer.echo(f"2FA:    {twofa_status} (optional; run `doberman 2fa setup`)")
+    typer.echo("")
+
+    enrolled = "yes" if payload["password"] else "no (run `doberman password set`)"
+    typer.echo(f"Password: {enrolled}")
+    typer.echo("")
+
+    elevations = payload["elevations"]
+    if not elevations:
+        typer.echo("Elevations: (none active)")
+    else:
+        typer.echo(f"Elevations: {len(elevations)} active")
+        for grant in elevations:
+            kind = "single-use" if grant["single_use"] else "reusable"
+            typer.echo(
+                f"  {grant['id']}  {grant['scope_glob']}  (expires {grant['expires_at']}; {kind})"
+            )
+    typer.echo("")
+
+    taint = payload["taint"]
+    if not taint:
+        typer.echo("Taint: (none)")
+    else:
+        typer.echo(f"Taint: {', '.join(f'{kind}={count}' for kind, count in taint.items())}")
+    typer.echo("")
+
+    typer.echo("Hooks:")
+    for hook in payload["hooks"]:
+        state = "installed" if hook["installed"] else "not installed"
+        typer.echo(f"  {hook['scope']:<8} {hook['path']}  [{state}]")
+    typer.echo("")
+
+    typer.echo("Recent decisions:")
+    recent = payload["recent_decisions"]
+    if not recent:
+        typer.echo("  (no decisions recorded yet)")
+    else:
+        for row in recent:
+            reasons = ", ".join(row["reason_codes"]) or "-"
+            typer.echo(f"  {row['ts']}  {verdict_label_str(row['final_verdict'])}  {reasons}")
+
+    missed = payload["missed_challenges_24h"]
+    if missed:
+        typer.echo("")
+        typer.echo(f"warning: {missed} challenge(s) auto-denied in the last 24h - see doberman log")
+
+
+@app.command(rich_help_panel="Daily")
+def status(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit one deterministic JSON document on stdout instead of the sectioned text view.",
+    ),
+) -> None:
+    """Show the active role, security mode, policy summary, hook install state,
+    taint state, and the most recent decisions."""
+    payload = _status_payload(path)
+    if as_json:
+        # Same style as ``scan --json`` / ``doctor --json`` (#178 / #179).
+        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return
+    _render_status_text(payload)
 
 
 @app.command(rich_help_panel="Getting started")
