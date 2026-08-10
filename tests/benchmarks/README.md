@@ -199,7 +199,15 @@ serialized report — keep that guarantee for your suite too.
 python -m tests.benchmarks.run --suite synthetic --profile both          # builtins vs plugins
 python -m tests.benchmarks.run --suite synthetic --profile before_after  # without vs with Doberman
 python -m pytest tests/integration/test_benchmark_synthetic_gate.py      # the gate
+
+# subjective-layer baseline-separation diagnostic (needs agentdojo; standalone flag)
+python -m tests.benchmarks.run --suite agentdojo --subjective
 ```
+
+`--subjective` runs a distribution-separation diagnostic over the subjective
+layer's per-suite streaming baseline instead of the ASR/FPR profile/mode path
+— see [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#subjective-layer-baseline-separation-diagnostic)
+for the methodology and the honest-vs-leak-quantifier arm split.
 
 ---
 

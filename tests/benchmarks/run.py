@@ -48,6 +48,12 @@ def main(argv: list[str] | None = None) -> int:
         help="F6 strength-mode override; 'all' runs each mode and keys the report by "
         "mode (default: the suite's per-case mode)",
     )
+    parser.add_argument(
+        "--subjective",
+        action="store_true",
+        help="run the subjective-layer baseline-separation diagnostic instead of the "
+        "ASR/FPR profile/mode path; standalone (--profile/--mode are ignored)",
+    )
     args = parser.parse_args(argv)
 
     adapter_cls = BUILTIN_ADAPTERS.get(args.suite)
@@ -57,8 +63,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     adapter = adapter_cls()
 
-    if args.mode == "all":
-        report: dict = {m: _run_one(adapter, args.profile, m) for m in _MODES}
+    if args.subjective:
+        from .subjective_runner import run_subjective_eval
+
+        report: dict = run_subjective_eval(adapter)
+    elif args.mode == "all":
+        report = {m: _run_one(adapter, args.profile, m) for m in _MODES}
     else:
         report = _run_one(adapter, args.profile, args.mode)
 
