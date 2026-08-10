@@ -67,6 +67,7 @@ _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),  # Stripe live/test secret/restricted key
     re.compile(r"SG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}"),  # SendGrid API key
     re.compile(r"npm_[A-Za-z0-9]{36}"),  # npm access token
+    re.compile(r"pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{20,}"),  # PyPI API token
     # JWT: two base64url JSON segments (header/payload start with eyJ) + signature
     re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
     # DB / message-queue connection URI with embedded user:password credentials
