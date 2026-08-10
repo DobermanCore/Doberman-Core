@@ -53,6 +53,7 @@ Low-level harness integration (also installed via `install-hooks` / `setup`).
 | Command | Purpose |
 |---------|---------|
 | `doberman hook pre` | Claude Code PreToolUse — gate one tool call |
+| `doberman hook codex-pre` | Codex CLI PreToolUse — gate one tool call (same decision spine as `hook pre`) |
 | `doberman hook post` | Claude Code PostToolUse — scan output for secrets; record history |
 | `doberman hook openclaw` | OpenClaw `before_tool_call` plugin hook — gate one tool call |
 
