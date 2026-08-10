@@ -43,20 +43,28 @@ def _write_webhook_yaml(tmp_path: Path, **kwargs) -> None:
     (d / "audit_webhook.yaml").write_text(yaml.dump(kwargs), encoding="utf-8")
 
 
-def _sink_with_mock_post(config: dict):
-    """Build a WebhookAuditSink and replace _post with a capturing mock.
+class _FakeResponse:
+    """Minimal context-manager response stub for urllib.request.urlopen."""
 
-    Returns ``(sink, posted_bodies)`` where ``posted_bodies`` is a list that
-    accumulates every raw dict handed to the real POST path.
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def _stub_urlopen(captured_requests: list):
+    """Return a urlopen replacement that records Request objects instead of POSTing.
+
+    Stubs at the urlopen level so the real _post path — JSON serialisation,
+    header construction, Request object assembly — is fully exercised.
     """
-    sink = WebhookAuditSink(config)
-    posted: list[dict] = []
 
-    def _fake_post(record: dict) -> None:
-        posted.append(record)
+    def _fake_urlopen(req, timeout=None):
+        captured_requests.append(req)
+        return _FakeResponse()
 
-    sink._post = _fake_post  # monkeypatch the internal method
-    return sink, posted
+    return _fake_urlopen
 
 
 # ---------------------------------------------------------------------------
@@ -202,50 +210,43 @@ def test_emit_does_not_block_on_wedged_endpoint() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_record_posted_as_json(tmp_path: Path) -> None:
-    """The worker thread POSTs the exact record as JSON."""
+def test_record_posted_as_json(monkeypatch) -> None:
+    """The worker POSTs the exact record as JSON — exercises the real _post path."""
     config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
-    sink, posted = _sink_with_mock_post(config)
+    captured: list[urllib.request.Request] = []
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
 
+    sink = WebhookAuditSink(config)
     record = {"final_verdict": "ALLOW", "action_id": "act-webhook-1"}
     sink.emit(record)
-    # Give the worker time to drain the queue.
     sink._queue.join()
 
-    assert len(posted) == 1
-    assert posted[0]["final_verdict"] == "ALLOW"
-    assert posted[0]["action_id"] == "act-webhook-1"
+    assert len(captured) == 1
+    body = json.loads(captured[0].data)
+    assert body["final_verdict"] == "ALLOW"
+    assert body["action_id"] == "act-webhook-1"
+    assert captured[0].get_header("Content-type") == "application/json"
 
 
-def test_synthetic_secret_never_in_posted_body(tmp_path: Path) -> None:
-    """A synthetic secret value must never appear in the JSON body sent to the endpoint."""
+def test_synthetic_secret_never_in_posted_body(monkeypatch) -> None:
+    """A synthetic secret value must never appear in the JSON body — real _post exercised."""
     config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
+    captured: list[urllib.request.Request] = []
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
 
-    # Capture the raw bytes that would be sent.
-    captured_bodies: list[bytes] = []
-
-    class _CapturingSink(WebhookAuditSink):
-        def _post(self, record: dict) -> None:
-            body = json.dumps(record, default=str).encode()
-            captured_bodies.append(body)
-
-    sink = _CapturingSink(config)
-
-    # The record is already redacted upstream; sinks must add nothing.
-    # We embed the synthetic secret key to prove it does NOT leak through.
+    sink = WebhookAuditSink(config)
     record = {
         "final_verdict": "AUTH",
         "reason_codes": ["sensitive_secret_access"],
-        # payload_fingerprints are HMAC fingerprints, not the raw secret.
+        # HMAC fingerprints are safe to transmit; raw secrets must never appear.
         "payload_fingerprints": ["hmac:deadbeef1234"],
     }
     sink.emit(record)
     sink._queue.join()
 
-    assert len(captured_bodies) == 1
-    body_text = captured_bodies[0].decode()
+    assert len(captured) == 1
+    body_text = captured[0].data.decode()
     assert _SECRET not in body_text, "Synthetic secret must never appear in the POSTed body"
-    # The HMAC fingerprint may appear (it's safe); the raw secret must not.
     assert "hmac:deadbeef1234" in body_text
 
 
@@ -254,19 +255,42 @@ def test_synthetic_secret_never_in_posted_body(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_auth_token_not_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch):
+def test_auth_token_in_header_not_in_body(monkeypatch) -> None:
+    """Authorization header carries the token; the JSON body must not contain it."""
+    _FAKE_TOKEN = "Bearer super-secret-token-xyz"  # noqa: S105 — synthetic
+    monkeypatch.setenv("WEBHOOK_TOKEN", _FAKE_TOKEN)
+
+    config = {"url": "https://example.com/audit", "auth_env": "WEBHOOK_TOKEN", "timeout_s": 5.0}
+    captured: list[urllib.request.Request] = []
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
+
+    sink = WebhookAuditSink(config)
+    sink.emit({"final_verdict": "BLOCK"})
+    sink._queue.join()
+
+    assert len(captured) == 1
+    req = captured[0]
+    # Token must be in the Authorization header (real Request object).
+    assert req.get_header("Authorization") == _FAKE_TOKEN
+    # Token must NOT appear anywhere in the POST body.
+    body_text = req.data.decode()
+    assert _FAKE_TOKEN not in body_text, "Token must never appear in the POST body"
+
+
+def test_auth_token_not_logged(monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
     """The Authorization token value must never appear in any log output."""
     _FAKE_TOKEN = "Bearer super-secret-token-xyz"  # noqa: S105 — synthetic
     monkeypatch.setenv("WEBHOOK_TOKEN", _FAKE_TOKEN)
 
     config = {"url": "https://example.com/audit", "auth_env": "WEBHOOK_TOKEN", "timeout_s": 5.0}
-    sink, _ = _sink_with_mock_post(config)
+    captured: list[urllib.request.Request] = []
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
 
+    sink = WebhookAuditSink(config)
     with caplog.at_level(logging.DEBUG, logger="doberman.storage.sinks"):
         sink.emit({"final_verdict": "BLOCK"})
         sink._queue.join()
 
-    # The raw token value must not appear anywhere in the captured log records.
     for record in caplog.records:
         assert _FAKE_TOKEN not in record.getMessage(), (
             f"Token appeared in log: {record.getMessage()!r}"
@@ -274,8 +298,8 @@ def test_auth_token_not_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture,
         assert _FAKE_TOKEN not in (record.exc_text or "")
 
 
-def test_auth_env_missing_does_not_raise(tmp_path: Path, monkeypatch):
-    """If the named env var is absent, the POST continues without Authorization."""
+def test_auth_env_missing_omits_authorization_header(monkeypatch) -> None:
+    """When the named env var is absent the POST goes out without Authorization."""
     monkeypatch.delenv("WEBHOOK_TOKEN_MISSING", raising=False)
 
     config = {
@@ -283,19 +307,15 @@ def test_auth_env_missing_does_not_raise(tmp_path: Path, monkeypatch):
         "auth_env": "WEBHOOK_TOKEN_MISSING",
         "timeout_s": 5.0,
     }
-    captured_headers: list[dict] = []
+    captured: list[urllib.request.Request] = []
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
 
-    class _HeaderSink(WebhookAuditSink):
-        def _post(self, record: dict) -> None:
-            # Simulate reading what headers would be sent.
-            token = __import__("os").environ.get(self._auth_env or "", "")
-            captured_headers.append({"has_auth": bool(token)})
-
-    sink = _HeaderSink(config)
+    sink = WebhookAuditSink(config)
     sink.emit({"x": 1})
     sink._queue.join()
 
-    assert captured_headers == [{"has_auth": False}]
+    assert len(captured) == 1
+    assert captured[0].get_header("Authorization") is None
 
 
 def test_auth_token_read_at_post_time_not_stored(monkeypatch) -> None:
@@ -317,58 +337,48 @@ def test_auth_token_read_at_post_time_not_stored(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_drop_oldest_when_queue_full() -> None:
+def test_drop_oldest_when_queue_full(monkeypatch) -> None:
     """When the queue is at capacity the oldest record is dropped, not the newest."""
-    # Create a tiny-queue sink; block the worker so it can't drain.
-    config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
-    sink = WebhookAuditSink(config)
-
-    # Replace the queue with a tiny one.
     import queue as _q
 
+    config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
+    captured: list[urllib.request.Request] = []
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
+
+    sink = WebhookAuditSink(config)
+
+    # Swap in a tiny queue and block the worker so it can't drain.
     tiny_q: _q.Queue = _q.Queue(maxsize=2)
     sink._queue = tiny_q
 
-    # Pause the worker so it can't drain items.
     pause = threading.Event()
-    orig_post = sink._post
+    sink._post = lambda r: pause.wait(timeout=10)  # block worker; never hits urlopen
 
-    def _slow_post(record: dict) -> None:
-        pause.wait(timeout=10)
-        orig_post(record)
+    time.sleep(0.05)  # let the worker settle on the empty queue
 
-    sink._post = _slow_post
-
-    # Wait until the worker blocks on the empty queue before we fill it.
-    time.sleep(0.05)
-
-    # Fill the queue to capacity.
+    # Fill the queue to capacity, then emit one more — should drop oldest.
     sink._queue.put({"seq": 0})
     sink._queue.put({"seq": 1})
-
-    # Now emit a third record — should drop oldest (seq=0) to make room.
     sink.emit({"seq": 2})
 
-    # The drop counter must be at least 1.
     assert sink.drops >= 1
 
-    # Unpause and let the worker finish.
-    pause.set()
+    pause.set()  # unblock worker
 
 
-def test_drop_counter_increments_on_each_overflow() -> None:
+def test_drop_counter_increments_on_each_overflow(monkeypatch) -> None:
     """Each overflow event increments the drop counter."""
-    config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
-    sink = WebhookAuditSink(config)
-
-    # Freeze the worker so queue never drains.
-    freeze = threading.Event()
-    sink._post = lambda r: freeze.wait(timeout=10)
-    time.sleep(0.05)
-
     import queue as _q
 
-    # Fill a tiny queue, then overflow it multiple times.
+    config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen([]))
+
+    sink = WebhookAuditSink(config)
+
+    freeze = threading.Event()
+    sink._post = lambda r: freeze.wait(timeout=10)  # block worker; network-free
+    time.sleep(0.05)
+
     tiny_q: _q.Queue = _q.Queue(maxsize=1)
     sink._queue = tiny_q
     sink._queue.put({"seq": 0})

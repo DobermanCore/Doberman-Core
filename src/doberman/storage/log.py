@@ -213,7 +213,7 @@ async def record_decision(
 
     # Fan-out is best-effort and isolated; never let it raise either.
     try:
-        emit_to_sinks(record)
+        emit_to_sinks(record, repo_root=repo_root)
     except Exception:  # noqa: BLE001 — defense in depth (emit_to_sinks already isolates)
         logger.warning("audit sink fan-out failed for action %s; continuing", decision.action_id)
 
