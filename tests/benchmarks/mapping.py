@@ -42,16 +42,22 @@ def to_security_object(action_id: str, action: CandidateAction) -> SecurityObjec
         source_context=action.source_context,
     )
     raw_arguments = dict(action.raw_arguments) if action.raw_arguments else {}
-    algebra = apply_adapters(
-        infer_algebra(base, raw_arguments),
-        {"tool_name": action.tool_name, "arguments": raw_arguments},
-    )
-    return base.model_copy(
-        update={
-            "algebra": algebra,
-            "reversibility": infer_reversibility(base, raw_arguments),
-        }
-    )
+    try:
+        algebra = apply_adapters(
+            infer_algebra(base, raw_arguments),
+            {"tool_name": action.tool_name, "arguments": raw_arguments},
+        )
+        return base.model_copy(
+            update={
+                "algebra": algebra,
+                "reversibility": infer_reversibility(base, raw_arguments),
+            }
+        )
+    except Exception:  # noqa: BLE001 — a benchmark case must never drop on an inference
+        # raise; keep the base object's conservative default algebra (matches the docstring
+        # and mirrors infer_algebra's own internal fail-safe). run_suite would otherwise
+        # skip the whole case, silently shrinking the measured corpus.
+        return base
 
 
 def to_eval_context(action: CandidateAction) -> EvalContext:
