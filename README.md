@@ -200,6 +200,18 @@ The tutorial rule steps up a write to `SECRETS_TODO.md` to AUTH, stays raise-onl
 
 > While the example is installed, core's "no plugins registered" checks will see it — that is expected. Uninstall before re-running the full core suite if you want a clean standalone environment.
 
+### Forward the audit log (webhook sink)
+
+Drop a `.doberman/audit_webhook.yaml` next to your policy file and every redacted decision record is also POSTed to your own log pipeline:
+
+```yaml
+url: https://logs.example.com/doberman   # HTTPS required off-loopback
+auth_env: DOBERMAN_WEBHOOK_TOKEN         # optional: env var read at POST time, sent in the Authorization header
+timeout_s: 3                             # optional, per-request
+```
+
+No file, no sink — the forwarder is inert by default. Delivery never touches the decision path: `emit()` hands the record to a bounded background queue and returns before any I/O, so a wedged endpoint cannot delay a decision; on overflow the oldest record is dropped and counted. Records carry the same already-redacted fields as the local log (path classes, reason codes, verdicts, HMAC fingerprints — never raw secrets), and the auth token value is read from the named env var at POST time, never stored or logged. This is a bridge to your pipeline, not a delivery guarantee. Additional sinks register through the **`doberman.audit_sinks`** entry-point group, same pattern as rules.
+
 ---
 
 ## Tune to your risk tolerance

@@ -424,8 +424,8 @@ def test_emit_to_sinks_includes_builtin_webhook(tmp_path: Path, monkeypatch) -> 
     """emit_to_sinks() hands records to the built-in WebhookAuditSink."""
     from doberman.storage import sinks as sinks_mod
 
-    # Reset the module-level singleton so our tmp_path config is picked up.
-    monkeypatch.setattr(sinks_mod, "_webhook_sink", None)
+    # Reset the module-level cache so our tmp_path config is picked up.
+    monkeypatch.setattr(sinks_mod, "_webhook_sinks", {})
     _write_webhook_yaml(tmp_path, url="http://localhost:9999/audit")
 
     received: list[dict] = []
@@ -475,7 +475,7 @@ def test_emit_to_sinks_inert_builtin_with_no_config(tmp_path: Path, monkeypatch)
     """When no audit_webhook.yaml exists the built-in sink is inert (no I/O)."""
     from doberman.storage import sinks as sinks_mod
 
-    monkeypatch.setattr(sinks_mod, "_webhook_sink", None)
+    monkeypatch.setattr(sinks_mod, "_webhook_sinks", {})
     monkeypatch.setattr("doberman.engine.registry.discover_audit_sinks", lambda: [])
 
     # No config file → should be inert.
