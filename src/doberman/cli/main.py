@@ -700,7 +700,8 @@ def doctor(
     typer.echo("")
     if failures:
         typer.echo(
-            f"{len(failures)} critical check(s) not healthy - Doberman may not be protecting you."
+            f"error: {len(failures)} critical check(s) not healthy - "
+            "Doberman may not be protecting you."
         )
         raise typer.Exit(code=1)
     typer.echo("All critical checks passed.")

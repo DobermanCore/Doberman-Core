@@ -122,7 +122,7 @@ def test_doctor_hooks_missing_fails(tmp_path):
     result = runner.invoke(app, ["doctor", "--path", root])
     assert result.exit_code == 1
     assert "[FAIL] Host hooks: not installed" in result.stdout
-    assert "critical check(s) not healthy" in result.stdout
+    assert "error: 1 critical check(s) not healthy" in result.stdout
 
 
 def test_doctor_config_missing_fails(tmp_path):
