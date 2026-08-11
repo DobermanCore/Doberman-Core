@@ -22,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         os: ["ubuntu-latest"]
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
         # Doberman is a local-first tool that runs on developer machines of every
         # OS, and it carries OS-specific code (e.g. the Windows O_BINARY key-write
         # path in storage/fingerprint.py). Guard that surface with one Windows leg
