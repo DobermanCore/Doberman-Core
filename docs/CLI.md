@@ -16,13 +16,13 @@ Entry point: `doberman` (Typer). All commands accept `--help`.
 | `doberman policy-history` | Append-only policy change ledger |
 | `doberman log` | Decision log (redacted) |
 | `doberman memory` | Aggregated class counts (no secrets) |
-| `doberman tui` | Interactive decision log with plain-language "why" panel |
+| `doberman tui` | Interactive decision log with plain-language "why" panel (needs the `[tui]` extra) |
 | `doberman dash` | Localhost-only dashboard (preview) |
 | `doberman demo` | Scripted attack reel through the real decision engine |
 | `doberman revoke` | Revoke an active role elevation by id |
 | `doberman setup` | First-run wizard (posture + Claude Code hooks) |
-| `doberman install-hooks` | Wire Claude Code host hooks |
-| `doberman uninstall-hooks` | Remove Claude Code host hooks |
+| `doberman install-hooks` | Wire host hooks (Claude Code by default; `--host codex` for Codex CLI) |
+| `doberman uninstall-hooks` | Remove host hooks (Claude Code by default; `--host codex` for Codex CLI) |
 | `doberman serve` | MCP stdio proxy in front of a downstream tool server |
 | `doberman version` | Print the installed Doberman version |
 | `doberman session-summary` | Print the device-global session-guard summary and exit |
