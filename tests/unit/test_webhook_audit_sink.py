@@ -684,3 +684,77 @@ def test_thread_start_failure_leaves_sink_inert(monkeypatch) -> None:
 
     # Restore so other threads in the suite are unaffected.
     monkeypatch.setattr(threading.Thread, "start", original_start)
+
+
+# ---------------------------------------------------------------------------
+# emit() / close() atomicity regression (fu351 review blocker)
+# ---------------------------------------------------------------------------
+
+
+def test_emit_close_race_no_stranded_record(monkeypatch) -> None:
+    """Regression: emit() cannot enqueue after close() has stopped the worker.
+
+    Deterministically reproduces the exact interleaving fu351 flagged:
+      1. emit() acquires _state_lock, sees _active=True, begins enqueue.
+      2. close() wants to flip _active=False but must wait for the lock.
+      3. emit() finishes enqueuing and releases the lock.
+      4. close() acquires the lock, flips _active=False, stops the worker.
+      5. Because the worker is still running when close() joins it, it drains
+         the record that emit() enqueued in step 3.
+
+    Without _state_lock the old code produced active=False, worker_alive=False,
+    queued_after_close=1 — a stranded, never-delivered record.
+    With the lock, every record enqueued before close() completes is delivered.
+    """
+    captured: list[urllib.request.Request] = []
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
+
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
+
+    # Reproduce the race at a higher level: pause emit() just after it passes
+    # the _active check (but while it still holds _state_lock) by
+    # monkeypatching put_nowait to block until close() has attempted to acquire
+    # _state_lock and then been forced to wait. This forces the worst-case
+    # interleaving: emit() enqueues, then close() stops the worker and drains.
+    original_put_nowait = sink._queue.put_nowait
+    emit_in_put = threading.Event()
+    close_may_proceed = threading.Event()
+
+    def _slow_put(record):
+        emit_in_put.set()  # signal: emit() is inside _state_lock, in put
+        close_may_proceed.wait(timeout=5)  # wait for close() to be called
+        original_put_nowait(record)
+
+    sink._queue.put_nowait = _slow_put
+
+    results: dict = {}
+
+    def _do_emit():
+        sink.emit({"race": True})
+        results["emit_done"] = True
+
+    def _do_close():
+        emit_in_put.wait(timeout=5)  # wait until emit() is inside _state_lock
+        close_may_proceed.set()  # unblock emit()'s put_nowait so it finishes
+        sink.close(drain_timeout_s=5.0)  # must wait for emit() to release _state_lock
+        results["close_done"] = True
+        results["worker_alive"] = sink._worker_thread is not None and sink._worker_thread.is_alive()
+
+    t_emit = threading.Thread(target=_do_emit)
+    t_close = threading.Thread(target=_do_close)
+
+    t_emit.start()
+    t_close.start()
+    t_emit.join(timeout=10)
+    t_close.join(timeout=10)
+
+    assert results.get("emit_done"), "emit() did not complete"
+    assert results.get("close_done"), "close() did not complete"
+    assert not results.get("worker_alive"), "Worker still alive after close()"
+
+    # The record emitted concurrently with close() must have been delivered —
+    # never stranded. close() drains the queue before stopping the worker.
+    assert len(captured) == 1, (
+        f"Expected 1 delivered record, got {len(captured)} — "
+        "record was stranded after close() stopped the worker"
+    )

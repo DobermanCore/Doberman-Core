@@ -182,6 +182,7 @@ class WebhookAuditSink:
         self._queue: queue.Queue[dict] = queue.Queue(maxsize=0)  # replaced below if active
         self._drops = 0
         self._drops_lock = threading.Lock()
+        self._state_lock = threading.Lock()  # guards _active transitions in emit/close
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
 
@@ -218,44 +219,50 @@ class WebhookAuditSink:
     def emit(self, record: dict) -> None:
         """Enqueue *record* for async delivery; returns immediately (no I/O).
 
-        If the queue is full the oldest record is dropped to make room, the
-        drop counter is incremented, and the new record is enqueued. Never
-        raises: any internal error is logged and swallowed. After ``close()``
-        records are silently discarded.
+        The active-state check and enqueue are atomic under ``_state_lock`` so
+        a concurrent ``close()`` cannot observe ``_active=True``, set it to
+        ``False``, stop the worker, and return while this call is still mid-
+        enqueue — which would strand an undelivered record with no consumer.
+
+        If the queue is full the oldest record is dropped to make room and the
+        drop counter is incremented. Never raises: any internal error is logged
+        and swallowed. After ``close()`` records are silently discarded.
         """
-        if not self._active:
-            return
-        try:
+        with self._state_lock:
+            if not self._active:
+                return
             try:
-                self._queue.put_nowait(record)
-            except queue.Full:
-                try:
-                    self._queue.get_nowait()  # drop oldest
-                except queue.Empty:
-                    pass
-                with self._drops_lock:
-                    self._drops += 1
-                # Best-effort: try again; if still full another thread won the
-                # race — just drop the incoming record rather than blocking.
                 try:
                     self._queue.put_nowait(record)
                 except queue.Full:
+                    try:
+                        self._queue.get_nowait()  # drop oldest
+                    except queue.Empty:
+                        pass
                     with self._drops_lock:
                         self._drops += 1
-        except Exception:  # noqa: BLE001 — emit must never raise
-            logger.warning("audit_webhook: emit() internal error; record dropped")
+                    # Best-effort: try again; if still full another thread won the
+                    # race — just drop the incoming record rather than blocking.
+                    try:
+                        self._queue.put_nowait(record)
+                    except queue.Full:
+                        with self._drops_lock:
+                            self._drops += 1
+            except Exception:  # noqa: BLE001 — emit must never raise
+                logger.warning("audit_webhook: emit() internal error; record dropped")
 
     def close(self, drain_timeout_s: float = 5.0) -> None:
         """Stop the worker thread and drain remaining queued records.
 
-        Sets the stop event, marks the sink inert (so concurrent ``emit()``
-        calls after ``close()`` are harmless no-ops), then joins the worker
-        thread with *drain_timeout_s* to let it flush any records already in
-        the queue before it exits.  Idempotent; never raises.
+        Acquires ``_state_lock`` to flip ``_active`` to ``False`` atomically
+        with any concurrent ``emit()`` check-and-enqueue, so no record can be
+        enqueued after the worker has been stopped.  Sets the stop event, then
+        joins the worker with *drain_timeout_s*.  Idempotent; never raises.
         """
-        if not self._active:
-            return
-        self._active = False  # new emit() calls become no-ops immediately
+        with self._state_lock:
+            if not self._active:
+                return
+            self._active = False  # atomic with any concurrent emit() check
         self._stop_event.set()
         if self._worker_thread is not None:
             self._worker_thread.join(timeout=drain_timeout_s)
