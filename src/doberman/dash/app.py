@@ -105,10 +105,10 @@ _HTML_SHELL = """<!doctype html>
   @media (prefers-color-scheme: light) {
     :root {
       --bg: #f7f7f8; --surface: #ffffff; --border: #dde1e6; --ink: #111; --ink-dim: #5b6572;
-      --pass: #1a7f37;  --pass-bg: rgba(26, 127, 55, .12);
-      --auth: #9a6700;  --auth-bg: rgba(154, 103, 0, .12);
-      --block: #cf222e; --block-bg: rgba(207, 34, 46, .12);
-      --neutral: #57606a; --neutral-bg: rgba(87, 96, 106, .12);
+      --pass: #116329;  --pass-bg: rgba(17, 99, 41, .12);
+      --auth: #7d5200;  --auth-bg: rgba(125, 82, 0, .12);
+      --block: #a40e26; --block-bg: rgba(164, 14, 38, .12);
+      --neutral: #424a53; --neutral-bg: rgba(66, 74, 83, .12);
     }
   }
   * { box-sizing: border-box; }
