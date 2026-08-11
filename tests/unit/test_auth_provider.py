@@ -167,6 +167,15 @@ def test_challenge_message_low_risk_renders_cleanly():
     assert "role_out_of_scope" in message  # the reason
 
 
+def test_challenge_message_is_ascii_and_cp1252_safe():
+    """_challenge_message output must be ASCII and cp1252-safe for legacy Windows consoles."""
+    from doberman.auth.provider import _challenge_message
+
+    msg = _challenge_message(_auth_decision(), _action(), AuthTier.soft_confirm)
+    assert msg.isascii(), f"non-ASCII in challenge prompt: {msg!r}"
+    msg.encode("ascii")  # raises UnicodeEncodeError if non-ASCII
+
+
 def test_registered_provider_is_preferred(monkeypatch):
     sentinel = object()
 
