@@ -1,8 +1,10 @@
 # Host adapter guide
 
 How Doberman plugs into a coding-agent host. This page distills the pattern
-shared by the two shipping integrations so a third adapter does not have to
-reverse-engineer both from scratch.
+shared by the two stable integrations so a new adapter does not have to
+reverse-engineer both from scratch. (A third, experimental Codex CLI adapter —
+`src/doberman/hosthooks/codex.py` — follows the same pre-call pattern through
+the same spine and is a useful extra reference, but is not documented here.)
 
 | Integration | Host surface | Doberman entry | Language |
 |-------------|--------------|----------------|----------|
@@ -86,8 +88,13 @@ apply_taint_floor(...)               → Decision (raise-only)
 acted_verdict(decision, enforcement) → Verdict actually enforced
 ```
 
-The spine is the only place that builds a `SecurityObject` and runs the
-engine. Adapters must not reimplement `decide` or invent a parallel model.
+On the pre-call gating path, the spine is the only place that builds a
+`SecurityObject` and runs the engine — adapters must not reimplement `decide`
+or invent a parallel model. The one exception today is Claude Code's post-call
+output scan (`evaluate_post`), which builds its own synthetic `SecurityObject`
+via `normalize()` and runs the objective guardrail directly, outside
+`spine.evaluate_action`. If your host supports a post-call scan, that lighter
+pattern is the precedent to follow.
 
 ---
 
