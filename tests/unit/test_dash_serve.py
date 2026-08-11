@@ -94,6 +94,7 @@ def test_cli_dash_missing_extra_exits_nonzero_with_install_hint(monkeypatch):
     result = runner.invoke(cli_app, ["dash"])
 
     assert result.exit_code != 0
+    assert result.stderr.startswith("error: ")
     assert 'pip install "doberman-core[dash]"' in result.stderr
 
 

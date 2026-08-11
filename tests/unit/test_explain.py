@@ -329,6 +329,7 @@ def test_tui_command_without_textual_prints_install_hint_and_exits_1(monkeypatch
     monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
     result = runner.invoke(app, ["tui"])
     assert result.exit_code == 1
+    assert result.stderr.startswith("error: ")
     assert "doberman-core[tui]" in result.output
 
 

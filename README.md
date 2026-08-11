@@ -113,6 +113,9 @@ Verdicts are colour-coded everywhere they're shown (`BLOCK` red, `AUTH` amber, `
 width. Colour is dropped automatically when output is piped or redirected, and honours
 [`NO_COLOR`](https://no-color.org) when that variable is set to a non-empty value.
 
+CLI diagnostics use one severity vocabulary: fatal failures start with `error:`, successful but
+degraded or skipped work starts with `warning:`, and informational asides start with `note:`.
+
 ---
 
 ## Verify it end-to-end
