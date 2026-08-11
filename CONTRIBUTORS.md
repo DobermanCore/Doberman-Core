@@ -26,6 +26,7 @@ In alphabetical order by handle (ordering is not a ranking):
 - [@snowyukitty](https://github.com/snowyukitty)
 - [@stevenmini2019](https://github.com/stevenmini2019)
 - [@Tian-Tan](https://github.com/Tian-Tan)
+- [@tomatotomata](https://github.com/tomatotomata)
 
 The living list of everyone who has landed a commit is always on the
 [GitHub contributors graph](https://github.com/fu351/Doberman-Core/graphs/contributors).

@@ -7,6 +7,8 @@ invariants.
 
 ## Local setup
 
+You need Python 3.11 or newer (CI tests 3.11, 3.12, and 3.13).
+
 ```bash
 git clone https://github.com/fu351/Doberman-Core.git
 cd Doberman-Core
@@ -27,8 +29,11 @@ ruff check .
 ruff format --check .
 python scripts/check_markdown_links.py
 lint-imports
-pytest --cov=doberman --cov-report=term-missing --cov-fail-under=80
+pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=80
 ```
+
+`-n auto` runs the suite in parallel (pytest-xdist ships in the `dev` extra), the
+same way CI runs it.
 
 CI also verifies that `doberman-core` builds and tests without the private
 enterprise package installed, then runs the same ruff, import-linter, pytest,
@@ -81,7 +86,7 @@ verification process. Before marking a pull request ready for review, run:
 ruff check .
 ruff format --check .
 lint-imports
-pytest --cov=doberman --cov-report=term-missing --cov-fail-under=80
+pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=80
 ```
 
 The Markdown check is intentionally offline: it validates repository-local Markdown files and
@@ -93,7 +98,19 @@ heading anchors, skips external URLs and fenced code blocks, and never makes net
 2. The call is normalized into a `SecurityObject`.
 3. The decision engine runs objective and adaptive guardrails.
 4. Guardrail verdicts merge through raise-only `combine()`.
-5. The execution gate returns PASS / AUTH /BLOCK: allow, authenticate, or block.
+5. The execution gate returns PASS / AUTH / BLOCK: allow, authenticate, or block.
+
+## Where the docs live
+
+| Doc                                            | What it covers                                        |
+| ---------------------------------------------- | ----------------------------------------------------- |
+| [`docs/SETUP.md`](./docs/SETUP.md)             | Install, first run, and host wiring                   |
+| [`docs/CLI.md`](./docs/CLI.md)                 | Every `doberman` CLI command                          |
+| [`docs/ADAPTER_GUIDE.md`](./docs/ADAPTER_GUIDE.md) | The shared shape of host adapters (proxy + hooks) |
+| [`docs/REASON_CODES.md`](./docs/REASON_CODES.md) | Reason-code reference for decisions                 |
+| [`docs/PARITY.md`](./docs/PARITY.md)           | Which guarantees hold on which host                   |
+| [`docs/BENCHMARKS.md`](./docs/BENCHMARKS.md)   | The benchmark harness and metrics                     |
+| [`docs/RELEASING.md`](./docs/RELEASING.md)     | Release process (maintainers)                         |
 
 ## Invariants
 
@@ -150,4 +167,12 @@ or
 labels to find level-1/2/3 work, or browse a specific rung directly, e.g.
 [`level-1`](https://github.com/fu351/Doberman-Core/labels/level-1) (swap the number for any level
 1-10). Good first PRs are usually narrow docs, tests, or guardrail hardening changes with a clear
-issue to close.
+issue to close. Ready for something meatier, the
+[`good first challenge`](https://github.com/fu351/Doberman-Core/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+challenge%22)
+label marks well-scoped issues a rung or two further up the ladder.
+
+## Questions and community
+
+Ask questions on the issue you're working on — maintainers watch the threads. For
+roadmap and design conversation between PRs, join the
+[Discord](https://discord.gg/Sfy5XGNqty).
