@@ -20,6 +20,10 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 - **UX:** `--help` groups commands into panels — Getting started / Daily use / Policy & control / Auth & recovery / Advanced (thanks @slegarraga, #279, closes #259)
 - **UX:** `uninstall-hooks` now states what it leaves behind (`.doberman/`, `~/.doberman/metrics.db`, password/2FA enrollment), and `setup`'s next steps name the exit (thanks @slegarraga, #276, closes #256)
 - **Docs:** docs/CLI.md documents `log --jsonl` (field allowlist, newest-first, empty-if-none) and the scan evidence 3-vs-10 display cap (thanks @AshSgDe29071999, #295, closes #223)
+- **New:** `WebhookAuditSink` — the first built-in concrete audit sink (F8.5). Drop a `.doberman/audit_webhook.yaml` (`url`, `auth_env`, `timeout_s`) and every redacted decision record is also POSTed to your own log pipeline. `emit()` never blocks the decision path (bounded queue, drop-oldest with a counted drop), HTTPS is required off-loopback, and the auth token is read from the named env var at POST time — never stored, never logged (thanks @Maqbool61, #317, closes #233)
+- **CI:** Python 3.13 joins the test matrix, and the package classifiers say so (thanks @jasperdingg, #328, closes #211)
+- **Docs:** [`docs/ADAPTER_GUIDE.md`](docs/ADAPTER_GUIDE.md) — the shared shape of Doberman's host adapters: hook lifecycle, normalization into `SecurityObject`, per-host verdict enforcement, and a checklist for writing a third adapter (thanks @AshSgDe29071999, #316, closes #189)
+- **Docs:** docs/CLI.md now documents every user-facing CLI command — 29 of 29, including the `2fa`, `password`, `taint`, and `hook` groups (thanks @AshSgDe29071999, #297, closes #222)
 
 ## 0.17.1 — 2026-08-06
 
