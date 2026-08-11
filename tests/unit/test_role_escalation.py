@@ -9,6 +9,8 @@ cannot be learned away).
 
 from datetime import datetime, timezone
 
+import pytest
+
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.rules.role_boundary import RoleBoundaryRule
 from doberman.models import (
@@ -25,7 +27,12 @@ FRONTEND = load_builtin_roles()["frontend"]
 RULE = RoleBoundaryRule()
 
 
-def _action(target, action_type=ActionType.file_write, source=SourceContext.unknown):
+def _action(
+    target,
+    action_type=ActionType.file_write,
+    source=SourceContext.unknown,
+    metadata=None,
+):
     return SecurityObject(
         id="ra-1",
         ts=datetime(2026, 6, 8, tzinfo=timezone.utc),
@@ -34,6 +41,7 @@ def _action(target, action_type=ActionType.file_write, source=SourceContext.unkn
         tool_name="fs_write",
         target=target,
         source_context=source,
+        metadata=metadata or {},
     )
 
 
@@ -74,6 +82,28 @@ def test_role_blocked_path_is_blocked(tmp_path):
     result = RULE.evaluate(
         _action("app/secret/key.txt", action_type=ActionType.file_delete), _ctx(role, tmp_path)
     )
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.role_blocked_target in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "raw_paths",
+    [
+        ["app/public.txt", "app/secret/key.txt"],
+        ["app/secret/key.txt", "app/public.txt"],
+    ],
+    ids=["blocked-last", "blocked-first"],
+)
+def test_batch_paths_use_worst_role_boundary_regardless_of_order(tmp_path, raw_paths):
+    role = RoleDefinition(name="scoped", allowed=["app/**"], blocked=["app/secret/**"])
+    action = _action(
+        "app/public.txt",
+        action_type=ActionType.file_delete,
+        metadata={"raw_paths": raw_paths},
+    )
+
+    result = RULE.evaluate(action, _ctx(role, tmp_path))
+
     assert result.verdict is Verdict.BLOCK
     assert ReasonCode.role_blocked_target in result.reason_codes
 
