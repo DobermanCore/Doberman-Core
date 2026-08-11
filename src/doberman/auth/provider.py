@@ -78,8 +78,8 @@ def _challenge_message(decision: Decision, action: SecurityObject, tier: AuthTie
     return (
         f"[RISK: {decision.final_risk.upper()}]  Doberman authentication required [{tier.value}]\n"
         f"  role:   {action.agent_role}\n"
-        f"  action: {action.tool_name} → {target}\n"
-        f"  reason: {reasons} — {decision.explanation.strip() or 'no further detail'}\n"
+        f"  action: {action.tool_name} -> {target}\n"
+        f"  reason: {reasons} - {decision.explanation.strip() or 'no further detail'}\n"
         f"Approve THIS exact action?"
     )
 
