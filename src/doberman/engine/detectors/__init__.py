@@ -11,13 +11,15 @@ behavioral (UEBA-style) detection lives in the enterprise edition and attaches
 through the ``doberman.detectors`` entry-point registry — core never imports it.
 """
 
+from doberman.engine.detectors.base64_blob import Base64BlobDetector
 from doberman.engine.detectors.token_channels import TokenChannelDetector
 
 #: The built-in detector set, in a stable order. ``SubjectiveGuardrail``
 #: instantiates these with their defaults; they abstain (PASS) on benign input.
-BUILTIN_DETECTOR_TYPES = (TokenChannelDetector,)
+BUILTIN_DETECTOR_TYPES = (TokenChannelDetector, Base64BlobDetector)
 
 __all__ = [
     "BUILTIN_DETECTOR_TYPES",
+    "Base64BlobDetector",
     "TokenChannelDetector",
 ]
