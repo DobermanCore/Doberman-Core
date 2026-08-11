@@ -9,6 +9,8 @@ Proves every contract from the issue:
 - HTTPS required for non-loopback URLs.
 - Auth token absent from logs.
 - emit_to_sinks wires the built-in webhook sink after plugin-discovered sinks.
+- close() stops the worker thread; emit() after close() is a no-op.
+- Thread-start failure leaves the sink inert (no retry storm).
 """
 
 import json
@@ -34,6 +36,8 @@ from doberman.storage.sinks import (
 # ---------------------------------------------------------------------------
 
 _SECRET = "AKIA-FAKE-WEBHOOK-SECRET-9999"  # noqa: S105 — synthetic test value only
+
+_ACTIVE_CONFIG = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
 
 
 def _write_webhook_yaml(tmp_path: Path, **kwargs) -> None:
@@ -65,6 +69,26 @@ def _stub_urlopen(captured_requests: list):
         return _FakeResponse()
 
     return _fake_urlopen
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def active_sink(monkeypatch):
+    """Yield a live WebhookAuditSink and close() it after the test.
+
+    Uses a urlopen stub so no network I/O escapes the test process. Every test
+    that constructs an active sink should use this fixture (or call
+    sink.close() itself) to avoid leaking a live worker thread into the rest of
+    the pytest run.
+    """
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen([]))
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
+    yield sink
+    sink.close(drain_timeout_s=2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -183,15 +207,18 @@ def test_inert_from_repo_no_file(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_emit_does_not_block_on_wedged_endpoint() -> None:
+def test_emit_does_not_block_on_wedged_endpoint(monkeypatch) -> None:
     """emit() must return before any network I/O — even with a frozen _post."""
-    config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
-    sink = WebhookAuditSink(config)
+    captured: list[urllib.request.Request] = []
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
 
     # Replace _post with a call that blocks until we release it.
     gate = threading.Event()
+    worker_reached = threading.Event()
 
     def _blocking_post(record: dict) -> None:
+        worker_reached.set()
         gate.wait(timeout=30)  # blocks the worker, not emit()
 
     sink._post = _blocking_post
@@ -199,7 +226,8 @@ def test_emit_does_not_block_on_wedged_endpoint() -> None:
     start = time.monotonic()
     sink.emit({"final_verdict": "BLOCK"})
     elapsed = time.monotonic() - start
-    gate.set()  # unblock the worker thread
+    gate.set()  # unblock worker before close()
+    sink.close(drain_timeout_s=2.0)
 
     # emit() must complete in well under 1 second (the network timeout is 5s).
     assert elapsed < 1.0, f"emit() blocked for {elapsed:.3f}s — it must be synchronous"
@@ -226,6 +254,7 @@ def test_record_posted_as_json(monkeypatch) -> None:
     assert body["final_verdict"] == "ALLOW"
     assert body["action_id"] == "act-webhook-1"
     assert captured[0].get_header("Content-type") == "application/json"
+    sink.close(drain_timeout_s=2.0)
 
 
 def test_synthetic_secret_never_in_posted_body(monkeypatch) -> None:
@@ -248,6 +277,7 @@ def test_synthetic_secret_never_in_posted_body(monkeypatch) -> None:
     body_text = captured[0].data.decode()
     assert _SECRET not in body_text, "Synthetic secret must never appear in the POSTed body"
     assert "hmac:deadbeef1234" in body_text
+    sink.close(drain_timeout_s=2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +305,7 @@ def test_auth_token_in_header_not_in_body(monkeypatch) -> None:
     # Token must NOT appear anywhere in the POST body.
     body_text = req.data.decode()
     assert _FAKE_TOKEN not in body_text, "Token must never appear in the POST body"
+    sink.close(drain_timeout_s=2.0)
 
 
 def test_auth_token_not_logged(monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
@@ -296,6 +327,7 @@ def test_auth_token_not_logged(monkeypatch, caplog: pytest.LogCaptureFixture) ->
             f"Token appeared in log: {record.getMessage()!r}"
         )
         assert _FAKE_TOKEN not in (record.exc_text or "")
+    sink.close(drain_timeout_s=2.0)
 
 
 def test_auth_env_missing_omits_authorization_header(monkeypatch) -> None:
@@ -316,11 +348,13 @@ def test_auth_env_missing_omits_authorization_header(monkeypatch) -> None:
 
     assert len(captured) == 1
     assert captured[0].get_header("Authorization") is None
+    sink.close(drain_timeout_s=2.0)
 
 
 def test_auth_token_read_at_post_time_not_stored(monkeypatch) -> None:
     """The token must not be cached on the sink object — it is read at POST time."""
     monkeypatch.setenv("LATE_TOKEN", "initial-value")
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen([]))
     config = {"url": "https://example.com/audit", "auth_env": "LATE_TOKEN", "timeout_s": 5.0}
     sink = WebhookAuditSink(config)
     # The env var name is stored, but the VALUE must not be.
@@ -330,6 +364,7 @@ def test_auth_token_read_at_post_time_not_stored(monkeypatch) -> None:
     for v in sink.__dict__.values():
         if isinstance(v, str):
             assert v != "initial-value", "Token value stored on sink"
+    sink.close(drain_timeout_s=2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -341,22 +376,27 @@ def test_drop_oldest_when_queue_full(monkeypatch) -> None:
     """When the queue is at capacity the oldest record is dropped, not the newest."""
     import queue as _q
 
-    config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
-    captured: list[urllib.request.Request] = []
-    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
-
-    sink = WebhookAuditSink(config)
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen([]))
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
 
     # Swap in a tiny queue and block the worker so it can't drain.
     tiny_q: _q.Queue = _q.Queue(maxsize=2)
     sink._queue = tiny_q
 
     pause = threading.Event()
-    sink._post = lambda r: pause.wait(timeout=10)  # block worker; never hits urlopen
+    worker_blocked = threading.Event()
 
-    time.sleep(0.05)  # let the worker settle on the empty queue
+    def _blocking_post(r):
+        worker_blocked.set()
+        pause.wait(timeout=10)
 
-    # Fill the queue to capacity, then emit one more — should drop oldest.
+    sink._post = _blocking_post
+
+    # Enqueue one record so the worker enters _post and signals worker_blocked.
+    sink._queue.put({"seq": -1})
+    worker_blocked.wait(timeout=5)  # deterministic: worker is now inside _post
+
+    # Refill the queue to capacity, then emit one more — should drop oldest.
     sink._queue.put({"seq": 0})
     sink._queue.put({"seq": 1})
     sink.emit({"seq": 2})
@@ -364,20 +404,28 @@ def test_drop_oldest_when_queue_full(monkeypatch) -> None:
     assert sink.drops >= 1
 
     pause.set()  # unblock worker
+    sink.close(drain_timeout_s=2.0)
 
 
 def test_drop_counter_increments_on_each_overflow(monkeypatch) -> None:
     """Each overflow event increments the drop counter."""
     import queue as _q
 
-    config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
     monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen([]))
-
-    sink = WebhookAuditSink(config)
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
 
     freeze = threading.Event()
-    sink._post = lambda r: freeze.wait(timeout=10)  # block worker; network-free
-    time.sleep(0.05)
+    worker_blocked = threading.Event()
+
+    def _blocking_post(r):
+        worker_blocked.set()
+        freeze.wait(timeout=10)
+
+    sink._post = _blocking_post
+
+    # Trigger the worker into _blocking_post so it's out of the way.
+    sink._queue.put({"seq": -1})
+    worker_blocked.wait(timeout=5)
 
     tiny_q: _q.Queue = _q.Queue(maxsize=1)
     sink._queue = tiny_q
@@ -387,7 +435,9 @@ def test_drop_counter_increments_on_each_overflow(monkeypatch) -> None:
         sink.emit({"seq": i + 1})
 
     assert sink.drops >= 1
+
     freeze.set()
+    sink.close(drain_timeout_s=2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -496,8 +546,7 @@ def test_http_error_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
     for HTTP/URL/Timeout errors.  Here we verify the worker keeps running and
     emits no unhandled exception after an HTTP 500 from the server.
     """
-    config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
-    sink = WebhookAuditSink(config)
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
 
     def _raise_http(_record: dict) -> None:
         raise urllib.error.HTTPError(
@@ -516,12 +565,12 @@ def test_http_error_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
 
     # Worker must log a warning (drop message) and not crash.
     assert any("dropped" in r.getMessage().lower() for r in caplog.records)
+    sink.close(drain_timeout_s=2.0)
 
 
 def test_url_error_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
     """A URLError (connection refused, DNS failure, etc.) is swallowed gracefully."""
-    config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
-    sink = WebhookAuditSink(config)
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
 
     def _raise_url_error(_record: dict) -> None:
         raise urllib.error.URLError("connection refused")
@@ -533,12 +582,12 @@ def test_url_error_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
         sink._queue.join()
 
     assert any("dropped" in r.getMessage().lower() for r in caplog.records)
+    sink.close(drain_timeout_s=2.0)
 
 
 def test_timeout_error_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
     """A TimeoutError from the endpoint is swallowed; the worker keeps running."""
-    config = {"url": "https://example.com/audit", "auth_env": None, "timeout_s": 5.0}
-    sink = WebhookAuditSink(config)
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
 
     def _raise_timeout(_record: dict) -> None:
         raise TimeoutError("timed out")
@@ -550,3 +599,88 @@ def test_timeout_error_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
         sink._queue.join()
 
     assert any("dropped" in r.getMessage().lower() for r in caplog.records)
+    sink.close(drain_timeout_s=2.0)
+
+
+# ---------------------------------------------------------------------------
+# close() lifecycle
+# ---------------------------------------------------------------------------
+
+
+def test_close_stops_worker_thread(monkeypatch) -> None:
+    """close() joins the worker thread; it must not be alive after close() returns."""
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen([]))
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
+
+    assert sink._worker_thread is not None
+    assert sink._worker_thread.is_alive()
+
+    sink.close(drain_timeout_s=5.0)
+
+    assert not sink._worker_thread.is_alive()
+
+
+def test_close_is_idempotent(monkeypatch) -> None:
+    """Calling close() multiple times must not raise."""
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen([]))
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
+
+    sink.close(drain_timeout_s=2.0)
+    sink.close(drain_timeout_s=2.0)  # second call must be a no-op
+
+
+def test_emit_after_close_is_noop(monkeypatch) -> None:
+    """emit() after close() silently discards the record; never raises."""
+    captured: list[urllib.request.Request] = []
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
+
+    sink.close(drain_timeout_s=2.0)
+    sink.emit({"final_verdict": "ALLOW"})  # must not raise or enqueue
+
+    assert len(captured) == 0
+
+
+def test_close_drains_queued_records(monkeypatch) -> None:
+    """close() lets the worker flush records already in the queue before exiting."""
+    captured: list[urllib.request.Request] = []
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen(captured))
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
+
+    # Emit several records, then close — all should be delivered.
+    for i in range(5):
+        sink.emit({"seq": i})
+
+    sink.close(drain_timeout_s=5.0)
+
+    assert len(captured) == 5
+
+
+def test_close_on_inert_sink_is_noop() -> None:
+    """close() on an inert (no-config) sink must not raise."""
+    sink = WebhookAuditSink(None)
+    sink.close()  # must be a no-op, not an error
+
+
+# ---------------------------------------------------------------------------
+# Thread-start failure → inert sink (no retry storm)
+# ---------------------------------------------------------------------------
+
+
+def test_thread_start_failure_leaves_sink_inert(monkeypatch) -> None:
+    """If Thread.start() raises, the sink must be left inert, not half-active."""
+    original_start = threading.Thread.start
+
+    def _bad_start(self):
+        raise RuntimeError("simulated thread-start failure")
+
+    monkeypatch.setattr(threading.Thread, "start", _bad_start)
+
+    sink = WebhookAuditSink(_ACTIVE_CONFIG)
+
+    # Sink must be inert — emit() must be a no-op, not enqueue or raise.
+    assert not sink._active
+    sink.emit({"x": 1})  # must not raise
+
+    # Restore so other threads in the suite are unaffected.
+    monkeypatch.setattr(threading.Thread, "start", original_start)
