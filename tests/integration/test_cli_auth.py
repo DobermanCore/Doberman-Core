@@ -78,3 +78,4 @@ def test_status_lists_then_revoke_removes_an_elevation(tmp_path):
 def test_revoke_unknown_id_errors(tmp_path):
     result = runner.invoke(app, ["revoke", "no-such-id", "--path", str(tmp_path)])
     assert result.exit_code == 1
+    assert result.stderr == "error: no elevation with id no-such-id\n"

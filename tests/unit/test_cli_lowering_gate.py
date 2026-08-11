@@ -134,6 +134,7 @@ def test_lowering_with_enrolled_2fa_decline_or_non_totp_factor_is_denied(
     result = _invoke_lowering(kind, root)
 
     assert result.exit_code == 1
+    assert result.stderr.startswith("error: ")
     _assert_lowering_state(kind, root, applied=False)
     _assert_single_ledger_method(root, "denied", approved=0)
 

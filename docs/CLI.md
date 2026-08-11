@@ -29,6 +29,13 @@ Entry point: `doberman` (Typer). All commands accept `--help`.
 
 Global option: `doberman --version` / `-V` also prints the version and exits.
 
+## Output conventions
+
+Human-readable diagnostics use one severity vocabulary: `error:` means the command failed and
+returned a non-zero exit code, `warning:` means the command succeeded but skipped or degraded
+something, and `note:` marks a purely informational aside. Machine-readable flags keep their
+documented schemas and do not add these prefixes.
+
 ## Auth enrollment
 
 Security-posture commands used by [SETUP.md](SETUP.md). Group entry points also appear in `doberman --help`.

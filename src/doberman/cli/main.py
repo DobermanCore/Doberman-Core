@@ -344,7 +344,7 @@ def mode(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     if saved is None:
-        typer.echo("mode change denied; unchanged", err=True)
+        typer.echo("error: mode change denied; unchanged", err=True)
         raise typer.Exit(code=1)
     typer.echo(f"mode set to {saved}")
 
@@ -403,7 +403,7 @@ def enforcement(
         )
     )
     if not outcome.approved:
-        typer.echo("enforcement change denied; unchanged", err=True)
+        typer.echo("error: enforcement change denied; unchanged", err=True)
         raise typer.Exit(code=1)
     save_policy((load_policy(path) or recommend_policy()).with_enforcement(new), path)
     typer.echo(f"enforcement set to {new}")
@@ -454,7 +454,7 @@ def prefs(
         )
     )
     if not outcome.approved:
-        typer.echo("preference change denied; unchanged", err=True)
+        typer.echo("error: preference change denied; unchanged", err=True)
         raise typer.Exit(code=1)
     save_preferences(updated, path)
     typer.echo(f"{dimension} set to {value:.2f}")
@@ -874,7 +874,7 @@ def twofa_remove() -> None:
     if not prompter.confirm(
         "Remove 2FA? Policy weakenings will then be gated by your local password instead"
     ):
-        typer.echo("aborted; 2FA is unchanged", err=True)
+        typer.echo("error: aborted; 2FA is unchanged", err=True)
         raise typer.Exit(code=1)
     current_code = prompter.read_code("Current 2FA code")
     try:
@@ -953,7 +953,7 @@ def taint_clear(
         # raise here would be a traceback, not a denial.
         approved, method = False, "denied"
     if not approved:
-        typer.echo(f"taint clear denied ({method}); unchanged", err=True)
+        typer.echo(f"error: taint clear denied ({method}); unchanged", err=True)
         raise typer.Exit(code=1)
 
     try:
@@ -979,7 +979,7 @@ def revoke(
     if revoked:
         typer.echo(f"revoked elevation {elevation_id}")
     else:
-        typer.echo(f"no elevation with id {elevation_id}", err=True)
+        typer.echo(f"error: no elevation with id {elevation_id}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -1056,7 +1056,8 @@ def tui(
     """
     if importlib.util.find_spec("textual") is None:
         typer.echo(
-            "The TUI requires the optional 'textual' extra: pip install \"doberman-core[tui]\"",
+            "error: The TUI requires the optional 'textual' extra: "
+            'pip install "doberman-core[tui]"',
             err=True,
         )
         raise typer.Exit(code=1)
@@ -1091,7 +1092,8 @@ def dash(
         from doberman.dash import create_app
     except ImportError as exc:
         typer.echo(
-            'The dashboard requires the optional "dash" extra: pip install "doberman-core[dash]"',
+            'error: The dashboard requires the optional "dash" extra: '
+            'pip install "doberman-core[dash]"',
             err=True,
         )
         raise typer.Exit(code=1) from exc
