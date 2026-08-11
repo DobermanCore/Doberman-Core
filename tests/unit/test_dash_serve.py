@@ -155,3 +155,13 @@ def test_shell_titles_pending_count():
 
 def test_shell_renders_pending_expiry():
     assert "expires " in app_module._HTML_SHELL
+
+
+def test_shell_light_mode_verdict_colors_pass_wcag_aa_contrast():
+    # Light-mode verdict badge text on 12% tint background must clear
+    # WCAG AA 4.5:1 contrast ratio.
+    light = app_module._HTML_SHELL.split("prefers-color-scheme: light", 1)[1].split("}")[0]
+    assert "--pass: #116329;" in light
+    assert "--auth: #7d5200;" in light
+    assert "--block: #a40e26;" in light
+    assert "--neutral: #424a53;" in light
