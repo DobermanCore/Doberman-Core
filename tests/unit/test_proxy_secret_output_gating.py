@@ -60,6 +60,7 @@ async def _rows() -> list[dict]:
     return await read_decisions(executor.REPO_ROOT)
 
 
+@pytest.mark.guarantee("output-secret-scan", host="mcp-proxy")
 async def test_secret_output_triggers_block_gate_without_leaking_secret():
     # The request itself is unremarkable (a plain local read) — only the
     # downstream RESULT carries the secret, so the pre-execution decision is a
