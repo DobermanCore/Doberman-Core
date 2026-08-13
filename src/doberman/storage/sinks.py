@@ -149,6 +149,11 @@ class WebhookAuditSink:
     before any network I/O. A daemon worker thread does the actual POST so a
     wedged or slow endpoint *cannot* delay a decision.
 
+    **Lifecycle:** call :meth:`close` to stop the worker thread and drain any
+    remaining queue items (bounded by ``drain_timeout_s``). After ``close()``
+    the sink is inert: :meth:`emit` silently discards records rather than
+    enqueuing them. ``close()`` is idempotent and never raises.
+
     **Queue overflow:** when the queue is full the *oldest* record is dropped
     (not the incoming one) and the drop count is incremented.  Records lost on
     overflow or process exit are lost — this sink is a bridge to your own log
@@ -165,6 +170,10 @@ class WebhookAuditSink:
 
         ``config`` is the parsed dict from :func:`_load_webhook_config`; pass
         ``None`` (or an empty/invalid dict) to create an inert sink.
+
+        If ``Thread.start()`` raises the failure is caught and the sink is left
+        inert — this prevents a retry storm where every subsequent decision
+        re-attempts the thread spawn.
         """
         self._active = False
         self._url: str = ""
@@ -173,6 +182,9 @@ class WebhookAuditSink:
         self._queue: queue.Queue[dict] = queue.Queue(maxsize=0)  # replaced below if active
         self._drops = 0
         self._drops_lock = threading.Lock()
+        self._state_lock = threading.Lock()  # guards _active transitions in emit/close
+        self._stop_event = threading.Event()
+        self._worker_thread: threading.Thread | None = None
 
         if not config:
             return
@@ -181,10 +193,16 @@ class WebhookAuditSink:
         self._auth_env = config.get("auth_env")
         self._timeout_s = float(config.get("timeout_s", _DEFAULT_TIMEOUT_S))
         self._queue = queue.Queue(maxsize=_QUEUE_MAX)
-        self._active = True
 
         worker = threading.Thread(target=self._worker, daemon=True, name="doberman-webhook-sink")
-        worker.start()
+        try:
+            worker.start()
+        except Exception:  # noqa: BLE001 — cache failure as inert; no retry storm
+            logger.warning("audit_webhook: failed to start worker thread; sink is inert")
+            return
+
+        self._worker_thread = worker
+        self._active = True
 
     @classmethod
     def from_repo(cls, repo_root: str) -> "WebhookAuditSink":
@@ -201,31 +219,53 @@ class WebhookAuditSink:
     def emit(self, record: dict) -> None:
         """Enqueue *record* for async delivery; returns immediately (no I/O).
 
-        If the queue is full the oldest record is dropped to make room, the
-        drop counter is incremented, and the new record is enqueued. Never
-        raises: any internal error is logged and swallowed.
+        The active-state check and enqueue are atomic under ``_state_lock`` so
+        a concurrent ``close()`` cannot observe ``_active=True``, set it to
+        ``False``, stop the worker, and return while this call is still mid-
+        enqueue — which would strand an undelivered record with no consumer.
+
+        If the queue is full the oldest record is dropped to make room and the
+        drop counter is incremented. Never raises: any internal error is logged
+        and swallowed. After ``close()`` records are silently discarded.
         """
-        if not self._active:
-            return
-        try:
+        with self._state_lock:
+            if not self._active:
+                return
             try:
-                self._queue.put_nowait(record)
-            except queue.Full:
-                try:
-                    self._queue.get_nowait()  # drop oldest
-                except queue.Empty:
-                    pass
-                with self._drops_lock:
-                    self._drops += 1
-                # Best-effort: try again; if still full another thread won the
-                # race — just drop the incoming record rather than blocking.
                 try:
                     self._queue.put_nowait(record)
                 except queue.Full:
+                    try:
+                        self._queue.get_nowait()  # drop oldest
+                    except queue.Empty:
+                        pass
                     with self._drops_lock:
                         self._drops += 1
-        except Exception:  # noqa: BLE001 — emit must never raise
-            logger.warning("audit_webhook: emit() internal error; record dropped")
+                    # Best-effort: try again; if still full another thread won the
+                    # race — just drop the incoming record rather than blocking.
+                    try:
+                        self._queue.put_nowait(record)
+                    except queue.Full:
+                        with self._drops_lock:
+                            self._drops += 1
+            except Exception:  # noqa: BLE001 — emit must never raise
+                logger.warning("audit_webhook: emit() internal error; record dropped")
+
+    def close(self, drain_timeout_s: float = 5.0) -> None:
+        """Stop the worker thread and drain remaining queued records.
+
+        Acquires ``_state_lock`` to flip ``_active`` to ``False`` atomically
+        with any concurrent ``emit()`` check-and-enqueue, so no record can be
+        enqueued after the worker has been stopped.  Sets the stop event, then
+        joins the worker with *drain_timeout_s*.  Idempotent; never raises.
+        """
+        with self._state_lock:
+            if not self._active:
+                return
+            self._active = False  # atomic with any concurrent emit() check
+        self._stop_event.set()
+        if self._worker_thread is not None:
+            self._worker_thread.join(timeout=drain_timeout_s)
 
     # ------------------------------------------------------------------
     # Internal
@@ -238,8 +278,8 @@ class WebhookAuditSink:
             return self._drops
 
     def _worker(self) -> None:
-        """Daemon thread: dequeue records and POST them until the process exits."""
-        while True:
+        """Daemon thread: dequeue and POST records until stopped or process exits."""
+        while not self._stop_event.is_set():
             try:
                 record = self._queue.get(block=True, timeout=1.0)
             except queue.Empty:
@@ -248,6 +288,18 @@ class WebhookAuditSink:
                 self._post(record)
             except Exception:  # noqa: BLE001 — worker must never crash
                 logger.warning("audit_webhook: POST failed; record dropped")
+            finally:
+                self._queue.task_done()
+        # Drain any records that arrived before the stop signal was noticed.
+        while True:
+            try:
+                record = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._post(record)
+            except Exception:  # noqa: BLE001
+                logger.warning("audit_webhook: POST failed during drain; record dropped")
             finally:
                 self._queue.task_done()
 
