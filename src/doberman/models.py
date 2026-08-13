@@ -268,6 +268,13 @@ class ReasonCode(StrEnum):
     # fingerprint) in an outbound payload: a confirmed read-then-send exfiltration.
     confirmed_exfil = "confirmed_exfil"
 
+    # C3.1 — the session correlator (doberman.engine.correlator): catches
+    # individually-safe actions that combine into exfiltration across a
+    # session's decision history. Raised post-decide, in the async executor —
+    # never inside decide() itself (see the module docstring).
+    correlated_trifecta = "correlated_trifecta"
+    correlated_destructive_flow = "correlated_destructive_flow"
+
     # Feature 11 — turn gate (pre-inference). Tier 0 (deterministic, BLOCK) and
     # Tier 1 (heuristic, AUTH-only). Every turn verdict carries one of these.
     turn_gate_error = "turn_gate_error"
