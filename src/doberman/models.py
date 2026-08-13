@@ -258,6 +258,9 @@ class ReasonCode(StrEnum):
     # OOD / smuggled-token channel defense (objective rule + subjective detector).
     smuggled_token_channel = "smuggled_token_channel"  # noqa: S105 — reason code, not a secret
     anomalous_token_pattern = "anomalous_token_pattern"  # noqa: S105 — reason code, not a secret
+    # A suspiciously large base64-looking blob in a tool argument — a common
+    # encode-and-exfiltrate shape (subjective detector, raise-only to AUTH).
+    oversized_encoded_blob = "oversized_encoded_blob"
 
     # HK.5 — host-hook containment: the cross-call (multi-step) exfiltration floor.
     multi_step_exfil = "multi_step_exfil"
