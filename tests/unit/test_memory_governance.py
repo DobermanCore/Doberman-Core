@@ -58,8 +58,8 @@ async def _row_counts(root: str, eid: str) -> dict[str, int]:
     async with open_db(root) as conn:
         for table in BASELINE_TABLES:
             async with conn.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE entity_id = ?",
-                (eid,),  # noqa: S608
+                f"SELECT COUNT(*) FROM {table} WHERE entity_id = ?",  # noqa: S608
+                (eid,),
             ) as cur:
                 counts[table] = (await cur.fetchone())[0]
     return counts
