@@ -436,5 +436,151 @@ def test_apply_correlator_no_db_yet_returns_decision_unchanged(tmp_path):
     decision = _pass_decision(action)
 
     out = apply_correlator(action, decision, "balanced", str(tmp_path / "does-not-exist"), "sess-x")
-
     assert out is decision
+
+
+# ---------------------------------------------------------------------------
+# D2 — the task-match leg: a user-justified egress destination (a token from
+# THIS session's trusted, typed-only user prompt) suppresses the trifecta's
+# fire condition. Pure-`correlate()` tests first, then the same behavior
+# proven end to end against a real DB via apply_correlator.
+# ---------------------------------------------------------------------------
+
+_TRIFECTA_RECENT = [
+    _row(action_type=ActionType.file_read, source_context=SourceContext.tool_output),
+    _row(
+        action_type=ActionType.file_read,
+        source_context=SourceContext.user,
+        reason_codes=(ReasonCode.sensitive_secret_access,),
+    ),
+]
+
+
+def test_task_match_suppresses_trifecta_for_user_justified_destination():
+    # The legit-API case: the session's trifecta legs are all present, but the
+    # CURRENT egress destination matches a task token the user's own prompt
+    # named (e.g. "call Stripe at api.stripe.com") — no false positive.
+    action = _action(external_destination="https://api.stripe.com/v1/charges")
+    decision = _pass_decision(action)
+
+    result = correlate(
+        _TRIFECTA_RECENT, decision, action, "balanced", task_hosts=frozenset({"stripe.com"})
+    )
+    assert result is None
+
+    # Subdomain match too (mirrors ExternalDestinationRule's own registered-
+    # domain semantics): a task token of the parent domain covers a subdomain.
+    result_subdomain = correlate(
+        _TRIFECTA_RECENT, decision, action, "strict", task_hosts=frozenset({"stripe.com"})
+    )
+    assert result_subdomain is None
+
+
+def test_task_match_does_not_suppress_an_unrelated_destination():
+    # SECURITY: the injection-soundness case. A task token exists for this
+    # session (the user asked to call Stripe), but the CURRENT egress is to a
+    # DIFFERENT, unrelated destination (e.g. one an indirect prompt injection
+    # in fetched content tried to add). Task-match must not blanket-suppress
+    # the trifecta for the whole session — only for the destination the user
+    # actually named.
+    action = _action(external_destination="https://evil.example/collect")
+    decision = _pass_decision(action)
+
+    result = correlate(
+        _TRIFECTA_RECENT, decision, action, "balanced", task_hosts=frozenset({"stripe.com"})
+    )
+    assert result is not None
+    assert ReasonCode.correlated_trifecta in result.reason_codes
+
+
+def test_no_task_hosts_leaves_trifecta_unchanged():
+    # No task tokens at all (the default) -> byte-for-byte the same behavior
+    # as before this feature existed.
+    action = _action(external_destination="https://api.stripe.com/v1/charges")
+    decision = _pass_decision(action)
+
+    result = correlate(_TRIFECTA_RECENT, decision, action, "balanced")
+    assert result is not None
+    assert ReasonCode.correlated_trifecta in result.reason_codes
+
+
+def test_task_match_never_suppresses_the_destructive_flow_leg():
+    # D2 is scoped to the trifecta only (a different attack shape from the
+    # archive-and-exfiltrate destructive flow) — a task token must not soften
+    # correlated_destructive_flow.
+    recent = [
+        _row(action_type=ActionType.file_read, source_context=SourceContext.user),
+        _row(action_type=ActionType.shell_exec, source_context=SourceContext.user),
+    ]
+    action = _action(external_destination="https://api.stripe.com/v1/charges")
+    decision = _pass_decision(action)
+
+    result = correlate(recent, decision, action, "balanced", task_hosts=frozenset({"stripe.com"}))
+    assert result is not None
+    assert ReasonCode.correlated_destructive_flow in result.reason_codes
+
+
+def test_apply_correlator_suppresses_with_a_real_task_token(tmp_path):
+    from doberman.storage.task_match import record_task_hosts
+
+    repo_root = str(tmp_path)
+    session_id = "sess-task-1"
+    _seed_row(repo_root, session_id, reason_codes=(ReasonCode.sensitive_secret_access,))
+    asyncio.run(record_task_hosts(repo_root, session_id, ["stripe.com"]))
+
+    action = _action(external_destination="https://api.stripe.com/v1/charges")
+    decision = _pass_decision(action)
+
+    out = apply_correlator(action, decision, "balanced", repo_root, session_id)
+
+    assert out is decision  # untouched -- the trifecta never fired
+    assert ReasonCode.correlated_trifecta not in out.reason_codes
+
+
+def test_apply_correlator_still_fires_for_a_destination_the_task_token_does_not_cover(tmp_path):
+    # SECURITY: same session, same recorded task token ("stripe.com") -- but
+    # THIS egress goes somewhere else. Proves the real (DB-backed) path is as
+    # injection-sound as the pure correlate() test above: a task token can
+    # never blanket-suppress a session, only the destination it actually names.
+    from doberman.storage.task_match import record_task_hosts
+
+    repo_root = str(tmp_path)
+    session_id = "sess-task-2"
+    _seed_row(repo_root, session_id, reason_codes=(ReasonCode.sensitive_secret_access,))
+    asyncio.run(record_task_hosts(repo_root, session_id, ["stripe.com"]))
+
+    action = _action(external_destination="https://evil.example/collect")
+    decision = _pass_decision(action)
+
+    out = apply_correlator(action, decision, "balanced", repo_root, session_id)
+
+    assert out.final_verdict is Verdict.AUTH
+    assert ReasonCode.correlated_trifecta in out.reason_codes
+
+
+def test_apply_correlator_fails_closed_when_task_host_read_errors(tmp_path, monkeypatch):
+    # Fail-closed (D2's own invariant, distinct from the correlator's
+    # pre-existing whole-call fail-closed-to-unchanged behavior): a task-host
+    # READ failure must degrade to "no task hosts" and let the trifecta fire
+    # normally -- never to a silently-unraised decision, and never a crash.
+    from doberman.storage.task_match import record_task_hosts
+
+    repo_root = str(tmp_path)
+    session_id = "sess-task-3"
+    _seed_row(repo_root, session_id, reason_codes=(ReasonCode.sensitive_secret_access,))
+    asyncio.run(record_task_hosts(repo_root, session_id, ["stripe.com"]))
+
+    async def _boom(repo_root, scope):  # noqa: ARG001
+        raise RuntimeError("task-host store unavailable")
+
+    monkeypatch.setattr("doberman.storage.task_match.task_hosts_for", _boom)
+
+    action = _action(external_destination="https://api.stripe.com/v1/charges")
+    decision = _pass_decision(action)
+
+    out = apply_correlator(action, decision, "balanced", repo_root, session_id)
+
+    # Despite a real (matching) task token existing, the read blew up -> the
+    # trifecta fires as if D2 did not exist. Fail toward MORE protection.
+    assert out.final_verdict is Verdict.AUTH
+    assert ReasonCode.correlated_trifecta in out.reason_codes

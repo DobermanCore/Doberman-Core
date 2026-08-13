@@ -53,8 +53,11 @@ DB_FILE = "doberman.db"
 #: column on every baseline/preference table — baseline_counts, baseline_transitions,
 #: baseline_state, score_history, preference_feedback — additive ALTER, backfilled
 #: once from each table's existing timestamp column so ``doberman memory prune``
-#: works immediately on data written before this migration).
-SCHEMA_VERSION = 9
+#: works immediately on data written before this migration), and to 10 for the
+#: task-match ledger (D2: session_task_hosts — additive CREATE TABLE; registered-
+#: domain tokens extracted from the TRUSTED (typed-only) user prompt at the turn
+#: gate, never the raw prompt text).
+SCHEMA_VERSION = 10
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -126,6 +129,23 @@ CREATE TABLE IF NOT EXISTS session_secret_fingerprints (
     fingerprint TEXT NOT NULL,
     first_seen  TEXT,
     PRIMARY KEY (scope, fingerprint)
+);
+
+-- Task-match ledger (D2): registered-domain tokens extracted from the TRUSTED,
+-- typed-only portion of the user's turn (never a pasted/tool-fetched segment —
+-- see turngate/task_tokens.py), scoped by the harness session id (the same
+-- HK.5.1 session id session_taint/decisions.session_id already use). Consumed
+-- by the C3.1 correlator to soften `correlated_trifecta` for an egress the
+-- user's own prompt actually named. `host` is a decoded hostname string, not a
+-- secret — the invariant this table preserves is "never the raw prompt", not
+-- "never a domain name" (Doberman already ships plaintext trusted hosts in
+-- engine/rules/destinations.py's TRUSTED_HOSTS).
+CREATE TABLE IF NOT EXISTS session_task_hosts (
+    scope      TEXT NOT NULL,
+    host       TEXT NOT NULL,
+    first_seen TEXT,
+    last_seen  TEXT,
+    PRIMARY KEY (scope, host)
 );
 
 CREATE TABLE IF NOT EXISTS baseline_counts (
