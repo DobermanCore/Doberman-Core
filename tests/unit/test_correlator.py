@@ -1,18 +1,22 @@
 """C3.1 — the session correlator (`doberman.engine.correlator`).
 
-Pure-function tests: no DB, no executor wiring — just `correlate()` over
-hand-built `DecisionRow` history plus a live `SecurityObject`/`Decision` for
-the current action. Mirrors `test_taint_floor_module.py`'s scope (the floor
-module, not its executor wiring) for the correlator's own pure core.
+Most of this file is pure-function tests: no DB, no executor wiring — just
+`correlate()` over hand-built `DecisionRow` history plus a live
+`SecurityObject`/`Decision` for the current action. The trailing
+`apply_correlator`/`apply_correlator_async` section DOES touch a real
+(tmp_path) DB — mirrors `test_taint_floor_module.py`'s own split (pure core +
+a module-level regression test for the shared read-correlate-raise wrapper,
+independent of either caller's own wiring test).
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
 
-from doberman.engine.correlator import DecisionRow, correlate
+from doberman.engine.correlator import DecisionRow, apply_correlator, correlate
 from doberman.models import (
     ActionType,
     Decision,
@@ -23,6 +27,7 @@ from doberman.models import (
     SourceContext,
     Verdict,
 )
+from doberman.storage.log import record_decision
 
 _NOW = datetime(2026, 8, 13, tzinfo=timezone.utc)
 
@@ -113,6 +118,53 @@ def test_single_egress_with_no_prior_sensitive_read_does_not_fire():
 
     assert correlate(recent, decision, action, "balanced") is None
     assert correlate([], decision, action, "strict") is None
+
+
+def test_sensitive_path_access_only_read_does_not_fire_trifecta():
+    # C3.1 FP fix: a PRIOR row carrying ONLY sensitive_path_access (a bare
+    # glob-policy hit — e.g. a legitimate read under infra/**/backend/auth/**
+    # that happens to hold config an agent legitimately needs) must NOT count
+    # as the trifecta's "sensitive read" leg — narrowed to secret-class
+    # evidence only (sensitive_secret_access / possible_high_entropy_secret /
+    # secret_exfiltration). This is what separates
+    # "read untrusted content -> read a policy-sensitive but non-secret
+    # config -> call a real external API" (benign) from
+    # "read untrusted content -> read an actual secret store -> exfiltrate"
+    # (attack) — see the module's _SENSITIVE_READ_REASONS docstring.
+    recent = [
+        _row(action_type=ActionType.file_read, source_context=SourceContext.webpage),
+        _row(
+            action_type=ActionType.file_read,
+            source_context=SourceContext.user,
+            reason_codes=(ReasonCode.sensitive_path_access,),
+        ),
+    ]
+    action = _action()
+    decision = _pass_decision(action)
+
+    assert correlate(recent, decision, action, "balanced") is None
+    assert correlate(recent, decision, action, "strict") is None
+
+
+def test_secret_class_read_still_fires_trifecta_alongside_path_access():
+    # A row carrying BOTH sensitive_path_access and a secret-class code (a
+    # real credential store that also happens to match a sensitive glob)
+    # still fires — the narrowing only drops path-access-ALONE evidence, it
+    # never weakens a genuine secret-class hit.
+    recent = [
+        _row(action_type=ActionType.file_read, source_context=SourceContext.webpage),
+        _row(
+            action_type=ActionType.file_read,
+            source_context=SourceContext.user,
+            reason_codes=(ReasonCode.sensitive_path_access, ReasonCode.sensitive_secret_access),
+        ),
+    ]
+    action = _action()
+    decision = _pass_decision(action)
+
+    result = correlate(recent, decision, action, "balanced")
+    assert result is not None
+    assert ReasonCode.correlated_trifecta in result.reason_codes
 
 
 def test_benign_reads_and_write_sequence_does_not_fire():
@@ -301,3 +353,88 @@ def test_soft_modes_never_hard_block(mode):
     result = correlate(recent, decision, action, mode)
     assert result is not None
     assert result.verdict is Verdict.AUTH
+
+
+# ---------------------------------------------------------------------------
+# apply_correlator / apply_correlator_async — the shared read-correlate-raise
+# wrapper (C3.1 Part 2), against a real (tmp_path) decision-log DB. Mirrors
+# test_taint_floor_module.py's own module-level regression coverage of
+# apply_taint_floor/apply_taint_floor_async, independent of either caller's
+# own wiring test (test_proxy_correlator.py / test_hosthook_spine.py).
+# ---------------------------------------------------------------------------
+
+
+def _seed_row(repo_root: str, session_id: str, *, reason_codes: tuple[ReasonCode, ...]) -> None:
+    row_action = SecurityObject(
+        id="hist-1",
+        ts=_NOW,
+        agent_role="unknown",
+        action_type=ActionType.file_read,
+        tool_name="file_read",
+        target=".npmrc",
+    )
+    row_decision = Decision(
+        action_id=row_action.id,
+        final_verdict=Verdict.AUTH,
+        final_risk=Risk.high,
+        objective=GuardrailResult(
+            verdict=Verdict.AUTH,
+            risk=Risk.high,
+            reason_codes=list(reason_codes),
+            explanation="synthetic history row for the apply_correlator test",
+        ),
+        reason_codes=list(reason_codes),
+        explanation="synthetic history row for the apply_correlator test",
+        decided_at=_NOW,
+    )
+    asyncio.run(
+        record_decision(
+            row_decision,
+            row_action,
+            repo_root=repo_root,
+            auth_result="executed",
+            session_id=session_id,
+        )
+    )
+
+
+def test_apply_correlator_reads_real_history_and_raises(tmp_path):
+    repo_root = str(tmp_path)
+    session_id = "sess-apply-1"
+    _seed_row(repo_root, session_id, reason_codes=(ReasonCode.sensitive_secret_access,))
+
+    action = _action()
+    decision = _pass_decision(action)
+
+    out = apply_correlator(action, decision, "balanced", repo_root, session_id)
+
+    assert out.final_verdict is Verdict.AUTH
+    assert ReasonCode.correlated_trifecta in out.reason_codes
+    # Raise-only: risk never drops below the input decision's own risk.
+    assert out.final_risk is not Risk.low
+
+
+def test_apply_correlator_no_session_id_reads_empty_history(tmp_path):
+    repo_root = str(tmp_path)
+    _seed_row(repo_root, "sess-apply-2", reason_codes=(ReasonCode.sensitive_secret_access,))
+
+    action = _action()
+    decision = _pass_decision(action)
+
+    # A DIFFERENT (or absent) session id must not see another session's rows.
+    out = apply_correlator(action, decision, "balanced", repo_root, None)
+
+    assert out.final_verdict is Verdict.PASS
+    assert ReasonCode.correlated_trifecta not in out.reason_codes
+
+
+def test_apply_correlator_no_db_yet_returns_decision_unchanged(tmp_path):
+    # A repo root with no decision-log DB at all (recent_session_decisions'
+    # own fail-closed-to-[] path) must leave the decision untouched, never
+    # crash or escalate — mirrors _apply_correlator's fail-closed contract.
+    action = _action()
+    decision = _pass_decision(action)
+
+    out = apply_correlator(action, decision, "balanced", str(tmp_path / "does-not-exist"), "sess-x")
+
+    assert out is decision

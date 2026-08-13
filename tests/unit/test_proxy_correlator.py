@@ -4,7 +4,7 @@ Mirrors `test_proxy_taint_floor.py`'s shape: the real `decide_and_execute` runs
 end to end with `executor._safe_decide` stubbed to a deterministic PASS (so the
 objective/subjective engine's own scoring never masks the assertion), and
 `executor.recent_session_decisions` stubbed to hand back scripted session
-history — the pure-MCP proxy has no session id of its own yet (see
+history — the pure-MCP proxy has no session id of its own, by design (see
 `_apply_correlator`'s docstring), so this is how the wiring is exercised
 without a real multi-call session.
 """
@@ -137,9 +137,12 @@ async def test_correlator_read_failure_leaves_decision_untouched(monkeypatch):
 
 async def test_no_session_history_never_fires():
     # The real (unstubbed) `recent_session_decisions` — with `session_id=None`
-    # today, this always reads an empty history, so the correlator never fires
-    # in the pure-MCP proxy yet (a known, documented gap — see
-    # `_apply_correlator`'s docstring). A clean PASS forwards normally.
+    # always (the pure-MCP proxy has no session concept at its `_call_tool`
+    # chokepoint), this always reads an empty history, so the correlator never
+    # fires here BY DESIGN (see `_apply_correlator`'s docstring). It DOES fire
+    # for the host-hook adapters, which have a real session id — see
+    # `doberman.hosthooks.spine.evaluate_action` and `test_spine.py`. A clean
+    # PASS forwards normally.
     save_mode("strict", executor.REPO_ROOT)
     session = _FakeSession({"net_send": _ok_result("ok")})
 

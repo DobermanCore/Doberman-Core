@@ -2,10 +2,10 @@
 
 Every host hook does the same thing between "translated the host's tool call"
 and "shaped the host's answer": resolve repo root + strictness mode, extract a
-session id, normalize, decide, apply the taint floor, resolve the enforcement
-dial, compute the acted verdict, and record monitor-softened history. This
-module owns that flow so a new host supplies ONLY its tool map, required-field
-checks, and output shape.
+session id, normalize, decide, apply the taint floor, apply the session
+correlator (C3.1), resolve the enforcement dial, compute the acted verdict,
+and record monitor-softened history. This module owns that flow so a new host
+supplies ONLY its tool map, required-field checks, and output shape.
 
 Speed contract (same as the adapters): imports only the light decision path —
 NEVER the proxy's tool-execution module or the subjective baseline (their ML
@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from doberman.config import load_active_role, load_mode, resolve_enforcement_sync
+from doberman.engine.correlator import apply_correlator
 from doberman.engine.decision_engine import PASS_STUB, decide
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.taint_floor import apply_taint_floor
@@ -83,6 +84,15 @@ def evaluate_action(
     )
     decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
     decision = apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)
+    # C3.1 session correlator: cross-call PATTERN raise (raise-only), right after
+    # the taint floor for the same reason (see doberman.engine.correlator's module
+    # docstring). Unlike the pure-MCP proxy's tool-execution chokepoint (no session
+    # concept of its own, always passes session_id=None), THIS path already has a
+    # real per-session id — the host harness's own session id (HK.5.1), extracted
+    # above and already used to scope the taint floor and the decision-history
+    # writes below — so the correlator reads real cross-call history here and can
+    # actually fire in production.
+    decision = apply_correlator(action, decision, ctx.mode, repo_root, session_id)
     enforcement = resolve_enforcement_sync(repo_root)
     acted = acted_verdict(decision, enforcement)
     if (

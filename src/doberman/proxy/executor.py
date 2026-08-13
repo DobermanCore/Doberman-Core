@@ -735,9 +735,16 @@ async def decide_and_execute(
     # C3.1 session correlator: cross-call PATTERN raise (raise-only), run right
     # after the taint floor for the same reason — see _apply_correlator's
     # docstring. Same `session_id=None` gap as the taint floor call above: the
-    # pure-MCP proxy has no session id of its own, so this reads an empty
-    # history (and never fires) until a caller with a real session id (HK.5.1 —
-    # see doberman.hosthooks.spine.extract_session_id) is wired in.
+    # pure-MCP proxy's `decide_and_execute`/`_call_tool` chokepoint (mcp_proxy.py)
+    # takes only `(downstream, tool_name, arguments)` — no session concept exists
+    # anywhere on this call path to thread through, so this deliberately keeps
+    # reading an empty history (never fires) here. This is NOT a remaining gap:
+    # doberman.hosthooks.spine.evaluate_action DOES have a real per-call session
+    # id (HK.5.1, via extract_session_id) and is now wired to the same correlator
+    # (doberman.engine.correlator.apply_correlator) — every host-hook adapter
+    # (Claude Code, OpenClaw, Codex) fires the correlator for real; only the raw
+    # MCP-proxy entry point remains session-less by design, exactly like the
+    # taint floor above.
     decision = await _apply_correlator(action, decision, load_mode(REPO_ROOT), None)
 
     # Record every intercepted action with its REAL verdict. Logged before the

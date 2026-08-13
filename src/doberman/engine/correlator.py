@@ -4,26 +4,34 @@ Catches individually-safe actions that combine into exfiltration across a
 session — a sequence the per-action objective/subjective rules miss, because
 each of those judges exactly one action.
 
-This module is a PURE function (:func:`correlate`), deliberately **not** wired
-into :func:`doberman.engine.decision_engine.decide`. ``decide()`` short-circuits
-on the first non-PASS objective verdict (an AUTH/BLOCK leg of a multi-step
+:func:`correlate` itself is a PURE function, deliberately **not** wired into
+:func:`doberman.engine.decision_engine.decide`. ``decide()`` short-circuits on
+the first non-PASS objective verdict (an AUTH/BLOCK leg of a multi-step
 attack), so a correlator called from inside it would never see the later legs
 that complete the pattern. Like the taint floor
-(:mod:`doberman.engine.taint_floor`), it is meant to run in the async executor
-AFTER ``decide()`` returns, over the session's persisted decision history.
+(:mod:`doberman.engine.taint_floor`), it is meant to run AFTER ``decide()``
+returns, over the session's persisted decision history —
+:func:`apply_correlator_async`/:func:`apply_correlator` below do exactly that
+(read the history, run :func:`correlate`, raise the decision), mirroring the
+taint floor's own async/sync split so both the async proxy executor and the
+sync host-hook spine can share one implementation without either importing
+the other's (heavier) module.
 
 It also deliberately does **not** touch
 :data:`doberman.engine.decision_engine.SUBJECTIVE_HARD_BLOCK_ALLOWLIST` — the
-caller raises the final ``Decision`` directly via ``max_verdict``/``max_risk``
-(mirroring the taint floor's own call site), bypassing the subjective clamp by
-construction rather than smuggling a new code onto that allowlist.
+apply wrapper raises the final ``Decision`` directly via
+``max_verdict``/``max_risk`` (mirroring the taint floor's own call site),
+bypassing the subjective clamp by construction rather than smuggling a new
+code onto that allowlist.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from doberman.engine.decision_engine import max_risk, max_verdict
 from doberman.models import (
     ActionType,
     Decision,
@@ -43,11 +51,39 @@ _STRICT_MODES: frozenset[str] = frozenset({"strict", "paranoid"})
 #: Reason codes on a PRIOR row that mark it as a sensitive/secret read — the
 #: "sensitive data" leg of the trifecta, and the read leg of the destructive-
 #: flow pattern.
+#:
+#: Deliberately SECRET-CLASS ONLY (content/secret-store evidence from
+#: ``SecretLeakageRule``) — ``sensitive_path_access`` (a bare glob-policy hit
+#: from ``ProtectedPathRule``, e.g. ``infra/**``/``backend/auth/**``) is
+#: excluded. Measured on a hand-built benign/attack sequence corpus
+#: (2026-08-13): a benign "read untrusted web content -> read a policy-
+#: sensitive config that legitimately holds an API token -> call a real but
+#: non-allowlisted external API" chain and an attack "read untrusted content
+#: -> read an actual secret-store file (``.npmrc``/``credentials``-shaped) ->
+#: send to an unknown destination" chain are cleanly distinguishable at the
+#: read step: the benign config read fires ONLY ``sensitive_path_access``
+#: (glob-policy, not secret-content evidence), while the attack's read of a
+#: real credential store fires ``sensitive_secret_access`` (secret-class) —
+#: the two rules key off different, non-overlapping path/content signals
+#: (``ProtectedPathRule``'s ``DEFAULT_SENSITIVE_GLOBS`` vs
+#: ``SecretLeakageRule``'s ``_SECRET_PATH``/content patterns). Keeping only
+#: secret-class codes here dropped ``correlated_trifecta``'s own false-fire
+#: rate on the benign chain from 100% to 0% in EVERY mode, with zero loss on
+#: the attack corpus (``correlated_trifecta`` still fires 100% of the time).
+#: Strict mode's benign session still ends up AUTH overall — but that is
+#: ``ExternalDestinationRule``'s own "unknown destination" policy in strict
+#: mode (unrelated to, and unaffected by, this narrowing), not the
+#: correlator misfiring — see ``doberman-vault/Sessions`` for the benchmark.
+#: Residual, NOT fixed by this narrowing: a benign session whose "sensitive"
+#: read genuinely touches real secret-shaped content (not just a
+#: policy-sensitive path) is still structurally identical to an attack read
+#: and will still fire — the correlator has no task/intent signal (the
+#: deferred D2 task-match leg) to tell "legitimately needs this credential"
+#: from "is exfiltrating it".
 _SENSITIVE_READ_REASONS: frozenset[ReasonCode] = frozenset(
     {
         ReasonCode.sensitive_secret_access,
         ReasonCode.possible_high_entropy_secret,
-        ReasonCode.sensitive_path_access,
         ReasonCode.secret_exfiltration,
     }
 )
@@ -248,4 +284,97 @@ def _correlate(
         risk=risk,
         reason_codes=reasons,
         explanation=explanation,
+    )
+
+
+#: How many of the session's most-recent decisions to read as pattern-check
+#: history. Bounded so the read stays a cheap, single indexed query
+#: regardless of session length. Matches the proxy executor's own
+#: ``_CORRELATOR_WINDOW`` (kept here as the shared default so a caller that
+#: doesn't override it gets the same window either way).
+_DEFAULT_WINDOW = 20
+
+
+async def apply_correlator_async(
+    action: SecurityObject,
+    decision: Decision,
+    mode: str,
+    repo_root: str,
+    session_id: str | None,
+    *,
+    window: int = _DEFAULT_WINDOW,
+) -> Decision:
+    """C3.1 — read this session's recent decision history and raise-only
+    apply :func:`correlate` to ``decision``.
+
+    Mirrors ``taint_floor.py``'s own shape: read a bounded slice of session
+    history, run the pure pattern check, and apply any raise directly via
+    ``max_verdict``/``max_risk`` — bypassing the subjective clamp by
+    construction, rather than adding a new code to
+    ``SUBJECTIVE_HARD_BLOCK_ALLOWLIST``.
+
+    Fails closed to the untouched ``decision``: a DB read failure or a
+    correlator bug must never crash the caller or silently escalate —
+    ``recent_session_decisions`` and :func:`correlate` are already
+    individually fail-closed/fail-quiet, and this wrapper adds one more layer
+    of defense-in-depth around the two calls. With ``session_id=None`` (no
+    session concept at the call site) ``recent_session_decisions`` returns an
+    empty history and this never fires — the same documented gap as the
+    taint floor's own ``session_id=None`` callers.
+    """
+    try:
+        from doberman.storage.log import recent_session_decisions  # lazy: keeps this module light
+
+        raw_rows = await recent_session_decisions(repo_root, session_id, window)
+        rows = [
+            row for row in (DecisionRow.from_storage(raw) for raw in raw_rows) if row is not None
+        ]
+        raise_result = correlate(rows, decision, action, mode)
+    except Exception:  # noqa: BLE001 — the correlator must never break the caller's path
+        return decision
+    if raise_result is None:
+        return decision
+    reasons = list(dict.fromkeys([*decision.reason_codes, *raise_result.reason_codes]))
+    explanation = " ".join(
+        part for part in (decision.explanation.strip(), raise_result.explanation.strip()) if part
+    )
+    return decision.model_copy(
+        update={
+            "final_verdict": max_verdict(decision.final_verdict, raise_result.verdict),
+            "final_risk": max_risk(decision.final_risk, raise_result.risk),
+            "reason_codes": reasons,
+            "explanation": explanation,
+        }
+    )
+
+
+def apply_correlator(
+    action: SecurityObject,
+    decision: Decision,
+    mode: str,
+    repo_root: str,
+    session_id: str | None,
+    *,
+    window: int = _DEFAULT_WINDOW,
+) -> Decision:
+    """Sync wrapper around :func:`apply_correlator_async` for the host-hook
+    spine (:mod:`doberman.hosthooks.spine`), which runs outside any event
+    loop — same split, and the same reason, as ``taint_floor.py``'s own
+    ``apply_taint_floor``/``apply_taint_floor_async`` pair: the async proxy
+    executor already runs inside a live event loop and must await
+    :func:`apply_correlator_async` directly (calling this sync wrapper there
+    would raise ``RuntimeError: asyncio.run() cannot be called from a running
+    event loop``).
+
+    ponytail: ``doberman.proxy.executor._apply_correlator`` still carries its
+    own copy of this read-correlate-raise sequence rather than calling
+    :func:`apply_correlator_async` directly — its tests monkeypatch
+    ``executor.recent_session_decisions`` (a module-level name), which a
+    delegating call would silently stop honoring. Not worth widening this
+    slice's diff (and risk) to touch already-green proxy tests for a ~15-line
+    dedup; upgrade path: fold it in when that test's monkeypatch target moves
+    to ``doberman.storage.log`` directly.
+    """
+    return asyncio.run(
+        apply_correlator_async(action, decision, mode, repo_root, session_id, window=window)
     )
