@@ -21,11 +21,13 @@ from doberman.auth import password, totp
 from doberman.auth.challenge import TIMEOUT_METHOD
 from doberman.auth.provider import CliPrompter
 from doberman.config import (
+    default_role_enabled,
     load_active_role,
     load_enforcement,
     load_mode,
     load_policy,
     load_preferences,
+    save_default_role_enabled,
     save_mode,
     save_policy,
     save_preferences,
@@ -96,6 +98,12 @@ hook_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(hook_app, name="hook")
+
+role_app = typer.Typer(
+    help="Agent role boundary (Feature 4) — the opt-in built-in default role.",
+    no_args_is_help=True,
+)
+app.add_typer(role_app, name="role")
 
 
 def _print_version_and_exit(show_version: bool) -> None:
@@ -407,6 +415,65 @@ def enforcement(
         raise typer.Exit(code=1)
     save_policy((load_policy(path) or recommend_policy()).with_enforcement(new), path)
     typer.echo(f"enforcement set to {new}")
+
+
+@role_app.command("enable-default")
+def role_enable_default(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Turn on the built-in opt-in least-privilege default role (D1).
+
+    Activates the packaged ``"default"`` role (see ``builtin_roles.yaml``)
+    whenever this repo has no explicit ``.doberman/role.yaml`` — an explicit
+    role file always takes precedence. Enabling is a strengthen (adds a role
+    boundary that wasn't enforced before) and applies immediately, no gate.
+    """
+    was = default_role_enabled(path)
+    if was:
+        typer.echo("the default role is already enabled")
+        return
+    # A strengthen: apply_change auto-approves (no gate) and still records the
+    # attempt to the append-only ledger.
+    asyncio.run(
+        apply_change(
+            {"default_role_enabled": was},
+            {"default_role_enabled": True},
+            "doberman role enable-default CLI",
+            repo_root=path,
+        )
+    )
+    save_default_role_enabled(True, path)
+    typer.echo("the built-in default role is now enabled (used when no role.yaml is set)")
+
+
+@role_app.command("disable-default")
+def role_disable_default(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Turn off the built-in opt-in least-privilege default role (D1).
+
+    Disabling removes an active role boundary — a ``weaken`` — so it is gated
+    behind the strongest enrolled possession factor (a 2FA code if enrolled,
+    otherwise the Doberman password set via ``doberman password set``); with
+    neither enrolled the change fails closed (denied, nothing changes).
+    """
+    was = default_role_enabled(path)
+    if not was:
+        typer.echo("the default role is already disabled")
+        return
+    outcome = asyncio.run(
+        apply_change(
+            {"default_role_enabled": was},
+            {"default_role_enabled": False},
+            "doberman role disable-default CLI",
+            repo_root=path,
+        )
+    )
+    if not outcome.approved:
+        typer.echo("error: disabling the default role was denied; unchanged", err=True)
+        raise typer.Exit(code=1)
+    save_default_role_enabled(False, path)
+    typer.echo("the built-in default role is now disabled")
 
 
 @app.command(rich_help_panel="Policy")

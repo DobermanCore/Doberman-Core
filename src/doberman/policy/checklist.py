@@ -148,6 +148,14 @@ class PolicyDoc:
     enforcement_expires_at: float | None = None
     #: Enforcement state a timed monitor/off reverts to when it expires.
     enforcement_revert: str = "enforce"
+    #: D1 opt-in flag: activate the built-in "default" least-privilege role
+    #: (see doberman.roles.roles / builtin_roles.yaml) when no explicit
+    #: .doberman/role.yaml exists. False (the byte-identical historical
+    #: behavior) unless a human explicitly turns it on via
+    #: `doberman role enable-default`; a malformed/non-bool stored value is
+    #: never treated as True (see PolicyDoc.from_mapping) — fail closed to
+    #: dormant, never to a wider grant.
+    default_role_enabled: bool = False
 
     def get(self, item_id: str) -> PolicyItem | None:
         return next((it for it in self.items if it.id == item_id), None)
@@ -188,6 +196,10 @@ class PolicyDoc:
     def with_preferences(self, preferences: PreferenceVector) -> "PolicyDoc":
         return replace(self, preferences=preferences)
 
+    def with_default_role_enabled(self, enabled: bool) -> "PolicyDoc":
+        """Return a copy with the D1 default-role opt-in flag set."""
+        return replace(self, default_role_enabled=bool(enabled))
+
     def to_mapping(self) -> dict[str, Any]:
         mapping: dict[str, Any] = {
             "mode": self.mode,
@@ -213,6 +225,9 @@ class PolicyDoc:
             if self.enforcement_expires_at is not None:
                 mapping["enforcement_expires_at"] = self.enforcement_expires_at
             mapping["enforcement_revert"] = self.enforcement_revert
+        # Only emit when set, to keep the common (opted-out) policy file clean.
+        if self.default_role_enabled:
+            mapping["default_role_enabled"] = True
         return mapping
 
     @classmethod
@@ -253,6 +268,11 @@ class PolicyDoc:
                 else None
             ),
             enforcement_revert=str(data.get("enforcement_revert", "enforce")),
+            # Fail closed: only a literal boolean True enables it. Any other
+            # stored value (a string "true", 1, garbage) is never trusted as an
+            # opt-in — `bool("false")` is truthy in Python, so a loose coercion
+            # here would be a silent widening on a hand-edited/corrupt file.
+            default_role_enabled=data.get("default_role_enabled") is True,
         )
 
 

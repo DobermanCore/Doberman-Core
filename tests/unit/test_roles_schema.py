@@ -15,7 +15,7 @@ from doberman.roles.roles import (
     load_builtin_roles,
 )
 
-EXPECTED_ROLES = {"frontend", "backend", "fullstack", "devops", "docs", "test"}
+EXPECTED_ROLES = {"frontend", "backend", "fullstack", "devops", "docs", "test", "default"}
 
 
 def test_builtins_load_and_validate():
