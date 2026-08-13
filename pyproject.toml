@@ -122,3 +122,19 @@ name = "Public core must not depend on the private enterprise package"
 type = "forbidden"
 source_modules = ["doberman"]
 forbidden_modules = ["doberman_enterprise"]
+
+# Hot-path decoupling: the objective-rules package is built by the host hooks on
+# EVERY tool call, in a cold-start CLI process, so it must never drag in the
+# subjective layer's heavy ML import chain (river/numpy/scipy, pulled in via
+# doberman.subjective.{baseline,drift,martingale}). engine.trifecta was extracted
+# as a models-only leaf (see its module docstring) precisely so engine.rules could
+# share the lethal-trifecta predicate without importing engine.subjective; this
+# contract makes that convention a CI-enforced invariant instead of a review-only
+# one. forbidden_modules names numpy/scipy/river directly (not just
+# doberman.subjective) so a future rule that reaches the ML libraries through any
+# path — not only the current one — still fails the contract.
+[[tool.importlinter.contracts]]
+name = "Objective-rules hot path must not depend on the subjective ML import chain"
+type = "forbidden"
+source_modules = ["doberman.engine.rules", "doberman.engine.trifecta", "doberman.engine.objective"]
+forbidden_modules = ["doberman.engine.subjective", "doberman.engine.detectors", "numpy", "scipy", "river"]
