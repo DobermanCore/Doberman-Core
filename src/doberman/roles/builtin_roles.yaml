@@ -130,3 +130,103 @@ roles:
       - "frontend/**"
       - "infra/**"
     blocked: []
+  # D1 — the built-in opt-in least-privilege default (Feature 4 gap-fill): a
+  # generic "read-mostly coding assistant" role a user can turn on without
+  # hand-writing a role.yaml (see `doberman role enable-default` / the opt-in
+  # flag resolution in doberman.config.load_active_role). Unlike the roles
+  # above, it isn't scoped to a directory convention (frontend/backend/etc) —
+  # it's meant to fit *any* repo shape, so `allowed` is a broad extension +
+  # common-directory allowlist rather than a path prefix. Credential/secret
+  # patterns (.env, *.pem, *.key, secrets/**) and Doberman's/the harness's own
+  # control plane (.doberman/**, .claude/**, .codex/**) are already hard-
+  # enforced unconditionally by the protected-path rule (paths.py) regardless
+  # of role — this role only adds the CI/infra/migrations step-up other roles
+  # already carry, plus the built-in escapes-repo-root -> BLOCK every role gets
+  # for free from classify(). A file type this list misses simply steps up to
+  # AUTH (the model's existing safe default for "out of scope"), it is never
+  # silently allowed.
+  #
+  # NOTE on the bare (no "**/" prefix) extension/filename globs below:
+  # `classify()` matches with `fnmatch`, not a real path-glob engine, so `*`
+  # already matches `/` (there's no directory boundary) — `*.py` matches BOTH
+  # `app.py` at the repo root AND `src/app.py`. A `**/*.py` prefix would be
+  # redundant, not stricter, so it's left off on purpose (unlike the other
+  # built-in roles above, which only ever need nested matches under a named
+  # top-level dir).
+  default:
+    description: >-
+      Opt-in default for a general-purpose coding assistant: ordinary source,
+      config, docs, and test files anywhere in the repo are in scope; CI/infra
+      config and unrecognized file types escalate to AUTH. An explicit
+      .doberman/role.yaml always overrides this default.
+    allowed:
+      - "*.py"
+      - "*.pyi"
+      - "*.ipynb"
+      - "*.js"
+      - "*.jsx"
+      - "*.ts"
+      - "*.tsx"
+      - "*.mjs"
+      - "*.cjs"
+      - "*.json"
+      - "*.jsonc"
+      - "*.yaml"
+      - "*.yml"
+      - "*.toml"
+      - "*.cfg"
+      - "*.ini"
+      - "*.md"
+      - "*.mdx"
+      - "*.rst"
+      - "*.txt"
+      - "*.html"
+      - "*.css"
+      - "*.scss"
+      - "*.less"
+      - "*.go"
+      - "*.rs"
+      - "*.java"
+      - "*.kt"
+      - "*.rb"
+      - "*.php"
+      - "*.c"
+      - "*.h"
+      - "*.cpp"
+      - "*.hpp"
+      - "*.cs"
+      - "*.swift"
+      - "*.sh"
+      - "*.ps1"
+      - "*.sql"
+      - "*.lock"
+      - "dockerfile"
+      - "dockerfile.*"
+      - "makefile"
+      - "license"
+      - "license.*"
+      - "readme.*"
+      - "changelog.*"
+      - "contributing.*"
+      - ".gitignore"
+      - ".gitattributes"
+      - "src/**"
+      - "lib/**"
+      - "app/**"
+      - "tests/**"
+      - "test/**"
+      - "docs/**"
+      - "scripts/**"
+      - "examples/**"
+    suspicious:
+      - "infra/**"
+      - "migrations/**"
+      - ".git/**"
+      - ".github/workflows/**"
+      - ".gitlab-ci.yml"
+      - "jenkinsfile"
+      - "jenkinsfile.*"
+      - ".circleci/**"
+      - "azure-pipelines.yml"
+      - "azure-pipelines.yaml"
+    blocked: []

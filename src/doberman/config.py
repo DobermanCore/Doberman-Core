@@ -7,9 +7,16 @@ escalation stays dormant until the user sets one (F6 onboarding will write it).
 
 Resolution rules for the active role (fail toward restriction):
 
-* no ``.doberman/role.yaml`` → ``None`` (role enforcement is opt-in; the role
-  rule abstains so nothing benign is gratuitously blocked).
-* ``role: <name>`` naming a built-in → that built-in.
+* no ``.doberman/role.yaml``, and the D1 default-role opt-in is not set →
+  ``None`` (role enforcement is opt-in; the role rule abstains so nothing
+  benign is gratuitously blocked). This is the historical, byte-identical
+  behavior for anyone who hasn't opted in.
+* no ``.doberman/role.yaml``, and the opt-in *is* set (``doberman role
+  enable-default``) → the built-in ``"default"`` role (a generic least-
+  privilege role for a coding assistant; see ``builtin_roles.yaml``).
+* ``role: <name>`` naming a built-in → that built-in. An explicit
+  ``role.yaml`` always wins over the opt-in default, even when both are
+  present.
 * an *inline* custom role definition (``allowed``/``suspicious``/``blocked``) →
   that custom :class:`RoleDefinition` (a permissive custom role is allowed but
   logged — the user owns that choice).
@@ -42,6 +49,9 @@ CONFIG_DIR = ".doberman"
 ROLE_FILE = "role.yaml"
 POLICY_FILE = "policies.yaml"
 
+#: The built-in role name the D1 opt-in activates (see builtin_roles.yaml).
+DEFAULT_ROLE_NAME = "default"
+
 
 def _role_file_path(repo_root: str) -> Path:
     return Path(repo_root) / CONFIG_DIR / ROLE_FILE
@@ -59,7 +69,12 @@ def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
     """
     path = _role_file_path(repo_root)
     if not path.exists():
-        return None
+        # No explicit role file: fall to the D1 opt-in default (still None
+        # unless a human explicitly turned it on) — byte-identical to today
+        # for anyone who hasn't opted in.
+        if not default_role_enabled(repo_root):
+            return None
+        return load_builtin_roles().get(DEFAULT_ROLE_NAME, MOST_RESTRICTIVE_ROLE)
 
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -218,6 +233,30 @@ def save_preferences(vector: PreferenceVector, repo_root: str = ".") -> None:
     """Persist the declared preference vector into the policy document."""
     doc = load_policy(repo_root) or recommend_policy()
     save_policy(doc.with_preferences(vector), repo_root)
+
+
+def default_role_enabled(repo_root: str = ".") -> bool:
+    """Whether the D1 opt-in default role is turned on for this repo.
+
+    Fails closed to ``False`` (dormant) on any missing/malformed
+    ``.doberman/policies.yaml`` — :func:`load_policy` already returns ``None``
+    for a corrupt file, and :meth:`PolicyDoc.from_mapping` only ever honors a
+    literal boolean ``True`` for the field, so a garbage value never widens
+    scope.
+    """
+    doc = load_policy(repo_root)
+    return doc.default_role_enabled if doc is not None else False
+
+
+def save_default_role_enabled(enabled: bool, repo_root: str = ".") -> bool:
+    """Persist the D1 opt-in flag; returns the value written.
+
+    Mirrors :func:`save_mode` — reuses the saved policy if one exists, else
+    starts from the recommended defaults.
+    """
+    doc = load_policy(repo_root) or recommend_policy()
+    save_policy(doc.with_default_role_enabled(enabled), repo_root)
+    return bool(enabled)
 
 
 def save_mode(name: str, repo_root: str = ".") -> str:

@@ -11,6 +11,8 @@ Entry point: `doberman` (Typer). All commands accept `--help`.
 | `doberman mode` | Show or set the security strength mode |
 | `doberman enforcement` | Show or set the enforcement dial (`enforce` / `monitor` / `off`) |
 | `doberman prefs` | Show or set the subjective preference vector (SL5) |
+| `doberman role enable-default` | Opt into the built-in least-privilege default role (used when no `.doberman/role.yaml` exists) |
+| `doberman role disable-default` | Opt back out (gated — a weaken) |
 | `doberman status` | Current posture, hooks, taint, elevations, recent decisions |
 | `doberman doctor` | Health self-check (script-friendly exit codes) |
 | `doberman policy-history` | Append-only policy change ledger |
