@@ -35,7 +35,8 @@ from doberman.auth.challenge import (
 from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import load_active_role, load_enforcement, load_mode, load_preferences
 from doberman.egress.artifact import ArtifactPinStore, ArtifactVerdict
-from doberman.engine.decision_engine import Guardrail, decide, max_risk
+from doberman.engine.correlator import DecisionRow, correlate
+from doberman.engine.decision_engine import Guardrail, decide, max_risk, max_verdict
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.rules import BUILTIN_RULE_TYPES
 from doberman.engine.rules.destinations import ExternalDestinationRule
@@ -56,7 +57,7 @@ from doberman.policy.drift import acted_verdict, effective_enforcement
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
 from doberman.storage.db import active_elevations, grant_elevation, mark_used
-from doberman.storage.log import record_decision
+from doberman.storage.log import recent_session_decisions, record_decision
 from doberman.subjective.baseline import (
     budget_allows_step_up,
     entity_id,
@@ -140,6 +141,11 @@ _VERDICT_TEMPLATES = {
 _OUTPUT_BLOCK_REASON_CODES: frozenset[ReasonCode] = frozenset(
     {ReasonCode.secret_exfiltration, ReasonCode.sensitive_secret_access}
 )
+
+#: C3.1 session correlator: how many of the session's most-recent decisions to
+#: read as pattern-check history. Bounded so the read stays a cheap, single
+#: indexed query regardless of session length.
+_CORRELATOR_WINDOW = 20
 
 
 def _denied_result(reason: ReasonCode, error_class: str, action_id: str) -> CallToolResult:
@@ -339,6 +345,50 @@ def _safe_decide(action: SecurityObject, ctx: EvalContext) -> Decision:
         # unwind is fail-closed by construction (no forward is reached).
         _engine_logger.exception("decision engine raised; failing closed (action %s)", action.id)
         return _engine_failure_decision(action)
+
+
+async def _apply_correlator(
+    action: SecurityObject, decision: Decision, mode: str, session_id: str | None
+) -> Decision:
+    """C3.1 — raise-only cross-call pattern check, run after the taint floor.
+
+    Mirrors ``apply_taint_floor_async``'s own shape: read a bounded slice of
+    this session's redacted decision history, run the pure ``correlate()``
+    over it, and apply any raise directly via ``max_verdict``/``max_risk`` —
+    bypassing the subjective clamp by construction, exactly like the taint
+    floor, rather than adding a new code to ``SUBJECTIVE_HARD_BLOCK_ALLOWLIST``.
+
+    Fails closed to the untouched ``decision``: a DB read failure or a
+    correlator bug must never crash the path or (via a swallowed exception
+    inside this function) silently escalate — both ``recent_session_decisions``
+    and ``correlate`` are already individually fail-closed/fail-quiet, and this
+    wrapper adds one more layer of defense-in-depth around the two calls.
+    """
+    try:
+        raw_rows = await recent_session_decisions(REPO_ROOT, session_id, _CORRELATOR_WINDOW)
+        rows = [
+            row for row in (DecisionRow.from_storage(raw) for raw in raw_rows) if row is not None
+        ]
+        raise_result = correlate(rows, decision, action, mode)
+    except Exception:  # noqa: BLE001 — the correlator must never break the execution path
+        _engine_logger.warning(
+            "session correlator failed (action %s); leaving decision as-is", action.id
+        )
+        return decision
+    if raise_result is None:
+        return decision
+    reasons = list(dict.fromkeys([*decision.reason_codes, *raise_result.reason_codes]))
+    explanation = " ".join(
+        part for part in (decision.explanation.strip(), raise_result.explanation.strip()) if part
+    )
+    return decision.model_copy(
+        update={
+            "final_verdict": max_verdict(decision.final_verdict, raise_result.verdict),
+            "final_risk": max_risk(decision.final_risk, raise_result.risk),
+            "reason_codes": reasons,
+            "explanation": explanation,
+        }
+    )
 
 
 def _is_destructive(action: SecurityObject) -> bool:
@@ -681,6 +731,21 @@ async def decide_and_execute(
     decision = await apply_taint_floor_async(
         action, decision, load_mode(REPO_ROOT), REPO_ROOT, None, arguments or {}
     )
+
+    # C3.1 session correlator: cross-call PATTERN raise (raise-only), run right
+    # after the taint floor for the same reason — see _apply_correlator's
+    # docstring. Same `session_id=None` gap as the taint floor call above: the
+    # pure-MCP proxy's `decide_and_execute`/`_call_tool` chokepoint (mcp_proxy.py)
+    # takes only `(downstream, tool_name, arguments)` — no session concept exists
+    # anywhere on this call path to thread through, so this deliberately keeps
+    # reading an empty history (never fires) here. This is NOT a remaining gap:
+    # doberman.hosthooks.spine.evaluate_action DOES have a real per-call session
+    # id (HK.5.1, via extract_session_id) and is now wired to the same correlator
+    # (doberman.engine.correlator.apply_correlator) — every host-hook adapter
+    # (Claude Code, OpenClaw, Codex) fires the correlator for real; only the raw
+    # MCP-proxy entry point remains session-less by design, exactly like the
+    # taint floor above.
+    decision = await _apply_correlator(action, decision, load_mode(REPO_ROOT), None)
 
     # Record every intercepted action with its REAL verdict. Logged before the
     # gate — safe because log_action swallows its own failures and forwards

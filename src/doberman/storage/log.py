@@ -67,6 +67,15 @@ _SELECT_DECISIONS_SINCE = (
     "FROM decisions WHERE id > ? ORDER BY id ASC"
 )
 
+# C3.1 — the session correlator's history read (doberman.engine.correlator).
+# Narrower than _SELECT_DECISIONS: only the redacted fields a correlation
+# pattern needs, scoped to one session and newest-first so the caller can take
+# the last N cheaply.
+_SELECT_SESSION_DECISIONS = (
+    "SELECT action_type, target_path_class, source_context, risk, reason_codes_json, "
+    "final_verdict FROM decisions WHERE session_id = ? ORDER BY id DESC LIMIT ?"
+)
+
 _DECISION_COLUMNS = [
     "id",
     "ts",
@@ -302,6 +311,55 @@ async def read_decisions_since(
     except Exception:  # noqa: BLE001 — a read failure must never crash the dash
         return []
     return [dict(zip(_DECISION_COLUMNS, row, strict=True)) for row in rows]
+
+
+async def recent_session_decisions(repo_root: str, session_id: str | None, n: int) -> list[dict]:
+    """The last ``n`` decisions for ``session_id``, newest first — lightweight,
+    already-redacted rows for the session correlator (``doberman.engine.correlator``).
+
+    Each row is ``{"action_type", "target_path_class", "source_context", "risk",
+    "reason_codes" (parsed list), "final_verdict"}`` — the same redacted
+    vocabulary already persisted by :func:`record_decision`, never the raw
+    target/arguments. Fails closed to ``[]`` on any error (missing/locked DB, no
+    ``session_id``, a malformed row) — a degraded read must never fabricate
+    session history, which would let the correlator either miss or invent a
+    cross-call pattern.
+    """
+    from doberman.storage.db import db_path
+
+    if not session_id or not db_path(repo_root).exists():
+        return []
+    try:
+        async with open_db(repo_root) as conn:
+            async with conn.execute(_SELECT_SESSION_DECISIONS, (session_id, int(n))) as cur:
+                rows = await cur.fetchall()
+    except Exception:  # noqa: BLE001 — a read failure must never break the decision path
+        return []
+
+    out: list[dict] = []
+    for (
+        action_type,
+        target_path_class,
+        source_context,
+        risk,
+        reason_codes_json,
+        final_verdict,
+    ) in rows:
+        try:
+            reason_codes = json.loads(reason_codes_json) if reason_codes_json else []
+        except (TypeError, ValueError):
+            reason_codes = []
+        out.append(
+            {
+                "action_type": action_type,
+                "target_path_class": target_path_class,
+                "source_context": source_context,
+                "risk": risk,
+                "reason_codes": reason_codes,
+                "final_verdict": final_verdict,
+            }
+        )
+    return out
 
 
 async def memory_summary(repo_root: str) -> dict:

@@ -3,7 +3,7 @@
 Every non-PASS Doberman decision can carry one or more `ReasonCode` values plus a human explanation.
 Catalogue of all members of `ReasonCode` in `src/doberman/models.py`, with raise-site modules under `src/doberman/`.
 
-**Total codes:** 51
+**Total codes:** 53
 
 | Code | Value | Group | Raised in | Meaning |
 |------|-------|-------|-----------|---------|
@@ -59,6 +59,8 @@ Catalogue of all members of `ReasonCode` in `src/doberman/models.py`, with raise
 | `egress_blocked_by_mode` | `egress_blocked_by_mode` | Feature RB — egress broker ground-truth reconciliation | `engine/rules/destinations.py` | In Paranoid mode only: a broker proven to enforce egress attests that this exact destination is NOT allowlisted and will itself drop it at the socket, so the rule hard-blocks instead of its usual AUTH. Dormant in every mode with no broker present. |
 | `anomalous_egress_velocity` | `anomalous_egress_velocity` | Feature RB — egress broker ground-truth reconciliation | `engine/rules/destinations.py` | A bounded, in-memory per-entity velocity tracker detected a burst, volume or fan-out anomaly across this entity's broker-observed connections in the same recent window used by RB.3, retrospectively raising the already-computed verdict. |
 | `artifact_digest_mismatch` | `artifact_digest_mismatch` | RB.7 — post-fetch artifact digest verification | `proxy/executor.py` | A pinned expected sha256 digest exists for a previously-fetched identity and the freshly returned tool-result content's digest disagrees with it, so the result is withheld from the agent post-fetch. |
+| `correlated_trifecta` | `correlated_trifecta` | C3.1 — session correlator (cross-call pattern floor) | `engine/correlator.py`, `proxy/executor.py` | This session's recent decision history shows an untrusted-provenance ingress and a sensitive/secret read as separate earlier calls, and the current action is an external egress — a lethal trifecta assembled across calls rather than within one. |
+| `correlated_destructive_flow` | `correlated_destructive_flow` | C3.1 — session correlator (cross-call pattern floor) | `engine/correlator.py`, `proxy/executor.py` | This session's recent decision history shows a broad read/enumeration and a shell command as separate earlier calls, and the current action is an external egress — a possible archive-then-exfiltrate flow. |
 
 ## Notes
 
