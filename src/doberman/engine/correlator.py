@@ -23,6 +23,16 @@ apply wrapper raises the final ``Decision`` directly via
 ``max_verdict``/``max_risk`` (mirroring the taint floor's own call site),
 bypassing the subjective clamp by construction rather than smuggling a new
 code onto that allowlist.
+
+D2 — the task-match leg: ``correlated_trifecta`` narrows its own fire
+condition (never a new lowering path — see :func:`_trifecta_fires`) so a
+session that reads untrusted content, reads a sensitive/secret credential, and
+then egresses to a destination the user's OWN pre-inference turn actually
+named does not false-positive. The task tokens come exclusively from the
+turn gate's trusted, typed-only prompt capture (``turngate/task_tokens.py`` →
+``storage/task_match.py``) — never from the agent's evolving context — so a
+prompt injection in a pasted/tool-fetched segment can never supply a task
+token and suppress this floor.
 """
 
 from __future__ import annotations
@@ -32,6 +42,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from doberman.engine.decision_engine import max_risk, max_verdict
+from doberman.engine.rules.destinations import _parse_host, _registered_match
 from doberman.models import (
     ActionType,
     Decision,
@@ -77,9 +88,11 @@ _STRICT_MODES: frozenset[str] = frozenset({"strict", "paranoid"})
 #: Residual, NOT fixed by this narrowing: a benign session whose "sensitive"
 #: read genuinely touches real secret-shaped content (not just a
 #: policy-sensitive path) is still structurally identical to an attack read
-#: and will still fire — the correlator has no task/intent signal (the
-#: deferred D2 task-match leg) to tell "legitimately needs this credential"
-#: from "is exfiltrating it".
+#: and will still fire — UNLESS the egress destination itself is one the
+#: user's own trusted turn named (the D2 task-match leg — see
+#: :func:`_task_matches_destination` and ``turngate/task_tokens.py``), which
+#: is exactly the "legitimately needs this credential for THIS destination"
+#: case D2 exists to distinguish from "is exfiltrating it".
 _SENSITIVE_READ_REASONS: frozenset[ReasonCode] = frozenset(
     {
         ReasonCode.sensitive_secret_access,
@@ -190,14 +203,50 @@ def _current_is_egress(action: SecurityObject) -> bool:
     return action.external_destination is not None
 
 
-def _trifecta_fires(recent: Sequence[DecisionRow], action: SecurityObject) -> bool:
+def _task_matches_destination(action: SecurityObject, task_hosts: frozenset[str]) -> bool:
+    """D2: does the CURRENT egress destination match a task token derived from
+    this session's TRUSTED, typed-only user prompt (``turngate/task_tokens.py``)?
+
+    Reuses ``ExternalDestinationRule``'s own host parsing + IDNA-decode +
+    registered-domain match (``_parse_host``/``_registered_match``) so the
+    comparison is byte-for-byte the same normalization the egress rule itself
+    would apply — a homoglyph domain can't slip past this the same way it
+    can't slip past that rule. ``task_hosts`` empty or no destination → no
+    match (nothing to compare); a malformed destination that fails to parse a
+    host → no match (never guessed).
+    """
+    if not task_hosts or action.external_destination is None:
+        return False
+    host, _had_credentials = _parse_host(action.external_destination)
+    if not host:
+        return False
+    return _registered_match(host, task_hosts)
+
+
+def _trifecta_fires(
+    recent: Sequence[DecisionRow], action: SecurityObject, task_hosts: frozenset[str]
+) -> bool:
     """Untrusted-provenance ingress + a sensitive/secret read, anywhere earlier
-    this session, followed by the CURRENT action being an external egress."""
+    this session, followed by the CURRENT action being an external egress —
+    UNLESS (D2) the egress destination matches a task token the user's own
+    trusted turn named, in which case this specific egress is user-justified
+    and the trifecta does not fire.
+
+    D2 is a fire-condition NARROWING, not a new lowering path: it only ever
+    keeps ``_trifecta_fires`` from returning ``True`` in the first place, the
+    same way the secret-class-only narrowing of ``_SENSITIVE_READ_REASONS``
+    above already does — raise-only end to end, because nothing here can pull
+    a verdict back down once ``correlate()`` has returned it.
+    """
     if not _current_is_egress(action):
         return False
     has_untrusted_ingress = any(_is_untrusted_ingress(row) for row in recent)
     has_sensitive_read = any(_is_sensitive_read(row) for row in recent)
-    return has_untrusted_ingress and has_sensitive_read
+    if not (has_untrusted_ingress and has_sensitive_read):
+        return False
+    if _task_matches_destination(action, task_hosts):
+        return False
+    return True
 
 
 def _destructive_flow_fires(recent: Sequence[DecisionRow], action: SecurityObject) -> bool:
@@ -225,6 +274,7 @@ def correlate(
     current: Decision,  # noqa: ARG001 — part of the documented contract; not yet consulted
     action: SecurityObject,
     mode: str,
+    task_hosts: frozenset[str] = frozenset(),
 ) -> GuardrailResult | None:
     """Pure cross-call pattern check over a session's recent decisions.
 
@@ -239,17 +289,27 @@ def correlate(
     the documented interface / future patterns that need it, but the two
     patterns implemented here only need the live ``action`` (for the egress
     signal) and the redacted ``recent`` history.
+
+    ``task_hosts`` (D2): registered-domain tokens derived from THIS session's
+    trusted, typed-only user prompt (see ``turngate/task_tokens.py`` and
+    ``storage/task_match.py``). Defaults to empty — unchanged behavior for any
+    caller that doesn't have (or hasn't fetched) a session's task tokens.
+    Consulted only by the trifecta leg (see :func:`_trifecta_fires`); the
+    destructive-flow leg is a different attack shape and is untouched by it.
     """
     try:
-        return _correlate(recent, action, mode)
+        return _correlate(recent, action, mode, task_hosts)
     except Exception:  # noqa: BLE001 — pure helper; caller treats a failure as None
         return None
 
 
 def _correlate(
-    recent: Sequence[DecisionRow], action: SecurityObject, mode: str
+    recent: Sequence[DecisionRow],
+    action: SecurityObject,
+    mode: str,
+    task_hosts: frozenset[str] = frozenset(),
 ) -> GuardrailResult | None:
-    fired_trifecta = _trifecta_fires(recent, action)
+    fired_trifecta = _trifecta_fires(recent, action, task_hosts)
     fired_destructive = _destructive_flow_fires(recent, action)
     if not fired_trifecta and not fired_destructive:
         return None
@@ -295,6 +355,26 @@ def _correlate(
 _DEFAULT_WINDOW = 20
 
 
+async def _session_task_hosts(repo_root: str, session_id: str | None) -> frozenset[str]:
+    """D2: this session's task-match hosts, or an empty set on any failure.
+
+    Deliberately its OWN try/except, separate from :func:`apply_correlator_async`'s
+    — a task-host read failure must fail closed to "no task hosts" (the
+    trifecta fires exactly as it would without this feature), never to
+    ``apply_correlator_async``'s broader "skip the correlator entirely" fallback,
+    which would also swallow a genuine ``correlated_destructive_flow`` fire.
+    No session id → no scope to read → empty, same as ``recent_session_decisions``.
+    """
+    if not session_id:
+        return frozenset()
+    try:
+        from doberman.storage.task_match import task_hosts_for  # lazy: keeps this module light
+
+        return frozenset(await task_hosts_for(repo_root, session_id))
+    except Exception:  # noqa: BLE001 — a task-host read failure never fabricates a match
+        return frozenset()
+
+
 async def apply_correlator_async(
     action: SecurityObject,
     decision: Decision,
@@ -321,7 +401,14 @@ async def apply_correlator_async(
     session concept at the call site) ``recent_session_decisions`` returns an
     empty history and this never fires — the same documented gap as the
     taint floor's own ``session_id=None`` callers.
+
+    D2: also fetches this session's task-match hosts (:func:`_session_task_hosts`,
+    its own separately fail-closed helper) and passes them to :func:`correlate`.
+    A task-host READ failure is deliberately isolated from the try/except below
+    — it must degrade to "no task hosts" (the trifecta still fires normally),
+    never disable the whole correlator the way a history-read failure does.
     """
+    task_hosts = await _session_task_hosts(repo_root, session_id)
     try:
         from doberman.storage.log import recent_session_decisions  # lazy: keeps this module light
 
@@ -329,7 +416,7 @@ async def apply_correlator_async(
         rows = [
             row for row in (DecisionRow.from_storage(raw) for raw in raw_rows) if row is not None
         ]
-        raise_result = correlate(rows, decision, action, mode)
+        raise_result = correlate(rows, decision, action, mode, task_hosts)
     except Exception:  # noqa: BLE001 — the correlator must never break the caller's path
         return decision
     if raise_result is None:

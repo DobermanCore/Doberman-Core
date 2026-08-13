@@ -46,6 +46,7 @@ from doberman.turngate.log import record_turn_decision
 from doberman.turngate.normalize import normalize_turn
 from doberman.turngate.raw import RAW_TURN_KEY, STYLE_PVALUE_KEY
 from doberman.turngate.signatures import Tier0SignatureGuardrail
+from doberman.turngate.task_tokens import record_task_hosts as _record_task_hosts
 
 logger = logging.getLogger("doberman.turngate.hook")
 
@@ -227,12 +228,23 @@ async def gate_turn(
     ts: datetime | None = None,
     tier0: TurnGuardrail | None = None,
     tier1: TurnGuardrail | None = None,
+    session_id: str | None = None,
 ) -> TurnGateOutcome:
     """Gate one pre-inference turn and return whether it may reach the model.
 
     Disabled (env / no host hook) → released with a logged notice. Otherwise:
     normalize → repeat-check → ``decide_turn`` → enforce. Any internal failure
     fails toward the human (AUTH); a denied AUTH/BLOCK is never released.
+
+    ``session_id`` (D2): the harness's own per-conversation session id — the
+    same HK.5.1 id the host-hook spine (``hosthooks/spine.py``) already
+    extracts and passes to the C3.1 correlator (``apply_correlator``) as
+    cross-call decision history's scope. A host wiring this pre-inference hook
+    should pass the SAME id it passes to the post-action spine, so a task
+    token captured here is visible to that session's own correlator reads.
+    ``None`` (no host session concept, or a host that hasn't wired it) simply
+    disables task-token capture for this turn — the correlator behaves exactly
+    as it did before this feature, unchanged.
     """
     when = ts or datetime.now(timezone.utc)
     tier0 = tier0 if tier0 is not None else DEFAULT_TIER0
@@ -282,6 +294,12 @@ async def gate_turn(
             await stylometry.observe_style(
                 raw.full_text, entity_id=entity_id, repo_root=repo_root, now=when
             )
+            # D2: released turns ONLY contribute task-match tokens — same
+            # discipline as the style baseline above and as publish_turn_context
+            # below ("a turn that was NOT released publishes nothing"): a
+            # turn that never reached the model earns no say in what egress
+            # counts as user-justified.
+            await _record_task_hosts(raw, repo_root=repo_root, session_id=session_id)
         # TG3.3: a released turn's signals (style p-value + flags) ride along
         # to the action stage as the entity's TurnContext (raise-only there).
         publish_turn_context(
