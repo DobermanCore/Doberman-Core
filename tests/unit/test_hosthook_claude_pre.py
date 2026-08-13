@@ -118,6 +118,15 @@ def test_destructive_bash_is_denied(cwd):
     assert _permission(_pre("Bash", {"command": "rm -rf /"}, cwd)) == "deny"
 
 
+@pytest.mark.guarantee("gitignored-delete-gate", host="claude-code")
+def test_unrecoverable_gitignored_delete_requires_auth(cwd):
+    out = _pre("Bash", {"command": "rm data/app.db"}, cwd)
+    assert _permission(out) == "deny"
+    reason = _reason(out)
+    assert "[AUTH]" in reason
+    assert "data/app.db" not in reason
+
+
 def test_block_reason_tells_user_there_is_no_in_session_override(cwd):
     reason = _reason(_pre("Bash", {"command": "rm -rf /"}, cwd))
     assert "no in-session override" in reason
