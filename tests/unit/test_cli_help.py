@@ -31,6 +31,8 @@ CLI_HELP_TARGETS = (
     ("dash",),
     ("demo",),
     ("memory",),
+    ("memory", "reset"),
+    ("memory", "prune"),
     ("policy-history",),
     ("install-hooks",),
     ("uninstall-hooks",),

@@ -53,7 +53,12 @@ from doberman.policy.modes import thresholds_for
 # not doing project work (HK.5.0b). The human runs these directly (not via a
 # gated tool), so the hook only ever sees the *agent* invoking them. Read/utility
 # verbs (`status`, `doctor`, `encode-safe`, `log`, `scan`, `review`) are
-# deliberately excluded — they don't mutate anything.
+# deliberately excluded — they don't mutate anything. `memory` joined this set
+# with Subj1's `memory reset`/`memory prune` (they mutate the learned behavioral
+# baseline/preference memory, the same class of action as `taint`); the bare
+# read-only `doberman memory` summary is blocked as collateral — the CLI verb
+# has no subcommand granularity here, and an unrecognized/ambiguous case fails
+# closed like everywhere else in this module.
 _DOBERMAN_CONTROL_SUBCOMMANDS = {
     "install-hooks",
     "uninstall-hooks",
@@ -65,6 +70,7 @@ _DOBERMAN_CONTROL_SUBCOMMANDS = {
     "taint",
     "password",
     "revoke",
+    "memory",
 }
 
 #: Default bulk-operation threshold: deleting/touching this many paths in one

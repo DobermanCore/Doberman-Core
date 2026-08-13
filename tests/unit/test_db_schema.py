@@ -4,6 +4,8 @@ import asyncio
 import os
 import stat
 
+import aiosqlite
+
 from doberman.storage.db import SCHEMA_VERSION, db_path, open_db
 
 _EXPECTED_TABLES = {
@@ -76,6 +78,101 @@ async def test_schema_creation_is_idempotent(tmp_path):
         async with conn.execute("SELECT COUNT(*) FROM schema_version") as cur:
             count = (await cur.fetchone())[0]
     assert count == 1
+
+
+# --- v8 -> v9: last_touched retention stamps (Subj1) -----------------------
+
+
+_V9_TABLES_AND_BACKFILL_SOURCE = {
+    "baseline_counts": "last_seen",
+    "baseline_transitions": None,
+    "baseline_state": None,
+    "score_history": "ts",
+    "preference_feedback": "updated_at",
+}
+
+
+async def test_migration_adds_and_backfills_last_touched(tmp_path):
+    # Hand-build a v8-shaped DB (pre-Subj1): every baseline/preference table
+    # without last_touched, one existing row per table carrying real data in
+    # whatever timestamp column it already had.
+    path = db_path(str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = await aiosqlite.connect(str(path))
+    await conn.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version (version) VALUES (8);
+        CREATE TABLE baseline_counts (
+            entity_id TEXT NOT NULL, feature_key TEXT NOT NULL, role TEXT,
+            count INTEGER NOT NULL DEFAULT 0, mean REAL NOT NULL DEFAULT 0,
+            m2 REAL NOT NULL DEFAULT 0, ewma_var REAL NOT NULL DEFAULT 0,
+            first_seen TEXT, last_seen TEXT,
+            PRIMARY KEY (entity_id, feature_key)
+        );
+        INSERT INTO baseline_counts (entity_id, feature_key, count, last_seen)
+            VALUES ('hmac:aaa', '__total__', 3, '2026-01-01T00:00:00+00:00');
+        CREATE TABLE baseline_transitions (
+            entity_id TEXT NOT NULL, from_state TEXT NOT NULL, to_state TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (entity_id, from_state, to_state)
+        );
+        INSERT INTO baseline_transitions (entity_id, from_state, to_state, count)
+            VALUES ('hmac:aaa', '1:x', 'y', 1);
+        CREATE TABLE baseline_state (
+            entity_id TEXT PRIMARY KEY, last_state TEXT, prev_state TEXT
+        );
+        INSERT INTO baseline_state (entity_id, last_state) VALUES ('hmac:aaa', 'y');
+        CREATE TABLE score_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, entity_id TEXT NOT NULL,
+            ts TEXT NOT NULL, kind TEXT NOT NULL, value REAL NOT NULL
+        );
+        INSERT INTO score_history (entity_id, ts, kind, value)
+            VALUES ('hmac:aaa', '2026-01-02T00:00:00+00:00', 'novelty', 0.5);
+        CREATE TABLE preference_feedback (
+            entity_id TEXT NOT NULL, dimension TEXT NOT NULL,
+            approvals INTEGER NOT NULL DEFAULT 0, denials INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT, PRIMARY KEY (entity_id, dimension)
+        );
+        INSERT INTO preference_feedback (entity_id, dimension, approvals, updated_at)
+            VALUES ('hmac:aaa', 'confidentiality', 1, '2026-01-03T00:00:00+00:00');
+        """
+    )
+    await conn.commit()
+    await conn.close()
+
+    # Opening through Doberman triggers the additive migration.
+    async with open_db(str(tmp_path)) as conn:
+        for table, backfill_source in _V9_TABLES_AND_BACKFILL_SOURCE.items():
+            cols = await _columns(conn, table)
+            assert "last_touched" in cols
+            if backfill_source is None:
+                continue  # no prior timestamp column to backfill from
+            async with conn.execute(f"SELECT last_touched, {backfill_source} FROM {table}") as cur:  # noqa: S608
+                row = await cur.fetchone()
+            assert row[0] == row[1]  # backfilled from the existing column, not invented
+        # Existing data (not just the new column) survived the migration.
+        async with conn.execute(
+            "SELECT count FROM baseline_counts WHERE entity_id = 'hmac:aaa'"
+        ) as cur:
+            assert (await cur.fetchone())[0] == 3
+
+
+async def test_fresh_db_has_last_touched_on_every_baseline_table(tmp_path):
+    async with open_db(str(tmp_path)) as conn:
+        for table in _V9_TABLES_AND_BACKFILL_SOURCE:
+            assert "last_touched" in await _columns(conn, table)
+
+
+async def test_reopening_a_v9_migrated_db_is_idempotent(tmp_path):
+    # Re-running the v8->v9 ALTER/backfill guard on an already-v9 DB must not
+    # error or double-add the column.
+    root = str(tmp_path)
+    async with open_db(root):  # first open -> fresh v9 DB
+        pass
+    async with open_db(root) as conn:  # second open re-runs the migration guard
+        cols = await _columns(conn, "baseline_counts")
+    assert cols.count("last_touched") == 1
 
 
 def test_db_file_is_owner_only(tmp_path):

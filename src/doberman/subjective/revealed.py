@@ -61,11 +61,12 @@ _PROBE = PreferenceVector(
 )
 
 _UPSERT_FEEDBACK = (
-    "INSERT INTO preference_feedback (entity_id, dimension, approvals, denials, updated_at) "
-    "VALUES (?, ?, ?, ?, ?) "
+    "INSERT INTO preference_feedback "
+    "(entity_id, dimension, approvals, denials, updated_at, last_touched) "
+    "VALUES (?, ?, ?, ?, ?, ?) "
     "ON CONFLICT(entity_id, dimension) DO UPDATE SET "
     "approvals = approvals + excluded.approvals, denials = denials + excluded.denials, "
-    "updated_at = excluded.updated_at"
+    "updated_at = excluded.updated_at, last_touched = excluded.last_touched"
 )
 
 #: In-process scope tokens: (entity_id, algebra_point) → expiry. Never persisted.
@@ -99,7 +100,7 @@ async def record_feedback(
             for dimension in dimensions:
                 await conn.execute(
                     _UPSERT_FEEDBACK,
-                    (entity_id, dimension, int(approved), int(not approved), stamp),
+                    (entity_id, dimension, int(approved), int(not approved), stamp, stamp),
                 )
             await conn.commit()
     except Exception:  # noqa: BLE001 — learning must never break the execution path
@@ -125,8 +126,9 @@ async def _record_guard_block(entity_id: str, repo_root: str, now: datetime | No
     try:
         async with open_db(repo_root) as conn:
             await conn.execute(
-                "INSERT INTO score_history (entity_id, ts, kind, value) VALUES (?, ?, ?, ?)",
-                (entity_id, stamp, "martingale_review", 1.0),
+                "INSERT INTO score_history (entity_id, ts, kind, value, last_touched) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (entity_id, stamp, "martingale_review", 1.0, stamp),
             )
             await conn.commit()
     except Exception:  # noqa: BLE001 — best-effort surfacing

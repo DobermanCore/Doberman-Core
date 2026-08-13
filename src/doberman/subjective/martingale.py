@@ -149,8 +149,9 @@ def martingale_score(beliefs: list[float] | tuple[float, ...]) -> MartingaleResu
 
 async def _append(conn, entity_id: str, kind: str, value: float, stamp: str) -> None:
     await conn.execute(
-        "INSERT INTO score_history (entity_id, ts, kind, value) VALUES (?, ?, ?, ?)",
-        (entity_id, stamp, kind, float(value)),
+        "INSERT INTO score_history (entity_id, ts, kind, value, last_touched) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (entity_id, stamp, kind, float(value), stamp),
     )
     await conn.execute(
         "DELETE FROM score_history WHERE entity_id = ? AND kind = ? AND id NOT IN ("
