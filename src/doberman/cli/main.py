@@ -48,6 +48,7 @@ from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.render import verdict_label, verdict_label_str
 from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
+from doberman.storage.memory import prune_stale_entities, reset_memory
 from doberman.storage.taint import clear_taint, entity_scope, read_taint
 
 
@@ -92,6 +93,12 @@ taint_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(taint_app, name="taint")
+
+memory_app = typer.Typer(
+    help="Learned behavioral memory: profile, gated reset, and retention pruning.",
+    no_args_is_help=False,
+)
+app.add_typer(memory_app, name="memory")
 
 hook_app = typer.Typer(
     help="Host-harness integration hooks (e.g. Claude Code PreToolUse/PostToolUse).",
@@ -1236,8 +1243,9 @@ def demo(
         raise typer.Exit(code=1)
 
 
-@app.command(rich_help_panel="Policy")
+@memory_app.callback(invoke_without_command=True, rich_help_panel="Policy")
 def memory(
+    ctx: typer.Context,
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
     """Show a plain-language, redaction-safe profile of what Doberman has learned.
@@ -1245,7 +1253,13 @@ def memory(
     Reads as classifications and habits - counts, verdict mix, most-touched path
     classes, and how many distinct secrets have been *seen* (a count only). It
     never shows a fingerprint value or any raw secret.
+
+    Run with no subcommand for this summary; see `doberman memory reset` (gated
+    wipe of the learned behavioral baseline/preference memory) and `doberman
+    memory prune` (drop stale entities' rows past a retention window).
     """
+    if ctx.invoked_subcommand is not None:
+        return
     summary = asyncio.run(memory_summary(path))
     typer.echo("Doberman learned memory")
     typer.echo("=" * 32)
@@ -1259,6 +1273,110 @@ def memory(
         for cls, count in summary["top_path_classes"]:
             typer.echo(f"  {cls}  x{count}")
     typer.echo(f"Distinct secrets seen (count only, never stored): {summary['secrets_seen']}")
+
+
+@memory_app.command("reset")
+def memory_reset(
+    entity: str | None = typer.Option(
+        None, "--entity", help="Scope to one entity id; omit to reset every entity in this repo."
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Wipe learned behavioral memory for this repo — a gated recovery action.
+
+    The subjective baseline and revealed-preference tables are persistent,
+    per-entity memory (RAND's "reliable deletion" requirement): if that memory
+    were ever poisoned — trained on a compromised session's behavior — nothing
+    short of this clears it. Deleting it is raise-SAFE by construction (same as
+    the v2->v3 baseline re-key): a colder baseline scores everything as MORE
+    novel until it relearns, never less protected. Requires an enrolled
+    possession factor (2FA if set up, otherwise your Doberman password), the
+    same gate as `doberman taint clear` - there is no confirm-only path. A
+    successful reset is recorded to the append-only policy-change ledger
+    (`doberman policy-history`), redacted to a row count and an entity-scope
+    class - never raw baseline content. A denied attempt leaves no ledger row,
+    same as `doberman taint clear` (ADR 0067).
+    """
+    if not totp.is_enrolled() and not password.is_enrolled():
+        typer.echo(
+            "error: resetting memory requires an enrolled possession factor - "
+            "run `doberman 2fa setup` or `doberman password set` first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    prompter = CliPrompter()
+    try:
+        approved, method = _verify_possession_factor(
+            prompter, action_label="resetting learned memory"
+        )
+    except Exception:  # noqa: BLE001 — any input/EOF/timeout error denies the reset
+        # Mirrors taint_clear: `_verify_possession_factor` does not guard its own
+        # prompt, so a non-interactive stdin must deny cleanly, not traceback.
+        approved, method = False, "denied"
+
+    scope_label = "one entity" if entity else "all entities"
+    if not approved:
+        # No ledger row here: `apply_change` can only record what it itself
+        # decided (a same-state before/after always classifies neutral ->
+        # auto-approved), so forcing a denied attempt through it would
+        # misrecord the denial as approved. Mirrors `doberman taint clear`,
+        # which also leaves a denied gate with no ledger trace (ADR 0067).
+        typer.echo(f"error: memory reset denied ({method}); unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        counts = asyncio.run(reset_memory(path, entity))
+    except Exception as exc:  # noqa: BLE001 — never report success on a failed reset
+        typer.echo(f"error: memory reset failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    total = sum(counts.values())
+    asyncio.run(
+        apply_change(
+            {"memory.reset": "present"},
+            {"memory.reset": f"cleared:{scope_label}"},
+            f"doberman memory reset ({scope_label}, {total} row(s))",
+            repo_root=path,
+        )
+    )
+    typer.echo(
+        f"Memory reset ({scope_label}, {total} row(s) across {len(counts)} table(s)). "
+        "The learned baseline/preference history for this scope is gone; it starts "
+        "cold and relearns from here - colder means more novel, never less protected."
+    )
+
+
+@memory_app.command("prune")
+def memory_prune(
+    older_than_days: int = typer.Option(
+        ...,
+        "--older-than-days",
+        min=1,
+        help="Drop every entity whose most recent activity is older than this many days.",
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Drop stale entities' learned memory past a retention window.
+
+    A maintenance op, not a security decision - unlike `doberman memory reset`
+    this is not gated behind a possession factor. It never touches the decision
+    log (the audit trail is not behavioral memory) and never prunes an entity
+    whose activity can't be dated (fail-safe: unknown age is never treated as
+    stale). Output is counts only - entity ids are never printed.
+    """
+    try:
+        result = asyncio.run(prune_stale_entities(path, older_than_days=older_than_days))
+    except Exception as exc:  # noqa: BLE001 — never report success on a failed prune
+        typer.echo(f"error: memory prune failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    entities = result.pop("entities_pruned")
+    total_rows = sum(result.values())
+    typer.echo(
+        f"Memory pruned: {entities} stale entity class(es), {total_rows} row(s) across "
+        f"{len(result)} table(s) untouched for {older_than_days}+ day(s)."
+    )
 
 
 @app.command("policy-history", rich_help_panel="Policy")

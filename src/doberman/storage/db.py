@@ -47,9 +47,14 @@ DB_FILE = "doberman.db"
 #: Feature CB (CB.1: the append-only ``cost_events`` meter ledger), to 6 for the
 #: read-vs-send exfil store (HK.5.2b: session_secret_fingerprints), to 7 for the
 #: shadow-only adjudication ledger (adaptive-precision Phase 0: shadow_adjudications;
-#: additive CREATE TABLE — no legacy migration needed), and to 8 for the dashboard's
-#: pending-approval queue (D3: pending_approvals; additive CREATE TABLE).
-SCHEMA_VERSION = 8
+#: additive CREATE TABLE — no legacy migration needed), to 8 for the dashboard's
+#: pending-approval queue (D3: pending_approvals; additive CREATE TABLE), and to 9
+#: for memory-governance retention stamps (Subj1: a ``last_touched`` ISO-timestamp
+#: column on every baseline/preference table — baseline_counts, baseline_transitions,
+#: baseline_state, score_history, preference_feedback — additive ALTER, backfilled
+#: once from each table's existing timestamp column so ``doberman memory prune``
+#: works immediately on data written before this migration).
+SCHEMA_VERSION = 9
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -124,47 +129,52 @@ CREATE TABLE IF NOT EXISTS session_secret_fingerprints (
 );
 
 CREATE TABLE IF NOT EXISTS baseline_counts (
-    entity_id   TEXT NOT NULL,
-    feature_key TEXT NOT NULL,
-    role        TEXT,
-    count       INTEGER NOT NULL DEFAULT 0,
-    mean        REAL NOT NULL DEFAULT 0,
-    m2          REAL NOT NULL DEFAULT 0,
-    ewma_var    REAL NOT NULL DEFAULT 0,
-    first_seen  TEXT,
-    last_seen   TEXT,
+    entity_id    TEXT NOT NULL,
+    feature_key  TEXT NOT NULL,
+    role         TEXT,
+    count        INTEGER NOT NULL DEFAULT 0,
+    mean         REAL NOT NULL DEFAULT 0,
+    m2           REAL NOT NULL DEFAULT 0,
+    ewma_var     REAL NOT NULL DEFAULT 0,
+    first_seen   TEXT,
+    last_seen    TEXT,
+    last_touched TEXT,
     PRIMARY KEY (entity_id, feature_key)
 );
 
 CREATE TABLE IF NOT EXISTS baseline_transitions (
-    entity_id  TEXT NOT NULL,
-    from_state TEXT NOT NULL,
-    to_state   TEXT NOT NULL,
-    count      INTEGER NOT NULL DEFAULT 0,
+    entity_id    TEXT NOT NULL,
+    from_state   TEXT NOT NULL,
+    to_state     TEXT NOT NULL,
+    count        INTEGER NOT NULL DEFAULT 0,
+    last_touched TEXT,
     PRIMARY KEY (entity_id, from_state, to_state)
 );
 
 CREATE TABLE IF NOT EXISTS baseline_state (
-    entity_id  TEXT PRIMARY KEY,
-    last_state TEXT,
-    prev_state TEXT
+    entity_id    TEXT PRIMARY KEY,
+    last_state   TEXT,
+    prev_state   TEXT,
+    last_touched TEXT
 );
 
 CREATE TABLE IF NOT EXISTS score_history (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_id TEXT NOT NULL,
-    ts        TEXT NOT NULL,
-    kind      TEXT NOT NULL,
-    value     REAL NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id    TEXT NOT NULL,
+    ts           TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    value        REAL NOT NULL,
+    last_touched TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_score_history ON score_history (entity_id, kind, id);
 
 CREATE TABLE IF NOT EXISTS preference_feedback (
-    entity_id  TEXT NOT NULL,
-    dimension  TEXT NOT NULL,
-    approvals  INTEGER NOT NULL DEFAULT 0,
-    denials    INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT,
+    entity_id    TEXT NOT NULL,
+    dimension    TEXT NOT NULL,
+    approvals    INTEGER NOT NULL DEFAULT 0,
+    denials      INTEGER NOT NULL DEFAULT 0,
+    updated_at   TEXT,
+    last_touched TEXT,
     PRIMARY KEY (entity_id, dimension)
 );
 
@@ -279,6 +289,28 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
     # created additively by executescript (CREATE TABLE IF NOT EXISTS).
     if decision_cols and "session_id" not in decision_cols:
         await conn.execute("ALTER TABLE decisions ADD COLUMN session_id TEXT")
+    # v8 -> v9: retention stamps (Subj1) — add `last_touched` to every baseline/
+    # preference table so `doberman memory prune` can find an entity's most recent
+    # activity. Additive ALTER on an existing table; fresh DBs get it from _SCHEMA
+    # above. Backfilled ONCE (only when the column was just added) from whichever
+    # existing timestamp column that table already has, so prune works immediately
+    # on data written before this migration — no invented values. Two tables never
+    # had a timestamp at all (baseline_transitions, baseline_state); their rows are
+    # left NULL and prune skips an entity whose activity is NULL in every table
+    # (never guessing an unknown age, fail-safe) — which in practice never happens
+    # for a real entity, since every observe() call also touches baseline_counts.
+    for table, backfill_from in (
+        ("baseline_counts", "last_seen"),
+        ("baseline_transitions", None),
+        ("baseline_state", None),
+        ("score_history", "ts"),
+        ("preference_feedback", "updated_at"),
+    ):
+        cols = await _table_columns(conn, table)
+        if cols and "last_touched" not in cols:
+            await conn.execute(f"ALTER TABLE {table} ADD COLUMN last_touched TEXT")  # noqa: S608 — table is a fixed literal above
+            if backfill_from:
+                await conn.execute(f"UPDATE {table} SET last_touched = {backfill_from}")  # noqa: S608 — fixed literals above
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

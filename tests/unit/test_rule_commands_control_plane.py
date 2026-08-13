@@ -186,6 +186,8 @@ def test_doberman_setup_is_blocked():
         "doberman taint clear",
         "doberman password set",
         "doberman revoke abc123",
+        "doberman memory reset",
+        "doberman memory prune --older-than-days 30",
     ],
 )
 def test_doberman_posture_and_auth_mutating_verbs_are_blocked(command):
@@ -203,6 +205,13 @@ def test_doberman_status_is_not_blocked_by_control_cli_rule():
 
 def test_bare_doberman_is_not_blocked_by_control_cli_rule():
     assert _cmd("doberman").verdict is not Verdict.BLOCK
+
+
+def test_bare_doberman_memory_is_blocked_as_collateral_of_the_verb_rule():
+    # `memory` joined the mutating-verb set for `memory reset`/`memory prune`
+    # (Subj1); the rule has no subcommand granularity, so the read-only summary
+    # is blocked too — a deliberate, documented fail-closed trade-off.
+    assert _cmd("doberman memory").verdict is Verdict.BLOCK
 
 
 # --- regression: deleting .doberman/policies.yaml is already blocked via the

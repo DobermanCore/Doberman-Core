@@ -18,6 +18,8 @@ Entry point: `doberman` (Typer). All commands accept `--help`.
 | `doberman policy-history` | Append-only policy change ledger |
 | `doberman log` | Decision log (redacted) |
 | `doberman memory` | Aggregated class counts (no secrets) |
+| `doberman memory reset` | Wipe learned behavioral memory for this repo (gated; needs a possession factor) |
+| `doberman memory prune` | Drop stale entities' learned memory past a retention window (ungated maintenance) |
 | `doberman tui` | Interactive decision log with plain-language "why" panel (needs the `[tui]` extra) |
 | `doberman dash` | Localhost-only dashboard (preview) |
 | `doberman demo` | Scripted attack reel through the real decision engine |

@@ -73,16 +73,19 @@ _COMMAND_EGRESS_ACTIONS = frozenset(
 )
 
 _UPSERT_COUNT = (
-    "INSERT INTO baseline_counts (entity_id, feature_key, role, count, first_seen, last_seen) "
-    "VALUES (?, ?, ?, 1, ?, ?) "
+    "INSERT INTO baseline_counts "
+    "(entity_id, feature_key, role, count, first_seen, last_seen, last_touched) "
+    "VALUES (?, ?, ?, 1, ?, ?, ?) "
     "ON CONFLICT(entity_id, feature_key) "
-    "DO UPDATE SET count = count + 1, last_seen = excluded.last_seen"
+    "DO UPDATE SET count = count + 1, last_seen = excluded.last_seen, "
+    "last_touched = excluded.last_touched"
 )
 
 _UPSERT_TRANSITION = (
-    "INSERT INTO baseline_transitions (entity_id, from_state, to_state, count) "
-    "VALUES (?, ?, ?, 1) "
-    "ON CONFLICT(entity_id, from_state, to_state) DO UPDATE SET count = count + 1"
+    "INSERT INTO baseline_transitions (entity_id, from_state, to_state, count, last_touched) "
+    "VALUES (?, ?, ?, 1, ?) "
+    "ON CONFLICT(entity_id, from_state, to_state) "
+    "DO UPDATE SET count = count + 1, last_touched = excluded.last_touched"
 )
 
 
@@ -180,9 +183,10 @@ async def _update_numeric(conn, eid: str, key: str, value: float, role: str, sta
     if row is None:
         await conn.execute(
             "INSERT INTO baseline_counts "
-            "(entity_id, feature_key, role, count, mean, m2, ewma_var, first_seen, last_seen) "
-            "VALUES (?, ?, ?, 1, ?, 0, 0, ?, ?)",
-            (eid, key, role, value, stamp, stamp),
+            "(entity_id, feature_key, role, count, mean, m2, ewma_var, first_seen, last_seen, "
+            "last_touched) "
+            "VALUES (?, ?, ?, 1, ?, 0, 0, ?, ?, ?)",
+            (eid, key, role, value, stamp, stamp, stamp),
         )
         return
     count, mean, m2, ewma_var = int(row[0]) + 1, float(row[1]), float(row[2]), float(row[3])
@@ -191,13 +195,13 @@ async def _update_numeric(conn, eid: str, key: str, value: float, role: str, sta
     m2 += delta * (value - mean)
     ewma_var = EWMA_ALPHA * (delta * delta) + (1 - EWMA_ALPHA) * ewma_var
     await conn.execute(
-        "UPDATE baseline_counts SET count = ?, mean = ?, m2 = ?, ewma_var = ?, last_seen = ? "
-        "WHERE entity_id = ? AND feature_key = ?",
-        (count, mean, m2, ewma_var, stamp, eid, key),
+        "UPDATE baseline_counts SET count = ?, mean = ?, m2 = ?, ewma_var = ?, last_seen = ?, "
+        "last_touched = ? WHERE entity_id = ? AND feature_key = ?",
+        (count, mean, m2, ewma_var, stamp, stamp, eid, key),
     )
 
 
-async def _advance_transitions(conn, eid: str, state: str) -> None:
+async def _advance_transitions(conn, eid: str, state: str, stamp: str) -> None:
     """Record 1st- and 2nd-order transitions and advance the entity's state."""
     async with conn.execute(
         "SELECT last_state, prev_state FROM baseline_state WHERE entity_id = ?", (eid,)
@@ -205,14 +209,15 @@ async def _advance_transitions(conn, eid: str, state: str) -> None:
         row = await cur.fetchone()
     last, prev = (row[0], row[1]) if row else (None, None)
     if last:
-        await conn.execute(_UPSERT_TRANSITION, (eid, f"1:{last}", state))
+        await conn.execute(_UPSERT_TRANSITION, (eid, f"1:{last}", state, stamp))
         if prev:
-            await conn.execute(_UPSERT_TRANSITION, (eid, f"2:{prev}>{last}", state))
+            await conn.execute(_UPSERT_TRANSITION, (eid, f"2:{prev}>{last}", state, stamp))
     await conn.execute(
-        "INSERT INTO baseline_state (entity_id, last_state, prev_state) VALUES (?, ?, ?) "
+        "INSERT INTO baseline_state (entity_id, last_state, prev_state, last_touched) "
+        "VALUES (?, ?, ?, ?) "
         "ON CONFLICT(entity_id) DO UPDATE SET last_state = excluded.last_state, "
-        "prev_state = excluded.prev_state",
-        (eid, state, last),
+        "prev_state = excluded.prev_state, last_touched = excluded.last_touched",
+        (eid, state, last, stamp),
     )
 
 
@@ -239,9 +244,9 @@ async def observe(
             await _persist_score_history(conn, entity_id, raw_scores, stamp)
             keys = await _bounded_keys(conn, entity_id, scoring_keys(action))
             for key in [TOTAL_KEY, *keys]:
-                await conn.execute(_UPSERT_COUNT, (entity_id, key, role, stamp, stamp))
+                await conn.execute(_UPSERT_COUNT, (entity_id, key, role, stamp, stamp, stamp))
             await _update_numeric(conn, entity_id, "num:volume", _volume(action), role, stamp)
-            await _advance_transitions(conn, entity_id, markov_state(action))
+            await _advance_transitions(conn, entity_id, markov_state(action), stamp)
             await conn.commit()
     except Exception:  # noqa: BLE001 — learning must never break the execution path
         logger.warning("baseline observe failed (entity %s); continuing", entity_id[:12])
@@ -620,8 +625,9 @@ async def _persist_score_history(conn, eid: str, raw: dict[str, float], stamp: s
     """Append raw sub-scores to the calibration history, pruned per kind."""
     for kind, value in raw.items():
         await conn.execute(
-            "INSERT INTO score_history (entity_id, ts, kind, value) VALUES (?, ?, ?, ?)",
-            (eid, stamp, kind, float(value)),
+            "INSERT INTO score_history (entity_id, ts, kind, value, last_touched) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (eid, stamp, kind, float(value), stamp),
         )
         await conn.execute(
             "DELETE FROM score_history WHERE entity_id = ? AND kind = ? AND id NOT IN ("
