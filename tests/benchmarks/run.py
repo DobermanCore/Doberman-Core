@@ -60,7 +60,21 @@ def main(argv: list[str] | None = None) -> int:
         help="run the C8 labeled-corpus detection report (per-category TPR/FPR/precision "
         "+ floor/forbidden violations) instead of the ASR/FPR path; forces --suite corpus",
     )
+    parser.add_argument(
+        "--poisoning",
+        action="store_true",
+        help="run the cross-session baseline-poisoning eval (gradual-drift robustness "
+        "number) instead of the ASR/FPR path; suite-independent (--suite/--profile/--mode "
+        "are ignored)",
+    )
     args = parser.parse_args(argv)
+
+    if args.poisoning:
+        from .poisoning_runner import run_poisoning_eval
+
+        json.dump(run_poisoning_eval(), sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
 
     if args.corpus:
         from .metrics import corpus_metrics
