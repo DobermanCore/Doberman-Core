@@ -11,8 +11,10 @@ import importlib.util
 import json
 import logging
 import secrets
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import typer
 
@@ -21,6 +23,7 @@ from doberman.auth import password, totp
 from doberman.auth.challenge import TIMEOUT_METHOD
 from doberman.auth.provider import CliPrompter
 from doberman.config import (
+    CONFIG_DIR,
     default_role_enabled,
     load_active_role,
     load_enforcement,
@@ -1642,6 +1645,153 @@ def uninstall_hooks(
     typer.echo(
         "These are not removed automatically; delete them only if you no longer use Doberman."
     )
+    typer.echo("Run `doberman uninstall` to also remove this project's `.doberman/` state.")
+
+
+def _project_uninstall_targets(path: str) -> list[tuple[str, str]]:
+    """Project-scoped removal targets: ``(description, path)`` pairs.
+
+    Deliberately excludes the ``global``/``user`` hook scopes (they protect every
+    project on this machine, not just this one) and the Codex ``plugin`` scope
+    (owned by ``codex plugin``, not writable here) — ``doberman uninstall`` is
+    project-scoped only.
+    """
+    from doberman.hosthooks.install_codex import codex_hook_install_states
+
+    targets: list[tuple[str, str]] = []
+    for scope, settings_path, installed in _hook_install_states(path):
+        if scope in ("project", "local") and installed:
+            targets.append((f"Claude Code hooks ({scope})", settings_path))
+    for scope, hooks_path, installed in codex_hook_install_states(path):
+        if scope == "repo" and installed:
+            targets.append(("Codex CLI hooks (repo)", hooks_path))
+    doberman_dir = Path(path) / CONFIG_DIR
+    if doberman_dir.exists():
+        targets.append((".doberman/ (policy + decision database)", str(doberman_dir)))
+    return targets
+
+
+@app.command(rich_help_panel="Getting started")
+def uninstall(
+    path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the typed confirmation. The possession-factor check is never skipped.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print what would be removed; remove nothing."
+    ),
+) -> None:
+    """Fully remove Doberman from this project: host hooks + `.doberman/`.
+
+    Project-scoped only. This does **not** touch `--global` hooks (they protect
+    every project on this machine) or your device-wide password / 2FA / fingerprint
+    key / `~/.doberman/metrics.db` (all shared across every project Doberman
+    protects) — removing those is a separate, deliberate action, not a side effect
+    of cleaning up one project.
+
+    Requires an enrolled possession factor (2FA if set up, otherwise your Doberman
+    password) — the same gate as `doberman taint clear` / `doberman memory reset`.
+    With neither enrolled, this fails closed and removes nothing. A destructive,
+    irreversible action, so it also asks you to type the project directory name
+    back before proceeding (skippable with `--yes`; the factor check is not).
+    """
+    targets = _project_uninstall_targets(path)
+    if not targets:
+        typer.echo("Nothing to remove for this project.")
+        return
+
+    project_name = Path(path).resolve().name
+    typer.echo(f"Doberman UNINSTALL requested for this project ({Path(path).resolve()}):")
+    for description, target_path in targets:
+        typer.echo(f"  - {description}: {target_path}")
+    typer.echo("")
+    typer.echo("This will NOT remove (shared across every project on this machine):")
+    typer.echo("  - hooks installed with --global")
+    typer.echo("  - your Doberman password / 2FA enrollment / fingerprint key")
+    typer.echo("  - ~/.doberman/metrics.db (device metrics)")
+
+    if dry_run:
+        typer.echo("")
+        typer.echo("[dry-run] nothing removed.")
+        return
+
+    if not totp.is_enrolled() and not password.is_enrolled():
+        typer.echo(
+            "\nerror: uninstalling requires an enrolled possession factor - "
+            "run `doberman 2fa setup` or `doberman password set` first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    prompter = CliPrompter()
+    try:
+        if not yes:
+            if not prompter.confirm("\nProceed?"):
+                typer.echo("error: uninstall denied (confirmation declined); unchanged", err=True)
+                raise typer.Exit(code=1)
+            typed = typer.prompt(f"Type the project directory name ({project_name}) to confirm")
+            if typed.strip() != project_name:
+                typer.echo("error: uninstall denied (name did not match); unchanged", err=True)
+                raise typer.Exit(code=1)
+        approved, method = _verify_possession_factor(
+            prompter, action_label="uninstalling Doberman from this project"
+        )
+    except typer.Exit:
+        raise
+    except Exception:  # noqa: BLE001 — any input/EOF/timeout error denies the uninstall
+        approved, method = False, "denied"
+    if not approved:
+        typer.echo(f"error: uninstall denied ({method}); unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    from doberman.hosthooks.install import (
+        load_settings,
+        remove_doberman_hooks,
+        resolve_settings_path,
+        write_settings,
+    )
+    from doberman.hosthooks.install_codex import (
+        codex_hook_install_states,
+        remove_codex_hooks,
+        resolve_codex_hooks_path,
+    )
+
+    errors: list[str] = []
+    for scope, settings_path, installed in _hook_install_states(path):
+        if scope not in ("project", "local") or not installed:
+            continue
+        try:
+            current = load_settings(resolve_settings_path(scope, path))
+            write_settings(resolve_settings_path(scope, path), remove_doberman_hooks(current))
+        except (ValueError, OSError) as exc:
+            errors.append(f"{settings_path}: {exc}")
+
+    for scope, hooks_path, installed in codex_hook_install_states(path):
+        if scope != "repo" or not installed:
+            continue
+        try:
+            current = load_settings(resolve_codex_hooks_path(scope, path))
+            write_settings(resolve_codex_hooks_path(scope, path), remove_codex_hooks(current))
+        except (ValueError, OSError) as exc:
+            errors.append(f"{hooks_path}: {exc}")
+
+    doberman_dir = Path(path) / CONFIG_DIR
+    if doberman_dir.exists():
+        try:
+            shutil.rmtree(doberman_dir)
+        except OSError as exc:
+            errors.append(f"{doberman_dir}: {exc}")
+
+    if errors:
+        typer.echo("error: uninstall finished with errors - some items were NOT removed:", err=True)
+        for err in errors:
+            typer.echo(f"  - {err}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo("\nDoberman removed from this project.")
 
 
 @app.command(rich_help_panel="Getting started")

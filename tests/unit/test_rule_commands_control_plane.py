@@ -188,6 +188,8 @@ def test_doberman_setup_is_blocked():
         "doberman revoke abc123",
         "doberman memory reset",
         "doberman memory prune --older-than-days 30",
+        "doberman uninstall",
+        "doberman uninstall --yes",
     ],
 )
 def test_doberman_posture_and_auth_mutating_verbs_are_blocked(command):
