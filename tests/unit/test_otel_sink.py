@@ -339,7 +339,9 @@ class TestOtlpPayload:
 class TestAuthToken:
     """Auth token must come only from the env-var and must never be logged."""
 
-    def test_auth_header_set_from_env_var(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_auth_header_set_from_env_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("MY_OTEL_TOKEN", "Bearer secret-token-xyz")
         policy_dir = _make_config(tmp_path, extra={"auth_env": "MY_OTEL_TOKEN"})
 
@@ -359,10 +361,13 @@ class TestAuthToken:
             # Call _post directly to avoid threading timing issues in this test
             sink._worker._post(_record())
 
-        assert any("authorization" in {k.lower(): v for k, v in h.items()} for h in captured_headers), \
-            "Authorization header was not sent"
+        assert any(
+            "authorization" in {k.lower(): v for k, v in h.items()} for h in captured_headers
+        ), "Authorization header was not sent"
 
-    def test_auth_token_absent_env_var_sends_no_header(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_auth_token_absent_env_var_sends_no_header(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("MISSING_TOKEN_ENV", raising=False)
         policy_dir = _make_config(tmp_path, extra={"auth_env": "MISSING_TOKEN_ENV"})
 
@@ -470,5 +475,6 @@ class TestSecretNeverExported:
         time.sleep(0.1)
 
         for payload in captured_payloads:
-            assert self.SYNTHETIC_SECRET not in payload.decode(), \
+            assert self.SYNTHETIC_SECRET not in payload.decode(), (
                 "Synthetic secret leaked into an emitted record"
+            )

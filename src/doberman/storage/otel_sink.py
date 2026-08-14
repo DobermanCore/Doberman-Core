@@ -65,6 +65,7 @@ _ALLOWED_FIELDS: frozenset[str] = frozenset(
 
 # ── config model (plain dataclass to avoid pydantic import here) ─────────────
 
+
 class _OtelSinkConfig:
     __slots__ = ("auth_env", "endpoint", "queue_max", "timeout_s")
 
@@ -115,6 +116,7 @@ def _load_config(policy_dir: Path) -> _OtelSinkConfig | None:
 
 # ── OTLP payload builder ─────────────────────────────────────────────────────
 
+
 def _build_otlp_payload(record: dict[str, Any]) -> bytes:
     """
     Wrap a single redacted decision record in a minimal OTLP/HTTP LogRecord
@@ -134,9 +136,7 @@ def _build_otlp_payload(record: dict[str, Any]) -> bytes:
 
     # Attributes: every field except timestamp goes in as a string attribute
     attributes = [
-        {"key": k, "value": {"stringValue": str(v)}}
-        for k, v in safe.items()
-        if k != "timestamp"
+        {"key": k, "value": {"stringValue": str(v)}} for k, v in safe.items() if k != "timestamp"
     ]
 
     log_record = {
@@ -150,9 +150,7 @@ def _build_otlp_payload(record: dict[str, Any]) -> bytes:
         "resourceLogs": [
             {
                 "resource": {
-                    "attributes": [
-                        {"key": "service.name", "value": {"stringValue": "doberman"}}
-                    ]
+                    "attributes": [{"key": "service.name", "value": {"stringValue": "doberman"}}]
                 },
                 "scopeLogs": [
                     {
@@ -175,6 +173,7 @@ def _timestamp_to_ns(ts: Any) -> int:
         return int(ts * 1e9)
     try:
         import datetime  # local import to keep module top-level clean
+
         if isinstance(ts, str):
             dt = datetime.datetime.fromisoformat(ts)
             return int(dt.timestamp() * 1e9)
@@ -184,6 +183,7 @@ def _timestamp_to_ns(ts: Any) -> int:
 
 
 # ── worker thread ─────────────────────────────────────────────────────────────
+
 
 class _OtlpWorker(threading.Thread):
     """
@@ -228,6 +228,7 @@ class _OtlpWorker(threading.Thread):
 
 
 # ── public sink ───────────────────────────────────────────────────────────────
+
 
 class OtelAuditSink:
     """
@@ -286,8 +287,7 @@ class OtelAuditSink:
                     self._q.task_done()
                     self._drops += 1
                     logger.debug(
-                        "audit_otel: queue overflow — dropped oldest record "
-                        "(total drops: %d)",
+                        "audit_otel: queue overflow — dropped oldest record (total drops: %d)",
                         self._drops,
                     )
                 except queue.Empty:
