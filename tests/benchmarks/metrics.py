@@ -33,10 +33,10 @@ All fields are counts; nothing here holds payload text.
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Protocol
 
 from doberman.models import ReasonCode, Verdict
 
@@ -241,6 +241,97 @@ class SuiteReport:
             "verdict_histogram": dict(sorted(self.verdict_histogram.items())),
             "reason_codes": dict(sorted(self.reason_codes.items())),
         }
+
+
+# ---------------------------------------------------------------------------
+# C8 — per-category detection metrics over the labeled corpus (issue #241)
+# ---------------------------------------------------------------------------
+
+
+class _RowResultLike(Protocol):
+    """The structural view :func:`corpus_metrics` needs of a decided corpus row.
+
+    Duck-typed on purpose so ``metrics`` never imports ``suites.corpus`` (which
+    imports the harness) — the corpus module's ``RowResult`` satisfies this.
+    """
+
+    verdict: Verdict
+
+    @property
+    def mitigated(self) -> bool: ...
+    @property
+    def flagged(self) -> bool: ...
+    @property
+    def floor_ok(self) -> bool: ...
+    @property
+    def forbidden_ok(self) -> bool: ...
+
+    # ``.row`` carries the ground truth (``.is_attack``, ``.kind``).
+    row: object
+
+
+def _category_block(results: list[_RowResultLike]) -> dict:
+    """TPR/FPR sub-report for one category's rows (attack *or* benign bucket)."""
+    n_attack = sum(1 for r in results if r.row.is_attack)  # type: ignore[attr-defined]
+    n_benign = len(results) - n_attack
+    detected = sum(1 for r in results if r.row.is_attack and r.mitigated)  # type: ignore[attr-defined]
+    blocked = sum(1 for r in results if r.row.is_attack and r.verdict is Verdict.BLOCK)  # type: ignore[attr-defined]
+    benign_flagged = sum(1 for r in results if not r.row.is_attack and r.flagged)  # type: ignore[attr-defined]
+    benign_blocked = sum(1 for r in results if not r.row.is_attack and r.verdict is Verdict.BLOCK)  # type: ignore[attr-defined]
+    return {
+        "n": len(results),
+        "n_attack": n_attack,
+        "n_benign": n_benign,
+        "detected": detected,
+        "missed": n_attack - detected,
+        "tpr": round(_safe_div(detected, n_attack), 6),
+        "tpr_strict": round(_safe_div(blocked, n_attack), 6),
+        "fpr": round(_safe_div(benign_flagged, n_benign), 6),
+        "hard_fpr": round(_safe_div(benign_blocked, n_benign), 6),
+    }
+
+
+def corpus_metrics(results: Iterable[_RowResultLike]) -> dict:
+    """Aggregate + per-category TPR / FPR / precision over decided corpus rows.
+
+    Redaction-safe: counts, rates, category labels, and the ids of any rows that
+    *violate* an assertion (ids are payload-free by schema) — never payload text.
+
+    * **TPR** — attacks mitigated (BLOCK or AUTH) / attacks. **tpr_strict** counts
+      BLOCK only. A documented-gap attack (no floor) still counts as a miss here,
+      so the number stays honest.
+    * **FPR** — benign flagged (any non-PASS) / benign; **hard_fpr** = benign
+      BLOCK / benign.
+    * **precision** — attack-flagged / (attack-flagged + benign-flagged): of every
+      action the engine flagged, the fraction that were real attacks.
+    * **floor_violations / forbidden_violations** — rows that broke their raise-only
+      floor or their FP guard. Both MUST be 0 for the CI gate to pass; the ids let
+      a failure name the offending rows without leaking payload.
+    """
+    results = list(results)
+    by_kind: dict[str, list[_RowResultLike]] = defaultdict(list)
+    for r in results:
+        by_kind[r.row.kind].append(r)  # type: ignore[attr-defined]
+
+    overall = _category_block(results)
+    attack_flagged = sum(1 for r in results if r.row.is_attack and r.flagged)  # type: ignore[attr-defined]
+    benign_flagged = sum(1 for r in results if not r.row.is_attack and r.flagged)  # type: ignore[attr-defined]
+    floor_violations = [r.row.id for r in results if not r.floor_ok]  # type: ignore[attr-defined]
+    forbidden_violations = [r.row.id for r in results if not r.forbidden_ok]  # type: ignore[attr-defined]
+
+    return {
+        "n": overall["n"],
+        "n_attack": overall["n_attack"],
+        "n_benign": overall["n_benign"],
+        "tpr": overall["tpr"],
+        "tpr_strict": overall["tpr_strict"],
+        "fpr": overall["fpr"],
+        "hard_fpr": overall["hard_fpr"],
+        "precision": round(_safe_div(attack_flagged, attack_flagged + benign_flagged), 6),
+        "floor_violations": sorted(floor_violations),
+        "forbidden_violations": sorted(forbidden_violations),
+        "by_category": {kind: _category_block(rows) for kind, rows in sorted(by_kind.items())},
+    }
 
 
 def build_report(suite: str, profile: str, outcomes: Iterable[ActionOutcome]) -> SuiteReport:

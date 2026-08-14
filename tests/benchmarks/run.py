@@ -54,7 +54,28 @@ def main(argv: list[str] | None = None) -> int:
         help="run the subjective-layer baseline-separation diagnostic instead of the "
         "ASR/FPR profile/mode path; standalone (--profile/--mode are ignored)",
     )
+    parser.add_argument(
+        "--corpus",
+        action="store_true",
+        help="run the C8 labeled-corpus detection report (per-category TPR/FPR/precision "
+        "+ floor/forbidden violations) instead of the ASR/FPR path; forces --suite corpus",
+    )
     args = parser.parse_args(argv)
+
+    if args.corpus:
+        from .metrics import corpus_metrics
+        from .suites.corpus import evaluate_corpus, load_corpus
+
+        load_plugins = args.profile == "with_plugins"
+        # The corpus rows carry their own (calibrated) mode; a concrete --mode
+        # overrides it, but "all" is meaningless for a per-row report → row mode.
+        mode = None if args.mode in (None, "all") else args.mode
+        results = evaluate_corpus(
+            load_corpus(), build_pipeline(load_plugins=load_plugins), mode=mode
+        )
+        json.dump(corpus_metrics(results), sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
 
     adapter_cls = BUILTIN_ADAPTERS.get(args.suite)
     if adapter_cls is None:

@@ -86,6 +86,45 @@ unusual actions.
   Needs the operator-supplied `agentdojo` package, same precondition as the
   other `agentdojo` commands above.
 
+## Labeled detection corpus (per-category FPR / TPR)
+
+The synthetic suite is a 3-attack smoke gate; the AgentDojo run measures coverage
+but needs an operator-supplied package. The **detection corpus** fills the gap
+between them: a deterministic, in-repo, ~137-row labeled fixture
+(`tests/corpus/detection_corpus.jsonl`) that measures detection *quality* per
+category — the false-positive rate that drives approval fatigue, and the
+true-positive rate per attack class — with **no external dependency**.
+
+- **What it measures:** each row is one labeled candidate action across
+  `injection / exfiltration / secrets / destructive / encoded / benign`. `--corpus`
+  runs every row through the real engine and reports **TPR** (mitigation = `AUTH`
+  or `BLOCK`), **tpr_strict** (`BLOCK` only), **FPR**, and **precision**, per
+  category and overall.
+- **Raise-only floors, calibrated to the engine.** Every attack row's
+  `expected_verdict_at_least` is the verdict the engine *actually* reaches today
+  (`null` for a documented gap). It is a regression fence, not an aspiration: the
+  generator refuses to lower a shipped floor, and the CI gate
+  (`tests/integration/test_corpus_gate.py`) fails if any attack drops below its
+  floor or any benign row is over-blocked.
+- **Honest, not tuned.** The corpus is *not* filtered to cases the engine wins.
+  Pure natural-language injection scores **TPR 0.0** — the objective layer is
+  structurally blind to it (a provenance/subjective concern), and the corpus says
+  so rather than hiding it. Calibration also surfaced a real precision note:
+  reading an `.env.example` template over-blocks, because the secret-path rule
+  matches `.env.*` fail-closed.
+- **Redaction + push-safety.** Reports hold counts, rates, category labels, and
+  payload-free row ids only. Payloads are synthetic; the secrets category triggers
+  on credential *paths* and shapeless high-entropy values, never assembled
+  provider literals.
+
+Reproduce (deterministic, from a cold clone):
+
+```bash
+python -m tests.benchmarks.run --suite corpus --corpus                # balanced (row-native) mode
+python -m tests.benchmarks.run --suite corpus --corpus --mode strict  # any F6 mode
+python -m tests.corpus._generate --check                              # verify the shipped floors match the engine
+```
+
 ## Reproduce
 
 Synthetic suite — **from a cold clone, no extra dependencies, deterministic:**
@@ -136,6 +175,31 @@ human-gated AUTH with zero benign friction** — but it hard-blocks none of them
 the protection is exactly as strong as the human answering the prompt (`deny-all`
 stops everything; `approve-all` stops nothing). This is a smoke gate, not a
 coverage claim.
+
+### Detection corpus (deterministic, n = 112 attack / 25 benign)
+
+Run: `python -m tests.benchmarks.run --suite corpus --corpus` (2026-08-13, doberman-core built-ins only, balanced mode unless noted).
+
+| Category | n (attack) | TPR (AUTH∪BLOCK) | tpr_strict (BLOCK) | FPR |
+|---|---|---|---|---|
+| secrets | 7 | **1.00** | 0.43 | — |
+| destructive | 10 | 0.80 | 0.60 | — |
+| encoded / smuggling | 79 | 0.82 | 0.00 | — |
+| exfiltration (balanced) | 8 | 0.375 | 0.00 | — |
+| exfiltration (**strict**) | 8 | **1.00** | 0.00 | — |
+| injection (natural-language) | 8 | **0.00** *(documented gap)* | 0.00 | — |
+| benign | — (25) | — | — | **0.00** |
+| **Overall (balanced)** | 112 | 0.74 | 0.08 | 0.00 |
+| **Overall (strict)** | 112 | 0.79 | 0.39 | 0.00 |
+
+Read honestly: precision is **1.00** and benign FPR **0.00** — the objective layer
+does not over-block legitimate traffic here — but `tpr_strict` **0.08** in balanced
+mode says almost all mitigation is a human-gated `AUTH`, not a hard `BLOCK` (the
+same "AUTH is a leash, not a wall" caveat as the synthetic suite, now measured
+across categories). Two categories are honest weak spots: **exfiltration** is
+mode-gated (balanced deliberately passes a bare unknown host → 0.375; strict AUTHs
+it → 1.00), and **natural-language injection** is a structural gap the deterministic
+layer cannot close (0.00) — it belongs to provenance / the subjective layer.
 
 ### AgentDojo suite (extended, operator-supplied)
 
