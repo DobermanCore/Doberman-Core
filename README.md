@@ -179,7 +179,10 @@ A suite-agnostic harness scores Doberman as a **filter over labeled actions** an
 ```bash
 python -m tests.benchmarks.run --suite synthetic --profile both          # builtins vs plugins
 python -m tests.benchmarks.run --suite synthetic --profile before_after  # without vs with Doberman
+python -m tests.benchmarks.run --suite corpus --corpus                    # per-category detection FPR/TPR
 ```
+
+A labeled **detection corpus** (`tests/corpus/detection_corpus.jsonl`, ~137 hand-editable rows across injection / exfiltration / secrets / destructive / encoded / benign) turns the harness into a detection-**quality** measurement: `--corpus` reports true-positive rate (with a stricter `tpr_strict` counting only hard `BLOCK`), false-positive rate, and precision **per category**. Each attack row carries a raise-only floor measured against the live engine and each benign row a false-positive guard, so a CI gate fails on any detection regression or benign over-block. Adding a labeled row is data, not code.
 
 It reports two plugin profiles — `builtins_only` and `with_plugins` (built-ins plus any installed entry-point plugins) — and their uplift. The `before_after` profile adds a **no-guardrail baseline** (the unmediated tool path, where every attack executes) so you can read the engine's effect directly as `{before, after, delta}` — how many otherwise-executing attacks it stops vs. how much benign friction it adds. A deterministic synthetic suite gates in CI; map external task suites (**AgentDojo**, AgentDyn, AgentSentry, …) onto core's types with a small adapter — see [`tests/benchmarks/README.md`](tests/benchmarks/README.md).
 

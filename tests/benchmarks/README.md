@@ -45,11 +45,12 @@ tests/benchmarks/
 ├── adapter.py     # CandidateAction, BenchmarkCase, SuiteAdapter  (the contract)
 ├── mapping.py     # CandidateAction -> SecurityObject / EvalContext
 ├── profiles.py    # build_pipeline(load_plugins=...) -> Pipeline; PassthroughPipeline (no-guardrail baseline)
-├── metrics.py     # SuiteReport: ASR, asr_strict, FPR, hard_fpr
+├── metrics.py     # SuiteReport: ASR, asr_strict, FPR, hard_fpr; corpus_metrics: per-category TPR/FPR/precision
 ├── runner.py      # run_suite, run_profiles (builtins vs plugins), run_before_after (without vs with Doberman)
-├── run.py         # CLI: python -m tests.benchmarks.run --suite <name> --profile both
+├── run.py         # CLI: python -m tests.benchmarks.run --suite <name> --profile both  (+ --corpus, --subjective)
 ├── suites/
 │   ├── synthetic.py   # built-in, deterministic, dependency-free (the CI gate)
+│   ├── corpus.py      # the labeled detection corpus (C8): loader + adapter + per-row driver
 │   ├── agentdojo.py   # AgentDojo + AgentDyn adapters (on-demand; lazy `agentdojo` import)
 │   └── <your_suite>.py
 └── README.md      # this file
@@ -200,9 +201,45 @@ python -m tests.benchmarks.run --suite synthetic --profile both          # built
 python -m tests.benchmarks.run --suite synthetic --profile before_after  # without vs with Doberman
 python -m pytest tests/integration/test_benchmark_synthetic_gate.py      # the gate
 
+# labeled detection corpus — per-category FPR / TPR / precision (C8, issue #241)
+python -m tests.benchmarks.run --suite corpus --corpus                   # balanced (row-native) mode
+python -m tests.benchmarks.run --suite corpus --corpus --mode strict     # any F6 mode
+python -m pytest tests/integration/test_corpus_gate.py                    # the raise-only + FP gate
+
 # subjective-layer baseline-separation diagnostic (needs agentdojo; standalone flag)
 python -m tests.benchmarks.run --suite agentdojo --subjective
 ```
+
+### The labeled detection corpus (`--corpus`)
+
+Where the synthetic suite proves the *harness* is wired correctly and the ASR/FPR
+path reports aggregate bypass/friction, the **detection corpus** measures
+detection *quality* per category. It is a flat JSONL fixture
+(`tests/corpus/detection_corpus.jsonl`) — one labeled row per line:
+
+```json
+{"id": "des-0000", "kind": "destructive", "surfaces": {"action_type": "shell_exec"},
+ "payload": "…", "is_attack": true, "expected_verdict_at_least": "BLOCK",
+ "forbidden_verdict_at_least": null, "notes": "recursive root delete"}
+```
+
+* An **attack** row (`is_attack: true`) carries `expected_verdict_at_least` — a
+  **measured, raise-only floor**: the verdict the engine reaches today
+  (`null` = a documented gap it does not yet catch). A floor may only rise; the
+  generator refuses to lower one.
+* A **benign** row carries `forbidden_verdict_at_least` — the false-positive
+  guard: the verdict a legitimate action must never reach (usually `AUTH` — it
+  must stay `PASS`).
+
+`--corpus` reports **TPR** (mitigation = `AUTH` or `BLOCK`), **tpr_strict**
+(`BLOCK` only), **FPR**, **precision**, and the ids of any row that broke its
+floor or guard — per category and overall. `tests/integration/test_corpus_gate.py`
+runs the deterministic tier in CI and fails on any violation. Regenerate + recalibrate
+against the live engine with `python -m tests.corpus._generate` (a dev tool; the
+shipped JSONL is a static fixture — **adding a labeled row needs no harness
+change**). Payloads are synthetic and redaction-safe; the secrets category
+triggers on credential *paths* and shapeless high-entropy values, never assembled
+provider literals.
 
 `--subjective` runs a distribution-separation diagnostic over the subjective
 layer's per-suite streaming baseline instead of the ASR/FPR profile/mode path
