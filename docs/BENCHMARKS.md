@@ -125,6 +125,48 @@ python -m tests.benchmarks.run --suite corpus --corpus --mode strict  # any F6 m
 python -m tests.corpus._generate --check                              # verify the shipped floors match the engine
 ```
 
+## Cross-session baseline poisoning (gradual-drift robustness)
+
+The subjective layer learns *allowed* actions only, which is poisonable in
+principle by a patient attacker who normalizes a dangerous action low-and-slow —
+one within-envelope step at a time, spread **across sessions** so the in-process
+ADWIN drift detector (which re-warms empty on every restart) never sees an abrupt
+shift. Static ASR says nothing about that threat. This eval measures it directly
+and reports the **poisoning rate**: the fraction of dangerous targets an attacker
+can teach the baseline to wave through.
+
+- **Cross-session, faithful.** Each session warms a batch of allowed actions,
+  then a simulated restart drops the in-process HST/ADWIN while the persisted
+  SQLite baseline, calibration history, and belief window survive — exactly a
+  proxy restart. Every learned action runs the production monitor sequence
+  (`observe` → ADWIN `note_allowed` → Martingale `note_belief`/`run_monitor`).
+- **Two honest arms.** `admitted` is the operative number — the autonomous
+  attacker whose poison actions are learned **only when the real engine returns
+  PASS** (no operator approvals). `worst_case` models an attacker who has already
+  defeated the approval gate and gets *every* action learned, to expose the
+  residual floor resistance beneath the score.
+- **What holds, and why.** The `admitted` poisoning rate is **0**: normalizing a
+  dangerous action needs allowed observations of its *own* dangerous key, and the
+  baseline scores novelty worst-wins across an action's keys, so the very
+  observations required are the ones the engine steps up and never learns. The
+  lethal-trifecta floor is **unpoisonable** — the `worst_case` attacker can drive
+  the score to near-zero and the verdict never flips, because the floor is
+  score-independent. The load-bearing brake on smooth gradual poisoning is the
+  severity-weighted `FAMILIAR_AT_HIGH` novelty threshold plus that floor; the
+  Martingale is the backstop for the *frozen endgame* (a belief pinned high after
+  normalization), not the smooth walk — an honest scope note, not a gap hidden.
+- **Honesty control.** A benign public read is included and *does* normalize, so
+  the eval cannot pass vacuously by reporting "nothing normalizes".
+- **Redaction.** Report holds scores, counts, verdict/class labels, and scenario
+  names only — never a payload, path, or destination.
+
+A small campaign gates in CI (`tests/integration/test_poisoning_gate.py`, the
+size-independent invariants); the fuller campaign is a CLI run:
+
+```bash
+python -m tests.benchmarks.run --poisoning
+```
+
 ## Reproduce
 
 Synthetic suite — **from a cold clone, no extra dependencies, deterministic:**
