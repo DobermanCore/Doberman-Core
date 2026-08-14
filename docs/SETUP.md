@@ -97,6 +97,14 @@ doberman uninstall-hooks             # remove only Doberman's entries (leaves yo
 `install-hooks` is idempotent (safe to re-run), backs up an existing `settings.json` before
 writing, and never touches your other settings or hooks. `doberman setup` above runs it for you.
 
+> **Order matters when removing Doberman.** `pip uninstall doberman-core` has no way to also
+> clean up the hook entries it wrote - pip doesn't support that. Always run
+> `doberman uninstall-hooks` *first*. If you already uninstalled the package and every tool call
+> now fails with `doberman: command not found`, don't edit `settings.json` by hand - just
+> `pip install doberman-core` again. The hook entries were never touched, so they start working
+> the moment the binary is back; run `doberman uninstall-hooks` afterward if you still want it
+> gone.
+
 On Claude Code it writes this snippet - or add it by hand:
 
 ```jsonc
