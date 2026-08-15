@@ -17,6 +17,11 @@ This module also ships the first **built-in** concrete sink (Feature 8, slice
 8.5): :class:`WebhookAuditSink`. It is config-gated via
 ``.doberman/audit_webhook.yaml`` and active only when that file is present and
 valid. See the class docstring for the full contract.
+
+The second built-in sink — :class:`~doberman.storage.otel_sink.OtelAuditSink`
+— lives in ``doberman.storage.otel_sink`` and is config-gated via
+``.doberman/audit_otel.yaml``. It is wired into :func:`emit_to_sinks` alongside
+the webhook sink.
 """
 
 import json
@@ -31,8 +36,6 @@ from typing import Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import yaml
-
-from doberman.storage.otel_sink import _get_builtin_otel_sink
 
 logger = logging.getLogger("doberman.storage.sinks")
 
@@ -168,15 +171,6 @@ class WebhookAuditSink:
     """
 
     def __init__(self, config: dict | None) -> None:
-        """Construct the sink.
-
-        ``config`` is the parsed dict from :func:`_load_webhook_config`; pass
-        ``None`` (or an empty/invalid dict) to create an inert sink.
-
-        If ``Thread.start()`` raises the failure is caught and the sink is left
-        inert — this prevents a retry storm where every subsequent decision
-        re-attempts the thread spawn.
-        """
         self._active = False
         self._url: str = ""
         self._auth_env: str | None = None
@@ -306,20 +300,13 @@ class WebhookAuditSink:
                 self._queue.task_done()
 
     def _post(self, record: dict) -> None:
-        """POST *record* as JSON to the configured URL.
-
-        The ``Authorization`` token is read from the env var named by
-        ``auth_env`` at call time — never from this object's fields — so it
-        is never stored in memory longer than the single request.  The token
-        value is **never** written to any log.
-        """
+        """POST *record* as JSON to the configured URL."""
         body = json.dumps(record, default=str).encode()
         headers = {"Content-Type": "application/json"}
 
         if self._auth_env:
             token = os.environ.get(self._auth_env, "")
             if token:
-                # The header value itself must not be logged anywhere.
                 headers["Authorization"] = token
 
         req = urllib.request.Request(self._url, data=body, headers=headers, method="POST")  # noqa: S310
@@ -340,24 +327,13 @@ class WebhookAuditSink:
             logger.warning("audit_webhook: network error posting to %s; record dropped", self._url)
 
 
-# Module-level cache — one sink per repo root, created once per process and
-# keyed by the *resolved* root path so "." and its absolute spelling share one
-# instance (one worker thread per configured repo, not per spelling). Tests
-# that need a custom root should construct WebhookAuditSink directly via
-# WebhookAuditSink.from_repo(root) or WebhookAuditSink(config).
+# Module-level cache — one sink per repo root, created once per process.
 _webhook_sinks: dict[str, WebhookAuditSink] = {}
 _webhook_sink_lock = threading.Lock()
 
 
 def _get_builtin_webhook_sink(repo_root: str = ".") -> WebhookAuditSink:
-    """Return (or lazily create) the process-level webhook sink for *repo_root*.
-
-    Only the first call for a given ``repo_root`` constructs a sink; subsequent
-    calls return the cached instance.  This avoids spinning up multiple worker
-    threads for the same config — while a second, different repo root in the
-    same process still gets its own sink instead of silently reusing the
-    first repo's config.
-    """
+    """Return (or lazily create) the process-level webhook sink for *repo_root*."""
     key = str(Path(repo_root).resolve())
     with _webhook_sink_lock:
         sink = _webhook_sinks.get(key)
@@ -366,22 +342,46 @@ def _get_builtin_webhook_sink(repo_root: str = ".") -> WebhookAuditSink:
     return sink
 
 
+class _InertSink:
+    """Fallback sink that silently discards all records (used when OTel module unavailable)."""
+
+    def emit(self, record: dict) -> None:  # noqa: ARG002
+        pass
+
+
+def _get_builtin_otel_sink(repo_root: str = ".") -> object:
+    """Return (or lazily create) the process-level OTel sink for *repo_root*.
+
+    Delegates to :func:`doberman.storage.otel_sink._get_builtin_otel_sink`.
+    Imported lazily so ``otel_sink`` is only loaded when first needed.
+    Returns an inert no-op sink if the module is unavailable.
+    """
+    try:
+        from doberman.storage.otel_sink import _get_builtin_otel_sink as _otel_get
+
+        return _otel_get(repo_root)
+    except Exception:  # noqa: BLE001
+        return _InertSink()
+
+
 def emit_to_sinks(record: dict, *, repo_root: str = ".") -> None:
     """Fan a redacted record out to every registered sink, isolating failures.
 
     Consults plugin-registered sinks first (entry-point group
     ``doberman.audit_sinks``) and then the built-in
-    :class:`WebhookAuditSink`.  Never raises: a sink that is not sink-shaped,
-    or whose ``emit`` raises, is logged and skipped.  With no sinks installed
-    and no webhook config this is a no-op.  The local SQLite log is written by
-    the caller (:mod:`doberman.storage.log`), not here — this fan-out is for
-    *extra* destinations only.
+    :class:`WebhookAuditSink` and :class:`~doberman.storage.otel_sink.OtelAuditSink`.
+    Never raises: a sink that is not sink-shaped, or whose ``emit`` raises, is
+    logged and skipped.  With no sinks installed and no config files this is a
+    no-op.  The local SQLite log is written by the caller
+    (:mod:`doberman.storage.log`), not here — this fan-out is for *extra*
+    destinations only.
     """
     # Lazy import: the registry lives in the engine layer.
     from doberman.engine.registry import discover_audit_sinks
 
     all_sinks: list[object] = list(discover_audit_sinks())
-    # Built-in webhook sink comes after plugin-discovered sinks (same isolation).
+    # Built-in sinks come after plugin-discovered sinks (same isolation).
+    all_sinks.append(_get_builtin_webhook_sink(repo_root))
     all_sinks.append(_get_builtin_otel_sink(repo_root))
 
     for sink in all_sinks:

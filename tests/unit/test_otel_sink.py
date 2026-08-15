@@ -489,8 +489,9 @@ class TestWiring:
     def test_emit_to_sinks_reaches_otel_sink(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from doberman.storage import otel_sink as otel_module
         from doberman.storage.sinks import emit_to_sinks
+
+        from doberman.storage import otel_sink as otel_module
 
         # Wire a fresh sink into the module-level cache for this tmp_path
         _make_config(tmp_path)
@@ -505,8 +506,9 @@ class TestWiring:
         # Patch discover_audit_sinks to return nothing (isolate our sink)
         monkeypatch.setattr("doberman.engine.registry.discover_audit_sinks", list)
         # Patch _get_builtin_webhook_sink to return an inert sink
-        from doberman.storage import sinks as sinks_module
         from doberman.storage.sinks import WebhookAuditSink
+
+        from doberman.storage import sinks as sinks_module
 
         monkeypatch.setattr(
             sinks_module,
