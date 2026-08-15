@@ -3,7 +3,11 @@
 Shipped history for Doberman. Planned work lives on the [roadmap](README.md#roadmap) and the
 [project board](https://github.com/users/fu351/projects/5); exact per-commit detail is in the
 [git log](https://github.com/fu351/Doberman-Core/commits/main) and
-[releases](https://github.com/fu351/Doberman-Core/releases) (latest: **v0.18.0**, the security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
+[releases](https://github.com/fu351/Doberman-Core/releases) (latest: **v0.18.1**, a docs patch fixing the README images on PyPI, atop **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
+
+## 0.18.1 — 2026-08-15
+
+- **Docs:** the README's logo and demo GIF now use absolute `raw.githubusercontent.com` URLs so they render on the PyPI project page. They used repo-relative paths, which GitHub resolves but PyPI (which renders the README standalone) cannot, so both showed as broken images on the 0.18.0 page. Docs-only; no code change.
 
 ## 0.18.0 — 2026-08-15
 

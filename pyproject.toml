@@ -1,6 +1,6 @@
 [project]
 name = "doberman-core"
-version = "0.18.0"
+version = "0.18.1"
 description = "Adaptive authorization layer for coding agents (open core)"
 readme = "README.md"
 license = "Apache-2.0"
