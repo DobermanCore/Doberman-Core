@@ -90,6 +90,12 @@ pip install doberman-core
 After installing, run `doberman --install-completion` to enable shell tab
 completion.
 
+> **Uninstalling?** Run `doberman uninstall-hooks` *before* `pip uninstall doberman-core` -
+> otherwise the hook entries left in `settings.json` will keep invoking a binary that's gone,
+> and every tool call fails with `doberman: command not found`. Already hit this? Just
+> `pip install doberman-core` again - the existing entries are still correct and start working
+> immediately, no repair needed.
+
 | Your agent | How Doberman plugs in | Get started |
 |---|---|---|
 | **Claude Code** | Hooks - gate every built-in *and* MCP tool call *(recommended)* | `doberman setup` -> [guide](docs/SETUP.md#claude-code-hooks) |

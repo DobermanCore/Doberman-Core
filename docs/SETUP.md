@@ -109,6 +109,14 @@ possession factor (2FA if set up, otherwise your Doberman password) and, since i
 also asks you to type the project directory name back to confirm (skippable with `--yes`; the
 factor check never is). With neither factor enrolled it fails closed and removes nothing.
 
+> **Order matters when removing Doberman.** `pip uninstall doberman-core` has no way to also
+> clean up the hook entries it wrote - pip doesn't support that. Always run
+> `doberman uninstall-hooks` *first*. If you already uninstalled the package and every tool call
+> now fails with `doberman: command not found`, don't edit `settings.json` by hand - just
+> `pip install doberman-core` again. The hook entries were never touched, so they start working
+> the moment the binary is back; run `doberman uninstall-hooks` afterward if you still want it
+> gone.
+
 On Claude Code it writes this snippet - or add it by hand:
 
 ```jsonc
