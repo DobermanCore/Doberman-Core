@@ -29,9 +29,10 @@ import urllib.request
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 from urllib.parse import urlparse
-from doberman.storage.otel_sink import _get_builtin_otel_sink
 
 import yaml
+
+from doberman.storage.otel_sink import _get_builtin_otel_sink
 
 logger = logging.getLogger("doberman.storage.sinks")
 
