@@ -62,6 +62,7 @@ from doberman.policy.modes import thresholds_for
 _DOBERMAN_CONTROL_SUBCOMMANDS = {
     "install-hooks",
     "uninstall-hooks",
+    "uninstall",
     "setup",
     "mode",
     "prefs",
@@ -444,8 +445,8 @@ _DISK_WIPE = re.compile(
 
 def _is_doberman_control_cli(tokens: list[str]) -> bool:
     """``doberman <verb>`` for a posture/auth-mutating verb (install/uninstall-hooks,
-    setup, mode, prefs, enforcement, 2fa, taint, password, revoke) — control-plane
-    tamper. Read/utility verbs are not in the set and stay allowed."""
+    uninstall, setup, mode, prefs, enforcement, 2fa, taint, password, revoke) —
+    control-plane tamper. Read/utility verbs are not in the set and stay allowed."""
     return (
         bool(tokens)
         and tokens[0] == "doberman"
@@ -547,8 +548,8 @@ def _segment_verdict(
         )
     if _is_doberman_control_cli(tokens):
         return _block_control_plane(
-            "Shell command would tamper with Doberman's control plane (install/remove "
-            "hooks, or change mode, enforcement, prefs, 2FA, taint, or password)."
+            "Shell command would tamper with Doberman's control plane (install/remove/"
+            "uninstall hooks, or change mode, enforcement, prefs, 2FA, taint, or password)."
         )
     if _package_manager_removes_doberman(tokens):
         return _block_control_plane(

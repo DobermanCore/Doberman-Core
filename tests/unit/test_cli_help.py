@@ -36,6 +36,7 @@ CLI_HELP_TARGETS = (
     ("policy-history",),
     ("install-hooks",),
     ("uninstall-hooks",),
+    ("uninstall",),
     ("setup",),
     ("session-summary",),
     ("dashboard",),

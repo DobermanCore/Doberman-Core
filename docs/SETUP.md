@@ -92,10 +92,22 @@ doberman install-hooks --global      # ~/.claude/settings.json (every project)
 doberman install-hooks --host codex  # Codex CLI: wires `doberman hook codex-pre` instead
 doberman install-hooks --dry-run     # show what would change, write nothing
 doberman uninstall-hooks             # remove only Doberman's entries (leaves your other hooks intact)
+doberman uninstall                   # remove hooks AND this project's .doberman/ (gated - see below)
 ```
 
 `install-hooks` is idempotent (safe to re-run), backs up an existing `settings.json` before
 writing, and never touches your other settings or hooks. `doberman setup` above runs it for you.
+
+`uninstall-hooks` only strips the hook entries — the project's `.doberman/` (policy, decision
+database), `--global` hooks, and your device-wide password/2FA/fingerprint key are all left in
+place. To fully remove Doberman's protection from **this project**, use `doberman uninstall`
+instead: it removes the project-scope and local-scope hooks *and* `.doberman/` in one step. It is
+project-scoped only — `--global` hooks and device-wide auth state are never touched, even on
+success, since those protect every project on the machine. Because it also deletes state, it is
+gated the same way as `doberman taint clear` / `doberman memory reset`: it requires your enrolled
+possession factor (2FA if set up, otherwise your Doberman password) and, since it's irreversible,
+also asks you to type the project directory name back to confirm (skippable with `--yes`; the
+factor check never is). With neither factor enrolled it fails closed and removes nothing.
 
 > **Order matters when removing Doberman.** `pip uninstall doberman-core` has no way to also
 > clean up the hook entries it wrote - pip doesn't support that. Always run
@@ -170,11 +182,11 @@ write or edit to `.claude/settings.json` (the hook-install file) is **blocked**,
 harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own
 `.doberman/` control plane. The protection holds **through the shell** too: a Bash command that
 writes or deletes the config (`echo > .claude/settings.json`, `rm -rf .doberman`) or runs
-`doberman uninstall-hooks` is blocked, not just the `Write`/`Edit` tools. The same shell-layer
-block extends to every posture- and auth-mutating Doberman verb - `mode`, `prefs`,
-`enforcement`, `2fa`, `password`, `revoke`, `taint` - treated as control-plane tampering and
-blocked fail-closed, while read/utility verbs (`status`, `doctor`, `log`, `scan`, `review`)
-stay allowed.
+`doberman uninstall-hooks` (or `doberman uninstall`) is blocked, not just the `Write`/`Edit`
+tools. The same shell-layer block extends to every posture- and auth-mutating Doberman verb -
+`mode`, `prefs`, `enforcement`, `2fa`, `password`, `revoke`, `taint`, `uninstall` - treated as
+control-plane tampering and blocked fail-closed, while read/utility verbs (`status`, `doctor`,
+`log`, `scan`, `review`) stay allowed.
 
 <a name="mcp-proxy"></a>
 
