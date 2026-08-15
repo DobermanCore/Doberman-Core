@@ -18,12 +18,13 @@ exactly one action id (no replay onto a different call).
 """
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
 
 from mcp.client.session import ClientSession
-from mcp.types import CallToolResult, TextContent
+from mcp.types import CallToolResult, EmbeddedResource, TextContent, TextResourceContents
 
 from doberman.auth.challenge import (
     TIMEOUT_METHOD,
@@ -416,6 +417,39 @@ def _result_text(result: CallToolResult) -> str:
     return "".join(block.text for block in result.content if isinstance(block, TextContent))
 
 
+def _scannable_text(result: CallToolResult) -> str:
+    """Every text-bearing channel of a tool result, for the secret scan + taint.
+
+    A tool result can carry plaintext in more than bare ``TextContent`` blocks:
+    ``structuredContent`` (a JSON object) and an ``EmbeddedResource``'s text
+    (e.g. a returned file resource). A secret in either of those must not bypass
+    the output scan just because it isn't a plain text block (CRIT-3), so this
+    folds all three channels — separated by newlines so an adjacent boundary can
+    neither hide nor fabricate a match — into the string the scan/taint see.
+
+    Binary blobs (``BlobResourceContents``) and image/audio blocks are skipped:
+    they carry no plaintext to leak here, and a full base64 blob is scan noise.
+    Never raises — a malformed block must not break the forward/return path.
+
+    ponytail: text channels only; if binary/blob exfil ever needs scanning,
+    decode the blob here behind a size cap.
+    """
+    parts: list[str] = []
+    for block in result.content:
+        if isinstance(block, TextContent):
+            parts.append(block.text)
+        elif isinstance(block, EmbeddedResource) and isinstance(
+            block.resource, TextResourceContents
+        ):
+            parts.append(block.resource.text)
+    if result.structuredContent:
+        try:
+            parts.append(json.dumps(result.structuredContent, default=str, sort_keys=True))
+        except (TypeError, ValueError):
+            parts.append(str(result.structuredContent))
+    return "\n".join(part for part in parts if part)
+
+
 async def _record_result_taint(result: CallToolResult) -> None:
     """Best-effort: feed a successful tool result's text to the taint floor.
 
@@ -426,7 +460,7 @@ async def _record_result_taint(result: CallToolResult) -> None:
     result (e.g. a non-string ``.text``) must not break the forward/return path.
     """
     try:
-        output_text = _result_text(result)
+        output_text = _scannable_text(result)
         if output_text:
             await record_output_taint(output_text, REPO_ROOT, None)
     except Exception:  # noqa: BLE001 — recording must never break the execution path
@@ -457,7 +491,7 @@ async def _scan_output_for_secrets(
     rather than silently letting it through.
     """
     try:
-        output_text = _result_text(result)
+        output_text = _scannable_text(result)
         if not output_text:
             return None
         scan_args = dict(arguments or {})
@@ -664,21 +698,24 @@ async def _handle_auth(
         return _verdict_result(redecision)
 
     result = await _forward(downstream, tool_name, arguments, action)
+    # The output-secret gate runs on EVERY result — success OR error (CRIT-2): a
+    # secret rides an error payload to the model just as easily as a clean one.
+    # Record output taint and spend a single-use grant BEFORE the gate, on error
+    # results too: (a) a gated secret still taints the session for the next call's
+    # cross-call exfil check, and (b) spending tracks EXECUTION, not a clean
+    # result — a secret-bearing OR errored output can't leave the grant unspent
+    # to release a second execution.
+    await _record_result_taint(result)
+    await _consume_single_use(action, grants, now)
+    gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
+    if gate is not None:
+        # Output-scan parity (parity-1): a secret in the RESULT must not reach
+        # the model even though the call itself was approved. Log only the block
+        # — skip the baseline "allowed" observation, since the outcome is not
+        # confirmed safe (mirrors the host-hook: one log row, the block).
+        await _persist(gate, action, auth_result="blocked", elevation_id=elevation_id, eid=eid)
+        return _verdict_result(gate)
     if not result.isError:
-        await _record_result_taint(result)
-        # Spending != learning: a single-use grant is spent by EXECUTION, not by
-        # a clean result — consume it here, before the gate, so a secret-bearing
-        # output can't leave the grant unspent to release a second execution.
-        await _consume_single_use(action, grants, now)
-        gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
-        if gate is not None:
-            # Output-scan parity (parity-1): a secret in the RESULT must not
-            # reach the model even though the call itself was approved. Log
-            # only the block — skip the baseline "allowed" observation, since
-            # the outcome is not confirmed safe (mirrors the host-hook: one log
-            # row, the block, not a clean one).
-            await _persist(gate, action, auth_result="blocked", elevation_id=elevation_id, eid=eid)
-            return _verdict_result(gate)
         artifact_gate = await _verify_artifact_digest(action, result)
         if artifact_gate is not None:
             # RB.7: a pinned artifact's fetched content disagreed with its
@@ -778,21 +815,24 @@ async def decide_and_execute(
     # then consume any single-use elevation that released it.
     softened = decision.final_verdict is not Verdict.PASS
     result = await _forward(downstream, tool_name, arguments, action)
+    # The output-secret gate runs on EVERY result — success OR error (CRIT-2): a
+    # secret rides an error payload to the model just as easily as a clean one.
+    # Record output taint and spend a single-use grant BEFORE the gate, on error
+    # results too: (a) a gated secret still taints the session for the next call's
+    # cross-call exfil check, and (b) spending tracks EXECUTION, not a clean
+    # result — a secret-bearing OR errored output can't leave the grant unspent
+    # to release a second execution.
+    await _record_result_taint(result)
+    await _consume_single_use(action, grants, now)
+    gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
+    if gate is not None:
+        # Output-scan parity (parity-1): a secret in the RESULT must not reach
+        # the model even though the call itself was PASS. Log only the block —
+        # skip the baseline "allowed" observation below, since the outcome is
+        # not confirmed safe (mirrors the host-hook: one log row, the block).
+        await _persist(gate, action, auth_result="blocked", eid=eid)
+        return _verdict_result(gate)
     if not result.isError:
-        await _record_result_taint(result)
-        # Spending != learning: a single-use grant is spent by EXECUTION, not by
-        # a clean result — consume it here, before the gate, so a secret-bearing
-        # output can't leave the grant unspent to release a second execution.
-        await _consume_single_use(action, grants, now)
-        gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
-        if gate is not None:
-            # Output-scan parity (parity-1): a secret in the RESULT must not
-            # reach the model even though the call itself was PASS. Log only
-            # the block — skip the baseline "allowed" observation below, since
-            # the outcome is not confirmed safe (mirrors the host-hook: one log
-            # row, the block, not a clean one).
-            await _persist(gate, action, auth_result="blocked", eid=eid)
-            return _verdict_result(gate)
         artifact_gate = await _verify_artifact_digest(action, result)
         if artifact_gate is not None:
             # RB.7: a pinned artifact's fetched content disagreed with its
