@@ -29,6 +29,7 @@ import urllib.request
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 from urllib.parse import urlparse
+from doberman.storage.otel_sink import _get_builtin_otel_sink
 
 import yaml
 
@@ -380,7 +381,7 @@ def emit_to_sinks(record: dict, *, repo_root: str = ".") -> None:
 
     all_sinks: list[object] = list(discover_audit_sinks())
     # Built-in webhook sink comes after plugin-discovered sinks (same isolation).
-    all_sinks.append(_get_builtin_webhook_sink(repo_root))
+    all_sinks.append(_get_builtin_otel_sink(repo_root))
 
     for sink in all_sinks:
         if not _looks_like_audit_sink(sink):

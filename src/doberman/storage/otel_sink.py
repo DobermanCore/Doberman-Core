@@ -3,18 +3,22 @@ doberman.storage.otel_sink
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 OpenTelemetry AuditSink — ships the redacted decision record to any OTLP collector.
 
-Design contract (mirrors the webhook sink in storage/sinks.py):
-  - ``emit()`` is called on the decision path and MUST return in O(1) —
-    no network I/O, no blocking.  It appends the record to a bounded
-    in-memory queue; a daemon worker thread drains it via OTLP/HTTP.
-  - Queue overflow drops the *oldest* record and increments a counter
-    (best-effort semantics — this is a bridge, not a delivery guarantee).
-  - Config lives in ``.doberman/audit_otel.yaml``.  Absent or malformed
-    config → the sink is inert (zero network I/O, zero side-effects).
-  - The sink exports *only* the allowlisted fields it receives; it adds
-    no fields of its own and reads nothing else from process state.
-  - Auth token comes from a named env-var only; it is never stored in
-    YAML, never logged.
+This is the second **built-in** concrete sink (after :class:`WebhookAuditSink`).
+It is config-gated via ``.doberman/audit_otel.yaml`` and active only when that
+file is present and valid.  :func:`doberman.storage.sinks.emit_to_sinks` calls
+it alongside the webhook sink on the same fan-out path.
+
+Design contract (mirrors :class:`WebhookAuditSink` in ``storage/sinks.py``):
+  - ``emit()`` enqueues the record and returns before any network I/O.
+  - Active-state check and enqueue are atomic under ``_state_lock`` so a
+    concurrent ``close()`` cannot strand a record with no consumer.
+  - ``close()`` flips ``_active`` to ``False`` atomically, sets the stop event,
+    then joins the worker with a bounded timeout.  Idempotent; never raises.
+  - Queue overflow drops the *oldest* record and increments a counter.
+  - Config lives in ``.doberman/audit_otel.yaml``.  Absent or malformed config
+    → the sink is inert (zero network I/O, zero side-effects).
+  - The sink exports *only* the allowlisted fields; it adds none of its own.
+  - Auth token comes from a named env-var only; never stored, never logged.
 
 Allowlisted record fields (same set the webhook sink may see upstream):
     timestamp, verdict, tool, reason_codes, explanation, session_id
@@ -25,11 +29,8 @@ OTLP/HTTP endpoint:
 
 Dependencies: stdlib only (``urllib.request``, ``json``, ``queue``,
 ``threading``, ``os``, ``logging``, ``pathlib``). No opentelemetry-sdk
-import required at the *sink* level — we speak the wire protocol directly
-so users don't have to install the OTel Python SDK.  This keeps the
-dependency footprint of doberman-core minimal and lets any OTLP-capable
-collector (Grafana Alloy, Otel Collector, Honeycomb, …) receive records
-without any glue code.
+import required — we speak the wire protocol directly so any OTLP-capable
+collector works without extra dependencies.
 """
 
 from __future__ import annotations
@@ -55,30 +56,37 @@ _CONFIG_FILENAME = "audit_otel.yaml"
 _DEFAULT_TIMEOUT_S = 5.0
 _DEFAULT_QUEUE_MAX = 1_000
 _OTLP_LOG_PATH = "/v1/logs"
-_DRAIN_POLL_S = 0.05  # how often the drain loop ticks while waiting
+_DRAIN_POLL_S = 0.05
 
-# The *only* fields that leave the process.  The record is already redacted
-# upstream; we re-filter here as a defence-in-depth measure so that even if
-# the upstream contract drifts, this sink never forwards unexpected fields.
+# The *only* fields that leave the process.  Already redacted upstream; we
+# re-filter here as defence-in-depth so upstream contract drift never leaks.
 _ALLOWED_FIELDS: frozenset[str] = frozenset(
     {"timestamp", "verdict", "tool", "reason_codes", "explanation", "session_id"}
 )
 
 
-# ── endpoint validation (mirrors _load_webhook_config in sinks.py) ────────────
+# ── endpoint validation (mirrors _is_loopback / _load_webhook_config) ────────
 
 
 def _is_loopback(host: str) -> bool:
-    return host in ("localhost", "127.0.0.1", "::1", "[::1]")
+    """Mirror of sinks.py _is_loopback — covers IPv4 127.x, ::1, localhost."""
+    h = host.strip("[]").lower()
+    if h in ("localhost", "::1"):
+        return True
+    parts = h.split(".")
+    if len(parts) == 4 and parts[0] == "127":
+        try:
+            return all(0 <= int(p) <= 255 for p in parts)
+        except ValueError:
+            return False
+    return False
 
 
 def _validate_endpoint(endpoint: str) -> str | None:
-    """
-    Accept only http(s) schemes.  Reject loopback addresses off by default so
-    audit records don't silently vanish to a local sink that was never
-    reachable.  Returns the normalised endpoint string, or None on rejection.
+    """Accept only http/https schemes; reject loopback hosts.
 
-    Mirrors the ``_is_loopback`` gate in the webhook sink (sinks.py).
+    Returns the normalised endpoint string (trailing slash stripped), or
+    ``None`` on rejection with a warning already logged.
     """
     try:
         parsed = urlparse(endpoint)
@@ -94,8 +102,7 @@ def _validate_endpoint(endpoint: str) -> str | None:
 
     if _is_loopback(parsed.hostname or ""):
         logger.warning(
-            "audit_otel: endpoint %r is a loopback address — sink disabled "
-            "(use a reachable collector or set endpoint to a non-loopback host)",
+            "audit_otel: endpoint %r is a loopback address — sink disabled",
             endpoint,
         )
         return None
@@ -103,36 +110,21 @@ def _validate_endpoint(endpoint: str) -> str | None:
     return endpoint.rstrip("/")
 
 
-# ── config model (plain dataclass to avoid pydantic import here) ─────────────
+# ── config loading ────────────────────────────────────────────────────────────
 
 
-class _OtelSinkConfig:
-    __slots__ = ("auth_env", "endpoint", "queue_max", "timeout_s")
+def _load_config(policy_dir: Path) -> dict | None:
+    """Parse ``.doberman/audit_otel.yaml``.
 
-    def __init__(
-        self,
-        endpoint: str,
-        auth_env: str | None,
-        timeout_s: float,
-        queue_max: int,
-    ) -> None:
-        self.endpoint = endpoint
-        self.auth_env = auth_env
-        self.timeout_s = timeout_s
-        self.queue_max = queue_max
-
-
-def _load_config(policy_dir: Path) -> _OtelSinkConfig | None:
-    """
-    Parse ``.doberman/audit_otel.yaml``.  Returns ``None`` if the file is
-    absent, unreadable, missing the required ``endpoint`` key, or the endpoint
-    fails validation — in all cases the sink is inert.
+    Returns a config dict on success, or ``None`` when the file is absent,
+    unreadable, missing ``endpoint``, or the endpoint fails validation.
+    Never raises.
     """
     cfg_path = policy_dir / _CONFIG_FILENAME
     if not cfg_path.exists():
         return None
     try:
-        raw = yaml.safe_load(cfg_path.read_text())
+        raw = yaml.safe_load(cfg_path.read_text()) or {}
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit_otel: could not read config (%s) — sink disabled", exc)
         return None
@@ -148,48 +140,50 @@ def _load_config(policy_dir: Path) -> _OtelSinkConfig | None:
 
     endpoint = _validate_endpoint(raw_endpoint)
     if endpoint is None:
-        return None  # warning already logged inside _validate_endpoint
+        return None  # warning already logged
 
-    return _OtelSinkConfig(
-        endpoint=endpoint,
-        auth_env=raw.get("auth_env") or None,
-        timeout_s=float(raw.get("timeout_s", _DEFAULT_TIMEOUT_S)),
-        queue_max=int(raw.get("queue_max", _DEFAULT_QUEUE_MAX)),
-    )
+    timeout_raw = raw.get("timeout_s", _DEFAULT_TIMEOUT_S)
+    try:
+        timeout_s = float(timeout_raw)
+        if timeout_s <= 0:
+            raise ValueError("timeout must be positive")
+    except (TypeError, ValueError):
+        logger.warning("audit_otel: invalid 'timeout_s' %r; using default", timeout_raw)
+        timeout_s = _DEFAULT_TIMEOUT_S
+
+    queue_max_raw = raw.get("queue_max", _DEFAULT_QUEUE_MAX)
+    try:
+        queue_max = int(queue_max_raw)
+        if queue_max <= 0:
+            raise ValueError("queue_max must be positive")
+    except (TypeError, ValueError):
+        logger.warning("audit_otel: invalid 'queue_max' %r; using default", queue_max_raw)
+        queue_max = _DEFAULT_QUEUE_MAX
+
+    return {
+        "endpoint": endpoint,
+        "auth_env": raw.get("auth_env") or None,
+        "timeout_s": timeout_s,
+        "queue_max": queue_max,
+    }
 
 
 # ── OTLP payload builder ─────────────────────────────────────────────────────
 
 
 def _build_otlp_payload(record: dict[str, Any]) -> bytes:
-    """
-    Wrap a single redacted decision record in a minimal OTLP/HTTP LogRecord
-    payload (JSON encoding).
-
-    Schema reference:
-        https://opentelemetry.io/docs/specs/otlp/#otlphttp
-        https://opentelemetry.io/docs/specs/otel/logs/data-model/
-
-    We use timeUnixNano from ``record["timestamp"]`` when available;
-    fall back to the current time.
-    """
-    # Filter to the allowlist
+    """Wrap a redacted record in a minimal OTLP/HTTP LogRecord payload (JSON)."""
     safe = {k: v for k, v in record.items() if k in _ALLOWED_FIELDS}
-
     ts_ns = _timestamp_to_ns(safe.get("timestamp"))
-
-    # Attributes: every field except timestamp goes in as a string attribute
     attributes = [
         {"key": k, "value": {"stringValue": str(v)}} for k, v in safe.items() if k != "timestamp"
     ]
-
     log_record = {
         "timeUnixNano": str(ts_ns),
         "observedTimeUnixNano": str(int(time.time() * 1e9)),
         "body": {"stringValue": json.dumps(safe)},
         "attributes": attributes,
     }
-
     payload = {
         "resourceLogs": [
             {
@@ -209,14 +203,12 @@ def _build_otlp_payload(record: dict[str, Any]) -> bytes:
 
 
 def _timestamp_to_ns(ts: Any) -> int:
-    """Convert a timestamp value to integer nanoseconds since Unix epoch."""
     if ts is None:
         return int(time.time() * 1e9)
     if isinstance(ts, (int, float)):
-        # Assume seconds if the value looks like a Unix timestamp
         return int(ts * 1e9)
     try:
-        import datetime  # local import to keep module top-level clean
+        import datetime
 
         if isinstance(ts, str):
             dt = datetime.datetime.fromisoformat(ts)
@@ -226,203 +218,180 @@ def _timestamp_to_ns(ts: Any) -> int:
     return int(time.time() * 1e9)
 
 
-# ── worker thread ─────────────────────────────────────────────────────────────
-
-
-class _OtlpWorker(threading.Thread):
-    """
-    Background daemon that pops records from the queue and POSTs them to the
-    OTLP endpoint.  Errors are logged at DEBUG; they never propagate to the
-    caller.
-
-    Lifecycle
-    ---------
-    The worker runs until ``_stop_event`` is set.  Callers use
-    ``drain(timeout)`` to flush in-flight records before teardown.
-    """
-
-    def __init__(self, cfg: _OtelSinkConfig, q: queue.Queue) -> None:  # type: ignore[type-arg]
-        super().__init__(daemon=True, name="doberman-otel-worker")
-        self._cfg = cfg
-        self._q = q
-        self._stop_event = threading.Event()
-
-    # ── stop signal ─────────────────────────────────────────────────────────
-
-    def request_stop(self) -> None:
-        """Signal the run loop to exit after the current record (if any)."""
-        self._stop_event.set()
-
-    @property
-    def should_stop(self) -> bool:
-        return self._stop_event.is_set()
-
-    # ── drain ────────────────────────────────────────────────────────────────
-
-    def drain(self, timeout: float) -> bool:
-        """
-        Block until the queue is empty or ``timeout`` seconds elapse.
-        Returns ``True`` if the queue drained cleanly, ``False`` on timeout.
-        Mirrors the bounded-join pattern in the webhook sink.
-        """
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._q.empty():
-                return True
-            time.sleep(_DRAIN_POLL_S)
-        return self._q.empty()
-
-    # ── run loop ─────────────────────────────────────────────────────────────
-
-    def run(self) -> None:
-        while not self.should_stop:
-            try:
-                record = self._q.get(block=True, timeout=1.0)
-            except queue.Empty:
-                continue
-            try:
-                self._post(record)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("audit_otel: export failed: %s", exc)
-            finally:
-                self._q.task_done()
-
-    def _post(self, record: dict[str, Any]) -> None:
-        payload = _build_otlp_payload(record)
-        url = self._cfg.endpoint + _OTLP_LOG_PATH
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-
-        # Auth token: resolved from env-var at send time, never cached
-        if self._cfg.auth_env:
-            token = os.environ.get(self._cfg.auth_env, "")
-            if token:
-                headers["Authorization"] = token
-            # If the var is absent we proceed without the header rather than
-            # crash; the collector will reject if auth is mandatory.
-
-        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")  # noqa: S310
-        with urllib.request.urlopen(req, timeout=self._cfg.timeout_s) as resp:  # noqa: S310
-            _ = resp.read()  # drain
-
-
 # ── public sink ───────────────────────────────────────────────────────────────
 
 
 class OtelAuditSink:
-    """
-    AuditSink implementation that exports each redacted decision record to an
-    OTLP/HTTP collector endpoint.
+    """Built-in OTLP/HTTP forwarder for the ``AuditSink`` seam.
 
-    Usage — in ``.doberman/audit_otel.yaml``::
+    Mirrors :class:`WebhookAuditSink` exactly: same ``_state_lock`` /
+    ``_active`` pattern, same ``close()`` contract, same ``from_repo()``
+    classmethod, same queue-overflow semantics, same secret hygiene.
 
-        endpoint: https://otel-collector.example.com:4318
-        auth_env: OTEL_AUTH_TOKEN          # optional
-        timeout_s: 5                       # optional, default 5
-        queue_max: 1000                    # optional, default 1000
-
-    The sink is inert when the config file is absent.
-
-    Lifecycle
-    ---------
-    Call ``close()`` during shutdown to flush in-flight records before the
-    process exits.  After ``close()`` returns, ``emit()`` is a guaranteed
-    no-op — records enqueued after close are silently discarded.
-
-    Thread-safety: ``emit()`` and ``close()`` are safe to call from any
-    thread; ``_state_lock`` guards the closed flip so there is no window
-    where a caller can enqueue into a drained-and-stopped worker.
+    Activated by ``.doberman/audit_webhook.yaml`` → this one by
+    ``.doberman/audit_otel.yaml``.  With no file (or a malformed one) the
+    sink is **inert**: :meth:`emit` returns immediately with no I/O.
     """
 
-    def __init__(self, policy_dir: Path | str | None = None) -> None:
-        if policy_dir is None:
-            policy_dir = Path(".doberman")
-        self._policy_dir = Path(policy_dir)
-        self._cfg = _load_config(self._policy_dir)
-        self._q: queue.Queue[dict[str, Any]] | None = None
-        self._worker: _OtlpWorker | None = None
+    def __init__(self, config: dict | None) -> None:
+        self._active = False
+        self._endpoint: str = ""
+        self._auth_env: str | None = None
+        self._timeout_s: float = _DEFAULT_TIMEOUT_S
+        self._queue: queue.Queue[dict] = queue.Queue(maxsize=0)
         self._drops = 0
-        self._closed = False
-        # _state_lock guards: _closed flip, queue-cap enforcement, and the
-        # closed check in emit() — same pattern as WebhookAuditSink._state_lock.
+        self._drops_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._worker_thread: threading.Thread | None = None
 
-        if self._cfg is not None:
-            self._q = queue.Queue(maxsize=0)  # unbounded — cap enforced in emit()
-            self._worker = _OtlpWorker(self._cfg, self._q)
-            self._worker.start()
+        if not config:
+            return
+
+        self._endpoint = config["endpoint"]
+        self._auth_env = config.get("auth_env")
+        self._timeout_s = float(config.get("timeout_s", _DEFAULT_TIMEOUT_S))
+        queue_max = int(config.get("queue_max", _DEFAULT_QUEUE_MAX))
+        self._queue = queue.Queue(maxsize=queue_max)
+
+        worker = threading.Thread(target=self._worker, daemon=True, name="doberman-otel-sink")
+        try:
+            worker.start()
+        except Exception:  # noqa: BLE001 — cache failure as inert; no retry storm
+            logger.warning("audit_otel: failed to start worker thread; sink is inert")
+            return
+
+        self._worker_thread = worker
+        self._active = True
+
+    @classmethod
+    def from_repo(cls, repo_root: str) -> OtelAuditSink:
+        """Construct from the repo's ``.doberman/audit_otel.yaml``.
+
+        Returns an inert sink when the config file is absent or malformed.
+        """
+        policy_dir = Path(repo_root) / ".doberman"
+        return cls(_load_config(policy_dir))
 
     # ── AuditSink interface ──────────────────────────────────────────────────
 
-    def emit(self, record: dict[str, Any]) -> None:
-        """
-        Enqueue the record for export.  Returns immediately — no I/O, no
-        blocking, no exception propagation.  Queue overflow drops the *oldest*
-        record and counts the drop.  No-op after ``close()``.
-        """
-        # Fast path: inert sink
-        if self._cfg is None or self._q is None:
-            return
+    def emit(self, record: dict) -> None:
+        """Enqueue *record* for async delivery; returns immediately (no I/O).
 
-        # Filter to the allowlist before touching the queue
-        safe = {k: v for k, v in record.items() if k in _ALLOWED_FIELDS}
-        if not safe:
-            return
-
+        Active-state check and enqueue are atomic under ``_state_lock`` —
+        mirrors the WebhookAuditSink contract exactly.  After ``close()``
+        records are silently discarded.  Never raises.
+        """
         with self._state_lock:
-            # Closed check is inside the lock so close() cannot race with an
-            # in-progress enqueue — same guarantee the webhook sink provides.
-            if self._closed:
+            if not self._active:
                 return
-
-            if self._q.qsize() >= self._cfg.queue_max:
-                # Drop oldest to make room
-                try:
-                    self._q.get_nowait()
-                    self._q.task_done()
-                    self._drops += 1
-                    logger.debug(
-                        "audit_otel: queue overflow — dropped oldest record (total drops: %d)",
-                        self._drops,
-                    )
-                except queue.Empty:
-                    pass
+            # Filter to allowlist inside the lock (defence-in-depth)
+            safe = {k: v for k, v in record.items() if k in _ALLOWED_FIELDS}
+            if not safe:
+                return
             try:
-                self._q.put_nowait(safe)
-            except queue.Full:
-                # Extremely unlikely race; drop-and-count
-                self._drops += 1
+                try:
+                    self._queue.put_nowait(safe)
+                except queue.Full:
+                    try:
+                        self._queue.get_nowait()  # drop oldest
+                    except queue.Empty:
+                        pass
+                    with self._drops_lock:
+                        self._drops += 1
+                    try:
+                        self._queue.put_nowait(safe)
+                    except queue.Full:
+                        with self._drops_lock:
+                            self._drops += 1
+            except Exception:  # noqa: BLE001 — emit must never raise
+                logger.warning("audit_otel: emit() internal error; record dropped")
+
+    def close(self, drain_timeout_s: float = 5.0) -> None:
+        """Stop the worker and drain remaining queued records.
+
+        Mirrors :meth:`WebhookAuditSink.close` exactly: acquires
+        ``_state_lock`` to flip ``_active`` atomically, then joins the worker
+        with a bounded timeout.  Idempotent; never raises.
+        """
+        with self._state_lock:
+            if not self._active:
+                return
+            self._active = False
+        self._stop_event.set()
+        if self._worker_thread is not None:
+            self._worker_thread.join(timeout=drain_timeout_s)
 
     # ── observability ────────────────────────────────────────────────────────
 
     @property
-    def drop_count(self) -> int:
-        """Total number of records dropped due to queue overflow."""
-        return self._drops
+    def drops(self) -> int:
+        """Total records dropped due to queue overflow."""
+        with self._drops_lock:
+            return self._drops
 
     @property
     def is_active(self) -> bool:
-        """``True`` when the sink is configured and will attempt exports."""
-        return self._cfg is not None
+        """``True`` when the sink is configured and exporting."""
+        return self._active
 
-    # ── lifecycle ────────────────────────────────────────────────────────────
+    # ── internal ─────────────────────────────────────────────────────────────
 
-    def close(self, timeout: float = 5.0) -> None:
-        """
-        Flip the sink closed, drain in-flight records up to ``timeout``
-        seconds, then stop the worker.
+    def _worker(self) -> None:
+        """Daemon thread: dequeue and POST records until stopped."""
+        while not self._stop_event.is_set():
+            try:
+                record = self._queue.get(block=True, timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                self._post(record)
+            except Exception:  # noqa: BLE001 — worker must never crash
+                logger.warning("audit_otel: POST failed; record dropped")
+            finally:
+                self._queue.task_done()
+        # Drain records that arrived before the stop signal was noticed.
+        while True:
+            try:
+                record = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._post(record)
+            except Exception:  # noqa: BLE001
+                logger.warning("audit_otel: POST failed during drain; record dropped")
+            finally:
+                self._queue.task_done()
 
-        The closed flip happens inside ``_state_lock`` so ``emit()`` cannot
-        enqueue new records after the flip — there is no window between
-        "drain finished" and "new record arrives".  Mirrors the lifecycle
-        contract of ``WebhookAuditSink`` (PR #342).
-        """
-        with self._state_lock:
-            if self._closed:
-                return
-            self._closed = True
+    def _post(self, record: dict[str, Any]) -> None:
+        payload = _build_otlp_payload(record)
+        url = self._endpoint + _OTLP_LOG_PATH
+        headers: dict[str, str] = {"Content-Type": "application/json"}
 
-        if self._worker is not None:
-            # Drain: let the worker finish records already in the queue.
-            self._worker.drain(timeout)
-            # Stop: signal the run loop to exit after its current iteration.
-            self._worker.request_stop()
+        if self._auth_env:
+            token = os.environ.get(self._auth_env, "")
+            if token:
+                headers["Authorization"] = token
+
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")  # noqa: S310
+        with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:  # noqa: S310
+            _ = resp.read()
+
+
+# ── module-level cache (mirrors _webhook_sinks in sinks.py) ──────────────────
+
+_otel_sinks: dict[str, OtelAuditSink] = {}
+_otel_sink_lock = threading.Lock()
+
+
+def _get_builtin_otel_sink(repo_root: str = ".") -> OtelAuditSink:
+    """Return (or lazily create) the process-level OTel sink for *repo_root*.
+
+    Mirrors :func:`_get_builtin_webhook_sink` in ``sinks.py`` exactly.
+    """
+    key = str(Path(repo_root).resolve())
+    with _otel_sink_lock:
+        sink = _otel_sinks.get(key)
+        if sink is None:
+            sink = _otel_sinks[key] = OtelAuditSink.from_repo(repo_root)
+    return sink
