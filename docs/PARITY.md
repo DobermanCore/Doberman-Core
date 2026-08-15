@@ -13,7 +13,7 @@ Each row is a security guarantee; each column a host Doberman can front.
 | Deleting unrecoverable gitignored data is gated (AN-1) | ◻ | ◻ | ◻ | ◻ |
 | A session that read a secret gets a raised floor on egress | [✅](https://github.com/fu351/Doberman-Core/blob/main/tests/unit/test_hosthook_taint_floor.py) | ◻ | [✅](https://github.com/fu351/Doberman-Core/blob/main/tests/unit/test_proxy_taint_floor.py) | ◻ |
 | An outbound value matching a read secret is blocked | [✅](https://github.com/fu351/Doberman-Core/blob/main/tests/unit/test_hosthook_exfil_fingerprint.py) | ◻ | ◻ | ◻ |
-| Tool output carrying credentials is blocked from the model | [✅](https://github.com/fu351/Doberman-Core/blob/main/tests/unit/test_hosthook_claude_post.py) | ◻ | ◻ | — |
+| Tool output carrying credentials is blocked from the model | [✅](https://github.com/fu351/Doberman-Core/blob/main/tests/unit/test_hosthook_claude_post.py) | ◻ | [✅](https://github.com/fu351/Doberman-Core/blob/main/tests/unit/test_proxy_secret_output_gating.py) | — |
 | The agent cannot edit Doberman's own config or hooks | [✅](https://github.com/fu351/Doberman-Core/blob/main/tests/unit/test_hosthook_control_plane.py) | [✅](https://github.com/fu351/Doberman-Core/blob/main/tests/unit/test_rule_paths_codex_control_plane.py) | ◻ | ◻ |
 | Approvals are single-use and bound to one action id | [✅](https://github.com/fu351/Doberman-Core/blob/main/tests/unit/test_hosthook_auth_challenge.py) | ◻ | ◻ | ◻ |
 | AUTH challenges auto-deny at the wall-clock deadline | [✅](https://github.com/fu351/Doberman-Core/blob/main/tests/unit/test_auth_challenge_timeout.py) | ◻ | ◻ | ◻ |
