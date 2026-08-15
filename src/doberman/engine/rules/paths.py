@@ -40,7 +40,8 @@ from doberman.models import (
 #: active role, and the DB holding the append-only policy_changes ledger /
 #: decision log / baselines / elevations; ADR 0011) and the Claude Code
 #: host-hook install config (``.claude/settings*.json`` + the ``.claude`` dir
-#: itself; ADR 0022 host-hook architecture / ADR 0024 this block). Editing or
+#: itself; ADR 0022 host-hook architecture / ADR 0024 this block), plus the
+#: per-user auth state that backs every possession-factor gate (ADR 0065). Editing or
 #: deleting either disables Doberman at the engine or harness level ("fire the
 #: cop") and bypasses the Feature 10 apply_change gate; Doberman writes these via
 #: direct I/O, never through the proxy, so any agent-proxied write/delete/read is
@@ -75,6 +76,28 @@ CONTROL_PLANE_GLOBS: tuple[str, ...] = (
     "**/.codex/config.toml",
     "**/.codex/plugins",
     "**/.codex/plugins/**",
+    # The per-user auth state (``doberman.auth.totp`` / ``doberman.auth.password``):
+    # the TOTP seed, its lockout counter, and the password hash. These live OUTSIDE
+    # any repo (``%LOCALAPPDATA%``/``$XDG_CONFIG_HOME``/``~/.config`` + ``doberman/``)
+    # precisely so they are never committed — which also puts them past
+    # :func:`canonicalize`'s repo-root confinement, so the repo-relative globs above
+    # can never reach them. Matched here against the RAW token instead (see
+    # :func:`names_control_plane`), which is why these patterns are shaped like the
+    # absolute path text rather than a relative one. Deleting the seed silently
+    # un-enrols 2FA (every "TOTP if enrolled" gate degrades to confirm-only);
+    # deleting the lockout file resets the brute-force counter; overwriting either
+    # secret hands an attacker the factor itself. ADR 0065.
+    "**/doberman/totp.secret",
+    "**/doberman/totp.secret.*",
+    "**/doberman/password.hash",
+    # ...and the containing state dir, so a recursive delete of the whole directory
+    # is caught too. Deliberately NOT a bare ``**/doberman`` — that would match any
+    # checkout of this project (the repo itself is named ``doberman``) and block
+    # ordinary work on it.
+    "**/appdata/local/doberman",
+    "**/appdata/local/doberman/**",
+    "**/.config/doberman",
+    "**/.config/doberman/**",
 )
 
 #: Paths that are NEVER allowed without going through the human-approved path.
