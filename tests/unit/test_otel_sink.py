@@ -3,13 +3,15 @@ tests/unit/test_otel_sink.py
 ────────────────────────────
 Tests for OtelAuditSink (Issue #245).
 
-Every invariant the issue demands is covered:
+Invariants covered:
 
 1.  ``emit()`` never blocks or raises into the decision path.
 2.  Queue overflow drops-and-counts rather than growing unbounded.
 3.  The sink exports ONLY the allowlisted record fields and adds none of its own.
 4.  Absent config → zero network I/O, sink is inert.
 5.  ``emit()`` is synchronous from the caller's perspective (returns before I/O).
+6.  Lifecycle — close() drains, stops the worker, and makes emit() a no-op.
+7.  Endpoint validation rejects non-http(s) schemes and loopback addresses.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from doberman.storage.otel_sink import (
     OtelAuditSink,
     _build_otlp_payload,
     _load_config,
+    _validate_endpoint,
 )
 
 # ── helpers / fixtures ────────────────────────────────────────────────────────
@@ -38,7 +41,7 @@ def _make_config(tmp_path: Path, extra: dict | None = None) -> Path:
     """Write a minimal valid audit_otel.yaml and return the policy dir."""
     policy_dir = tmp_path / ".doberman"
     policy_dir.mkdir()
-    cfg: dict[str, Any] = {"endpoint": "http://localhost:4318"}
+    cfg: dict[str, Any] = {"endpoint": "https://otel-collector.example.com:4318"}
     if extra:
         cfg.update(extra)
     (policy_dir / "audit_otel.yaml").write_text(yaml.dump(cfg))
@@ -101,7 +104,6 @@ class TestEmitNonBlocking:
         assert sink._worker is not None
         sink._worker._post = always_raise  # type: ignore[method-assign]
 
-        # emit must never propagate the network error
         for _ in range(5):
             sink.emit(_record())  # must not raise
 
@@ -128,7 +130,6 @@ class TestQueueOverflow:
         policy_dir = _make_config(tmp_path, extra={"queue_max": 3})
         sink = OtelAuditSink(policy_dir)
 
-        # Pause the worker so the queue fills up
         pause = threading.Event()
         original_post = sink._worker._post  # type: ignore[union-attr]
 
@@ -139,11 +140,9 @@ class TestQueueOverflow:
         assert sink._worker is not None
         sink._worker._post = blocking_post  # type: ignore[method-assign]
 
-        # Fill to cap
         for i in range(3):
             sink.emit(_record(session_id=f"sess-{i}"))
 
-        # One more — should trigger a drop
         sink.emit(_record(session_id="sess-overflow"))
 
         assert sink.drop_count >= 1, "Expected at least one drop"
@@ -154,7 +153,6 @@ class TestQueueOverflow:
         policy_dir = _make_config(tmp_path, extra={"queue_max": max_q})
         sink = OtelAuditSink(policy_dir)
 
-        # Halt worker so queue fills deterministically
         pause = threading.Event()
         original_post = sink._worker._post  # type: ignore[union-attr]
 
@@ -168,7 +166,7 @@ class TestQueueOverflow:
         for i in range(max_q * 3):
             sink.emit(_record(session_id=f"s-{i}"))
 
-        assert sink._q is not None  # type: ignore[union-attr]
+        assert sink._q is not None
         assert sink._q.qsize() <= max_q
 
         pause.set()
@@ -192,7 +190,6 @@ class TestFieldAllowlist:
         assert sink._worker is not None
         sink._worker._post = capturing_post  # type: ignore[method-assign]
 
-        # Include extra fields that should NOT appear
         dirty_record = _record(
             secret="sk-THIS-MUST-NOT-APPEAR",  # noqa: S106
             internal_trace="raw-prompt-contents",
@@ -200,7 +197,6 @@ class TestFieldAllowlist:
         )
         sink.emit(dirty_record)
 
-        # Give the worker time to process
         time.sleep(0.1)
 
         assert len(captured) == 1
@@ -253,7 +249,6 @@ class TestAbsentConfig:
     def test_no_config_means_inert(self, tmp_path: Path) -> None:
         policy_dir = tmp_path / ".doberman"
         policy_dir.mkdir()
-        # No audit_otel.yaml
         sink = OtelAuditSink(policy_dir)
 
         assert not sink.is_active
@@ -358,7 +353,6 @@ class TestAuthToken:
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             sink = OtelAuditSink(policy_dir)
             assert sink._worker is not None
-            # Call _post directly to avoid threading timing issues in this test
             sink._worker._post(_record())
 
         assert any(
@@ -400,7 +394,6 @@ class TestAuthToken:
         with patch("urllib.request.urlopen", side_effect=OSError("forced error")):
             sink = OtelAuditSink(policy_dir)
             assert sink._worker is not None
-            # Trigger an error path which might log
             try:
                 sink._worker._post(_record())
             except OSError:
@@ -478,3 +471,142 @@ class TestSecretNeverExported:
             assert self.SYNTHETIC_SECRET not in payload.decode(), (
                 "Synthetic secret leaked into an emitted record"
             )
+
+
+# ── 9. Lifecycle — close() contract ──────────────────────────────────────────
+
+
+class TestLifecycle:
+    """
+    close() must:
+    - drain in-flight records before returning (within timeout)
+    - stop the worker run loop
+    - make emit() a guaranteed no-op (closed-check inside _state_lock)
+    - be idempotent (double-close is safe)
+    - accept timeout parameter (bounded join, does not hang forever)
+    """
+
+    def test_close_makes_emit_noop(self, tmp_path: Path) -> None:
+        policy_dir = _make_config(tmp_path)
+        sink = OtelAuditSink(policy_dir)
+
+        captured: list[dict] = []
+
+        assert sink._worker is not None
+        sink._worker._post = lambda r: captured.append(r)  # type: ignore[method-assign]
+
+        sink.close()
+
+        # Any emit after close must be silently discarded
+        sink.emit(_record())
+        time.sleep(0.1)
+
+        assert captured == [], "emit() enqueued a record after close()"
+
+    def test_close_stops_worker(self, tmp_path: Path) -> None:
+        policy_dir = _make_config(tmp_path)
+        sink = OtelAuditSink(policy_dir)
+
+        assert sink._worker is not None
+        sink.close()
+
+        # Give the thread a moment to notice the stop signal and exit
+        sink._worker.join(timeout=2.0)
+        assert not sink._worker.is_alive(), "Worker thread still alive after close()"
+
+    def test_close_drains_pending_records(self, tmp_path: Path) -> None:
+        """Records enqueued before close() must be exported before close() returns."""
+        policy_dir = _make_config(tmp_path)
+        sink = OtelAuditSink(policy_dir)
+
+        delivered: list[dict] = []
+        gate = threading.Event()
+
+        def gated_post(record: dict) -> None:
+            gate.wait(timeout=5)
+            delivered.append(record)
+
+        assert sink._worker is not None
+        sink._worker._post = gated_post  # type: ignore[method-assign]
+
+        # Enqueue a record, then open the gate and close
+        sink.emit(_record(session_id="drain-me"))
+        gate.set()
+        sink.close(timeout=3.0)
+
+        assert len(delivered) >= 1, "close() returned before pending record was exported"
+
+    def test_close_is_idempotent(self, tmp_path: Path) -> None:
+        policy_dir = _make_config(tmp_path)
+        sink = OtelAuditSink(policy_dir)
+
+        sink.close()
+        sink.close()  # must not raise or deadlock
+
+    def test_close_respects_timeout(self, tmp_path: Path) -> None:
+        """close() must return within a bounded time even if records are stuck."""
+        policy_dir = _make_config(tmp_path)
+        sink = OtelAuditSink(policy_dir)
+
+        stuck = threading.Event()
+
+        assert sink._worker is not None
+        sink._worker._post = lambda _r: stuck.wait(timeout=60)  # type: ignore[method-assign]
+
+        sink.emit(_record())  # will never be delivered — worker is stuck
+
+        t0 = time.monotonic()
+        sink.close(timeout=0.3)  # short timeout — must return promptly
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 2.0, f"close() hung for {elapsed:.2f}s instead of respecting timeout"
+        stuck.set()  # unblock the worker so the test thread can clean up
+
+
+# ── 10. Endpoint validation ───────────────────────────────────────────────────
+
+
+class TestEndpointValidation:
+    """
+    _validate_endpoint must:
+    - accept https and http schemes
+    - reject non-http(s) schemes (file://, ftp://, custom://)
+    - reject loopback addresses (localhost, 127.0.0.1, ::1)
+    Mirrors the _is_loopback gate in the webhook sink (sinks.py).
+    """
+
+    def test_https_endpoint_is_accepted(self) -> None:
+        result = _validate_endpoint("https://collector.example.com:4318")
+        assert result is not None
+
+    def test_http_endpoint_is_accepted(self) -> None:
+        result = _validate_endpoint("http://collector.internal:4318")
+        assert result is not None
+
+    def test_file_scheme_is_rejected(self) -> None:
+        assert _validate_endpoint("file:///etc/passwd") is None
+
+    def test_ftp_scheme_is_rejected(self) -> None:
+        assert _validate_endpoint("ftp://collector.example.com") is None
+
+    def test_custom_scheme_is_rejected(self) -> None:
+        assert _validate_endpoint("grpc://collector.example.com") is None
+
+    def test_localhost_is_rejected(self) -> None:
+        assert _validate_endpoint("https://localhost:4318") is None
+
+    def test_127_0_0_1_is_rejected(self) -> None:
+        assert _validate_endpoint("https://127.0.0.1:4318") is None
+
+    def test_ipv6_loopback_is_rejected(self) -> None:
+        assert _validate_endpoint("https://[::1]:4318") is None
+
+    def test_loopback_config_makes_sink_inert(self, tmp_path: Path) -> None:
+        """A loopback endpoint in the yaml must produce an inert sink."""
+        policy_dir = tmp_path / ".doberman"
+        policy_dir.mkdir()
+        (policy_dir / "audit_otel.yaml").write_text(
+            yaml.dump({"endpoint": "https://localhost:4318"})
+        )
+        sink = OtelAuditSink(policy_dir)
+        assert not sink.is_active
