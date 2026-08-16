@@ -17,6 +17,11 @@ This module also ships the first **built-in** concrete sink (Feature 8, slice
 8.5): :class:`WebhookAuditSink`. It is config-gated via
 ``.doberman/audit_webhook.yaml`` and active only when that file is present and
 valid. See the class docstring for the full contract.
+
+The second built-in sink — :class:`~doberman.storage.otel_sink.OtelAuditSink`
+— lives in ``doberman.storage.otel_sink`` and is config-gated via
+``.doberman/audit_otel.yaml``. It is wired into :func:`emit_to_sinks` alongside
+the webhook sink.
 """
 
 import json
@@ -364,23 +369,47 @@ def _get_builtin_webhook_sink(repo_root: str = ".") -> WebhookAuditSink:
     return sink
 
 
+class _InertSink:
+    """Fallback sink that silently discards all records (used when OTel module unavailable)."""
+
+    def emit(self, record: dict) -> None:  # noqa: ARG002
+        pass
+
+
+def _get_builtin_otel_sink(repo_root: str = ".") -> object:
+    """Return (or lazily create) the process-level OTel sink for *repo_root*.
+
+    Delegates to :func:`doberman.storage.otel_sink._get_builtin_otel_sink`.
+    Imported lazily so ``otel_sink`` is only loaded when first needed.
+    Returns an inert no-op sink if the module is unavailable.
+    """
+    try:
+        from doberman.storage.otel_sink import _get_builtin_otel_sink as _otel_get
+
+        return _otel_get(repo_root)
+    except Exception:  # noqa: BLE001
+        return _InertSink()
+
+
 def emit_to_sinks(record: dict, *, repo_root: str = ".") -> None:
     """Fan a redacted record out to every registered sink, isolating failures.
 
     Consults plugin-registered sinks first (entry-point group
     ``doberman.audit_sinks``) and then the built-in
-    :class:`WebhookAuditSink`.  Never raises: a sink that is not sink-shaped,
-    or whose ``emit`` raises, is logged and skipped.  With no sinks installed
-    and no webhook config this is a no-op.  The local SQLite log is written by
-    the caller (:mod:`doberman.storage.log`), not here — this fan-out is for
-    *extra* destinations only.
+    :class:`WebhookAuditSink` and :class:`~doberman.storage.otel_sink.OtelAuditSink`.
+    Never raises: a sink that is not sink-shaped, or whose ``emit`` raises, is
+    logged and skipped.  With no sinks installed and no config files this is a
+    no-op.  The local SQLite log is written by the caller
+    (:mod:`doberman.storage.log`), not here — this fan-out is for *extra*
+    destinations only.
     """
     # Lazy import: the registry lives in the engine layer.
     from doberman.engine.registry import discover_audit_sinks
 
     all_sinks: list[object] = list(discover_audit_sinks())
-    # Built-in webhook sink comes after plugin-discovered sinks (same isolation).
+    # Built-in sinks come after plugin-discovered sinks (same isolation).
     all_sinks.append(_get_builtin_webhook_sink(repo_root))
+    all_sinks.append(_get_builtin_otel_sink(repo_root))
 
     for sink in all_sinks:
         if not _looks_like_audit_sink(sink):
