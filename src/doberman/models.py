@@ -255,6 +255,11 @@ class ReasonCode(StrEnum):
     lethal_trifecta = "lethal_trifecta"
     unclassified_action = "unclassified_action"
 
+    # PII / financial data-class exfil (issue #321): checksum-valid personal or
+    # financial data (card number, IBAN, SSN) in an outbound payload with an
+    # external destination. Class label only — the matched value is never logged.
+    pii_data_class_egress = "pii_data_class_egress"
+
     # OOD / smuggled-token channel defense (objective rule + subjective detector).
     smuggled_token_channel = "smuggled_token_channel"  # noqa: S105 — reason code, not a secret
     anomalous_token_pattern = "anomalous_token_pattern"  # noqa: S105 — reason code, not a secret
