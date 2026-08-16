@@ -31,6 +31,7 @@ wall-clock deadline on every challenge and denies when it expires.
 import asyncio
 import contextvars
 import logging
+import os
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -63,6 +64,22 @@ DEFAULT_CHALLENGE_TIMEOUT_S = 1200.0
 #: and ``"error"`` (a channel failed): an audit must be able to tell silence
 #: apart from refusal, because they call for different operator responses.
 TIMEOUT_METHOD = "timeout"
+
+#: Dev/test escape hatch (ADR 0074): when this env var is truthy every AUTH
+#: challenge denies immediately, before any approval channel (dashboard, GUI
+#: dialog, TTY) opens. Deny-only by construction — there is no approve path —
+#: so setting it can only make Doberman stricter; it cannot bypass auth. Meant
+#: for unattended dev/test/CI runs; deliberately absent from user-facing docs.
+AUTODENY_ENV = "DOBERMAN_AUTODENY_AUTH"
+
+#: :attr:`AuthResult.method` when :data:`AUTODENY_ENV` resolved the challenge.
+#: Distinct from ``"denied"``/``"timeout"``/``"error"`` so the audit log never
+#: mistakes a dev-switch denial for a human decision or a channel failure.
+AUTODENY_METHOD = "autodeny"
+
+
+def _autodeny_enabled() -> bool:
+    return os.environ.get(AUTODENY_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
 class AuthTier(StrEnum):
@@ -268,6 +285,17 @@ def run_auth_challenge(
     from doberman.auth.provider import active_provider
 
     tier = select_tier(decision)
+    if _autodeny_enabled():
+        # ADR 0074: dev-only fail-closed shortcut — deny before any channel
+        # opens. Cannot approve, so it is never an auth bypass.
+        logger.info("auth challenge auto-denied by %s (action %s)", AUTODENY_ENV, action.id)
+        return AuthResult(
+            approved=False,
+            tier=tier,
+            method=AUTODENY_METHOD,
+            at=at or datetime.now(timezone.utc),
+            action_id=action.id,
+        )
     token = _current_challenge.set((decision, action, tier))
     try:
         return _run_with_deadline(
