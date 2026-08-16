@@ -15,6 +15,7 @@ In alphabetical order by handle (ordering is not a ranking):
 - [@AshSgDe29071999](https://github.com/AshSgDe29071999)
 - [@averyquinnhq](https://github.com/averyquinnhq)
 - [@Bestpart-Irene](https://github.com/Bestpart-Irene)
+- [@blackcoderx](https://github.com/blackcoderx)
 - [@harshitagrawal2O](https://github.com/harshitagrawal2O)
 - [@jasperdingg](https://github.com/jasperdingg)
 - **Lee Sang Hoon** — [@leemeo3](https://github.com/leemeo3)
