@@ -37,7 +37,7 @@ queue_max: 1000
 
 > **Security note:** Never put the token value in the YAML. Store it in the environment variable named by `auth_env`.
 
-> **Loopback addresses are rejected.** Doberman refuses `localhost`, `127.x.x.x`, and `::1` as endpoints because audit records contain reason codes and explanations that are redaction-sensitive. An accidental loopback configuration would silently discard every export; a non-loopback host makes the misconfiguration visible. For local testing, use a collector reachable by hostname (e.g. `otel-collector.internal`) or run the collector in Docker and reference it by container name.
+> **Loopback addresses are rejected.** Doberman refuses `localhost`, `127.x.x.x`, and `::1` as endpoints because audit records contain reason codes and decision metadata that are redaction-sensitive. An accidental loopback configuration would silently discard every export; a non-loopback host makes the misconfiguration visible. For local testing, use a collector reachable by hostname (e.g. `otel-collector.internal`) or run the collector in Docker and reference it by container name.
 
 ### 2. Set the auth token (if required)
 
@@ -95,11 +95,13 @@ Each record contains only the **allowlisted fields** — the same fields already
 
 | Field | Example value |
 |---|---|
-| `timestamp` | `2026-08-14T10:00:00Z` |
-| `verdict` | `BLOCK` |
-| `tool` | `run_terminal_cmd` |
+| `ts` | `2026-08-14T10:00:00+00:00` |
+| `action_type` | `bash_command` |
+| `risk` | `high` |
+| `final_verdict` | `BLOCK` |
+| `decided_layer` | `objective` |
 | `reason_codes` | `["destructive_command"]` |
-| `explanation` | `Recursive force-delete of a home/root target.` |
+| `auth_result` | `null` |
 | `session_id` | `sess-abc123` |
 
 The sink adds **no fields of its own** — no raw payloads, no prompt text, no secrets.

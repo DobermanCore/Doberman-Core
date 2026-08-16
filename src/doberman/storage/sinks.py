@@ -171,6 +171,15 @@ class WebhookAuditSink:
     """
 
     def __init__(self, config: dict | None) -> None:
+        """Construct the sink.
+
+        ``config`` is the parsed dict from :func:`_load_webhook_config`; pass
+        ``None`` (or an empty/invalid dict) to create an inert sink.
+
+        If ``Thread.start()`` raises the failure is caught and the sink is left
+        inert — this prevents a retry storm where every subsequent decision
+        re-attempts the thread spawn.
+        """
         self._active = False
         self._url: str = ""
         self._auth_env: str | None = None
@@ -300,13 +309,20 @@ class WebhookAuditSink:
                 self._queue.task_done()
 
     def _post(self, record: dict) -> None:
-        """POST *record* as JSON to the configured URL."""
+        """POST *record* as JSON to the configured URL.
+
+        The ``Authorization`` token is read from the env var named by
+        ``auth_env`` at call time — never from this object's fields — so it
+        is never stored in memory longer than the single request.  The token
+        value is **never** written to any log.
+        """
         body = json.dumps(record, default=str).encode()
         headers = {"Content-Type": "application/json"}
 
         if self._auth_env:
             token = os.environ.get(self._auth_env, "")
             if token:
+                # The header value itself must not be logged anywhere.
                 headers["Authorization"] = token
 
         req = urllib.request.Request(self._url, data=body, headers=headers, method="POST")  # noqa: S310
@@ -327,13 +343,24 @@ class WebhookAuditSink:
             logger.warning("audit_webhook: network error posting to %s; record dropped", self._url)
 
 
-# Module-level cache — one sink per repo root, created once per process.
+# Module-level cache — one sink per repo root, created once per process and
+# keyed by the *resolved* root path so "." and its absolute spelling share one
+# instance (one worker thread per configured repo, not per spelling). Tests
+# that need a custom root should construct WebhookAuditSink directly via
+# WebhookAuditSink.from_repo(root) or WebhookAuditSink(config).
 _webhook_sinks: dict[str, WebhookAuditSink] = {}
 _webhook_sink_lock = threading.Lock()
 
 
 def _get_builtin_webhook_sink(repo_root: str = ".") -> WebhookAuditSink:
-    """Return (or lazily create) the process-level webhook sink for *repo_root*."""
+    """Return (or lazily create) the process-level webhook sink for *repo_root*.
+
+    Only the first call for a given ``repo_root`` constructs a sink; subsequent
+    calls return the cached instance.  This avoids spinning up multiple worker
+    threads for the same config — while a second, different repo root in the
+    same process still gets its own sink instead of silently reusing the
+    first repo's config.
+    """
     key = str(Path(repo_root).resolve())
     with _webhook_sink_lock:
         sink = _webhook_sinks.get(key)

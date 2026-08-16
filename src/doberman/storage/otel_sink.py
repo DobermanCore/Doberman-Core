@@ -20,8 +20,9 @@ Design contract (mirrors :class:`WebhookAuditSink` in ``storage/sinks.py``):
   - The sink exports *only* the allowlisted fields; it adds none of its own.
   - Auth token comes from a named env-var only; never stored, never logged.
 
-Allowlisted record fields (same set the webhook sink may see upstream):
-    timestamp, verdict, tool, reason_codes, explanation, session_id
+Allowlisted record fields (the exportable subset of ``build_record()``):
+    ts, action_type, risk, final_verdict, decided_layer, reason_codes,
+    auth_result, session_id
 
 OTLP/HTTP endpoint:
     POST <endpoint>/v1/logs  (JSON, application/json)
@@ -187,9 +188,9 @@ def _load_config(policy_dir: Path) -> dict | None:
 def _build_otlp_payload(record: dict[str, Any]) -> bytes:
     """Wrap a redacted record in a minimal OTLP/HTTP LogRecord payload (JSON)."""
     safe = {k: v for k, v in record.items() if k in _ALLOWED_FIELDS}
-    ts_ns = _timestamp_to_ns(safe.get("timestamp"))
+    ts_ns = _timestamp_to_ns(safe.get("ts"))
     attributes = [
-        {"key": k, "value": {"stringValue": str(v)}} for k, v in safe.items() if k != "timestamp"
+        {"key": k, "value": {"stringValue": str(v)}} for k, v in safe.items() if k != "ts"
     ]
     log_record = {
         "timeUnixNano": str(ts_ns),

@@ -269,12 +269,36 @@ class TestFieldAllowlist:
         )
 
     def test_allowed_fields_are_subset_of_build_record_keys(self) -> None:
-        """Every name in _ALLOWED_FIELDS must exist as a key in build_record() output."""
-        real_record = _build_record()
+        """Every name in _ALLOWED_FIELDS must exist as a key in the REAL
+        build_record() output — asserted against storage.log.build_record()
+        itself, not this file's _build_record() mirror, so a field rename in
+        log.py fails here instead of silently emptying the export."""
+        from datetime import datetime, timezone
+
+        from doberman.engine.decision_engine import PASS_STUB, decide
+        from doberman.models import EvalContext
+        from doberman.proxy.normalize import normalize
+        from doberman.storage.log import build_record
+
+        action = normalize("file_write", {"path": "notes.txt"}, {})
+        decision = decide(action, objective=PASS_STUB, subjective=PASS_STUB, ctx=EvalContext())
+        real_record = build_record(
+            decision,
+            action,
+            auth_result=None,
+            elevation_id=None,
+            now=datetime.now(timezone.utc),
+            session_id="sess-abc123",
+        )
         unknown = _ALLOWED_FIELDS - set(real_record.keys())
         assert not unknown, (
             f"_ALLOWED_FIELDS contains keys not in build_record(): {unknown}. "
             "These will always be absent from exported records."
+        )
+        # And this file's fixture must stay in lock-step with the real producer,
+        # or every other test here is validating a shape production never emits.
+        assert set(_build_record().keys()) == set(real_record.keys()), (
+            "_build_record() in this file has drifted from storage.log.build_record()"
         )
 
 
