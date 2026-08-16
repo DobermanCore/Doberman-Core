@@ -37,7 +37,7 @@ AI agent ──▶ Doberman ──▶ real tools (files, shell, MCP servers, API
                  └─ normalize → risk engine → PASS / AUTH / BLOCK
 ```
 
-Works with **Claude Code, Cursor, Codex, Copilot, and any MCP-compatible agent.** Open-source, local-first, and bound by two rules it will never break: it **fails closed** (uncertainty denies) and is **raise-only** (it can tighten automatically, but never silently loosens).
+Works with **Claude Code, Codex, OpenClaw, and any MCP-compatible agent** — Cursor and other MCP clients connect through the [MCP proxy](#quick-start). Open-source, local-first, and bound by two rules it will never break: it **fails closed** (uncertainty denies) and is **raise-only** (it can tighten automatically, but never silently loosens).
 
 <div align="center">
 
