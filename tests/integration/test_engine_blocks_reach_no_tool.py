@@ -90,6 +90,21 @@ async def test_auth_returns_error_and_nothing_recorded(monkeypatch):
         assert fake.calls == []
 
 
+@pytest.mark.guarantee("gitignored-delete-gate", host="mcp-proxy")
+async def test_unrecoverable_gitignored_delete_requires_auth(monkeypatch):
+    # Unlike the sibling above, DEFAULT_OBJECTIVE is left real: the actual
+    # DestructiveCommandRule decides AUTH here, proving the engine-level
+    # guarantee (tests/unit/test_rule_commands.py::
+    # test_unrecoverable_gitignored_data_delete_requires_auth) holds through
+    # the MCP proxy's wiring too.
+    monkeypatch.setattr(executor, "run_auth_challenge", _deny_challenge)
+    async with proxied_session() as (fake, agent):
+        result = await agent.call_tool("shell_exec", {"command": "rm data/app.db"})
+        assert result.isError
+        assert "authentication required" in result.content[0].text
+        assert fake.calls == []
+
+
 async def test_engine_exception_fails_closed(monkeypatch):
     def exploding_decide(*args, **kwargs):
         raise RuntimeError("engine exploded")
