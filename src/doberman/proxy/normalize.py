@@ -147,6 +147,36 @@ _PACKAGE_EGRESS_SUBCOMMANDS = frozenset(
         "upload",
     }
 )
+#: ADR 0075 — package managers whose no-URL *fetch* forms route to a well-known
+#: default registry; values are the canonical host that route implies. Only used
+#: when a segment resolves ZERO explicit hosts and carries no redirect signal.
+_PM_DEFAULT_REGISTRY: dict[str, str] = {
+    "pip": "pypi.org",
+    "pip3": "pypi.org",
+    "pipx": "pypi.org",
+    "uv": "pypi.org",
+    "poetry": "pypi.org",
+    "npm": "registry.npmjs.org",
+    "pnpm": "registry.npmjs.org",
+    "yarn": "registry.npmjs.org",
+    "bun": "registry.npmjs.org",
+    "cargo": "crates.io",
+    "gem": "rubygems.org",
+    "go": "proxy.golang.org",
+}
+#: Fetch-direction subcommands only. publish/push/upload send artifacts OUT and
+#: never qualify for the implied-registry classification (ADR 0075).
+_PM_FETCH_SUBCOMMANDS = frozenset({"add", "download", "fetch", "install", "sync", "update"})
+#: pip-family flags whose value is a local file, so a dotted filename
+#: (requirements.txt) must not be mistaken for a host. A URL value stays a route.
+_REQUIREMENT_FILE_FLAGS = frozenset({"-r", "--requirement", "-c", "--constraint"})
+#: Ambient env vars that redirect a package manager off its default registry.
+#: ponytail: config-file redirects (~/.npmrc, pip.conf, project .npmrc) are
+#: invisible to static parsing — the runtime egress broker is the upgrade path;
+#: the secrets/taint/trifecta floors hold regardless of route.
+_PM_REGISTRY_ENV_NAMES = frozenset(
+    {"PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_INDEX_URL", "NPM_CONFIG_REGISTRY", "GOPROXY"}
+)
 _TRANSPARENT_COMMAND_WRAPPERS = frozenset(
     {"command", "env", "exec", "ionice", "nice", "nohup", "sudo", "time"}
 )
@@ -281,6 +311,81 @@ def _ambient_proxy_present() -> bool:
     )
 
 
+def _ambient_registry_override() -> bool:
+    """An env-level registry redirect (PIP_INDEX_URL, NPM_CONFIG_REGISTRY, ...)
+    means a package manager's "default" route is not the default registry."""
+    return any(
+        name.upper() in _PM_REGISTRY_ENV_NAMES and bool(value) for name, value in os.environ.items()
+    )
+
+
+def _implied_registry_fetch(verb: str | None, arguments: list[str]) -> str | None:
+    """The default-registry host a recognized package-manager *fetch* implies,
+    or ``None`` when the segment does not qualify (ADR 0075).
+
+    Qualifies only when the verb has a known default registry and every
+    package-subcommand present is fetch-direction (install/add/download/...).
+    A publish/push/upload anywhere in the segment disqualifies it.
+    """
+    if verb in {"python", "python3", "py"} and len(arguments) >= 3 and arguments[0] == "-m":
+        return _implied_registry_fetch(_command_name(arguments[1]), arguments[2:])
+    host = _PM_DEFAULT_REGISTRY.get(verb or "")
+    if host is None:
+        return None
+    subcommands = {
+        _command_name(arg)
+        for arg in arguments
+        if not arg.startswith("-") and _command_name(arg) in _PACKAGE_EGRESS_SUBCOMMANDS
+    }
+    if not subcommands or not subcommands <= _PM_FETCH_SUBCOMMANDS:
+        return None
+    return host
+
+
+def _pm_route_redirect(tokens: list[str]) -> bool:
+    """True when any token could redirect a package manager off its default
+    registry route. Covers the two shapes ``_candidate_hosts`` cannot see:
+    inline env assignments (consumed by ``_command_verb``) and ``--flag=value``
+    attached forms (skipped as flags)."""
+    for token in tokens:
+        assignment = _ENV_ASSIGNMENT.match(token)
+        if assignment:
+            if assignment.group("name").upper() in _PM_REGISTRY_ENV_NAMES and assignment.group(
+                "value"
+            ):
+                return True
+            continue
+        if not token.startswith("-") or "=" not in token:
+            continue
+        flag, value = token.split("=", 1)
+        if "://" in value:
+            return True
+        if flag in _REQUIREMENT_FILE_FLAGS:
+            continue  # local-file value; the URL case is caught above
+        if _looks_like_host_token(value):
+            return True
+    return False
+
+
+def _strip_requirement_files(arguments: list[str]) -> list[str]:
+    """Drop the local-file value of ``-r``/``--requirement``/``-c``/``--constraint``
+    so a dotted filename (``requirements.txt``) is not mistaken for a host.
+    A URL value (contains ``://``) is kept — the manager fetches it, so it IS a
+    route and must surface as an explicit host."""
+    out: list[str] = []
+    skip = False
+    for token in arguments:
+        if skip:
+            skip = False
+            if "://" in token:
+                out.append(token)
+            continue
+        if token in _REQUIREMENT_FILE_FLAGS:
+            skip = True
+        out.append(token)
+    return out
+
+
 def _looks_like_host_token(token: str) -> bool:
     if "://" in token or token.startswith("//"):
         return True
@@ -361,6 +466,8 @@ def _suspected_egress_token(segments: list[list[str]]) -> bool:
 def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
     segments, parse_ambiguous, dynamic_walk = walk_command(command)
     hosts: list[str] = []
+    implied_hosts: list[str] = []
+    implied_only = True
     saw_egress = False
     dynamic_host = False
     had_credentials = False
@@ -379,6 +486,17 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
             continue
         saw_egress = True
         route_override = route_override or _has_route_override(tokens)
+        # ADR 0075: a recognized default-route package-manager fetch may imply
+        # its registry host — but any redirect-capable token (attached
+        # --flag=URL, inline registry env var) disqualifies the segment.
+        implied = _implied_registry_fetch(verb, arguments)
+        if implied is not None and not _pm_route_redirect(tokens):
+            implied_hosts.append(implied)
+            # Only for a qualifying fetch: -r/--constraint file values are local
+            # paths, not hosts (a URL value survives the strip and stays a host).
+            arguments = _strip_requirement_files(arguments)
+        else:
+            implied_only = False
         found, dynamic, embedded = _candidate_hosts(arguments)
         hosts.extend(found)
         dynamic_host = dynamic_host or dynamic
@@ -404,7 +522,26 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
         return None, {}
 
     unique_hosts = list(dict.fromkeys(hosts))
-    destination = _redact_host(unique_hosts[0]) if unique_hosts else None
+    # ADR 0075: every egress segment was a recognized default-route package
+    # fetch, they all imply the same registry, no explicit host appeared
+    # anywhere, and no ambiguity/redirect signal fired — surface the canonical
+    # registry host with the implied marker instead of egress_ambiguous. The
+    # destination rule PASSes this only in modes that already relax
+    # destination-alone signals, and only for hosts on the trusted list.
+    if (
+        implied_only
+        and not unresolved_suspected
+        and not unique_hosts
+        and len(set(implied_hosts)) == 1
+        and not parse_ambiguous
+        and not dynamic_host
+        and not dynamic_walk
+        and not route_override
+        and not had_credentials
+        and not _ambient_proxy_present()
+        and not _ambient_registry_override()
+    ):
+        return _redact_host(implied_hosts[0]), {"egress_implied_registry": True}
     ambiguous = (
         parse_ambiguous
         or unresolved_suspected
@@ -414,6 +551,7 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
         or _ambient_proxy_present()
         or len(unique_hosts) != 1
     )
+    destination = _redact_host(unique_hosts[0]) if unique_hosts else None
     metadata: dict[str, Any] = {}
     if ambiguous:
         metadata["egress_ambiguous"] = True

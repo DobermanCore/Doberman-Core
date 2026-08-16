@@ -411,6 +411,22 @@ class ExternalDestinationRule:
                 return self._pass_broker_enforced()
             if self._mode_hard_blocks_egress(ctx, broker_verdict):
                 return self._block_egress_mode()
+            if (
+                metadata.get("egress_implied_registry")
+                and not had_credentials
+                and not _is_ip_literal(host)
+                and _registered_match(host, self._trusted)
+                and not thresholds_for(
+                    getattr(ctx, "mode", "balanced")
+                ).escalate_unknown_destination
+            ):
+                # ADR 0075: a recognized package-manager fetch over its default
+                # registry, with no redirect signal (normalize guarantees that).
+                # Light/Balanced already PASS destination-alone signals for
+                # UNKNOWN hosts; a trusted-registry route is strictly stronger.
+                # Strict/Paranoid keep the AUTH below, and trimming the trusted
+                # list in policy tightens this automatically.
+                return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
             return self._auth_egress(
                 "Shell, package, or git egress requires authentication because "
                 "static parsing cannot prove the runtime route."
