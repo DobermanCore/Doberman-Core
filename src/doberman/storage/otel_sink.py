@@ -60,8 +60,21 @@ _DRAIN_POLL_S = 0.05
 
 # The *only* fields that leave the process.  Already redacted upstream; we
 # re-filter here as defence-in-depth so upstream contract drift never leaks.
+# Fields from build_record() in storage/log.py that are safe to export.
+# These are the *actual* key names the producer emits — derived from
+# build_record() so that a future rename in log.py will break the tests
+# here rather than silently emptying the export.
 _ALLOWED_FIELDS: frozenset[str] = frozenset(
-    {"timestamp", "verdict", "tool", "reason_codes", "explanation", "session_id"}
+    {
+        "ts",  # ISO-8601 timestamp
+        "action_type",  # e.g. "bash_command"
+        "risk",  # e.g. "high"
+        "final_verdict",  # "PASS" | "BLOCK" | "AUTH"
+        "decided_layer",  # "objective" | "combined"
+        "reason_codes",  # list[str]
+        "auth_result",  # "pass" | "fail" | None
+        "session_id",  # opaque UUID from host harness
+    }
 )
 
 

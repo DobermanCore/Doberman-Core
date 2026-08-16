@@ -37,6 +37,8 @@ queue_max: 1000
 
 > **Security note:** Never put the token value in the YAML. Store it in the environment variable named by `auth_env`.
 
+> **Loopback addresses are rejected.** Doberman refuses `localhost`, `127.x.x.x`, and `::1` as endpoints because audit records contain reason codes and explanations that are redaction-sensitive. An accidental loopback configuration would silently discard every export; a non-loopback host makes the misconfiguration visible. For local testing, use a collector reachable by hostname (e.g. `otel-collector.internal`) or run the collector in Docker and reference it by container name.
+
 ### 2. Set the auth token (if required)
 
 ```bash
