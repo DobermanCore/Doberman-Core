@@ -172,17 +172,22 @@ def _check_db(path: str) -> CheckResult:
 
     p = db_path(path)
     if not p.exists():
+        # Absent is the normal state of a fresh install (the DB appears on the
+        # first gated decision), so it must not fail the run — a red "may not be
+        # protecting you" on a healthy first-run `doctor` teaches users to
+        # ignore the tool. Present-but-unreadable below stays a critical FAIL.
         return CheckResult(
             "Decision DB",
-            CheckStatus.FAIL,
-            "not found — created on first decision; run `doberman setup`",
-            critical=True,
+            CheckStatus.WARN,
+            "not created yet — appears on the first gated decision",
         )
     # Read-only probe: open in SQLite `mode=ro` so we never create or migrate.
     try:
         conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
         try:
-            conn.execute("SELECT 1").fetchone()
+            # Must touch the schema: a bare `SELECT 1` never reads the file, so
+            # a corrupt/non-SQLite file would probe as healthy.
+            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         finally:
             conn.close()
     except sqlite3.Error as exc:

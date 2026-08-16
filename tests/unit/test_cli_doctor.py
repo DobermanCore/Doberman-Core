@@ -150,14 +150,32 @@ def test_doctor_config_corrupt_fails_closed(tmp_path):
     assert "failed to load" in result.stdout
 
 
-def test_doctor_db_missing_fails(tmp_path):
+def test_doctor_db_missing_warns_but_passes(tmp_path):
+    # A fresh install has no decision DB until the first gated decision — that
+    # is healthy, not a critical failure (P0-2, 2026-08-16 e2e review).
     root = str(tmp_path)
     _install_hooks(root)
-    _save_config(root)  # healthy EXCEPT the decision DB
+    _save_config(root)  # fresh install: no decision DB yet
+
+    result = runner.invoke(app, ["doctor", "--path", root])
+    assert result.exit_code == 0
+    assert "[warn] Decision DB: not created yet" in result.stdout
+    assert "may not be protecting you" not in result.stdout
+
+
+def test_doctor_db_unreadable_still_fails(tmp_path):
+    # The loosening is scoped to ABSENT only: a present-but-corrupt DB is a
+    # real health failure and must stay critical.
+    root = str(tmp_path)
+    _install_hooks(root)
+    _save_config(root)
+    db_file = tmp_path / ".doberman" / "doberman.db"
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    db_file.write_bytes(b"this is not a sqlite database")
 
     result = runner.invoke(app, ["doctor", "--path", root])
     assert result.exit_code == 1
-    assert "[FAIL] Decision DB: not found" in result.stdout
+    assert "[FAIL] Decision DB: present but unreadable" in result.stdout
 
 
 # ---------------------------------------------------------------------------
