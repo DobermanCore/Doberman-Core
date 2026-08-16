@@ -36,6 +36,7 @@ from doberman.config import (
     save_preferences,
 )
 from doberman.demo import format_outcome_line, format_summary_table, run_demo
+from doberman.discovery.mcp_scan import MCP_CONFIG_FILES, scan_mcp_configs
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
@@ -243,6 +244,11 @@ def scan(
         "--json",
         help="Emit one deterministic JSON document on stdout instead of the risk map.",
     ),
+    mcp: bool = typer.Option(
+        False,
+        "--mcp",
+        help="Statically scan known repository MCP configs for suspicious patterns.",
+    ),
 ) -> None:
     """Show a read-only risk map of the agent's capabilities and sensitive surface.
 
@@ -250,6 +256,10 @@ def scan(
     Tool-derived capabilities require a live proxy session and are omitted here.
     """
     capabilities = rate_capabilities(enumerate_capabilities(tools=[], repo_root=path))
+    mcp_findings = scan_mcp_configs(path) if mcp else []
+    mcp_files = (
+        [name for name in MCP_CONFIG_FILES if (Path(path) / Path(name)).is_file()] if mcp else []
+    )
     if as_json:
         # Stable schema for scripts/editor integrations (#178).
         payload = {
@@ -266,10 +276,36 @@ def scan(
                 for c in sorted(capabilities, key=lambda x: (x.category, x.name))
             ],
         }
+        if mcp:
+            payload["mcp"] = {
+                "findings": [
+                    {
+                        "server": finding.server,
+                        "source_file": finding.source_file,
+                        "category": finding.category,
+                        "pattern_class": finding.pattern_class,
+                        "risk": finding.risk.value,
+                    }
+                    for finding in mcp_findings
+                ],
+                "files_scanned": mcp_files,
+            }
         typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return
     if not quiet:
-        typer.echo(render_risk_map(capabilities))
+        output = render_risk_map(capabilities)
+        if mcp:
+            lines = ["", "MCP configuration admission scan", "=" * 32]
+            if mcp_findings:
+                lines.extend(
+                    f"[{finding.risk.value.upper():^8}] {finding.source_file} "
+                    f"{finding.server} ({finding.category}/{finding.pattern_class})"
+                    for finding in mcp_findings
+                )
+            else:
+                lines.append("No suspicious MCP configuration patterns found.")
+            output = "\n".join([output, *lines])
+        typer.echo(output)
 
 
 @app.command(rich_help_panel="Policy")

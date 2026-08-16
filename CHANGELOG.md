@@ -13,6 +13,7 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   Presence alone never escalates (co-occurrence gate); only the class label is ever logged.
 - **OpenTelemetry AuditSink** (#245, @Maqbool61): forwards the redacted decision record to any
   OTLP/HTTP collector, config-gated via `.doberman/audit_otel.yaml`; inert without config.
+- **New:** `doberman scan --mcp` statically scans known repository MCP configs for redaction-safe admission-risk pattern classes without running servers or making network requests (#240).
 
 ## 0.18.1 — 2026-08-15
 
