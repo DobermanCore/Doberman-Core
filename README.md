@@ -122,6 +122,10 @@ width. Colour is dropped automatically when output is piped or redirected, and h
 CLI diagnostics use one severity vocabulary: fatal failures start with `error:`, successful but
 degraded or skipped work starts with `warning:`, and informational asides start with `note:`.
 
+Add `--mcp` to `doberman scan` for a static, read-only admission check of repository MCP configs;
+it reports pattern classes only and never emits raw URLs, arguments, environment values, or other
+config content.
+
 ---
 
 ## Verify it end-to-end
