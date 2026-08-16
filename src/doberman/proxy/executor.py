@@ -57,6 +57,7 @@ from doberman.models import (
 from doberman.policy.drift import acted_verdict, effective_enforcement
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
+from doberman.storage import tool_pins
 from doberman.storage.db import active_elevations, grant_elevation, mark_used
 from doberman.storage.log import recent_session_decisions, record_decision
 from doberman.subjective.baseline import (
@@ -147,6 +148,32 @@ _OUTPUT_BLOCK_REASON_CODES: frozenset[ReasonCode] = frozenset(
 #: read as pattern-check history. Bounded so the read stays a cheap, single
 #: indexed query regardless of session length.
 _CORRELATOR_WINDOW = 20
+
+_STRICT_MODES: frozenset[str] = frozenset({"strict", "paranoid"})
+_TOOL_SCHEMA_CHANGED_EXPLANATION = (
+    "The tool's advertised contract changed after it was pinned; re-approve the pin "
+    "from a human terminal before trusting the new schema."
+)
+
+
+async def _apply_tool_pin_floor(tool_name: str, decision: Decision) -> Decision:
+    """Raise a changed tool contract to AUTH, or BLOCK in strict/paranoid."""
+    if await tool_pins.pin_status(tool_name, repo_root=REPO_ROOT) != "changed":
+        return decision
+    floor = Verdict.BLOCK if load_mode(REPO_ROOT) in _STRICT_MODES else Verdict.AUTH
+    risk = Risk.critical if floor is Verdict.BLOCK else Risk.high
+    reasons = list(dict.fromkeys([*decision.reason_codes, ReasonCode.tool_schema_changed]))
+    explanation = " ".join(
+        part for part in (decision.explanation.strip(), _TOOL_SCHEMA_CHANGED_EXPLANATION) if part
+    )
+    return decision.model_copy(
+        update={
+            "final_verdict": max_verdict(decision.final_verdict, floor),
+            "final_risk": max_risk(decision.final_risk, risk),
+            "reason_codes": reasons,
+            "explanation": explanation,
+        }
+    )
 
 
 def _denied_result(reason: ReasonCode, error_class: str, action_id: str) -> CallToolResult:
@@ -692,6 +719,7 @@ async def _handle_auth(
     # block even post-approval; otherwise the human-approved action is released.
     grants = tuple(await active_elevations(REPO_ROOT, now))
     redecision = _safe_decide(action, _build_ctx(arguments, grants, surprise_score, eid=eid))
+    redecision = await _apply_tool_pin_floor(tool_name, redecision)
     if redecision.final_verdict is Verdict.BLOCK:
         log_action(action, redecision.final_verdict)
         await _persist(redecision, action, auth_result="approved", eid=eid)
@@ -759,6 +787,7 @@ async def decide_and_execute(
         action,
         _build_ctx(arguments, grants, score, budget_ok=budget_ok, eid=eid, scope_token=token),
     )
+    decision = await _apply_tool_pin_floor(tool_name, decision)
 
     # HK.5.2/5.2b cross-call exfil floor: raise-only, awaited directly (this
     # function already runs inside a live event loop — see taint_floor.py's

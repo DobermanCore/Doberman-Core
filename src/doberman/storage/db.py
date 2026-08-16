@@ -57,7 +57,9 @@ DB_FILE = "doberman.db"
 #: task-match ledger (D2: session_task_hosts — additive CREATE TABLE; registered-
 #: domain tokens extracted from the TRUSTED (typed-only) user prompt at the turn
 #: gate, never the raw prompt text).
-SCHEMA_VERSION = 10
+#: Version 11 adds issue #246's tool-schema TOFU pins (additive CREATE TABLE;
+#: keyed HMAC fingerprints only, never raw tool descriptions/input schemas).
+SCHEMA_VERSION = 11
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -146,6 +148,17 @@ CREATE TABLE IF NOT EXISTS session_task_hosts (
     first_seen TEXT,
     last_seen  TEXT,
     PRIMARY KEY (scope, host)
+);
+
+-- Tool-schema pinning (#246): trust the first tools/list sighting, then record
+-- any changed (name, description, inputSchema) keyed-HMAC fingerprint. Raw tool
+-- descriptions and schemas are structurally absent from this table.
+CREATE TABLE IF NOT EXISTS tool_pins (
+    tool_name    TEXT PRIMARY KEY,
+    pinned_fp    TEXT NOT NULL,
+    last_seen_fp TEXT,
+    pinned_at    TEXT NOT NULL,
+    changed_at   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS baseline_counts (

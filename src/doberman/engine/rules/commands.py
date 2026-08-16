@@ -72,6 +72,7 @@ _DOBERMAN_CONTROL_SUBCOMMANDS = {
     "password",
     "revoke",
     "memory",
+    "tools",
 }
 
 #: Default bulk-operation threshold: deleting/touching this many paths in one

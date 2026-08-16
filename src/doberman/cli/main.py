@@ -54,6 +54,7 @@ from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
 from doberman.storage.memory import prune_stale_entities, reset_memory
 from doberman.storage.taint import clear_taint, entity_scope, read_taint
+from doberman.storage.tool_pins import approve_pin
 
 
 def _ensure_encode_safe_stdio() -> None:
@@ -97,6 +98,12 @@ taint_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(taint_app, name="taint")
+
+tools_app = typer.Typer(
+    help="MCP tool-schema pin management (gated re-approval).",
+    no_args_is_help=True,
+)
+app.add_typer(tools_app, name="tools")
 
 memory_app = typer.Typer(
     help="Learned behavioral memory: profile, gated reset, and retention pruning.",
@@ -1081,6 +1088,41 @@ def taint_clear(
         "This session's memory of a secret being read is gone; egress in this repo "
         "returns to the mode default until something taints it again."
     )
+
+
+@tools_app.command("approve")
+def tools_approve(
+    tool_name: str = typer.Argument(..., help="Tool name whose last-seen schema to approve."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Approve a changed MCP tool fingerprint after possession-factor verification."""
+    if not totp.is_enrolled() and not password.is_enrolled():
+        typer.echo(
+            "error: approving a tool pin requires an enrolled possession factor - "
+            "run `doberman 2fa setup` or `doberman password set` first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        approved, method = _verify_possession_factor(
+            CliPrompter(), action_label=f"approving the {tool_name} tool pin"
+        )
+    except Exception:  # noqa: BLE001 - any input/EOF/timeout error denies approval
+        approved, method = False, "denied"
+    if not approved:
+        typer.echo(f"error: tool pin approval denied ({method}); unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        approved_fp = asyncio.run(approve_pin(tool_name, repo_root=path))
+    except Exception as exc:  # noqa: BLE001 - failed storage update is never success
+        typer.echo(f"error: tool pin approval failed (error class: {type(exc).__name__})", err=True)
+        raise typer.Exit(code=1) from exc
+    if approved_fp is None:
+        typer.echo(f"error: no last-seen pin exists for tool {tool_name}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Tool pin approved for {tool_name}: {approved_fp}")
 
 
 @app.command(rich_help_panel="Auth")

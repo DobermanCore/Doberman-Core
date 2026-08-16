@@ -54,6 +54,8 @@ CLI_HELP_TARGETS = (
     ("hook", "codex-pre"),
     ("taint",),
     ("taint", "clear"),
+    ("tools",),
+    ("tools", "approve"),
 )
 
 runner = CliRunner()
