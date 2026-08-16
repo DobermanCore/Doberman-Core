@@ -237,6 +237,8 @@ class ReasonCode(StrEnum):
     unknown_external_destination = "unknown_external_destination"
     egress_requires_auth = "egress_requires_auth"
     encoded_exfiltration = "encoded_exfiltration"
+    # Issue #246: the live MCP tool contract changed after its TOFU pin.
+    tool_schema_changed = "tool_schema_changed"
     rule_error = "rule_error"
 
     # Feature 4 — agent role policy & boundaries (+ policy-source seam).

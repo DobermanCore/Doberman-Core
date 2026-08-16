@@ -7,6 +7,10 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **MCP tool-schema pinning** (#246): every proxied `tools/list` now records a keyed-HMAC
+  trust-on-first-use pin for each tool's name, description, and input schema. A later mismatch
+  raises live calls to AUTH in Light/Balanced or BLOCK in Strict/Paranoid until a human runs
+  `doberman tools approve <tool_name>`; raw schemas are never stored or logged.
 - **PII / financial data-class exfil rule** (#321): checksum-valid structured personal/financial
   data — payment card numbers (issuer prefix + Luhn), IBANs (mod-97), dashed US SSNs — in an
   outbound payload with an external destination now steps up to authentication in every mode.
