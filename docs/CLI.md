@@ -1,9 +1,6 @@
 # Doberman CLI reference
-
 Entry point: `doberman` (Typer). All commands accept `--help`.
-
 ## Core commands
-
 | Command | Purpose |
 |---------|---------|
 | `doberman scan` | Read-only capability risk map of the repo |
@@ -30,57 +27,41 @@ Entry point: `doberman` (Typer). All commands accept `--help`.
 | `doberman serve` | MCP stdio proxy in front of a downstream tool server |
 | `doberman version` | Print the installed Doberman version |
 | `doberman session-summary` | Print the device-global session-guard summary and exit |
-
 Global option: `doberman --version` / `-V` also prints the version and exits.
-
 ## Output conventions
-
 Human-readable diagnostics use one severity vocabulary: `error:` means the command failed and
 returned a non-zero exit code, `warning:` means the command succeeded but skipped or degraded
 something, and `note:` marks a purely informational aside. Machine-readable flags keep their
 documented schemas and do not add these prefixes.
-
 ## Auth enrollment
-
 Security-posture commands used by [SETUP.md](SETUP.md). Group entry points also appear in `doberman --help`.
-
 | Command | Purpose |
 |---------|---------|
 | `doberman 2fa setup` | Enroll TOTP two-factor; print provisioning URI |
 | `doberman 2fa remove` | Remove TOTP enrollment (proves possession of the factor) |
 | `doberman 2fa reset-lockout` | Clear TOTP lockout early (proves password possession) |
 | `doberman password set` | Set or rotate the local password possession factor |
-
 ## Session taint recovery
-
 | Command | Purpose |
 |---------|---------|
 | `doberman taint clear` | Clear this repo's sticky session taint (gated; needs a possession factor) |
-
 ## Host hooks
-
 Low-level harness integration (also installed via `install-hooks` / `setup`).
-
 | Command | Purpose |
 |---------|---------|
 | `doberman hook pre` | Claude Code PreToolUse — gate one tool call |
 | `doberman hook codex-pre` | Codex CLI PreToolUse — gate one tool call (same decision spine as `hook pre`) |
 | `doberman hook post` | Claude Code PostToolUse — scan output for secrets; record history |
 | `doberman hook openclaw` | OpenClaw `before_tool_call` plugin hook — gate one tool call |
-
 ## Machine-readable flags
-
 | Flag | Commands | Notes |
 |------|----------|-------|
-| `--json` | `status`, `scan`, `doctor`, `policy-history` | One JSON document on stdout |
+| `--json` | `scan`, `doctor`, `policy-history` | One JSON document on stdout |
 | `--jsonl` | `log` | One redacted decision object per line (empty if none) |
 | `--quiet` / `-q` | `scan` | No human map; exit code preserved |
 | `--path` / `-p` | most commands | Repository root (default `.`) |
-
 When both are passed, `--json` wins over `--quiet`: machine-readable JSON is still emitted.
-
 ### `doberman scan --json` schema
-
 ```json
 {
   "version": 1,
@@ -96,30 +77,22 @@ When both are passed, `--json` wins over `--quiet`: machine-readable JSON is sti
   ]
 }
 ```
-
 Capabilities are sorted by `(category, name)` for deterministic output.
-
 Each capability's `evidence` list is capped at **10** entries in discovery. The human-readable risk map shows only the first **3** of those entries per capability — so `doberman scan` and `doberman scan --json` can legitimately differ in how much evidence they display for the same capability.
-
 ### `doberman doctor --json`
-
 Emits `{version, path, ok, checks[], critical_failures[]}`. Exit code is still non-zero when critical checks fail.
-
 ### `doberman log --jsonl`
-
 Emits one redacted JSON object per decision line (newest first). Columns are an allowlist of already-redacted fields (`ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id` / `agent_role` / `risk` when present). Empty output when there are no rows.
 
 ## JSON output conventions
 
-All five machine-readable modes (`status --json`, `scan --json`, `doctor --json`,
-`policy-history --json`, `log --jsonl`) share one contract. Understanding it once covers every
-command.
+All four machine-readable modes share one contract. Understanding it once covers every command.
 
 ### Flag naming
 
-- **`--json`** (`status`, `scan`, `doctor`, `policy-history`) — emits **one JSON document** on
-  stdout: a single JSON object or array that can be piped directly into `jq`,
-  `python -m json.tool`, or any JSON-aware tool.
+- **`--json`** (`scan`, `doctor`, `policy-history`) — emits **one JSON document** on stdout: a single
+  JSON object or array that can be piped directly into `jq`, `python -m json.tool`, or any
+  JSON-aware tool.
 - **`--jsonl`** (`log`) — emits **one JSON object per line** (JSON Lines / NDJSON). Each line is
   independently parseable; an empty result set produces empty stdout, not `[]`. This shape suits
   streaming consumers and `while read line` shell loops.
@@ -156,14 +129,73 @@ JSON payload.
 
 ### `doberman policy-history --json` schema
 
-Emits a JSON array of ledger rows, newest first — the same redacted dicts the human view reads:
-`ts`, `rule_id`, `from_state`, `to_state`, `classification` (strengthen / weaken / neutral),
-`reason` (redacted at write time), `approval_method`, `approved` (denied weakening attempts are
-recorded too — the poisoning signal), and `approved_by`. No raw policy contents, secrets, or file
-paths appear.
+Emits a JSON array of policy-change rows in newest-first order, using the same redacted fields
+`read_policy_changes()` returns. Each element contains the change timestamp, the changed key,
+the previous and new values, and the actor. No raw policy contents, secrets, or file paths appear.
+
+## Exit codes
+
+All Doberman CLI commands follow a two-value convention. There are no genuine
+collisions: the same code always means the same class of failure regardless of
+which command raises it.
+
+| Code | Meaning | When |
+|------|---------|------|
+| `0` | Success | The command completed normally. |
+| `1` | Operation failed | A gate denied the change, a runtime error occurred, a required optional dependency is not installed, or the operation finished with errors. |
+| `2` | Bad input / usage error | An argument or option value is invalid before any state is touched (wrong mode name, unknown enforcement state, missing required argument). |
+
+Code `2` is reserved for *input validation* failures — the kind that could be caught
+before any I/O or gate check runs. Scripts that want to distinguish "the user
+passed a bad flag" from "the gate denied the change" can branch on `2` vs `1`.
+Code `1` covers everything else: auth denials, runtime errors, missing optional
+extras, and partial-success failures where some items were not affected.
+
+### Per-command detail
+
+| Command | Code | Trigger |
+|---------|------|---------|
+| `serve` | `2` | No downstream server command provided after `--` |
+| `serve` | `1` | MCP proxy runtime error |
+| `mode` | `2` | Invalid mode name |
+| `mode` | `1` | Mode change denied by possession-factor gate |
+| `enforcement` | `2` | Unknown enforcement state (must be `enforce`, `monitor`, or `off`) |
+| `enforcement` | `1` | Enforcement change denied by possession-factor gate |
+| `role disable-default` | `1` | Disable denied by possession-factor gate |
+| `prefs` | `2` | No value provided, or invalid dimension / value |
+| `prefs` | `1` | Preference change denied by possession-factor gate |
+| `doctor` | `1` | One or more critical checks failed |
+| `password set` | `1` | Passwords did not match, or enroll failed |
+| `2fa setup` | `1` | TOTP enroll failed |
+| `2fa remove` | `1` | Not enrolled; user declined confirmation; or unenroll failed |
+| `2fa reset-lockout` | `1` | Not enrolled; no password enrolled; or incorrect password |
+| `taint clear` | `1` | No possession factor enrolled; gate denied; or DB clear failed |
+| `tools approve` | `1` | No possession factor enrolled; gate denied; storage failed; or no pin exists for the named tool |
+| `revoke` | `1` | Elevation ID not found or revoke failed |
+| `tui` | `1` | Optional `textual` extra not installed |
+| `dash` | `1` | Optional `dash` extra not installed |
+| `demo` | `1` | Invalid mode name, or one or more scenarios did not match expected outcome |
+| `memory reset` | `1` | No possession factor enrolled; gate denied; or DB reset failed |
+| `memory prune` | `1` | DB prune operation failed |
+| `uninstall` | `1` | No possession factor enrolled; confirmation declined; name mismatch; gate denied; or some items were not removed |
+
+Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`,
+`install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`,
+`setup`, `hook pre/post/openclaw/codex-pre`) exit `0` on success and let
+Typer's default handler return `1` on unhandled exceptions; they have no
+explicit `typer.Exit(code=...)` call sites of their own.
+
+### Collision audit
+
+`grep -n "typer.Exit(code=" src/doberman/cli/main.py` returns 42 call sites
+(the issue body said 44; the count reflects the state at the time this section
+was written). All 42 use `code=1` or `code=2`. No command uses both codes for
+the same logical condition, and no two commands use the same code for
+contradictory meanings — `2` is always a bad-input rejection, `1` is always an
+operation failure. No exit-code values were changed; this section is
+documentation only.
 
 ## Examples
-
 ```bash
 doberman scan --path . | less
 doberman scan --json | jq '.capabilities[] | select(.present)'
@@ -175,5 +207,4 @@ doberman 2fa setup
 doberman password set
 doberman setup
 ```
-
 See also [SETUP.md](SETUP.md) and the root README.
