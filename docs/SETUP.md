@@ -409,6 +409,16 @@ header bar showing the current mode + effective enforcement at a glance, and a d
 state before any decisions arrive - no build step, no external assets, works fully offline like
 the rest of the shell.
 
+**Changing the mode from the dashboard.** The `change` button next to the mode badge opens a
+small form (`GET`/`POST /api/mode`) to switch Light/Balanced/Strict/Paranoid without touching a
+terminal. This goes through the exact same gate as `doberman mode`: raising strictness applies
+immediately, and lowering it prompts for the same possession factor (a 2FA code if enrolled,
+otherwise the Doberman password set via `doberman password set`) - with neither enrolled, a
+lowering fails closed. Every attempt, approved or denied, is written to the same append-only
+policy-change ledger (`doberman policy-history`). Exactly like `/api/resolve`, the dash server
+never verifies the code itself - it only carries it through to the existing gate in
+`doberman.policy.drift`.
+
 #### Try the demo
 
 Want to see real verdicts light up the dashboard without wiring up an agent? `doberman demo`
