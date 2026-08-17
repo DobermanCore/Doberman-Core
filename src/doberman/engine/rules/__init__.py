@@ -13,6 +13,7 @@ entry-point registry (slice 3.8) — core never imports it.
 """
 
 from doberman.engine.rules.commands import DestructiveCommandRule
+from doberman.engine.rules.data_classes import PiiDataClassRule
 from doberman.engine.rules.destinations import ExternalDestinationRule
 from doberman.engine.rules.normalization import NormalizationFailureRule
 from doberman.engine.rules.paths import ProtectedPathRule
@@ -35,6 +36,7 @@ BUILTIN_RULE_TYPES = (
     RoleBoundaryRule,
     PolicySourceRule,
     TokenChannelRule,
+    PiiDataClassRule,
     TrifectaFloorRule,
 )
 
@@ -43,6 +45,7 @@ __all__ = [
     "DestructiveCommandRule",
     "ExternalDestinationRule",
     "NormalizationFailureRule",
+    "PiiDataClassRule",
     "PolicySourceRule",
     "ProtectedPathRule",
     "RoleBoundaryRule",

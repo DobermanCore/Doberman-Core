@@ -3,7 +3,7 @@
 Every non-PASS Doberman decision can carry one or more `ReasonCode` values plus a human explanation.
 Catalogue of all members of `ReasonCode` in `src/doberman/models.py`, with raise-site modules under `src/doberman/`.
 
-**Total codes:** 53
+**Total codes:** 55
 
 | Code | Value | Group | Raised in | Meaning |
 |------|-------|-------|-----------|---------|
@@ -25,6 +25,8 @@ Catalogue of all members of `ReasonCode` in `src/doberman/models.py`, with raise
 | `unknown_external_destination` | `unknown_external_destination` | Feature 3 — objective guardrail (basic rules + plugin seam) | `auth/challenge.py`, `egress/local.py`, `engine/rules/destinations.py` | A network destination is not on the trusted-host allowlist and cannot otherwise be classified as safe, requiring authentication (subject to mode thresholds and any proven-broker override). |
 | `egress_requires_auth` | `egress_requires_auth` | Feature 3 — objective guardrail (basic rules + plugin seam) | `engine/rules/destinations.py` | A shell, package-install or git command has an external destination whose runtime route static parsing cannot prove, requiring authentication regardless of how trusted the parsed host looks. |
 | `encoded_exfiltration` | `encoded_exfiltration` | Feature 3 — objective guardrail (basic rules + plugin seam) | `auth/challenge.py` | Reserved for a base64/hex-encoded payload that decodes to a secret pattern. Wired into auth tiering and policy, but the shipped secrets rule currently reports such decoded hits as `secret_exfiltration` or `possible_high_entropy_secret`, so this code is not presently emitted. |
+| `tool_schema_changed` | `tool_schema_changed` | Feature 3 - objective guardrail (basic rules + plugin seam) | `proxy/executor.py` | The tool's (name, description, inputSchema) fingerprint no longer matches the pinned one - a possible rug-pull; AUTH in light/balanced, BLOCK in strict/paranoid until a human re-approves the pin. |
+| `pii_data_class_egress` | `pii_data_class_egress` | Feature 3 — objective guardrail (basic rules + plugin seam) | `engine/rules/data_classes.py` | The outbound payload contains checksum-valid personal or financial data — a payment card number (issuer prefix + Luhn), an IBAN (mod-97), or a dashed US SSN — and the action has an external destination, so authentication is required in every mode. Only the class label is recorded, never the matched value. |
 | `rule_error` | `rule_error` | Feature 3 — objective guardrail (basic rules + plugin seam) | `engine/objective.py`, `engine/subjective.py` | An individual objective or subjective rule raised, or returned something other than a `GuardrailResult`, while being evaluated. That one rule's result is isolated to AUTH rather than being allowed to force a silent PASS or an unrelated hard BLOCK. |
 | `role_blocked_target` | `role_blocked_target` | Feature 4 — agent role policy & boundaries (+ policy-source seam) | `engine/rules/role_boundary.py`, `policy/modes.py` | The active agent role's boundary matcher explicitly denies this target, hard-blocking the action. |
 | `role_out_of_scope` | `role_out_of_scope` | Feature 4 — agent role policy & boundaries (+ policy-source seam) | `auth/challenge.py`, `engine/rules/role_boundary.py`, `policy/drift.py` | The action falls outside the boundaries declared for the agent's active role without being on an explicit block list, requiring authentication (role elevation). |

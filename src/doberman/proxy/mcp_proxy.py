@@ -6,14 +6,18 @@ the single chokepoint. The agent's MCP config points at Doberman instead of
 the real tool server, which puts Doberman physically on the execution path.
 """
 
+import logging
+
 from mcp.client.session import ClientSession
 from mcp.server.lowlevel import Server
 from mcp.shared.exceptions import McpError
 from mcp.types import INTERNAL_ERROR, CallToolResult, ErrorData, Tool
 
 from doberman.proxy import executor
+from doberman.storage import tool_pins
 
 PROXY_NAME = "doberman"
+logger = logging.getLogger("doberman.proxy.mcp_proxy")
 
 
 def build_proxy_server(downstream: ClientSession, *, name: str = PROXY_NAME) -> Server:
@@ -42,6 +46,17 @@ def build_proxy_server(downstream: ClientSession, *, name: str = PROXY_NAME) -> 
                     ),
                 )
             ) from None
+        try:
+            # Keep this module-attribute call patchable: schema reconciliation
+            # is observable in tests and must never make tools/list unavailable.
+            await tool_pins.reconcile_pins(result.tools, repo_root=executor.REPO_ROOT)
+        except Exception as exc:  # noqa: BLE001 - tools/list must remain available
+            # Defense in depth around the storage API's own never-raise contract.
+            # Never include the exception message: it could contain raw schema.
+            logger.warning(
+                "tool-pin reconciliation escaped its boundary; continuing (error class: %s)",
+                type(exc).__name__,
+            )
         return result.tools
 
     @server.call_tool()

@@ -36,6 +36,7 @@ from doberman.config import (
     save_preferences,
 )
 from doberman.demo import format_outcome_line, format_summary_table, run_demo
+from doberman.discovery.mcp_scan import MCP_CONFIG_FILES, scan_mcp_configs
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
@@ -53,6 +54,7 @@ from doberman.storage.db import active_elevations, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
 from doberman.storage.memory import prune_stale_entities, reset_memory
 from doberman.storage.taint import clear_taint, entity_scope, read_taint
+from doberman.storage.tool_pins import approve_pin
 
 
 def _ensure_encode_safe_stdio() -> None:
@@ -96,6 +98,12 @@ taint_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(taint_app, name="taint")
+
+tools_app = typer.Typer(
+    help="MCP tool-schema pin management (gated re-approval).",
+    no_args_is_help=True,
+)
+app.add_typer(tools_app, name="tools")
 
 memory_app = typer.Typer(
     help="Learned behavioral memory: profile, gated reset, and retention pruning.",
@@ -243,6 +251,11 @@ def scan(
         "--json",
         help="Emit one deterministic JSON document on stdout instead of the risk map.",
     ),
+    mcp: bool = typer.Option(
+        False,
+        "--mcp",
+        help="Statically scan known repository MCP configs for suspicious patterns.",
+    ),
 ) -> None:
     """Show a read-only risk map of the agent's capabilities and sensitive surface.
 
@@ -250,6 +263,10 @@ def scan(
     Tool-derived capabilities require a live proxy session and are omitted here.
     """
     capabilities = rate_capabilities(enumerate_capabilities(tools=[], repo_root=path))
+    mcp_findings = scan_mcp_configs(path) if mcp else []
+    mcp_files = (
+        [name for name in MCP_CONFIG_FILES if (Path(path) / Path(name)).is_file()] if mcp else []
+    )
     if as_json:
         # Stable schema for scripts/editor integrations (#178).
         payload = {
@@ -266,10 +283,36 @@ def scan(
                 for c in sorted(capabilities, key=lambda x: (x.category, x.name))
             ],
         }
+        if mcp:
+            payload["mcp"] = {
+                "findings": [
+                    {
+                        "server": finding.server,
+                        "source_file": finding.source_file,
+                        "category": finding.category,
+                        "pattern_class": finding.pattern_class,
+                        "risk": finding.risk.value,
+                    }
+                    for finding in mcp_findings
+                ],
+                "files_scanned": mcp_files,
+            }
         typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return
     if not quiet:
-        typer.echo(render_risk_map(capabilities))
+        output = render_risk_map(capabilities)
+        if mcp:
+            lines = ["", "MCP configuration admission scan", "=" * 32]
+            if mcp_findings:
+                lines.extend(
+                    f"[{finding.risk.value.upper():^8}] {finding.source_file} "
+                    f"{finding.server} ({finding.category}/{finding.pattern_class})"
+                    for finding in mcp_findings
+                )
+            else:
+                lines.append("No suspicious MCP configuration patterns found.")
+            output = "\n".join([output, *lines])
+        typer.echo(output)
 
 
 @app.command(rich_help_panel="Policy")
@@ -1045,6 +1088,41 @@ def taint_clear(
         "This session's memory of a secret being read is gone; egress in this repo "
         "returns to the mode default until something taints it again."
     )
+
+
+@tools_app.command("approve")
+def tools_approve(
+    tool_name: str = typer.Argument(..., help="Tool name whose last-seen schema to approve."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Approve a changed MCP tool fingerprint after possession-factor verification."""
+    if not totp.is_enrolled() and not password.is_enrolled():
+        typer.echo(
+            "error: approving a tool pin requires an enrolled possession factor - "
+            "run `doberman 2fa setup` or `doberman password set` first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        approved, method = _verify_possession_factor(
+            CliPrompter(), action_label=f"approving the {tool_name} tool pin"
+        )
+    except Exception:  # noqa: BLE001 - any input/EOF/timeout error denies approval
+        approved, method = False, "denied"
+    if not approved:
+        typer.echo(f"error: tool pin approval denied ({method}); unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        approved_fp = asyncio.run(approve_pin(tool_name, repo_root=path))
+    except Exception as exc:  # noqa: BLE001 - failed storage update is never success
+        typer.echo(f"error: tool pin approval failed (error class: {type(exc).__name__})", err=True)
+        raise typer.Exit(code=1) from exc
+    if approved_fp is None:
+        typer.echo(f"error: no last-seen pin exists for tool {tool_name}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Tool pin approved for {tool_name}: {approved_fp}")
 
 
 @app.command(rich_help_panel="Auth")

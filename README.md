@@ -122,6 +122,10 @@ width. Colour is dropped automatically when output is piped or redirected, and h
 CLI diagnostics use one severity vocabulary: fatal failures start with `error:`, successful but
 degraded or skipped work starts with `warning:`, and informational asides start with `note:`.
 
+Add `--mcp` to `doberman scan` for a static, read-only admission check of repository MCP configs;
+it reports pattern classes only and never emits raw URLs, arguments, environment values, or other
+config content.
+
 ---
 
 ## Verify it end-to-end
@@ -246,7 +250,11 @@ Set a mode in `.doberman/policies.yaml` or via `doberman mode <mode>`. Every mod
 >
 > Editing **CI/CD pipeline configuration** — GitHub Actions, GitLab CI (`.gitlab-ci.yml`), Jenkins (`Jenkinsfile`), CircleCI (`.circleci/`), or Azure Pipelines (`azure-pipelines.yml`) — steps up to **authentication in every mode**: that config builds, tests, signs, and deploys the repo, so an agent rewrite is always a human-in-the-loop moment.
 >
+> **Default-registry package fetches** get the same Light/Balanced relaxation: a recognized package-manager fetch with no explicit URL — `pip install requests`, `pip install -r requirements.txt`, `npm install`, `yarn add`, `poetry install`, `go mod download` — passes without a prompt, because its route is the manager's default registry (pypi.org, registry.npmjs.org, …), a *stronger* signal than the unknown hosts these modes already allow. Anything that could redirect the route still steps up in every mode: an explicit URL, `--index-url`/`--registry` (attached or separated), a proxy or registry environment variable, dynamic tokens, a chained command, or the publish/upload direction. `git pull`/`git fetch` also still step up — their route is the configured remote, which static parsing cannot verify. Strict/Paranoid keep the prompt for every package fetch.
+>
 > **Unknown network destinations** step up to authentication only in Strict/Paranoid. Light and Balanced treat a plain unknown host (e.g. fetching a docs site or an API) as allowed — that AUTH fired on almost every web fetch and was the top source of benign prompts. This relaxes the *destination-alone* signal only: a secret leaving to **any** host is still a hard block (secrets rule + raise-only combine, every mode), and the sharper destination smells (credentials embedded in the URL, raw IP addresses, unresolvable hosts) still step up in every mode. An **out-of-scope role target** likewise steps up in Balanced/Strict/Paranoid but is relaxed in Light; a role-**blocked** target is a hard block in every mode.
+>
+> **Checksum-valid personal or financial data bound for an external destination** — a payment card number (issuer prefix + Luhn), an IBAN (mod-97), or a dashed US SSN — steps up to **authentication in every mode**. Presence alone never escalates: a card number written to a local file is not exfiltration; the prompt fires only when the data class co-occurs with an outbound destination, mirroring the trifecta's structure. Only the class label reaches any log ("payment card number"), never the value. Free-text PII (names, addresses) and one-time auth codes are outside this structured-format rule's reach — that limit is recorded, not papered over.
 >
 > One escalation is mode-gated: the **lethal trifecta** — sensitive data **and** untrusted-content provenance **and** an external destination — steps up to authentication in Light/Balanced, and is a hard **BLOCK** in Strict/Paranoid. Those high-security modes refuse this serious-exfil pattern outright rather than leaving it to a confirmation prompt that alert fatigue could rubber-stamp. In Strict/Paranoid this hard block is enforced at **both** decision layers (the objective rules *and* the subjective floor), so an authentication step-up on some other signal can never mask it back down to a mere prompt.
 >
@@ -275,6 +283,10 @@ The adaptive layer's four SL5 "care" weights (`confidentiality`, `reversibility`
 ### Recovering from sticky taint — `doberman taint clear`
 
 Reading a secret taints a session for the rest of it, by design — a timed reset would just be a bypass an attacker waits out. In Strict/Paranoid that means a single legitimate secret read can raise every later egress in that repo to AUTH or BLOCK, with no in-band way to reset it. `doberman taint clear` is the explicit, human-only escape hatch: it requires an enrolled possession factor (TOTP if enrolled, otherwise the local Doberman password) and, once verified, wipes **both** taint stores for the current repo — the accumulated-taint ledger and the read-vs-send fingerprint match. There is no confirm-only path, no `--scope`/`--session` narrowing, and a denied or failed gate leaves every row untouched. Because `taint` is already a control-plane-blocked subcommand, a mediated agent can never shell out to run this itself — it only runs from your own terminal.
+
+### MCP tool-schema rug-pull defense — `doberman tools approve`
+
+On every proxied `tools/list`, Doberman pins a keyed-HMAC fingerprint of each tool's name, description, and input schema, then checks that pin on the live `tools/call` path. A changed contract raises the call to AUTH in Light/Balanced or BLOCK in Strict/Paranoid; raw schemas are never stored or logged. This is honestly **trust on first use**: it detects a change after first contact, not a malicious schema presented on that first contact. After reviewing the server change out-of-band, run `doberman tools approve <tool_name>` from your terminal (possession-factor required); mediated agents are blocked from invoking that weakening themselves.
 
 ### Governing learned memory — `doberman memory reset` / `doberman memory prune`
 

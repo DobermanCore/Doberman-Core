@@ -8,10 +8,12 @@ present). Deterministic and hermetic — no live ``codex`` process.
 """
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.hosthooks import claude_code, codex
 from doberman.hosthooks import spine as spine_module
 
@@ -188,6 +190,44 @@ def test_auth_runs_dobermans_own_challenge(tmp_path, monkeypatch):
     # A Write to a CI/CD config is DEFAULT_SENSITIVE -> AUTH tier (the path rule
     # runs on the file_write target; a shell redirect to the same path is not
     # AUTH'd by the command rule, so use a real file-write action here).
+    payload["tool_name"] = "Write"
+    payload["tool_input"] = {"file_path": ".github/workflows/ci.yml", "content": "x"}
+    out = codex.evaluate_pre(payload)
+    assert out is not None, "an AUTH-tier action must not abstain"
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class _Approve:
+    """A local human who is present and says yes (confirm-only tiers)."""
+
+    def confirm(self, message):
+        return True
+
+    def read_code(self, message):
+        return "000000"
+
+
+@pytest.mark.guarantee("auth-action-bound", host="codex")
+def test_approval_is_bound_to_the_action_id(tmp_path, monkeypatch):
+    """#65/#67 parity: an approval for one action id must never authorize a
+    different action, even if a buggy or compromised auth provider returns
+    "approved" — mirrors test_hosthook_auth_challenge.py's own-host proof."""
+
+    def _fake_challenge(decision, action, *, prompter=None, at=None):
+        return AuthResult(
+            approved=True,
+            tier=AuthTier.local_auth,
+            method="local_auth",
+            at=datetime.now(timezone.utc),
+            action_id="some-other-action",  # approved, but for the WRONG action
+        )
+
+    monkeypatch.setattr(codex, "AUTH_PROMPTER", _Approve())
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _fake_challenge)
+    payload = _load("pre_bash.json")
+    payload["cwd"] = str(tmp_path)
+    # A Write to a CI/CD config is DEFAULT_SENSITIVE -> AUTH tier (same action
+    # used by test_auth_runs_dobermans_own_challenge above).
     payload["tool_name"] = "Write"
     payload["tool_input"] = {"file_path": ".github/workflows/ci.yml", "content": "x"}
     out = codex.evaluate_pre(payload)

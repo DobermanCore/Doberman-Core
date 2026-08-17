@@ -237,6 +237,8 @@ class ReasonCode(StrEnum):
     unknown_external_destination = "unknown_external_destination"
     egress_requires_auth = "egress_requires_auth"
     encoded_exfiltration = "encoded_exfiltration"
+    # Issue #246: the live MCP tool contract changed after its TOFU pin.
+    tool_schema_changed = "tool_schema_changed"
     rule_error = "rule_error"
 
     # Feature 4 — agent role policy & boundaries (+ policy-source seam).
@@ -254,6 +256,11 @@ class ReasonCode(StrEnum):
     irreversible_high_blast = "irreversible_high_blast"
     lethal_trifecta = "lethal_trifecta"
     unclassified_action = "unclassified_action"
+
+    # PII / financial data-class exfil (issue #321): checksum-valid personal or
+    # financial data (card number, IBAN, SSN) in an outbound payload with an
+    # external destination. Class label only — the matched value is never logged.
+    pii_data_class_egress = "pii_data_class_egress"
 
     # OOD / smuggled-token channel defense (objective rule + subjective detector).
     smuggled_token_channel = "smuggled_token_channel"  # noqa: S105 — reason code, not a secret
