@@ -163,6 +163,17 @@ def test_apply_patch_without_derived_paths_fails_closed(cwd):
     assert _call("apply_patch", {"patch": "diff"}, cwd=cwd)["verdict"] == "block"
 
 
+@pytest.mark.guarantee("control-plane-self-protection", host="openclaw")
+def test_control_plane_write_is_blocked(cwd):
+    out = _call(
+        "apply_patch",
+        {"patch": "diff"},
+        derived_paths=[".doberman/policies.yaml"],
+        cwd=cwd,
+    )
+    assert out["verdict"] == "block"
+
+
 # --- gating scope --------------------------------------------------------------
 
 
