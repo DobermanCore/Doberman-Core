@@ -41,6 +41,19 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   "no decisions yet" empty-state (it stayed visible even with rows); the wrapper is removed so the
   empty-state hides correctly again, and a test now guards the sibling structure the reveal needs.
   The README demo gif is refreshed to the new dark brand look.
+- **Environment-variable dump detection** (thanks @QY-25123): a shell command whose sole effect
+  is to enumerate/print the process environment — bare `env`, any form of `printenv`, `export`/
+  `export -p`, `declare -x`/`typeset -x` with no named variable, or a PowerShell `Env:` drive
+  listing (`Get-ChildItem Env:`/`gci env:`/`dir env:`/`ls Env:`) — now steps up to authentication
+  before it runs. Previously these fell through a gap between the destructive-command rule (no
+  file/network target to check) and the secrets rule (nothing secret-shaped in the *command
+  text* itself, only in output the command hadn't produced yet): `env`'s own listing in
+  `_TRANSPARENT_WRAPPERS` stripped it down to an empty token list pre-execution, so the process
+  environment — a common carrier for API keys and tokens — could be printed straight into an
+  agent's context with no pre-execution check at all, only a same-turn output scan after the
+  fact. New reason code `environment_dump_command`. Legitimate uses are unaffected: `env
+  FOO=bar real_command` (env as a wrapper) and `export FOO=bar`/`declare -x FOO=bar` (setting one
+  variable) still pass.
 - **MCP tool-schema pinning** (#246): every proxied `tools/list` now records a keyed-HMAC
   trust-on-first-use pin for each tool's name, description, and input schema. A later mismatch
   raises live calls to AUTH in Light/Balanced or BLOCK in Strict/Paranoid until a human runs

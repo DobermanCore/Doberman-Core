@@ -3,7 +3,7 @@
 Every non-PASS Doberman decision can carry one or more `ReasonCode` values plus a human explanation.
 Catalogue of all members of `ReasonCode` in `src/doberman/models.py`, with raise-site modules under `src/doberman/`.
 
-**Total codes:** 55
+**Total codes:** 56
 
 | Code | Value | Group | Raised in | Meaning |
 |------|-------|-------|-----------|---------|
@@ -20,6 +20,7 @@ Catalogue of all members of `ReasonCode` in `src/doberman/models.py`, with raise
 | `protected_path_blocked` | `protected_path_blocked` | Feature 3 — objective guardrail (basic rules + plugin seam) | `engine/rules/commands.py`, `engine/rules/paths.py`, `policy/modes.py` | The target path resolves inside a location explicitly protected by policy (e.g. Doberman's own control-plane files), hard-blocking the action. |
 | `sensitive_path_access` | `sensitive_path_access` | Feature 3 — objective guardrail (basic rules + plugin seam) | `auth/challenge.py`, `engine/rules/paths.py`, `policy/drift.py` | The target path matches a sensitive-but-not-protected location, requiring authentication before the access proceeds. |
 | `destructive_command` | `destructive_command` | Feature 3 — objective guardrail (basic rules + plugin seam) | `engine/rules/commands.py`, `policy/modes.py` | A shell or git command matched a pattern that irreversibly destroys data or history — a recursive force-delete, a history rewrite, or piping a downloaded payload into a shell. |
+| `environment_dump_command` | `environment_dump_command` | Feature 3 — objective guardrail (basic rules + plugin seam) | `engine/rules/commands.py` | A shell command whose sole effect is to enumerate/print the process environment (bare `env`, any form of `printenv`, `export`/`export -p`, `declare -x`/`typeset -x` with no named variable, or a PowerShell `Env:` drive listing) — a locally-scoped read of a common secret carrier, requiring authentication before it runs. |
 | `bulk_operation` | `bulk_operation` | Feature 3 — objective guardrail (basic rules + plugin seam) | `auth/challenge.py`, `engine/rules/commands.py`, `policy/drift.py` | A command deletes at or above the configured bulk-operand threshold, requiring authentication before the mass operation proceeds. |
 | `opaque_command` | `opaque_command` | Feature 3 — objective guardrail (basic rules + plugin seam) | `auth/challenge.py`, `engine/rules/commands.py` | A command's effect cannot be determined statically — an inline shell payload (`-c ...`) or a command that fails to parse safely — requiring authentication before it runs. |
 | `unknown_external_destination` | `unknown_external_destination` | Feature 3 — objective guardrail (basic rules + plugin seam) | `auth/challenge.py`, `egress/local.py`, `engine/rules/destinations.py` | A network destination is not on the trusted-host allowlist and cannot otherwise be classified as safe, requiring authentication (subject to mode thresholds and any proven-broker override). |

@@ -232,6 +232,11 @@ class ReasonCode(StrEnum):
     protected_path_blocked = "protected_path_blocked"
     sensitive_path_access = "sensitive_path_access"
     destructive_command = "destructive_command"
+    # A shell command whose sole effect is to enumerate/print the process
+    # environment (bare `env`, `printenv`, `export -p`, `declare -x`, the
+    # PowerShell `Env:` drive) — a locally-scoped read of a common secret
+    # carrier, parallel to `sensitive_secret_access` for files.
+    environment_dump_command = "environment_dump_command"
     bulk_operation = "bulk_operation"
     opaque_command = "opaque_command"
     unknown_external_destination = "unknown_external_destination"

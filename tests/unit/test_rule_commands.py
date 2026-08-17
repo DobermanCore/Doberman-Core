@@ -271,3 +271,68 @@ def test_shared_command_walk_surfaces_unbalanced_and_cap_exhaustion_as_ambiguity
     assert unbalanced is True
     assert len(capped_segments) == 256
     assert cap_exhausted is True
+
+
+# --- Environment-dump detection ---------------------------------------------
+# `env` (as a transparent wrapper) previously stripped bare `env`/`printenv`/
+# `export` invocations down to an empty token list, which the caller's
+# `if not tokens: continue` guard silently skipped — the process environment
+# (a common secret carrier: API keys, tokens) could be printed with no
+# pre-execution check at all. These commands now step up to AUTH.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env",
+        "env -i",
+        "env -0",
+        "env -u HOME",
+        "env --unset=HOME",
+        "sudo env",
+        "printenv",
+        "printenv HOME",  # targets one var, but still reads the environment
+        "export",
+        "export -p",
+        "declare -x",
+        "typeset -x",
+        "Get-ChildItem Env:",
+        "gci env:",
+        "dir env:",
+        "ls Env:",
+    ],
+)
+def test_environment_dump_commands_require_auth(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.environment_dump_command in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env python app.py",  # env used as a wrapper to run a real command
+        "env FOO=bar some_command",
+        "export FOO=bar",  # sets one variable, doesn't list them
+        "export FOO",
+        "declare -x FOO=bar",
+        "declare -r FOO",  # -x not present - not an export listing
+        "ls env-notes.txt",  # a file named similarly, not the PowerShell drive
+    ],
+)
+def test_non_dump_env_related_commands_pass(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.PASS
+
+
+def test_env_with_only_assignment_and_no_command_is_still_a_dump():
+    # `env FOO=bar` (no utility operand) prints the environment merged with
+    # the override, per POSIX `env` semantics - still a dump.
+    result = _cmd("env FOO=bar")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.environment_dump_command in result.reason_codes
+
+
+def test_environment_dump_explanation_never_echoes_command_text():
+    result = _cmd("env")
+    assert "env" not in result.explanation.lower().split()
