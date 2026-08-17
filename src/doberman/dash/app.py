@@ -511,11 +511,21 @@ _HTML_SHELL = """<!doctype html>
             " @ " + (String(row.ts || "").slice(11, 19) || "-");
           li.appendChild(detail);
 
+          // Rows are appended oldest-first, so the newest decision is always
+          // the last child - keep the scrollable list pinned to that end
+          // (unless the user has scrolled up to read older rows) so a
+          // freshly loaded dashboard shows the latest activity, not the
+          // oldest backfilled row.
+          var nearBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 4;
+
           // The empty state is CSS-only (`#feed:not(:empty) ~ #feed-empty`) -
           // appending the first row is enough to reveal the real list.
           feedEl.appendChild(li);
           while (feedEl.children.length > MAX_FEED_ROWS) {
             feedEl.removeChild(feedEl.firstChild);
+          }
+          if (nearBottom) {
+            feedEl.scrollTop = feedEl.scrollHeight;
           }
         });
       } catch (e) {
