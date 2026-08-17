@@ -1,4 +1,5 @@
 """Shared test fixtures.
+
 Feature 3 introduces keyed HMAC fingerprinting, which reads/creates a local key
 file. Tests must NEVER touch the real per-user key (deterministic, isolated
 runs only), so we point ``DOBERMAN_KEY_FILE`` at a throwaway path inside a
@@ -23,6 +24,7 @@ from doberman.storage.fingerprint import KEY_FILE_ENV
 def isolated_fingerprint_key(tmp_path, monkeypatch):
     """Point the HMAC key at a per-test temp file so tests never use the real
     user key and never share key state across tests.
+
     Returns the key path so tests that exercise key generation/rotation can use
     it directly (there is exactly ONE setter of the env var — this fixture — so
     the key path is deterministic and free of fixture-ordering races).
@@ -35,6 +37,7 @@ def isolated_fingerprint_key(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def isolated_totp_secret(tmp_path, monkeypatch):
     """Point the TOTP secret at a per-test temp file (Feature 7).
+
     Tests must never touch the real per-user 2FA secret, and the
     consecutive-failure rate-limit state is keyed by this path, so a fresh path
     per test isolates rate-limit state too. Returns the path for tests that
@@ -48,6 +51,7 @@ def isolated_totp_secret(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def isolated_password_hash(tmp_path, monkeypatch):
     """Point the local password hash at a per-test temp file (C1 slice 2).
+
     Tests must never touch a real per-user possession factor. The failure
     counter is keyed by this path, so a fresh path also isolates lockout state.
     """
@@ -59,6 +63,7 @@ def isolated_password_hash(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def isolated_device_metrics_home(tmp_path, monkeypatch):
     """Point the device-global metrics rollup (dashboard) at a per-test temp dir.
+
     ``storage.device_metrics`` writes a lifetime rollup to
     ``~/.doberman/metrics.db`` on every decision (:mod:`doberman.storage.log`);
     tests must never touch the real per-user rollup, so point ``DOBERMAN_HOME``
@@ -74,6 +79,7 @@ def isolated_device_metrics_home(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def isolated_executor_repo_root(tmp_path, monkeypatch):
     """Point the proxy's repo root (config + elevation DB) at a temp dir.
+
     Feature 7 persists elevations to ``<repo_root>/.doberman/doberman.db``; this
     keeps every test's DB/config inside its own tmp dir so nothing is ever
     written into the working tree, and elevation state never leaks across tests.

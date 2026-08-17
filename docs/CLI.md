@@ -1,6 +1,9 @@
 # Doberman CLI reference
+
 Entry point: `doberman` (Typer). All commands accept `--help`.
+
 ## Core commands
+
 | Command | Purpose |
 |---------|---------|
 | `doberman scan` | Read-only capability risk map of the repo |
@@ -27,41 +30,57 @@ Entry point: `doberman` (Typer). All commands accept `--help`.
 | `doberman serve` | MCP stdio proxy in front of a downstream tool server |
 | `doberman version` | Print the installed Doberman version |
 | `doberman session-summary` | Print the device-global session-guard summary and exit |
+
 Global option: `doberman --version` / `-V` also prints the version and exits.
+
 ## Output conventions
+
 Human-readable diagnostics use one severity vocabulary: `error:` means the command failed and
 returned a non-zero exit code, `warning:` means the command succeeded but skipped or degraded
 something, and `note:` marks a purely informational aside. Machine-readable flags keep their
 documented schemas and do not add these prefixes.
+
 ## Auth enrollment
+
 Security-posture commands used by [SETUP.md](SETUP.md). Group entry points also appear in `doberman --help`.
+
 | Command | Purpose |
 |---------|---------|
 | `doberman 2fa setup` | Enroll TOTP two-factor; print provisioning URI |
 | `doberman 2fa remove` | Remove TOTP enrollment (proves possession of the factor) |
 | `doberman 2fa reset-lockout` | Clear TOTP lockout early (proves password possession) |
 | `doberman password set` | Set or rotate the local password possession factor |
+
 ## Session taint recovery
+
 | Command | Purpose |
 |---------|---------|
 | `doberman taint clear` | Clear this repo's sticky session taint (gated; needs a possession factor) |
+
 ## Host hooks
+
 Low-level harness integration (also installed via `install-hooks` / `setup`).
+
 | Command | Purpose |
 |---------|---------|
 | `doberman hook pre` | Claude Code PreToolUse — gate one tool call |
 | `doberman hook codex-pre` | Codex CLI PreToolUse — gate one tool call (same decision spine as `hook pre`) |
 | `doberman hook post` | Claude Code PostToolUse — scan output for secrets; record history |
 | `doberman hook openclaw` | OpenClaw `before_tool_call` plugin hook — gate one tool call |
+
 ## Machine-readable flags
+
 | Flag | Commands | Notes |
 |------|----------|-------|
-| `--json` | `scan`, `doctor`, `policy-history` | One JSON document on stdout |
+| `--json` | `status`, `scan`, `doctor`, `policy-history` | One JSON document on stdout |
 | `--jsonl` | `log` | One redacted decision object per line (empty if none) |
 | `--quiet` / `-q` | `scan` | No human map; exit code preserved |
 | `--path` / `-p` | most commands | Repository root (default `.`) |
+
 When both are passed, `--json` wins over `--quiet`: machine-readable JSON is still emitted.
+
 ### `doberman scan --json` schema
+
 ```json
 {
   "version": 1,
@@ -77,22 +96,30 @@ When both are passed, `--json` wins over `--quiet`: machine-readable JSON is sti
   ]
 }
 ```
+
 Capabilities are sorted by `(category, name)` for deterministic output.
+
 Each capability's `evidence` list is capped at **10** entries in discovery. The human-readable risk map shows only the first **3** of those entries per capability — so `doberman scan` and `doberman scan --json` can legitimately differ in how much evidence they display for the same capability.
+
 ### `doberman doctor --json`
+
 Emits `{version, path, ok, checks[], critical_failures[]}`. Exit code is still non-zero when critical checks fail.
+
 ### `doberman log --jsonl`
+
 Emits one redacted JSON object per decision line (newest first). Columns are an allowlist of already-redacted fields (`ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id` / `agent_role` / `risk` when present). Empty output when there are no rows.
 
 ## JSON output conventions
 
-All four machine-readable modes share one contract. Understanding it once covers every command.
+All five machine-readable modes (`status --json`, `scan --json`, `doctor --json`,
+`policy-history --json`, `log --jsonl`) share one contract. Understanding it once covers every
+command.
 
 ### Flag naming
 
-- **`--json`** (`scan`, `doctor`, `policy-history`) — emits **one JSON document** on stdout: a single
-  JSON object or array that can be piped directly into `jq`, `python -m json.tool`, or any
-  JSON-aware tool.
+- **`--json`** (`status`, `scan`, `doctor`, `policy-history`) — emits **one JSON document** on
+  stdout: a single JSON object or array that can be piped directly into `jq`,
+  `python -m json.tool`, or any JSON-aware tool.
 - **`--jsonl`** (`log`) — emits **one JSON object per line** (JSON Lines / NDJSON). Each line is
   independently parseable; an empty result set produces empty stdout, not `[]`. This shape suits
   streaming consumers and `while read line` shell loops.
@@ -129,11 +156,14 @@ JSON payload.
 
 ### `doberman policy-history --json` schema
 
-Emits a JSON array of policy-change rows in newest-first order, using the same redacted fields
-`read_policy_changes()` returns. Each element contains the change timestamp, the changed key,
-the previous and new values, and the actor. No raw policy contents, secrets, or file paths appear.
+Emits a JSON array of ledger rows, newest first — the same redacted dicts the human view reads:
+`ts`, `rule_id`, `from_state`, `to_state`, `classification` (strengthen / weaken / neutral),
+`reason` (redacted at write time), `approval_method`, `approved` (denied weakening attempts are
+recorded too — the poisoning signal), and `approved_by`. No raw policy contents, secrets, or file
+paths appear.
 
 ## Examples
+
 ```bash
 doberman scan --path . | less
 doberman scan --json | jq '.capabilities[] | select(.present)'
@@ -145,4 +175,5 @@ doberman 2fa setup
 doberman password set
 doberman setup
 ```
+
 See also [SETUP.md](SETUP.md) and the root README.
