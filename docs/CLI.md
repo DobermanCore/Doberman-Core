@@ -72,7 +72,7 @@ Low-level harness integration (also installed via `install-hooks` / `setup`).
 
 | Flag | Commands | Notes |
 |------|----------|-------|
-| `--json` | `scan`, `doctor`, `policy-history` | One JSON document on stdout |
+| `--json` | `status`, `scan`, `doctor`, `policy-history` | One JSON document on stdout |
 | `--jsonl` | `log` | One redacted decision object per line (empty if none) |
 | `--quiet` / `-q` | `scan` | No human map; exit code preserved |
 | `--path` / `-p` | most commands | Repository root (default `.`) |
@@ -108,6 +108,59 @@ Emits `{version, path, ok, checks[], critical_failures[]}`. Exit code is still n
 ### `doberman log --jsonl`
 
 Emits one redacted JSON object per decision line (newest first). Columns are an allowlist of already-redacted fields (`ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id` / `agent_role` / `risk` when present). Empty output when there are no rows.
+
+## JSON output conventions
+
+All five machine-readable modes (`status --json`, `scan --json`, `doctor --json`,
+`policy-history --json`, `log --jsonl`) share one contract. Understanding it once covers every
+command.
+
+### Flag naming
+
+- **`--json`** (`status`, `scan`, `doctor`, `policy-history`) — emits **one JSON document** on
+  stdout: a single JSON object or array that can be piped directly into `jq`,
+  `python -m json.tool`, or any JSON-aware tool.
+- **`--jsonl`** (`log`) — emits **one JSON object per line** (JSON Lines / NDJSON). Each line is
+  independently parseable; an empty result set produces empty stdout, not `[]`. This shape suits
+  streaming consumers and `while read line` shell loops.
+
+The two shapes are genuinely different and the flag names make the difference explicit:
+`--json` → one document, `--jsonl` → one object per line.
+
+### Stdout purity
+
+When a machine-readable flag is active, **stdout contains JSON and nothing else**. Rich tables,
+headings, progress spinners, and `note:` / `warning:` lines are suppressed or redirected to
+stderr. Scripts must read only stdout; humans can read stderr.
+
+### Redaction guarantee
+
+JSON output never contains raw file paths, file contents, argument values, environment variables,
+secrets, or prompt text. It contains only what the human view already shows — path *classes*
+(`*.env`, `backend/auth/*.ts`), reason-code enumerations, risk levels, and verdicts — because
+both modes draw from the same already-redacted data source.
+
+### Determinism guarantee
+
+All `--json` documents have **deterministic key ordering** (`sort_keys=True`) and **compact
+separators** (`","` / `":"`). Two invocations on identical state produce byte-for-byte identical
+output. `--jsonl` produces deterministic per-line objects with the same key ordering; line order
+follows the command's documented row order (newest-first for `log`).
+
+### Exit codes
+
+Machine-readable flags do not change exit semantics. `doctor --json` still exits non-zero when
+critical checks fail. `scan --json` still exits zero even when high-risk capabilities are present
+(the human `--quiet` behavior). Scripts must check the exit code independently of parsing the
+JSON payload.
+
+### `doberman policy-history --json` schema
+
+Emits a JSON array of ledger rows, newest first — the same redacted dicts the human view reads:
+`ts`, `rule_id`, `from_state`, `to_state`, `classification` (strengthen / weaken / neutral),
+`reason` (redacted at write time), `approval_method`, `approved` (denied weakening attempts are
+recorded too — the poisoning signal), and `approved_by`. No raw policy contents, secrets, or file
+paths appear.
 
 ## Examples
 

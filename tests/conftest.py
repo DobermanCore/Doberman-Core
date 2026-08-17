@@ -8,7 +8,11 @@ need to exercise key generation/rotation override this with their own
 ``tmp_path`` injection.
 """
 
+import json as _json
+from typing import Any
+
 import pytest
+from typer.testing import Result
 
 from doberman.auth.password import PASSWORD_FILE_ENV
 from doberman.auth.totp import TOTP_FILE_ENV
@@ -107,3 +111,87 @@ def _neutralize_hosthook_auth_prompter(monkeypatch):
             raise PrompterUnavailableError("headless test: no auth channel")
 
     monkeypatch.setattr(claude_code, "AUTH_PROMPTER", _NoChannel())
+
+
+# ── JSON output assertion helper (Issue #192) ─────────────────────────────────
+
+
+def assert_json_stdout(result: Result, *, jsonl: bool = False) -> Any:
+    """Assert that *result.stdout* contains valid JSON and nothing else.
+
+    Parameters
+    ----------
+    result:
+        The ``CliRunner`` result whose ``stdout`` attribute is inspected.
+    jsonl:
+        ``False`` (default) — assert stdout is exactly **one** valid JSON
+        value (object or array) and return it.  This is the ``--json`` contract
+        shared by ``scan``, ``doctor``, and ``policy-history``.
+
+        ``True`` — assert stdout is zero or more **newline-separated** JSON
+        objects, one per non-empty line, and return them as a list.  This is
+        the ``--jsonl`` contract used by ``log``.  An empty result set must
+        produce empty stdout, not ``[]``; this helper returns ``[]`` in that
+        case.
+
+    Returns
+    -------
+    Any
+        The parsed Python value(s):
+        - ``jsonl=False``: the single parsed document (dict, list, …).
+        - ``jsonl=True``: a list of parsed dicts (may be empty).
+
+    Raises
+    ------
+    AssertionError
+        If stdout is not valid JSON, if it mixes JSON with non-JSON text,
+        or (for ``jsonl=True``) if any non-empty line is not a JSON object.
+
+    Safety contract
+    ---------------
+    This helper asserts *shape only* — valid JSON, nothing extraneous on stdout.
+    It deliberately does **not** assert redaction, field presence, or content
+    values.  Each command's own test keeps its redaction assertions so they
+    cannot be accidentally weakened by sharing this helper.
+    """
+    stdout = result.stdout
+
+    if not jsonl:
+        # ── Single-document mode (--json) ────────────────────────────────────
+        # stdout must be exactly one JSON value — nothing before, nothing after
+        # (allow a single trailing newline as typer.echo adds one).
+        text = stdout.strip()
+        assert text, (  # noqa: S101
+            "Expected one JSON document on stdout but stdout was empty.\n"
+            f"stderr: {getattr(result, 'stderr', '(unavailable)')}"
+        )
+        try:
+            doc = _json.loads(text)
+        except _json.JSONDecodeError as exc:
+            raise AssertionError(f"stdout is not valid JSON: {exc}\nstdout was: {text!r}") from exc
+        # Guard against mixed output: extra bytes surrounding the JSON value
+        # (e.g. a Rich heading on the same stream) are caught here.
+        extra = stdout.replace(text, "", 1).strip()
+        assert not extra, (  # noqa: S101
+            f"Non-JSON text found on stdout alongside the JSON document: {extra!r}"
+        )
+        return doc
+
+    else:
+        # ── JSON Lines mode (--jsonl) ─────────────────────────────────────────
+        # Empty stdout is valid (no rows → no output).
+        lines = [line for line in stdout.splitlines() if line.strip()]
+        records: list[Any] = []
+        for i, line in enumerate(lines):
+            try:
+                obj = _json.loads(line)
+            except _json.JSONDecodeError as exc:
+                raise AssertionError(
+                    f"Line {i + 1} of --jsonl output is not valid JSON: {exc}\nLine was: {line!r}"
+                ) from exc
+            assert isinstance(obj, dict), (  # noqa: S101
+                f"Line {i + 1} of --jsonl output is not a JSON object "
+                f"(got {type(obj).__name__})\nLine was: {line!r}"
+            )
+            records.append(obj)
+        return records
