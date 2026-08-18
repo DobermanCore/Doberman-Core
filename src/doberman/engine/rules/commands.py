@@ -73,6 +73,10 @@ _DOBERMAN_CONTROL_SUBCOMMANDS = {
     "revoke",
     "memory",
     "tools",
+    # `tune --accept` grants a standing elevation (a weakening) through the
+    # same gated chokepoint as any other loosening (#243) — shelling it out
+    # is the same tampering shape as `revoke`/`2fa`/`taint`.
+    "tune",
 }
 
 #: Default bulk-operation threshold: deleting/touching this many paths in one

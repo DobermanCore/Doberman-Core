@@ -55,7 +55,8 @@ _UPSERT_FINGERPRINT = (
 
 _SELECT_DECISIONS = (
     "SELECT id, ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
-    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id "
+    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id, "
+    "entity_id, session_id "
     "FROM decisions ORDER BY id DESC"
 )
 
@@ -63,7 +64,8 @@ _SELECT_DECISIONS = (
 # feed poll (doberman.dash): "give me what's new since the last row I saw".
 _SELECT_DECISIONS_SINCE = (
     "SELECT id, ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
-    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id "
+    "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id, "
+    "entity_id, session_id "
     "FROM decisions WHERE id > ? ORDER BY id ASC"
 )
 
@@ -91,6 +93,8 @@ _DECISION_COLUMNS = [
     "auth_required",
     "auth_result",
     "elevation_id",
+    "entity_id",
+    "session_id",
 ]
 
 

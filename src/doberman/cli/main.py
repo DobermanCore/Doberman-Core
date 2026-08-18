@@ -44,13 +44,15 @@ from doberman.policy.drift import (
     apply_change,
     apply_enforcement_change,
     apply_preferences_change,
+    apply_standing_elevation,
     log_change,
     read_policy_changes,
 )
+from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.render import verdict_label, verdict_label_str
-from doberman.storage.db import active_elevations, revoke_elevation
+from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
 from doberman.storage.memory import prune_stale_entities, reset_memory
 from doberman.storage.taint import clear_taint, entity_scope, read_taint
@@ -1137,6 +1139,120 @@ def revoke(
     else:
         typer.echo(f"error: no elevation with id {elevation_id}", err=True)
         raise typer.Exit(code=1)
+
+
+@app.command(rich_help_panel="Daily")
+def tune(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    json_out: bool = typer.Option(
+        False, "--json", help="Emit the report + proposals as one JSON document."
+    ),
+    last: int = typer.Option(2000, "--last", help="Consider the most recent N decisions."),
+    min_occurrences: int = typer.Option(
+        5,
+        "--min-occurrences",
+        help="Minimum all-approved occurrences before a standing-elevation proposal is emitted.",
+    ),
+    accept: str = typer.Option(
+        None, "--accept", help="Accept a proposal id from the last `doberman tune` report."
+    ),
+) -> None:
+    """Friction report - interventions/session, top AUTH reasons - plus gated tuning proposals.
+
+    Never applies anything by itself. Where an AUTH class has been approved
+    every time, often enough, `doberman tune` proposes a standing, revocable,
+    time-limited elevation; `--accept <id>` routes acceptance through the same
+    possession-factor-gated weaken chokepoint as any other policy loosening
+    (`doberman revoke <elevation-id>` reverses it early).
+    """
+    rows = asyncio.run(read_decisions(path, limit=max(0, last)))
+    proposals = generate_proposals(rows, min_occurrences=min_occurrences)
+
+    if accept is not None:
+        proposal = next((p for p in proposals if p["id"] == accept), None)
+        if proposal is None:
+            typer.echo("error: unknown or stale proposal id; rerun 'doberman tune'", err=True)
+            raise typer.Exit(code=1)
+        typer.echo(proposal["what_would_loosen"])
+        outcome = asyncio.run(
+            apply_standing_elevation(
+                scope_glob=proposal["target_path_class"],
+                reason=f"doberman tune accept {accept}",
+                repo_root=path,
+                ttl_days=proposal["ttl_days"],
+            )
+        )
+        if not outcome.approved:
+            typer.echo("error: change denied; nothing granted", err=True)
+            raise typer.Exit(code=1)
+        grant = asyncio.run(
+            grant_elevation(
+                path,
+                proposal["target_path_class"],
+                task_id=f"tune:{accept}",
+                now=datetime.now(timezone.utc),
+                ttl_seconds=proposal["ttl_days"] * 86400,
+            )
+        )
+        typer.echo(
+            f"Granted standing elevation {grant.id} for {proposal['target_path_class']} "
+            f"until {grant.expires_at.isoformat()}. Revoke any time: doberman revoke {grant.id}"
+        )
+        return
+
+    report = build_friction_report(rows)
+    if json_out:
+        typer.echo(json.dumps({**report, "proposals": proposals}, sort_keys=True, default=str))
+        return
+
+    if not rows:
+        typer.echo("(no decisions recorded yet)")
+        return
+
+    typer.echo("Doberman friction report")
+    typer.echo("=" * 32)
+    ips = report["interventions_per_session"]
+    typer.echo(
+        f"Interventions/session: {ips:.2f}" if ips is not None else "Interventions/session: n/a"
+    )
+    typer.echo(
+        f"{report['decisions']} decisions across {report['sessions']} session(s) "
+        f"({report['unsessioned_decisions']} unsessioned); {report['interventions']} intervention(s) (AUTH)"
+    )
+    if report["top_auth_reason_codes"]:
+        typer.echo("Top AUTH reasons:")
+        for code, n in report["top_auth_reason_codes"]:
+            typer.echo(f"  {code}: {n}")
+    if report["approval_rate_by_reason"]:
+        typer.echo("Approval rate by reason:")
+        for code, stats in sorted(report["approval_rate_by_reason"].items()):
+            rate = f"{stats['rate']:.0%}" if stats["rate"] is not None else "n/a"
+            typer.echo(f"  {code}: {stats['approved']}/{stats['n']} ({rate})")
+    if report["approval_rate_by_target"]:
+        typer.echo("Approval rate by target:")
+        for target, stats in sorted(report["approval_rate_by_target"].items()):
+            rate = f"{stats['rate']:.0%}" if stats["rate"] is not None else "n/a"
+            typer.echo(f"  {target}: {stats['approved']}/{stats['n']} ({rate})")
+    if report["trend"]:
+        typer.echo("Recent trend:")
+        for week, stats in sorted(report["trend"].items())[-8:]:
+            week_ips = stats["interventions_per_session"]
+            week_ips_str = f"{week_ips:.2f}/session" if week_ips is not None else "n/a"
+            typer.echo(
+                f"  {week}: {stats['decisions']} decisions, {stats['interventions']} interventions, "
+                f"{stats['sessions']} session(s), {week_ips_str}"
+            )
+    if proposals:
+        typer.echo("")
+        typer.echo("Tuning proposals (nothing applied automatically):")
+        for p in proposals:
+            typer.echo(f"  [{p['id']}] {p['what_would_loosen']}")
+            typer.echo(f"    why: {p['why']}")
+            typer.echo(f"    To accept: doberman tune --accept {p['id']}")
+        typer.echo(
+            "  Accepting requires your possession factor and grants a revocable, "
+            "time-limited elevation (doberman revoke <elevation-id>)."
+        )
 
 
 # Columns from ``_DECISION_COLUMNS`` that ``log --jsonl`` emits in addition to the

@@ -21,6 +21,7 @@ Entry point: `doberman` (Typer). All commands accept `--help`.
 | `doberman dash` | Localhost-only dashboard (preview) |
 | `doberman demo` | Scripted attack reel through the real decision engine |
 | `doberman revoke` | Revoke an active role elevation by id |
+| `doberman tune` | Friction report (interventions/session, top AUTH reasons, approval rates, trend) plus gated standing-elevation proposals; `--accept <id>` grants one |
 | `doberman setup` | First-run wizard (posture + Claude Code hooks) |
 | `doberman install-hooks` | Wire host hooks (Claude Code by default; `--host codex` for Codex CLI) |
 | `doberman uninstall-hooks` | Remove host hooks (Claude Code by default; `--host codex` for Codex CLI) |
@@ -56,7 +57,7 @@ Low-level harness integration (also installed via `install-hooks` / `setup`).
 ## Machine-readable flags
 | Flag | Commands | Notes |
 |------|----------|-------|
-| `--json` | `scan`, `doctor`, `policy-history` | One JSON document on stdout |
+| `--json` | `status`, `scan`, `doctor`, `policy-history`, `tune` | One JSON document on stdout |
 | `--jsonl` | `log` | One redacted decision object per line (empty if none) |
 | `--quiet` / `-q` | `scan` | No human map; exit code preserved |
 | `--path` / `-p` | most commands | Repository root (default `.`) |
@@ -90,9 +91,9 @@ All four machine-readable modes share one contract. Understanding it once covers
 
 ### Flag naming
 
-- **`--json`** (`scan`, `doctor`, `policy-history`) — emits **one JSON document** on stdout: a single
-  JSON object or array that can be piped directly into `jq`, `python -m json.tool`, or any
-  JSON-aware tool.
+- **`--json`** (`status`, `scan`, `doctor`, `policy-history`, `tune`) — emits **one JSON document** on
+  stdout: a single JSON object or array that can be piped directly into `jq`,
+  `python -m json.tool`, or any JSON-aware tool.
 - **`--jsonl`** (`log`) — emits **one JSON object per line** (JSON Lines / NDJSON). Each line is
   independently parseable; an empty result set produces empty stdout, not `[]`. This shape suits
   streaming consumers and `while read line` shell loops.
@@ -195,6 +196,10 @@ contradictory meanings — `2` is always a bad-input rejection, `1` is always an
 operation failure. No exit-code values were changed; this section is
 documentation only.
 
+### `doberman tune --json`
+
+Emits `{version, decisions, sessions, unsessioned_decisions, interventions, interventions_per_session, top_auth_reason_codes, approval_rate_by_reason, approval_rate_by_target, trend, proposals}`. Deterministic across identical inputs (`sort_keys=True`); considers the most recent `--last` decisions (default 2000). A proposal is `{id, kind, action_type, target_path_class, occurrences, approval_rate, reason_codes, ttl_days, what_would_loosen, why}` — emitted only when an `(action_type, target_path_class)` group has at least `--min-occurrences` (default 5) AUTH rows, **all** approved, a narrow non-whole-tree path class, and reason codes that are a non-empty subset of `{role_out_of_scope}` (the only code a standing elevation may ever cover). `doberman tune` never applies a proposal itself. `doberman tune --accept <id>` recomputes proposals from the same `--last`/`--min-occurrences`, rejects an unknown/stale id (exit 1), then routes the accepted one through the same possession-factor-gated weaken chokepoint every other policy loosening uses (TOTP if enrolled, else the local password; fails closed with neither) before granting a revocable, time-limited elevation (`doberman revoke <elevation-id>` reverses it early).
+
 ## Examples
 ```bash
 doberman scan --path . | less
@@ -203,6 +208,7 @@ doberman scan --quiet; echo $?
 doberman doctor --json | jq .ok
 doberman policy-history --json | jq 'length'
 doberman log --jsonl | jq -c 'select(.final_verdict=="block")'
+doberman tune --json | jq '.proposals'
 doberman 2fa setup
 doberman password set
 doberman setup
