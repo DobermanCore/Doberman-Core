@@ -21,6 +21,10 @@ mechanism (a core safety invariant):
   preference vector (numeric weights, so classified directly rather than via
   the token-rank table): lowering any weight is a weaken and requires the
   same mandatory possession factor as a policy-rule weakening; raising applies automatically.
+* :func:`apply_standing_elevation` — the sibling chokepoint for a friction-tuning
+  standing elevation (``doberman tune --accept``, #243): always a weaken (there is
+  no "before" state to rank), gated the same way, and never grants the elevation
+  itself — the caller does that only on approval.
 * :func:`effective_enforcement` — the **read-side** clamp: turns the on-disk
   enforcement fields into the state to act on, verifying them against the ledger
   so a hand-edit of ``policies.yaml`` (e.g. ``enforcement: off``) that bypassed the
@@ -539,6 +543,65 @@ async def apply_preferences_change(
         approved, method = _run_weaken_gate(before, after, reason, prompter or CliPrompter())
     else:
         approved, method = True, "auto"
+
+    await _record_change(
+        repo_root,
+        before,
+        after,
+        classification,
+        reason,
+        approved=approved,
+        method=method,
+        now=when,
+    )
+    notify_observers(
+        {
+            "ts": when.isoformat(),
+            "classification": classification.value,
+            "changed_rules": _changed_keys(before, after),
+            "reason": reason,
+            "approved": approved,
+            "method": method,
+        }
+    )
+    return ChangeOutcome(classification=classification, approved=approved, method=method)
+
+
+async def apply_standing_elevation(
+    scope_glob: str,
+    reason: str,
+    *,
+    repo_root: str,
+    ttl_days: int,
+    prompter: Prompter | None = None,
+    now: datetime | None = None,
+) -> ChangeOutcome:
+    """Chokepoint for a friction-tuning standing elevation (``doberman tune --accept``, #243).
+
+    A standing elevation always LOWERS protection for ``scope_glob`` - it
+    turns a recurring role-out-of-scope AUTH into an automatic PASS for
+    ``ttl_days`` - so classification is always :attr:`Classification.weaken`;
+    there is no "before" state to rank against
+    (:func:`classify_change`/:func:`_prefs_classify` don't apply here). It
+    clears the same mandatory-possession-factor gate as every other
+    weakening (:func:`_run_weaken_gate` - TOTP if enrolled, else password,
+    fails closed if neither is enrolled) and every attempt (including
+    denials) is recorded to the append-only ledger and fanned out to
+    observers - a structural sibling of :func:`apply_preferences_change`.
+    This function never grants anything itself: the caller (``doberman tune
+    --accept``) calls :func:`doberman.storage.db.grant_elevation` only when
+    ``outcome.approved``.
+    """
+    reason = _redact_reason(reason)
+    when = now or datetime.now(timezone.utc)
+    classification = Classification.weaken
+
+    before = {f"standing_elevation:{scope_glob}": "auth_required"}
+    after = {f"standing_elevation:{scope_glob}": f"standing_elevation({ttl_days}d)"}
+
+    from doberman.auth.provider import CliPrompter
+
+    approved, method = _run_weaken_gate(before, after, reason, prompter or CliPrompter())
 
     await _record_change(
         repo_root,
