@@ -44,6 +44,7 @@ dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-xdist", "ruff>=0.15,<0.
 explain = ["anthropic"]
 tui = ["textual"]
 dash = ["starlette", "uvicorn"]
+sbom = ["pip-audit"]
 
 [project.scripts]
 doberman = "doberman.cli.main:app"
