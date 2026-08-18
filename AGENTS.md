@@ -147,142 +147,18 @@ push again; never merge red.
 
 ---
 
-## 6. Slice 0 — Bootstrap (only if scaffolding is missing)
+## 6. Slice 0 — Bootstrap (already done)
 
-Scaffold the repo + working CI + a trivial smoke test, committed on `chore/bootstrap-scaffolding` with
-`chore(repo): bootstrap project scaffolding and CI`.
+The repo is bootstrapped with live scaffolding and green CI — the real `pyproject.toml`,
+`.github/workflows/ci.yml`, `.github/pull_request_template.md`, and `.gitignore` are the source of truth:
+read them, never recreate them from this doc. Standing rules from bootstrap that still bind:
 
-### `pyproject.toml`
-```toml
-[project]
-name = "doberman"
-version = "0.0.0"
-description = "Adaptive authorization layer for coding agents (open core)"
-license = { text = "Apache-2.0" }
-requires-python = ">=3.11"
-dependencies = ["pydantic>=2", "mcp", "aiosqlite", "pyotp", "pyyaml", "typer"]
-
-[project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "import-linter"]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/doberman"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-addopts = "-q"
-
-[tool.coverage.run]
-source = ["doberman"]
-branch = true
-
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-[tool.ruff.lint]
-extend-select = ["I", "B", "S"]   # imports, bugbear, security
-
-[tool.importlinter]
-root_package = "doberman"
-
-# Decoupling: the policy core must not import the proxy adapter.
-[[tool.importlinter.contracts]]
-name = "Policy core must not depend on the proxy adapter"
-type = "forbidden"
-source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "doberman.storage", "doberman.learning"]
-forbidden_modules = ["doberman.proxy"]
-```
-
-### `.github/workflows/ci.yml`
-```yaml
-name: CI
-on:
-  push:
-    branches: ["feat/**", "fix/**", "chore/**", "main"]
-  pull_request:
-    branches: ["main"]
-permissions:
-  contents: read
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-      - run: python -m pip install --upgrade pip && pip install -e ".[dev]"
-      - run: ruff check .
-      - run: ruff format --check .
-      - name: Architecture boundaries
-        run: lint-imports
-      - run: pytest --cov=doberman --cov-report=term-missing --cov-fail-under=80
-  secret-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@v2
-        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
-```
-> `--cov-fail-under=80` is a starting bar — raise it over time, never lower it to pass a PR.
-
-### `.gitignore`
-```gitignore
-.doberman/
-*.db
-*.sqlite
-*.sqlite3
-*.key
-.env
-.env.*
-__pycache__/
-*.py[cod]
-.venv/
-.pytest_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-dist/
-build/
-*.egg-info/
-```
-
-### `.github/pull_request_template.md`
-```markdown
-## Slice
-- Feature / Slice: <id> — <title>
-
-## What this PR does
-
-## Tests added (run in CI)
--
-
-## Security checklist
-- [ ] Fails closed on error / uncertainty
-- [ ] No secret, full file, or unredacted prompt logged or committed
-- [ ] Any guardrail/learning change is raise-only (no silent loosening)
-- [ ] Every BLOCK/AUTH carries reason codes + a human explanation
-
-## Edge cases covered / Deviations from plan / Risks introduced
--
-```
-
-> The authoritative scaffolding is the actual `pyproject.toml`, `.github/workflows/ci.yml`, and
-> `.github/pull_request_template.md` in the repo — the blocks above are the starting shape.
+- The coverage gate (`--cov-fail-under`) is a starting bar to **raise over time — never lower it to pass a PR**.
+- The `import-linter` contract (§7) and CI's `secret-scan` job (gitleaks, full history) must stay; a new import
+  boundary gets a new contract, never a relaxed one.
+- Runtime/secret paths stay gitignored: `.doberman/`, `*.db`, `*.sqlite*`, `*.key`, `.env*`.
+- Only if a **new** repo ever needs bootstrapping, copy this repo's scaffolding set and adapt it
+  (branch `chore/bootstrap-scaffolding`, commit `chore(repo): bootstrap project scaffolding and CI`).
 
 ---
 

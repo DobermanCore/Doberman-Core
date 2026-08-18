@@ -34,6 +34,7 @@ CLI_HELP_TARGETS = (
     ("memory", "reset"),
     ("memory", "prune"),
     ("policy-history",),
+    ("tune",),
     ("install-hooks",),
     ("uninstall-hooks",),
     ("uninstall",),

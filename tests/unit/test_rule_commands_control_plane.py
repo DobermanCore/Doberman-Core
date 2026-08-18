@@ -186,6 +186,7 @@ def test_doberman_setup_is_blocked():
         "doberman taint clear",
         "doberman password set",
         "doberman revoke abc123",
+        "doberman tune --accept abc123",
         "doberman memory reset",
         "doberman memory prune --older-than-days 30",
         "doberman tools approve fs_read",
