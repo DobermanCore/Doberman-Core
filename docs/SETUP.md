@@ -383,9 +383,12 @@ Now live: a **summary stats line** (verdict counts, top reason codes, secret/tai
 current mode + effective enforcement - `GET /api/stats`) and a **scrolling live decision feed**
 (`GET /api/feed`, Server-Sent Events) that backfills the most recent decisions on connect, then
 streams new ones as they're recorded. Both are read-only and serve only already-redacted decision-
-log fields (verdict, action type, path *class*, reason codes, timestamp) - never a raw target,
-argument, or secret. `EventSource` can't set request headers, so the feed also accepts the token
-as `?token=` (loopback-only + single-run token keeps this sound).
+log fields (verdict, action type, path *class*, risk, source context, reason codes, timestamp) -
+never a raw target, argument, or secret. Risk and source context matter most on actions with no
+path class (e.g. a `shell_exec` PASS carries neither a path nor, usually, a reason code) - without
+them that row would otherwise render with no signal beyond the verdict. `EventSource` can't set
+request headers, so the feed also accepts the token as `?token=` (loopback-only + single-run
+token keeps this sound).
 
 **Interactive AUTH approve/deny.** An `AUTH` challenge can now be answered from the dashboard
 instead of the terminal: `GET /api/pending` lists redacted pending approvals (action type, risk,

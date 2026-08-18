@@ -499,6 +499,15 @@ _HTML_SHELL = """<!doctype html>
           badge.textContent = row.verdict;
           li.appendChild(badge);
 
+          // A PASS on a non-path action (e.g. shell_exec) has no
+          // target_path_class and usually no reason codes either - without
+          // the risk badge that row would render as bare noise ("PASS
+          // shell_exec — — @ ..."), so it always shows even at "low".
+          var riskBadge = document.createElement("span");
+          riskBadge.className = RISK_BADGE_CLASS[row.risk] || "badge badge-neutral";
+          riskBadge.textContent = (row.risk || "-").toUpperCase();
+          li.appendChild(riskBadge);
+
           var detail = document.createElement("span");
           detail.className = "detail";
           // textContent only - a row-derived string must render literally,
@@ -507,6 +516,7 @@ _HTML_SHELL = """<!doctype html>
           // and stays available in `doberman log` / the TUI.
           detail.textContent = row.action_type +
             " " + (row.target_path_class || "-") +
+            " from:" + (row.source_context || "-") +
             " " + (row.reason_codes && row.reason_codes.length ? row.reason_codes.join(",") : "-") +
             " @ " + (String(row.ts || "").slice(11, 19) || "-");
           li.appendChild(detail);
@@ -582,14 +592,19 @@ def _make_stats_route(token: str, repo_root: str) -> Route:
 
 
 def _feed_row(row: dict) -> dict:
-    """The ONLY fields the feed ever serializes - exactly what the TUI shows.
+    """The ONLY fields the feed ever serializes.
 
     ``row`` comes from :func:`doberman.storage.log.read_decisions`/
     ``read_decisions_since``, already redacted at write time (path *class*,
     not a raw path; no raw arguments; no secrets). This picks a further
-    subset - e.g. ``agent_role``/``source_context``/``auth_result`` are
-    dropped even though they're on the row - per the D2 rule of only ever
-    passing through what the decision-transparency TUI itself displays.
+    subset - e.g. ``agent_role``/``auth_result`` are dropped even though
+    they're on the row.
+
+    ``risk`` and ``source_context`` are included (beyond what the TUI's
+    5-column table shows) because a PASS row for a non-path action (e.g.
+    ``shell_exec``, which carries no ``target_path_class``) otherwise renders
+    with no signal at all beyond the verdict and action type - both fields
+    are already redaction-safe classifications, never a raw target/argument.
     """
     return {
         "id": row.get("id"),
@@ -597,6 +612,8 @@ def _feed_row(row: dict) -> dict:
         "verdict": row.get("final_verdict"),
         "action_type": row.get("action_type"),
         "target_path_class": row.get("target_path_class"),
+        "risk": row.get("risk"),
+        "source_context": row.get("source_context"),
         "reason_codes": reason_codes(row),
     }
 

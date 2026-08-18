@@ -140,3 +140,17 @@ def test_the_totp_field_is_masked(tmp_path):
     html = _index_html(tmp_path)
     assert 'totpInput.type = "password";' in html
     assert 'totpInput.type = "text";' not in html
+
+
+def test_feed_row_renders_a_risk_badge(tmp_path):
+    """A PASS row with no path class and no reason codes (e.g. shell_exec)
+    used to render as bare noise ("PASS shell_exec — — @ ..."); the risk
+    badge is the signal that always shows, even at "low"."""
+    html = _index_html(tmp_path)
+    assert "riskBadge.className = RISK_BADGE_CLASS[row.risk]" in html
+    assert 'riskBadge.textContent = (row.risk || "-").toUpperCase();' in html
+
+
+def test_feed_row_renders_source_context(tmp_path):
+    html = _index_html(tmp_path)
+    assert '" from:" + (row.source_context || "-") +' in html
