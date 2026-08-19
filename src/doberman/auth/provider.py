@@ -23,7 +23,8 @@ from typing import Protocol, runtime_checkable
 
 from doberman.auth import totp
 from doberman.auth.challenge import AuthResult, AuthTier, Prompter
-from doberman.models import Decision, SecurityObject
+from doberman.explain import _describe_reason
+from doberman.models import ActionType, Decision, SecurityObject
 
 logger = logging.getLogger("doberman.auth.provider")
 
@@ -45,6 +46,7 @@ class AuthProvider(Protocol):
         *,
         prompter: Prompter | None = None,
         at: datetime | None = None,
+        message_tone: str = "human",
     ) -> AuthResult: ...
 
 
@@ -66,21 +68,70 @@ class CliPrompter:
         return str(typer.prompt(message, hide_input=True))
 
 
-def _challenge_message(decision: Decision, action: SecurityObject, tier: AuthTier) -> str:
+#: Plain-language verb for the S1 "human" tone's first line. ``other`` is what
+#: an unrecognized/generic MCP tool normalizes to (see proxy/normalize.py), so
+#: it reads as "use a tool" rather than the more generic fallback below. An
+#: ActionType genuinely absent here falls back to "do this" — never inventing
+#: a more specific-sounding claim than the action type actually supports.
+_PLAIN_VERBS: dict[ActionType, str] = {
+    ActionType.file_write: "write to a file",
+    ActionType.file_read: "read a file",
+    ActionType.file_delete: "delete a file",
+    ActionType.shell_exec: "run a command",
+    ActionType.network_request: "send data out",
+    ActionType.other: "use a tool",
+}
+
+
+def _plain_verb(action_type: ActionType) -> str:
+    return _PLAIN_VERBS.get(action_type, "do this")
+
+
+def _plain_why(decision: Decision) -> str:
+    """One capitalized sentence explaining the reason, reusing explain.py's copy.
+
+    No reason codes → the decision's own explanation, or a safe generic default.
+    Never oversells — it states the recorded reason, not a verdict on intent.
+    """
+    if decision.reason_codes:
+        fragments = [_describe_reason(code) for code in decision.reason_codes]
+        sentence = "; ".join(fragments)
+    else:
+        sentence = decision.explanation.strip() or "Doberman flagged this action for review"
+    sentence = sentence.strip().rstrip(".")
+    return sentence[:1].upper() + sentence[1:] + "."
+
+
+def _challenge_message(
+    decision: Decision, action: SecurityObject, tier: AuthTier, tone: str = "human"
+) -> str:
     """Build a prompt that names the EXACT action, target, and reason.
 
     Shown only to the local human approving the action (never logged), so it may
     include the concrete target — that is the whole point of an action-specific
-    challenge ("approve THIS file", not a generic "enter 2FA").
+    challenge ("approve THIS file", not a generic "enter 2FA"). ``tone``
+    controls wording only: "technical" is the original detailed format,
+    "human" (the default, S1) is a plain, friendly rendering of the exact same
+    facts — reason codes stay on the Decision and in the logs either way.
     """
-    reasons = ", ".join(decision.reason_codes) or "unspecified"
     target = action.target or "(no target)"
+    if tone == "technical":
+        reasons = ", ".join(decision.reason_codes) or "unspecified"
+        return (
+            f"[RISK: {decision.final_risk.upper()}]  Doberman authentication required [{tier.value}]\n"
+            f"  role:   {action.agent_role}\n"
+            f"  action: {action.tool_name} -> {target}\n"
+            f"  reason: {reasons} - {decision.explanation.strip() or 'no further detail'}\n"
+            f"Approve THIS exact action?"
+        )
     return (
-        f"[RISK: {decision.final_risk.upper()}]  Doberman authentication required [{tier.value}]\n"
-        f"  role:   {action.agent_role}\n"
-        f"  action: {action.tool_name} -> {target}\n"
-        f"  reason: {reasons} - {decision.explanation.strip() or 'no further detail'}\n"
-        f"Approve THIS exact action?"
+        f"Your agent wants to {_plain_verb(action.action_type)}:\n"
+        f"\n"
+        f"    {target}\n"
+        f"\n"
+        f"{_plain_why(decision)}\n"
+        f"\n"
+        f"Approve this exact action?"
     )
 
 
@@ -97,10 +148,11 @@ class LocalAuthProvider:
         *,
         prompter: Prompter | None = None,
         at: datetime | None = None,
+        message_tone: str = "human",
     ) -> AuthResult:
         prompter = prompter or CliPrompter()
         when = at or datetime.now(timezone.utc)
-        message = _challenge_message(decision, action, tier)
+        message = _challenge_message(decision, action, tier, message_tone)
 
         try:
             approved, method = self._run_tier(tier, message, prompter)

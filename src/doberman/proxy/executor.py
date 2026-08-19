@@ -34,7 +34,13 @@ from doberman.auth.challenge import (
     run_auth_challenge,
 )
 from doberman.auth.elevation import find_cover, scope_for_target
-from doberman.config import load_active_role, load_enforcement, load_mode, load_preferences
+from doberman.config import (
+    load_active_role,
+    load_enforcement,
+    load_message_tone,
+    load_mode,
+    load_preferences,
+)
 from doberman.egress.artifact import ArtifactPinStore, ArtifactVerdict
 from doberman.engine.correlator import DecisionRow, correlate
 from doberman.engine.decision_engine import Guardrail, decide, max_risk, max_verdict
@@ -674,7 +680,11 @@ async def _handle_auth(
     auth_result: AuthResult | None = None
     try:
         auth_result = await asyncio.to_thread(
-            run_auth_challenge, decision, action, prompter=AUTH_PROMPTER
+            run_auth_challenge,
+            decision,
+            action,
+            prompter=AUTH_PROMPTER,
+            message_tone=load_message_tone(REPO_ROOT),
         )
     except Exception:  # noqa: BLE001 — a challenge failure must fail closed, not crash/leak
         _engine_logger.warning("auth challenge raised; failing closed (action %s)", action.id)

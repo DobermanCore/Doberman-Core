@@ -102,7 +102,7 @@ def test_unavailable_channel_denies_with_dialog_hint(cwd, monkeypatch):
 def test_approval_is_bound_to_the_action_id(cwd, monkeypatch):
     # A result whose action_id is for a DIFFERENT call must never be honored, even
     # though it is "approved" — the single-use approval is bound to one action.
-    def _fake_challenge(decision, action, *, prompter=None, at=None):
+    def _fake_challenge(decision, action, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=True,
             tier=AuthTier.local_auth,
@@ -160,7 +160,7 @@ def test_timed_out_auth_denies_with_expired_no_response_hint(cwd, monkeypatch):
     # A challenge that reaches its deadline unanswered (AN-4a, ADR 0046) is denied, and
     # the message says the request *expired* — distinct from a human refusal — so the
     # log and the user can tell silence from "no". Fail-closed either way.
-    def _timed_out(decision, action, *, prompter=None, at=None):
+    def _timed_out(decision, action, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=False,
             tier=AuthTier.local_auth,
@@ -181,7 +181,7 @@ def test_timed_out_auth_denies_with_expired_no_response_hint(cwd, monkeypatch):
 def test_timed_out_two_factor_still_names_the_setup_command(cwd, monkeypatch):
     # The timeout branch must keep the same actionable 2FA-enrollment hint the refusal
     # branch carries — a timed-out un-enrolled 2FA action still dead-ends without it.
-    def _timed_out(decision, action, *, prompter=None, at=None):
+    def _timed_out(decision, action, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=False,
             tier=AuthTier.two_factor,

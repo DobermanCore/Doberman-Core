@@ -106,6 +106,7 @@ def resolve_auth(
     *,
     event: str,
     prompter: "Prompter | None",
+    message_tone: str = "human",
 ) -> dict[str, Any]:
     """Run Doberman's tiered challenge for an AUTH and answer the host hook.
 
@@ -115,6 +116,10 @@ def resolve_auth(
     real approve path (issues #65/#67). We now present the action-bound challenge over
     a GUI→TTY fallback (the dialog is a channel the human can actually see even when the
     agent's TUI owns the terminal).
+
+    ``message_tone`` (S1) is cosmetic wording only; the caller resolves it from
+    the repo's saved policy (this module stays config-free — see the file's own
+    hot-path note) and passes it in as data, same as ``prompter``.
 
     Approved *and* bound to THIS action id → ``allow`` the one call. A denial, an
     unavailable channel, or any error → ``deny`` (fail closed). The auth stack is
@@ -130,7 +135,9 @@ def resolve_auth(
         from doberman.auth.challenge import TIMEOUT_METHOD, run_auth_challenge
 
         active_prompter = prompter if prompter is not None else _default_auth_prompter()
-        result = run_auth_challenge(decision, action, prompter=active_prompter)
+        result = run_auth_challenge(
+            decision, action, prompter=active_prompter, message_tone=message_tone
+        )
     except Exception:  # noqa: BLE001 — any challenge/prompter error is a denial (fail closed)
         return hook_output(event, "deny", _auth_denied_reason(decision, channel_error=True))
 

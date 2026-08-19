@@ -20,6 +20,7 @@ CLI_HELP_TARGETS = (
     ("mode",),
     ("enforcement",),
     ("prefs",),
+    ("message-tone",),
     ("role",),
     ("role", "enable-default"),
     ("role", "disable-default"),

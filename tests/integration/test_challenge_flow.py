@@ -61,9 +61,15 @@ def _auth_decision(reasons, risk=Risk.low):
 
 
 def test_prompt_names_the_specific_target_and_reason():
+    # "technical" tone: the raw reason code is asserted verbatim; the "human"
+    # default's plain-language rendering of the same facts is covered by
+    # test_auth_provider.py's own tone tests.
     prompter = ScriptedPrompter(confirm=False)
     run_auth_challenge(
-        _auth_decision([ReasonCode.unknown_tool]), _action("backend/api.ts"), prompter=prompter
+        _auth_decision([ReasonCode.unknown_tool]),
+        _action("backend/api.ts"),
+        prompter=prompter,
+        message_tone="technical",
     )
     msg = prompter.messages[0]
     assert "backend/api.ts" in msg

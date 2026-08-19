@@ -43,7 +43,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
-from doberman.config import load_active_role
+from doberman.config import load_active_role, load_message_tone
 from doberman.engine.decision_engine import PASS_STUB, decide, max_risk
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.hosthooks import hookio, spine
@@ -139,8 +139,14 @@ def _hook_output(permission: str, reason: str) -> dict[str, Any]:
     return hookio.hook_output(_HOOK_EVENT, permission, reason)
 
 
-def _resolve_auth(decision: Decision, action: SecurityObject) -> dict[str, Any]:
-    return hookio.resolve_auth(decision, action, event=_HOOK_EVENT, prompter=AUTH_PROMPTER)
+def _resolve_auth(decision: Decision, action: SecurityObject, repo_root: str) -> dict[str, Any]:
+    return hookio.resolve_auth(
+        decision,
+        action,
+        event=_HOOK_EVENT,
+        prompter=AUTH_PROMPTER,
+        message_tone=load_message_tone(repo_root),
+    )
 
 
 def _decision_payload(decision: Decision) -> dict[str, Any]:
@@ -191,7 +197,7 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
         if result.acted is Verdict.AUTH:
             # Run Doberman's own action-bound challenge so the human can actually
             # approve in-session (issues #65/#67) — not just be told to.
-            hook_result = _resolve_auth(result.decision, result.action)
+            hook_result = _resolve_auth(result.decision, result.action, result.repo_root)
         else:
             hook_result = _decision_payload(result.decision)  # BLOCK -> deny
         _record_pre_history(

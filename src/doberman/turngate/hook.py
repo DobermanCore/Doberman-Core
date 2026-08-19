@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from doberman.auth.challenge import TIMEOUT_METHOD, AuthResult, Prompter, run_auth_challenge
+from doberman.config import load_message_tone
 from doberman.engine.decision_engine import TurnGuardrail, decide_turn
 from doberman.models import (
     ActionType,
@@ -146,7 +147,13 @@ async def _enforce(
         return TurnGateOutcome(False, Verdict.BLOCK, decision, "blocked (Tier 0 signature)")
 
     if decision.final_verdict is Verdict.AUTH:
-        result = run_auth_challenge(decision, _synthetic_action(turn), prompter=prompter, at=when)
+        result = run_auth_challenge(
+            decision,
+            _synthetic_action(turn),
+            prompter=prompter,
+            at=when,
+            message_tone=load_message_tone(repo_root),
+        )
         approved = result.approved and result.action_id == turn.id
         label = _auth_result_label(result, approved=approved)
         await record_turn_decision(
@@ -178,7 +185,9 @@ async def _handle_repeat(
         await record_turn_decision(turn, decision, repo_root=repo_root, stage="turn_lockout")
         return TurnGateOutcome(False, Verdict.BLOCK, decision, "locked out (repeat)")
 
-    result = repeat.challenge_repeat(turn, record, prompter=prompter, at=when)
+    result = repeat.challenge_repeat(
+        turn, record, prompter=prompter, at=when, message_tone=load_message_tone(repo_root)
+    )
     if result.approved and result.action_id == turn.id:
         repeat.clear_record(entity_id, turn.prompt_fingerprint)  # single-use
         decision = _pass_decision(turn, when)
@@ -313,7 +322,11 @@ async def gate_turn(
         )
         decision = _fail_to_human(fallback_turn, when)
         result = run_auth_challenge(
-            decision, _synthetic_action(fallback_turn), prompter=prompter, at=when
+            decision,
+            _synthetic_action(fallback_turn),
+            prompter=prompter,
+            at=when,
+            message_tone=load_message_tone(repo_root),
         )
         approved = result.approved and result.action_id == fallback_turn.id
         return TurnGateOutcome(approved, Verdict.AUTH, decision, "fail-to-human")

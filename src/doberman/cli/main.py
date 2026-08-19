@@ -24,13 +24,16 @@ from doberman.auth.challenge import TIMEOUT_METHOD
 from doberman.auth.provider import CliPrompter
 from doberman.config import (
     CONFIG_DIR,
+    MESSAGE_TONES,
     default_role_enabled,
     load_active_role,
     load_enforcement,
+    load_message_tone,
     load_mode,
     load_policy,
     load_preferences,
     save_default_role_enabled,
+    save_message_tone,
     save_mode,
     save_policy,
     save_preferences,
@@ -582,6 +585,30 @@ def prefs(
     typer.echo(f"{dimension} set to {value:.2f}")
 
 
+@app.command("message-tone", rich_help_panel="Policy")
+def message_tone(
+    tone: str = typer.Argument(None, help=f"New tone ({', '.join(MESSAGE_TONES)})."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show or set the AUTH challenge message tone (S1; cosmetic display only).
+
+    With no argument, prints the active tone. "human" (the default) renders a
+    plain, friendly challenge; "technical" keeps the original detailed format.
+    This never changes what is evaluated, blocked, or logged — reason codes
+    stay on every decision either way — so, unlike `prefs`/`mode`, it needs no
+    possession factor to change.
+    """
+    if tone is None:
+        typer.echo(load_message_tone(path))
+        return
+    try:
+        saved = save_message_tone(tone, path)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"message tone set to {saved}")
+
+
 def _hook_install_states(path: str) -> list[tuple[str, str, bool]]:
     """Per-scope Doberman hook install state (delegates to the shared helper).
 
@@ -604,6 +631,7 @@ def _status_payload(path: str) -> dict:
     doc = load_policy(path)
     vector = load_preferences(path)
     mode = load_mode(path)
+    tone = load_message_tone(path)
     twofa = totp.is_enrolled()
     password_enrolled = password.is_enrolled()
     grants = asyncio.run(active_elevations(path, datetime.now(timezone.utc)))
@@ -649,6 +677,7 @@ def _status_payload(path: str) -> dict:
         "doberman_version": __version__,
         "role": role.name if role else None,
         "mode": mode,
+        "message_tone": tone,
         "prefs": {name: getattr(vector, name) for name in DIMENSIONS},
         "prefs_preset": preset_name(vector) or "custom",
         "policy": policy,
@@ -686,6 +715,9 @@ def _render_status_text(payload: dict) -> None:
     typer.echo("")
 
     typer.echo(f"Mode:   {payload['mode']}  (of: {modes})")
+    typer.echo("")
+
+    typer.echo(f"Messages: {payload['message_tone']}  (set via `doberman message-tone`)")
     typer.echo("")
 
     prefs = payload["prefs"]

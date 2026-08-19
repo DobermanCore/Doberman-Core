@@ -268,3 +268,32 @@ def save_mode(name: str, repo_root: str = ".") -> str:
     doc = load_policy(repo_root) or recommend_policy()
     save_policy(doc.with_mode(mode.value), repo_root)
     return mode.value
+
+
+#: The only valid values for the S1 message-tone display preference.
+MESSAGE_TONES: tuple[str, ...] = ("human", "technical")
+
+
+def load_message_tone(repo_root: str = ".") -> str:
+    """The active AUTH challenge message tone ("human" unless set to "technical").
+
+    Never raises: a missing/corrupt saved policy resolves to "human", same as
+    the field's own fail-closed default (see PolicyDoc.from_mapping).
+    """
+    doc = load_policy(repo_root)
+    return doc.message_tone if doc is not None else "human"
+
+
+def save_message_tone(tone: str, repo_root: str = ".") -> str:
+    """Validate and persist the message tone; returns the canonical value.
+
+    Raises ``ValueError`` on an unknown tone. Unlike ``save_default_role_enabled``
+    and ``save_mode``'s enforcement-softening siblings, this is a purely cosmetic
+    display preference with no strengthen/weaken ordering — it is written
+    directly, with NO drift/possession-factor gate (see doberman.policy.drift).
+    """
+    if tone not in MESSAGE_TONES:
+        raise ValueError(f"unknown message tone {tone!r}; choose one of {MESSAGE_TONES}")
+    doc = load_policy(repo_root) or recommend_policy()
+    save_policy(doc.with_message_tone(tone), repo_root)
+    return tone

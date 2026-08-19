@@ -42,7 +42,7 @@ FAKE_AWS = "AKIAIOSFODNN7EXAMPLE"  # noqa: S105
 def deny_auth(monkeypatch):
     """Make every EB.1 AUTH deterministic and prove it forwards nothing."""
 
-    def _deny(decision, action, *, prompter=None, at=None):
+    def _deny(decision, action, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=False,
             tier=AuthTier.local_auth,
@@ -86,7 +86,7 @@ async def test_secret_exfil_domain_send_is_blocked(monkeypatch):
     _PASSING = StaticGuardrail(GuardrailResult(verdict=Verdict.PASS, risk=Risk.low))
     monkeypatch.setattr(executor, "DEFAULT_OBJECTIVE", _PASSING)
 
-    def _deny(decision, action, *, prompter=None, at=None):
+    def _deny(decision, action, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=False,
             tier=AuthTier.local_auth,

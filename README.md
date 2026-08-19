@@ -300,6 +300,10 @@ Every AUTH prompt is already in the redacted decision log; `doberman tune` turns
 
 `doberman uninstall-hooks` only strips the hook entries: it never touches `.doberman/`, and needs no authentication, which means nothing stops a protected agent that reaches a shell from disabling its own security layer if it wanted to. `doberman uninstall` closes that gap: it removes both the project- and local-scope hooks *and* the project's `.doberman/` control plane (policy + decision database) in one step, gated the same way as `doberman taint clear` / `doberman memory reset`: an enrolled possession factor (TOTP if enrolled, otherwise the local password), with no confirm-only fallback and a hard fail-closed refusal if neither is enrolled. Because it's destructive and irreversible, it also asks you to type the project directory name back before proceeding (`--yes` skips that prompt; it never skips the factor check). It is deliberately **project-scoped only**: `--global` hooks and your device-wide password / 2FA / fingerprint key / `~/.doberman/metrics.db` are shared across every project Doberman protects on the machine and are never touched, even on success. `uninstall` is itself a control-plane-blocked subcommand, so a mediated agent can never shell out to run it. Same protection as `uninstall-hooks`.
 
+### Plain or technical wording, `doberman message-tone`
+
+The authorization prompt speaks plain English by default - *"Your agent wants to run a command: `git push --force main`. The command looked destructive. Approve this exact action?"* - so you can read a catch and decide in seconds without parsing reason codes. Prefer the detailed engineering view? `doberman message-tone technical` switches to the terse `[RISK: …] role: … reason: …` block, and `doberman message-tone human` switches back. It changes wording only: cosmetic, not possession-factor gated, and it never touches the decision, the reason codes, or what lands in the decision log.
+
 ---
 
 ## Who is this for?
