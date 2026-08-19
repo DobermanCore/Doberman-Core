@@ -28,6 +28,7 @@ Entry point: `doberman` (Typer). All commands accept `--help`.
 | `doberman serve` | MCP stdio proxy in front of a downstream tool server |
 | `doberman version` | Print the installed Doberman version |
 | `doberman session-summary` | Print the device-global session-guard summary and exit |
+
 Global option: `doberman --version` / `-V` also prints the version and exits.
 ## Output conventions
 Human-readable diagnostics use one severity vocabulary: `error:` means the command failed and
@@ -61,6 +62,7 @@ Low-level harness integration (also installed via `install-hooks` / `setup`).
 | `--jsonl` | `log` | One redacted decision object per line (empty if none) |
 | `--quiet` / `-q` | `scan` | No human map; exit code preserved |
 | `--path` / `-p` | most commands | Repository root (default `.`) |
+
 When both are passed, `--json` wins over `--quiet`: machine-readable JSON is still emitted.
 ### `doberman scan --json` schema
 ```json
