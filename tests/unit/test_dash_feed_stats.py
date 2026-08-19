@@ -217,6 +217,31 @@ async def test_feed_backfill_returns_seeded_rows_oldest_first(tmp_path):
     assert [e["verdict"] for e in events] == ["BLOCK", "PASS"]
 
 
+async def test_feed_row_carries_risk_and_source_context(tmp_path):
+    """A PASS on a non-path action (e.g. shell_exec) has no target_path_class
+    and usually no reason codes either - risk + source_context are the only
+    signal left, so the feed row must carry them (see doberman.dash.app._feed_row).
+    """
+    root = str(tmp_path)
+    await _seed(
+        root,
+        action_id="r1",
+        verdict=Verdict.PASS,
+        reason_codes=[],
+        action_type=ActionType.shell_exec,
+        target="ls -la",
+        risk=Risk.low,
+    )
+
+    client = TestClient(create_app(_TOKEN, root, feed_poll_interval=0.01, feed_max_polls=0))
+    resp = client.get("/api/feed", headers={"Authorization": f"Bearer {_TOKEN}"})
+    events = _sse_events(resp.text)
+    assert len(events) == 1
+    assert events[0]["risk"] == "low"
+    assert events[0]["source_context"] == "user"
+    assert events[0]["target_path_class"] is None
+
+
 async def test_feed_empty_backfill_when_db_missing(tmp_path):
     client = TestClient(
         create_app(_TOKEN, str(tmp_path), feed_poll_interval=0.01, feed_max_polls=0)
