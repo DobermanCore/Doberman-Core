@@ -182,6 +182,7 @@ _EXPECTED_STATUS_KEYS = {
     "elevations",
     "taint",
     "hooks",
+    "excluded_from_global",
     "recent_decisions",
     "missed_challenges_24h",
 }
@@ -202,9 +203,24 @@ def test_status_json_parses_with_expected_keys(tmp_path):
     assert isinstance(payload["twofa"], bool)
     assert isinstance(payload["password"], bool)
     assert isinstance(payload["missed_challenges_24h"], int)
+    assert isinstance(payload["excluded_from_global"], bool)
     # deterministic separators / keys (mirror scan --json)
     again = runner.invoke(app, ["status", "--path", str(tmp_path), "--json"])
     assert again.stdout == result.stdout
+
+
+def test_status_reports_excluded_from_global(tmp_path):
+    from doberman.storage.exclusions import add_exclusion
+
+    add_exclusion(str(tmp_path))
+
+    text_result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert text_result.exit_code == 0, text_result.output
+    assert "excluded from global" in text_result.output.lower()
+
+    json_result = runner.invoke(app, ["status", "--path", str(tmp_path), "--json"])
+    payload = json.loads(json_result.stdout)
+    assert payload["excluded_from_global"] is True
 
 
 def test_status_text_has_blank_line_section_breaks(tmp_path):

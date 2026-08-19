@@ -109,6 +109,13 @@ possession factor (2FA if set up, otherwise your Doberman password) and, since i
 also asks you to type the project directory name back to confirm (skippable with `--yes`; the
 factor check never is). With neither factor enrolled it fails closed and removes nothing.
 
+If a global (or Codex `user`-scope) hook is still installed elsewhere on the machine, it would
+otherwise keep firing here even after `.doberman/` is gone — `uninstall` detects that and also
+adds this project to a device-wide exclusion list the global hook checks first on every call, so
+it gets a true no-op instead of silently recreating `.doberman/`. Run `doberman install-hooks`
+in this project again to clear the exclusion (no gate needed - re-enabling protection is always
+allowed).
+
 > **Order matters when removing Doberman.** `pip uninstall doberman-core` has no way to also
 > clean up the hook entries it wrote - pip doesn't support that. Always run
 > `doberman uninstall-hooks` *first*. If you already uninstalled the package and every tool call

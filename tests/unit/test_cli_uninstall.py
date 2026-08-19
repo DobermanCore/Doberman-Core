@@ -25,6 +25,7 @@ from doberman.config import save_policy
 from doberman.hosthooks.install import merge_doberman_hooks, resolve_settings_path, write_settings
 from doberman.hosthooks.install_codex import merge_codex_hooks, resolve_codex_hooks_path
 from doberman.policy.checklist import recommend_policy
+from doberman.storage.exclusions import is_excluded
 
 runner = CliRunner()
 
@@ -322,3 +323,93 @@ def test_denied_output_never_contains_the_password(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert _PASSWORD not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Global-hook exclusion: a still-installed global (or Codex user-scope) hook
+# would otherwise keep firing here after this project's own state is gone, so
+# a successful uninstall also adds the project to the device-wide exclusion
+# list that the global hook checks (see doberman.storage.exclusions).
+# ---------------------------------------------------------------------------
+
+
+def _with_fake_global_claude_hooks(tmp_path, monkeypatch, root: str) -> None:
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir(exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    write_settings(resolve_settings_path("global", root), merge_doberman_hooks({}))
+
+
+def test_uninstall_auto_excludes_project_when_global_hook_installed(tmp_path, monkeypatch):
+    root = str(tmp_path / "project")
+    Path(root).mkdir()
+    password.enroll(_PASSWORD)
+    _install_project_hooks(root)
+    _make_doberman_dir(root)
+    _with_fake_global_claude_hooks(tmp_path, monkeypatch, root)
+    _use_prompter(monkeypatch, lambda: _CorrectCode(_PASSWORD))
+
+    result = runner.invoke(app, ["uninstall", "--path", root, "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "exclusion list" in result.output.lower()
+    assert is_excluded(root) is True
+
+
+def test_uninstall_does_not_exclude_when_no_global_hook_installed(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    password.enroll(_PASSWORD)
+    _install_project_hooks(root)
+    _make_doberman_dir(root)
+    _use_prompter(monkeypatch, lambda: _CorrectCode(_PASSWORD))
+
+    result = runner.invoke(app, ["uninstall", "--path", root, "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "exclusion list" not in result.output.lower()
+    assert is_excluded(root) is False
+
+
+def test_denied_uninstall_does_not_exclude_even_with_global_hook(tmp_path, monkeypatch):
+    root = str(tmp_path / "project")
+    Path(root).mkdir()
+    password.enroll(_PASSWORD)
+    _install_project_hooks(root)
+    _make_doberman_dir(root)
+    _with_fake_global_claude_hooks(tmp_path, monkeypatch, root)
+    _use_prompter(monkeypatch, lambda: _WrongCode())
+
+    result = runner.invoke(app, ["uninstall", "--path", root, "--yes"])
+
+    assert result.exit_code == 1
+    assert is_excluded(root) is False
+
+
+def test_dry_run_does_not_exclude_even_with_global_hook(tmp_path, monkeypatch):
+    root = str(tmp_path / "project")
+    Path(root).mkdir()
+    password.enroll(_PASSWORD)
+    _install_project_hooks(root)
+    _make_doberman_dir(root)
+    _with_fake_global_claude_hooks(tmp_path, monkeypatch, root)
+    _use_prompter(monkeypatch, lambda: _CorrectCode(_PASSWORD))
+
+    result = runner.invoke(app, ["uninstall", "--path", root, "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "exclusion list" in result.output.lower()  # mentioned, but not yet applied
+    assert is_excluded(root) is False
+
+
+def test_install_hooks_clears_an_existing_exclusion(tmp_path):
+    root = str(tmp_path)
+    from doberman.storage.exclusions import add_exclusion
+
+    add_exclusion(root)
+    assert is_excluded(root) is True
+
+    result = runner.invoke(app, ["install-hooks", "--path", root])
+
+    assert result.exit_code == 0, result.output
+    assert "no longer excluded" in result.output.lower()
+    assert is_excluded(root) is False
