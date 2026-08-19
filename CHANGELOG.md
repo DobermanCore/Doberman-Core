@@ -32,6 +32,11 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   class has been approved every time; never applies anything itself, `--accept <id>` routes through
   the same weaken chokepoint as every other policy loosening (#243).
 - **Dashboard: richer live-feed rows.** The live decision feed (`GET /api/feed`) now includes each row's `risk` and `source_context`, and the dashboard shows both (a risk badge plus a `from:<context>` tag). A `PASS` on an action with no path class (e.g. `shell_exec`, which has no file target) and no reason codes previously rendered as bare noise (verdict + action type only) - both fields were already redaction-safe classifications on the decision row, just not surfaced.
+- **Dashboard: brand-aligned visual refresh.** The local dashboard is restyled onto Doberman's
+  shared brand system (warm near-black surface, tan brand, PASS/AUTH/BLOCK verdict ramp), with the
+  Doberman logo mark and a live **ON GUARD / ALERT** status pill that flips to ALERT the moment an
+  approval is waiting on a human. Appearance only: no new endpoints, no change to auth, redaction,
+  or the decision path, and the feed's auto-scroll and risk/source columns are unchanged.
 - **MCP tool-schema pinning** (#246): every proxied `tools/list` now records a keyed-HMAC
   trust-on-first-use pin for each tool's name, description, and input schema. A later mismatch
   raises live calls to AUTH in Light/Balanced or BLOCK in Strict/Paranoid until a human runs

@@ -87,86 +87,125 @@ _HTML_SHELL = """<!doctype html>
 <style>
   :root {
     color-scheme: dark light;
-    --bg: #0b0d10;
-    --surface: #14171c;
-    --border: #262b33;
-    --ink: #e6e6e6;
-    --ink-dim: #9aa1ac;
+    --ink-0: oklch(13% 0.008 55);
+    --ink-1: oklch(16% 0.009 55);
+    --ink-2: oklch(19.5% 0.010 55);
+    --ink-3: oklch(25% 0.012 55);
+    --rule: oklch(34% 0.012 55);
+    --rule-2: oklch(28% 0.011 55);
+    --fg: oklch(96% 0 0);
+    --fg-2: oklch(82% 0.004 55);
+    --fg-3: oklch(64% 0.006 55);
+    --tan: oklch(74% 0.140 58);
+    --tan-hi: oklch(84% 0.150 64);
     --mono: ui-monospace, "SF Mono", Consolas, monospace;
-    --pass: #3fb950;
-    --pass-bg: rgba(63, 185, 80, .14);
-    --auth: #d29922;
-    --auth-bg: rgba(210, 153, 34, .14);
-    --block: #f85149;
-    --block-bg: rgba(248, 81, 73, .14);
-    --neutral: #8b949e;
-    --neutral-bg: rgba(139, 148, 158, .14);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --pass: oklch(76% 0.16 152);
+    --pass-bg: oklch(76% 0.16 152 / 14%);
+    --auth: oklch(82% 0.155 78);
+    --auth-bg: oklch(82% 0.155 78 / 14%);
+    --block: oklch(66% 0.205 26);
+    --block-bg: oklch(66% 0.205 26 / 14%);
+    --neutral: var(--fg-3);
+    --neutral-bg: oklch(64% 0.006 55 / 14%);
+    --r-sm: 8px;
+    --r: 10px;
+    --r-lg: 12px;
+    --d: 140ms ease-out;
   }
   @media (prefers-color-scheme: light) {
     :root {
-      --bg: #f7f7f8; --surface: #ffffff; --border: #dde1e6; --ink: #111; --ink-dim: #5b6572;
+      --ink-0: #f7f7f8; --ink-1: #ffffff; --ink-2: #eef0f2; --ink-3: #e2e5e9;
+      --rule: #c7ccd2; --rule-2: #dde1e6;
+      --fg: #15181d; --fg-2: #3a4048; --fg-3: #5b6572;
+      --tan: #6b4a1f; --tan-hi: #52380f;
       --pass: #116329;  --pass-bg: rgba(17, 99, 41, .12);
       --auth: #7d5200;  --auth-bg: rgba(125, 82, 0, .12);
       --block: #a40e26; --block-bg: rgba(164, 14, 38, .12);
       --neutral: #424a53; --neutral-bg: rgba(66, 74, 83, .12);
     }
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
   body {
-    margin: 0 auto; padding: 2rem 2rem 3rem; min-height: 100vh; max-width: 1080px;
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: var(--bg); color: var(--ink);
+    margin: 0 auto; padding: 1.5rem 1.5rem 4rem; min-height: 100vh; max-width: 1080px;
+    font: 14px/1.5 var(--font);
+    background: var(--ink-0); color: var(--fg);
+    -webkit-font-smoothing: antialiased;
   }
-  h1 { font-size: 1.1rem; font-weight: 600; margin: 0; letter-spacing: -.01em; }
-  h2 { font-size: .9rem; font-weight: 600; margin: 1.75rem 0 .6rem; color: var(--ink-dim); }
+  h2 {
+    font-family: var(--mono); font-size: .72rem; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--fg-3);
+    margin: 1.75rem 0 .6rem;
+  }
   .topbar {
-    display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem;
-    padding-bottom: 1rem; margin-bottom: .5rem; border-bottom: 1px solid var(--border);
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: .6rem 1rem;
+    padding-bottom: 1.1rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--rule-2);
   }
-  #status { display: inline-flex; align-items: center; gap: .5rem; font-size: .85rem; color: var(--ink-dim); }
-  .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--neutral); flex: none; }
+  .brand { display: inline-flex; align-items: center; gap: .6rem; }
+  .brand svg { width: 28px; height: 28px; flex: none; }
+  .brand .word {
+    font-family: var(--mono); font-weight: 700; font-size: .95rem;
+    letter-spacing: .06em; color: var(--tan);
+  }
+  .topbar-right { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: .4rem;
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .02em;
+    padding: .32rem .6rem; border: 1px solid var(--rule); border-radius: 999px;
+    background: var(--ink-2); color: var(--fg-3); white-space: nowrap;
+  }
+  .dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--neutral); flex: none; }
   .dot.ok { background: var(--pass); }
   .dot.err { background: var(--block); }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: .45rem;
+    font-family: var(--mono); font-size: .76rem; font-weight: 600; letter-spacing: .03em;
+    padding: .4rem .75rem; border-radius: 999px; border: 1px solid var(--rule);
+    color: var(--fg-3); white-space: nowrap;
+  }
+  .status-pill .pip { font-size: .7em; }
+  .status-pill.ok .pip { color: var(--tan); }
+  .status-pill.alert { color: var(--auth); border-color: var(--auth); background: var(--auth-bg); }
+  .status-pill.alert .pip { animation: pulse 1.6s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .status-pill.alert .pip { animation: none; } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
   .badge {
     display: inline-flex; align-items: center; font-family: var(--mono);
-    font-size: .72rem; font-weight: 600; letter-spacing: .02em;
-    padding: .2rem .5rem; border-radius: 4px; line-height: 1.4;
+    font-size: .72rem; font-weight: 700; letter-spacing: .02em;
+    padding: .24rem .5rem; border-radius: 5px; line-height: 1.4;
   }
   .badge-pass { color: var(--pass); background: var(--pass-bg); }
   .badge-auth { color: var(--auth); background: var(--auth-bg); }
   .badge-block { color: var(--block); background: var(--block-bg); }
-  .badge-neutral { color: var(--ink-dim); background: var(--neutral-bg); }
+  .badge-neutral { color: var(--neutral); background: var(--neutral-bg); }
   .badge-risk-low { color: var(--pass); background: var(--pass-bg); }
   .badge-risk-medium { color: var(--auth); background: var(--auth-bg); }
   .badge-risk-high, .badge-risk-critical { color: var(--block); background: var(--block-bg); }
   #stats {
-    margin: 0 0 1.5rem; font-size: .82rem; color: var(--ink-dim);
+    margin: 0 0 1.75rem; font-family: var(--mono); font-size: .82rem; color: var(--fg-3);
     display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center;
+    padding: .85rem 1.1rem; border: 1px solid var(--rule-2); border-radius: var(--r);
+    background: var(--ink-1);
   }
-  #stats .count { color: var(--ink); font-family: var(--mono); }
+  #stats .count { color: var(--fg); }
   .empty-state {
-    padding: 1rem; border: 1px dashed var(--border); border-radius: 6px;
-    color: var(--ink-dim); font-size: .82rem; text-align: center;
+    padding: 2rem 1.5rem; border: 1px dashed var(--rule); border-radius: var(--r);
+    color: var(--fg-3); font-size: .85rem; text-align: center;
   }
-  #feed, #pending-list { list-style: none; margin: .5rem 0 0; padding: 0; }
-  #feed {
-    max-height: 60vh; overflow-y: auto;
-    border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
-  }
+  #feed, #pending-list { list-style: none; margin: .5rem 0 0; }
   #feed:not(:empty) ~ #feed-empty { display: none; }
-  #feed li {
-    display: flex; align-items: baseline; gap: .5rem;
-    padding: .5rem .7rem; border-bottom: 1px solid var(--border);
-    font-size: .8rem; font-family: var(--mono);
-  }
-  #feed li:last-child { border-bottom: none; }
-  #feed li .detail { color: var(--ink-dim); overflow-wrap: anywhere; }
+  #pending-list:not(:empty) ~ #pending-empty { display: none; }
   #pending-list .badge { font-size: .76rem; padding: .25rem .55rem; }
   #pending-list li {
-    padding: 1rem 1.1rem; margin-bottom: .7rem;
-    border: 1px solid var(--auth);
-    border-radius: 8px; background: var(--surface); font-size: .85rem;
-    box-shadow: 0 4px 8px -4px rgba(210, 153, 34, .4);
+    padding: 1.4rem 1.5rem 1.5rem; margin-bottom: .9rem;
+    border: 1px solid var(--auth); border-radius: var(--r-lg); background: var(--ink-1);
+    font-size: .85rem;
+    box-shadow: 0 6px 20px -10px oklch(0% 0 0 / 55%);
     animation: pending-arrive .28s ease-out both;
   }
   @keyframes pending-arrive {
@@ -176,43 +215,63 @@ _HTML_SHELL = """<!doctype html>
   @media (prefers-reduced-motion: reduce) {
     #pending-list li { animation: none; }
   }
-  #pending-list:not(:empty) ~ #pending-empty { display: none; }
-  #pending-list .row-header { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
-  #pending-list .row-header .detail { color: var(--ink); font-family: var(--mono); font-size: .82rem; }
+  #pending-list .row-header { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap; }
+  #pending-list .row-header .detail { color: var(--fg); font-family: var(--mono); font-size: .82rem; }
   #pending-list > li > .detail {
     color: var(--auth); font-family: var(--mono); font-size: .84rem; font-weight: 600;
   }
-  #pending-list .row-explanation { margin: .45rem 0 .8rem; color: var(--ink); opacity: .82; max-width: 68ch; }
+  #pending-list .row-explanation { margin: .5rem 0 1rem; color: var(--fg-2); line-height: 1.6; max-width: 62ch; }
   #pending-list input {
     font-family: var(--mono); font-size: .95rem; padding: .45rem .6rem; margin-right: .5rem;
-    letter-spacing: .12em; width: 9rem; background: var(--bg); color: var(--ink); border: 1px solid var(--border); border-radius: 4px;
+    letter-spacing: .12em; width: 9rem;
+    background: var(--ink-0); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px;
   }
   #pending-list button {
-    font: inherit; font-size: .82rem; font-weight: 600; padding: .45rem 1rem; margin-right: .45rem;
-    transition: background .12s ease;
-    border: 1px solid var(--border); border-radius: 4px; background: transparent; color: inherit;
-    cursor: pointer;
+    font-family: var(--font); font-size: .86rem; font-weight: 600; padding: .55rem 1.15rem; margin-right: .5rem;
+    border-radius: var(--r-sm); cursor: pointer;
+    transition: background-color var(--d), border-color var(--d), color var(--d);
   }
-  #pending-list button.approve { border-color: var(--pass); color: var(--pass); }
-  #pending-list button.deny { border-color: var(--block); color: var(--block); }
-  #pending-list button.approve:hover { background: var(--pass-bg); }
-  #pending-list button.deny:hover { background: var(--block-bg); }
+  #pending-list button.deny { background: transparent; border: 1px solid var(--rule); color: var(--block); }
+  #pending-list button.deny:hover { border-color: var(--block); background: var(--block-bg); }
+  #pending-list button.approve { background: var(--auth); border: 1px solid var(--auth); color: var(--ink-0); }
+  #pending-list button.approve:hover { background: var(--tan-hi); border-color: var(--tan-hi); }
+  .feed-wrap { border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--ink-1); overflow: hidden; }
+  #feed { max-height: 60vh; overflow-y: auto; }
+  #feed li {
+    display: flex; align-items: baseline; gap: .5rem;
+    padding: .6rem 1.1rem; border-bottom: 1px solid var(--rule-2);
+    font-size: .8rem; font-family: var(--mono);
+    transition: background-color var(--d);
+  }
+  #feed li:last-child { border-bottom: none; }
+  #feed li:hover { background: var(--ink-2); }
+  #feed li .detail { color: var(--fg-3); overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
+  <h1 class="sr-only">Doberman local dashboard</h1>
   <div class="topbar">
-    <h1>Doberman Dashboard</h1>
-    <div id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></div>
-    <span class="badge badge-neutral" id="mode-badge">mode: -</span>
-    <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="15" style="fill:var(--ink-2); stroke:var(--tan); stroke-width:1.5" />
+        <text x="16" y="21.5" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-weight="700" font-size="15" style="fill:var(--tan)">D</text>
+      </svg>
+      <span class="word">DOBERMAN</span>
+    </div>
+    <div class="topbar-right">
+      <span class="chip" id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></span>
+      <span class="badge badge-neutral" id="mode-badge">mode: -</span>
+      <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
+      <span class="status-pill ok" id="guard-status"><span class="pip" id="guard-pip" aria-hidden="true">●</span><span id="guard-label">ON GUARD</span></span>
+    </div>
   </div>
   <div id="stats">stats loading...</div>
   <h2>Pending approvals</h2>
   <ul id="pending-list" aria-live="polite"></ul>
-  <div id="pending-empty" class="empty-state">No pending approvals right now.</div>
+  <div id="pending-empty" class="empty-state">Nothing pending. Doberman's watching.</div>
   <h2>Recent decisions</h2>
-  <ul id="feed"></ul>
-  <div id="feed-empty" class="empty-state">Waiting for the first decision...</div>
+  <div class="feed-wrap"><ul id="feed"></ul></div>
+  <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
   <script>
     (function () {
       // Verdict/risk/enforcement -> badge class lookups. Explicit,
@@ -266,6 +325,19 @@ _HTML_SHELL = """<!doctype html>
       var enforcementBadge = document.getElementById("enforcement-badge");
       var feedEl = document.getElementById("feed");
       var MAX_FEED_ROWS = 200;
+
+      var guardStatus = document.getElementById("guard-status");
+      var guardPip = document.getElementById("guard-pip");
+      var guardLabel = document.getElementById("guard-label");
+      // The guard-dog status pill: calm ("ON GUARD") while nothing is
+      // waiting on a human, flips to "ALERT" the moment the pending queue
+      // is non-empty - the same signal driving document.title's "(N)" below.
+      function updateGuardStatus(pendingCount) {
+        var alertMode = pendingCount > 0;
+        guardStatus.className = "status-pill" + (alertMode ? " alert" : " ok");
+        guardPip.textContent = alertMode ? "⚠" : "●";
+        guardLabel.textContent = alertMode ? "ALERT" : "ON GUARD";
+      }
 
       fetch("/api/health", { headers: { "Authorization": "Bearer " + token } })
         .then(function (res) {
@@ -466,6 +538,7 @@ _HTML_SHELL = """<!doctype html>
           pendingList.appendChild(li);
         });
         document.title = (rows.length ? "(" + rows.length + ") " : "") + "Doberman Dashboard";
+        updateGuardStatus(rows.length);
       }
 
       function refreshPending() {

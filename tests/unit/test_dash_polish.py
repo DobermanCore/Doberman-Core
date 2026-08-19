@@ -86,7 +86,7 @@ def test_pending_list_still_has_a_designed_empty_state(tmp_path):
 def test_dark_theme_is_the_default_via_css_custom_properties(tmp_path):
     html = _index_html(tmp_path)
     assert "color-scheme: dark light;" in html
-    assert "--bg: #0b0d10;" in html
+    assert "--ink-0: oklch(13% 0.008 55);" in html
     assert "@media (prefers-color-scheme: light)" in html
 
 
