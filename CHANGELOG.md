@@ -37,6 +37,10 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   Doberman logo mark and a live **ON GUARD / ALERT** status pill that flips to ALERT the moment an
   approval is waiting on a human. Appearance only: no new endpoints, no change to auth, redaction,
   or the decision path, and the feed's auto-scroll and risk/source columns are unchanged.
+  Follow-up: the restyle briefly wrapped the feed list in a container, which broke the CSS-only
+  "no decisions yet" empty-state (it stayed visible even with rows); the wrapper is removed so the
+  empty-state hides correctly again, and a test now guards the sibling structure the reveal needs.
+  The README demo gif is refreshed to the new dark brand look.
 - **MCP tool-schema pinning** (#246): every proxied `tools/list` now records a keyed-HMAC
   trust-on-first-use pin for each tool's name, description, and input schema. A later mismatch
   raises live calls to AUTH in Light/Balanced or BLOCK in Strict/Paranoid until a human runs
