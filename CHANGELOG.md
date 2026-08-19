@@ -7,6 +7,13 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **Plain-language auth messages — new `message_tone` setting:** the authorization prompt now
+  speaks plainly by default — *"Your agent wants to run a command: … Approve this exact action?"* —
+  instead of the terse `[RISK: …] role: … reason: …` block. `doberman message-tone human|technical`
+  switches between the two; **human** is the default. The setting is cosmetic — it changes wording
+  only and is **not** possession-factor gated (there is no strengthen/weaken ordering to a phrasing
+  choice). Reason codes and the PASS/AUTH/BLOCK verdict are identical either way and still logged;
+  only what the human reads changes.
 - **Auth popup redesign — one brand system across every surface:** the out-of-band
   tkinter authorization dialog is redrawn on a `Canvas` — the Doberman logo mark, a
   tan **DOBERMAN** wordmark, a rounded message panel (with the command shown in amber),

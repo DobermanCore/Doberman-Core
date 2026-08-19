@@ -127,9 +127,15 @@ def test_prompter_failure_denies_fail_closed():
 
 
 def test_challenge_message_names_target_and_reason():
+    # "technical" tone: the original detailed format, pinned exactly (the
+    # "human" default is covered separately below).
     prompter = FakePrompter(confirm=False)
     LocalAuthProvider().authenticate(
-        _auth_decision(), _action("backend/api.ts"), AuthTier.soft_confirm, prompter=prompter
+        _auth_decision(),
+        _action("backend/api.ts"),
+        AuthTier.soft_confirm,
+        prompter=prompter,
+        message_tone="technical",
     )
     message = prompter.messages[0]
     assert "backend/api.ts" in message  # the EXACT target
@@ -144,6 +150,7 @@ def test_challenge_message_includes_risk_badge():
         _action("backend/api.ts"),
         AuthTier.soft_confirm,
         prompter=prompter,
+        message_tone="technical",
     )
     message = prompter.messages[0]
     assert "RISK: CRITICAL" in message  # the badge is additive, not a replacement
@@ -159,6 +166,7 @@ def test_challenge_message_low_risk_renders_cleanly():
         _action("backend/api.ts"),
         AuthTier.soft_confirm,
         prompter=prompter,
+        message_tone="technical",
     )
     message = prompter.messages[0]
     assert "RISK: LOW" in message
@@ -168,12 +176,31 @@ def test_challenge_message_low_risk_renders_cleanly():
 
 
 def test_challenge_message_is_ascii_and_cp1252_safe():
-    """_challenge_message output must be ASCII and cp1252-safe for legacy Windows consoles."""
+    """_challenge_message output must be ASCII and cp1252-safe for legacy Windows consoles,
+    in BOTH tones (the default "human" tone and the original "technical" one)."""
     from doberman.auth.provider import _challenge_message
 
-    msg = _challenge_message(_auth_decision(), _action(), AuthTier.soft_confirm)
-    assert msg.isascii(), f"non-ASCII in challenge prompt: {msg!r}"
-    msg.encode("ascii")  # raises UnicodeEncodeError if non-ASCII
+    for tone in ("human", "technical"):
+        msg = _challenge_message(_auth_decision(), _action(), AuthTier.soft_confirm, tone)
+        assert msg.isascii(), f"non-ASCII in {tone} challenge prompt: {msg!r}"
+        msg.encode("ascii")  # raises UnicodeEncodeError if non-ASCII
+
+
+def test_challenge_message_human_tone_is_plain_and_names_target_and_reason():
+    """S1: the "human" tone (the default) is plain-worded but states the same facts —
+    the exact target and the reason, in plain language, without the raw code or the
+    technical [RISK:]/role:/reason: scaffolding."""
+    prompter = FakePrompter(confirm=False)
+    LocalAuthProvider().authenticate(
+        _auth_decision(), _action("backend/api.ts"), AuthTier.soft_confirm, prompter=prompter
+    )
+    message = prompter.messages[0]
+    assert "    backend/api.ts" in message  # the exact target, indented
+    assert "role_out_of_scope" not in message  # no raw reason code
+    assert "[RISK:" not in message  # no technical badge
+    assert "role:" not in message
+    assert "Approve this exact action?" in message
+    assert "outside" in message and "scope" in message  # the plain-language reason
 
 
 def test_registered_provider_is_preferred(monkeypatch):

@@ -143,7 +143,7 @@ async def test_gated_output_still_consumes_a_single_use_elevation(
     monkeypatch.setattr(executor, "_safe_decide", _real_safe_decide)
     calls = {"n": 0}
 
-    def approve_elev(decision, action, *, prompter=None, at=None):
+    def approve_elev(decision, action, *, prompter=None, at=None, message_tone=None):
         calls["n"] += 1
         return AuthResult(
             approved=True,

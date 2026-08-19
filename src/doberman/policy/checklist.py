@@ -156,6 +156,15 @@ class PolicyDoc:
     #: never treated as True (see PolicyDoc.from_mapping) — fail closed to
     #: dormant, never to a wider grant.
     default_role_enabled: bool = False
+    #: Cosmetic display preference (S1) for the AUTH challenge message the local
+    #: human reads: "human" (plain, friendly wording) or "technical" (today's
+    #: exact detailed format). Purely presentational — it never changes what is
+    #: evaluated, blocked, or logged. "human" (the default) unless a garbage
+    #: stored value is read, which also falls back to "human" (see
+    #: PolicyDoc.from_mapping) — a cosmetic setting has no strengthen/weaken
+    #: ordering to fail closed on, but a corrupt value must still resolve to a
+    #: safe, known choice rather than propagate garbage.
+    message_tone: str = "human"
 
     def get(self, item_id: str) -> PolicyItem | None:
         return next((it for it in self.items if it.id == item_id), None)
@@ -200,6 +209,14 @@ class PolicyDoc:
         """Return a copy with the D1 default-role opt-in flag set."""
         return replace(self, default_role_enabled=bool(enabled))
 
+    def with_message_tone(self, tone: str) -> "PolicyDoc":
+        """Return a copy with the AUTH challenge message tone set.
+
+        Does not validate — the caller (:func:`doberman.config.save_message_tone`)
+        is the gate; this method just carries the value like every other ``with_*``.
+        """
+        return replace(self, message_tone=tone)
+
     def to_mapping(self) -> dict[str, Any]:
         mapping: dict[str, Any] = {
             "mode": self.mode,
@@ -228,6 +245,9 @@ class PolicyDoc:
         # Only emit when set, to keep the common (opted-out) policy file clean.
         if self.default_role_enabled:
             mapping["default_role_enabled"] = True
+        # Only emit when non-default, to keep a normal (human-tone) policy file clean.
+        if self.message_tone != "human":
+            mapping["message_tone"] = self.message_tone
         return mapping
 
     @classmethod
@@ -273,6 +293,13 @@ class PolicyDoc:
             # opt-in — `bool("false")` is truthy in Python, so a loose coercion
             # here would be a silent widening on a hand-edited/corrupt file.
             default_role_enabled=data.get("default_role_enabled") is True,
+            # Fail closed to "human": only the two known tone values are ever
+            # honored — a garbage/hand-edited value never propagates as-is.
+            message_tone=(
+                data.get("message_tone")
+                if data.get("message_tone") in ("human", "technical")
+                else "human"
+            ),
         )
 
 

@@ -82,7 +82,7 @@ def approving_prompter_for_other_action(monkeypatch):
     """An "approved" challenge result bound to a DIFFERENT action id —
     resolve_auth must never honor it (single-use, action-bound approval)."""
 
-    def _fake_challenge(decision, action, *, prompter=None, at=None):
+    def _fake_challenge(decision, action, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=True,
             tier=AuthTier.local_auth,

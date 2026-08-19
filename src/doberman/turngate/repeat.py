@@ -214,13 +214,18 @@ def challenge_repeat(
     *,
     prompter: Prompter | None = None,
     at: datetime | None = None,
+    message_tone: str = "human",
 ) -> AuthResult:
     """Run the F7 challenge for a repeated, just-blocked turn and return the result.
 
     On approval the caller releases the turn and clears the record (single-use);
     on denial the caller calls :func:`note_denied`. The proof tier is bound to
-    the original block reason (Tier 0 → 2FA).
+    the original block reason (Tier 0 → 2FA). ``message_tone`` (S1, cosmetic
+    only) is passed through as data — this module stays config-free, the caller
+    (turngate/hook.py, which already has repo_root) resolves it.
     """
     when = _now(at)
     action, decision = _repeat_decision(turn, record, when)
-    return run_auth_challenge(decision, action, prompter=prompter, at=when)
+    return run_auth_challenge(
+        decision, action, prompter=prompter, at=when, message_tone=message_tone
+    )

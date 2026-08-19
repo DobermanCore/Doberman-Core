@@ -20,7 +20,7 @@ from doberman.proxy.interception_log import LOGGER_NAME
 from .test_proxy_passthrough import proxied_session
 
 
-def _deny_challenge(decision, action, *, prompter=None, at=None):
+def _deny_challenge(decision, action, *, prompter=None, at=None, message_tone=None):
     """A deterministic denied AuthResult (stands in for confirm/2FA failure)."""
     return AuthResult(
         approved=False,

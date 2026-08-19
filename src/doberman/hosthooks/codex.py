@@ -39,6 +39,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
+from doberman.config import load_message_tone
 from doberman.hosthooks import claude_code, hookio, spine
 from doberman.models import Verdict
 
@@ -158,7 +159,11 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             return None  # raise-only; monitor-softened history recorded by the spine
         if result.acted is Verdict.AUTH:
             hook_result = hookio.resolve_auth(
-                result.decision, result.action, event=_EVENT, prompter=AUTH_PROMPTER
+                result.decision,
+                result.action,
+                event=_EVENT,
+                prompter=AUTH_PROMPTER,
+                message_tone=load_message_tone(result.repo_root),
             )
         else:
             hook_result = hookio.decision_payload(result.decision, event=_EVENT)

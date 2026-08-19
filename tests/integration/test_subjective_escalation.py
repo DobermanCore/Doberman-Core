@@ -20,7 +20,7 @@ from doberman.subjective.drift import K_OBSERVATIONS, reset_adwin
 from .test_proxy_passthrough import proxied_session
 
 
-def _deny(decision, action, *, prompter=None, at=None):
+def _deny(decision, action, *, prompter=None, at=None, message_tone=None):
     return AuthResult(
         approved=False,
         tier=AuthTier.local_auth,

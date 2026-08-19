@@ -213,7 +213,7 @@ def test_approval_is_bound_to_the_action_id(tmp_path, monkeypatch):
     different action, even if a buggy or compromised auth provider returns
     "approved" — mirrors test_hosthook_auth_challenge.py's own-host proof."""
 
-    def _fake_challenge(decision, action, *, prompter=None, at=None):
+    def _fake_challenge(decision, action, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=True,
             tier=AuthTier.local_auth,

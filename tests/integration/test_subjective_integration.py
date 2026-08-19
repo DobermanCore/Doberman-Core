@@ -44,7 +44,7 @@ _BLOCKING = StaticGuardrail(
 )
 
 
-def _deny(decision, action, *, prompter=None, at=None):
+def _deny(decision, action, *, prompter=None, at=None, message_tone=None):
     return AuthResult(
         approved=False,
         tier=AuthTier.local_auth,
@@ -54,7 +54,7 @@ def _deny(decision, action, *, prompter=None, at=None):
     )
 
 
-def _approve(decision, action, *, prompter=None, at=None):
+def _approve(decision, action, *, prompter=None, at=None, message_tone=None):
     return AuthResult(
         approved=True,
         tier=AuthTier.local_auth,

@@ -173,6 +173,7 @@ _EXPECTED_STATUS_KEYS = {
     "doberman_version",
     "role",
     "mode",
+    "message_tone",
     "prefs",
     "prefs_preset",
     "policy",

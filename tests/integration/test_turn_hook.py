@@ -198,7 +198,7 @@ async def test_auth_turn_timeout_recorded_distinctly_from_denial(tmp_path, monke
     ``timeout``, not ``denied`` — silence and a human refusal are different audit
     events (ADR 0046). Not released either way (fail closed)."""
 
-    def _timed_out(decision, action, *, prompter=None, at=None):
+    def _timed_out(decision, action, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=False,
             tier=AuthTier.local_auth,
@@ -243,7 +243,7 @@ async def test_repeat_denied_timeout_recorded_distinctly(tmp_path, monkeypatch):
     first = await gate_turn(text, entity_id="e", repo_root=root, ts=_TS)
     assert first.released is False and first.verdict is Verdict.BLOCK
 
-    def _timed_out_repeat(turn, record, *, prompter=None, at=None):
+    def _timed_out_repeat(turn, record, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=False,
             tier=AuthTier.two_factor,

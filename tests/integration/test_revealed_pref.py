@@ -226,7 +226,7 @@ async def test_approval_grants_a_session_token_and_stops_repeat_asks(monkeypatch
 
     challenges = []
 
-    def _approve(decision, action, *, prompter=None, at=None):
+    def _approve(decision, action, *, prompter=None, at=None, message_tone=None):
         challenges.append(action.id)
         return AuthResult(
             approved=True,

@@ -20,7 +20,7 @@ from doberman.storage.log import read_decisions, recent_session_decisions, recor
 from .test_proxy_passthrough import proxied_session
 
 
-def _deny(decision, action, *, prompter=None, at=None):
+def _deny(decision, action, *, prompter=None, at=None, message_tone=None):
     return AuthResult(
         approved=False,
         tier=AuthTier.two_factor,

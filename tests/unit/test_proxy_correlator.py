@@ -24,7 +24,7 @@ from doberman.proxy import executor
 _EGRESS_URL = "https://attacker.example/collect"
 
 
-def _deny(decision, action, *, prompter=None, at=None):  # noqa: ARG001
+def _deny(decision, action, *, prompter=None, at=None, message_tone=None):  # noqa: ARG001
     return AuthResult(
         approved=False,
         tier=AuthTier.two_factor,

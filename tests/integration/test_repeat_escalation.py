@@ -97,11 +97,13 @@ def test_replay_without_a_valid_totp_fails():
 
 
 def test_challenge_text_restates_the_block_reason_and_pattern():
+    # "technical" tone: the raw reason code is asserted verbatim (the S1 "human"
+    # default plain-language rendering is covered by test_auth_provider.py).
     code = _valid_code()
     register_block("ent", "hmac:abc", ReasonCode.secret_export, now=_NOW)
     record = lookup("ent", "hmac:abc", now=_NOW)
     prompter = RecordingPrompter(confirm=True, code=code)
-    challenge_repeat(_turn(), record, prompter=prompter, at=_NOW)
+    challenge_repeat(_turn(), record, prompter=prompter, at=_NOW, message_tone="technical")
     message = prompter.messages[0]
     assert "secret_export" in message
     assert restate(ReasonCode.secret_export).split()[0].lower() in message.lower()

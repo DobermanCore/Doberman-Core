@@ -269,6 +269,7 @@ def run_auth_challenge(
     prompter: Prompter | None = None,
     at: AwareDatetime | None = None,
     timeout_s: float = DEFAULT_CHALLENGE_TIMEOUT_S,
+    message_tone: str = "human",
 ) -> AuthResult:
     """Select the tier and run the challenge through the active provider.
 
@@ -277,6 +278,11 @@ def run_auth_challenge(
     it never alters the decision's verdict or the required tier. With nothing
     installed, the local provider runs (CLI confirm + TOTP). Lazy-imports the
     provider to avoid an import cycle (challenge defines the types it consumes).
+
+    ``message_tone`` (S1) is purely cosmetic — "human" (plain wording, the
+    default) or "technical" (the original detailed format) — and is passed
+    through as data; this module never reads config/repo state itself, so a
+    caller with repo access resolves the tone and hands it in here.
 
     Returns within ``timeout_s`` no matter what the channel does: an unanswered
     challenge yields a non-approved result with ``method`` set to
@@ -300,7 +306,7 @@ def run_auth_challenge(
     try:
         return _run_with_deadline(
             lambda: active_provider().authenticate(
-                decision, action, tier, prompter=prompter, at=at
+                decision, action, tier, prompter=prompter, at=at, message_tone=message_tone
             ),
             timeout_s=timeout_s,
             on_timeout=lambda: AuthResult(

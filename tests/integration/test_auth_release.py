@@ -21,7 +21,7 @@ _AUTHING = StaticGuardrail(
 
 
 def _approve(tier=AuthTier.local_auth):
-    def challenge(decision, action, *, prompter=None, at=None):
+    def challenge(decision, action, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=True,
             tier=tier,
@@ -33,7 +33,7 @@ def _approve(tier=AuthTier.local_auth):
     return challenge
 
 
-def _deny(decision, action, *, prompter=None, at=None):
+def _deny(decision, action, *, prompter=None, at=None, message_tone=None):
     return AuthResult(
         approved=False,
         tier=AuthTier.local_auth,
@@ -43,7 +43,7 @@ def _deny(decision, action, *, prompter=None, at=None):
     )
 
 
-def _approve_for_wrong_action(decision, action, *, prompter=None, at=None):
+def _approve_for_wrong_action(decision, action, *, prompter=None, at=None, message_tone=None):
     return AuthResult(
         approved=True,
         tier=AuthTier.local_auth,
@@ -130,7 +130,7 @@ async def test_role_elevation_grants_then_covered_file_passes(
     _write_role(isolated_executor_repo_root)
     calls = {"n": 0}
 
-    def approve_elev(decision, action, *, prompter=None, at=None):
+    def approve_elev(decision, action, *, prompter=None, at=None, message_tone=None):
         calls["n"] += 1
         return AuthResult(
             approved=True,
@@ -161,7 +161,7 @@ async def test_destructive_elevation_is_single_use(monkeypatch, isolated_executo
     _write_role(isolated_executor_repo_root)
     calls = {"n": 0}
 
-    def approve_elev(decision, action, *, prompter=None, at=None):
+    def approve_elev(decision, action, *, prompter=None, at=None, message_tone=None):
         calls["n"] += 1
         return AuthResult(
             approved=True,
@@ -187,7 +187,7 @@ async def test_auth_challenge_raising_fails_closed_and_sanitized(monkeypatch):
     """A `run_auth_challenge` crash must deny — never crash the proxy or leak."""
     monkeypatch.setattr(executor, "DEFAULT_OBJECTIVE", _AUTHING)
 
-    def boom(decision, action, *, prompter=None, at=None):
+    def boom(decision, action, *, prompter=None, at=None, message_tone=None):
         raise RuntimeError("challenge backend exploded: leaked-internal-detail")
 
     monkeypatch.setattr(executor, "run_auth_challenge", boom)
@@ -211,7 +211,7 @@ async def test_mark_used_failure_does_not_corrupt_successful_forward(
     """A `mark_used` crash after a successful forward must not turn it into an error."""
     _write_role(isolated_executor_repo_root)
 
-    def approve_elev(decision, action, *, prompter=None, at=None):
+    def approve_elev(decision, action, *, prompter=None, at=None, message_tone=None):
         return AuthResult(
             approved=True,
             tier=AuthTier.role_elevation,
