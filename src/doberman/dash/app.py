@@ -54,8 +54,10 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import html
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -82,7 +84,7 @@ _HTML_SHELL = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Doberman Dashboard</title>
+<title>%%DASH_PAGE_TITLE%%</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root {
@@ -151,6 +153,11 @@ _HTML_SHELL = """<!doctype html>
   .brand .word {
     font-family: var(--mono); font-weight: 700; font-size: .95rem;
     letter-spacing: .06em; color: var(--tan);
+  }
+  .brand .project {
+    font-family: var(--mono); font-weight: 600; font-size: .95rem;
+    color: var(--fg-2); padding-left: .6rem; margin-left: .6rem;
+    border-left: 1px solid var(--rule);
   }
   .topbar-right { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
   .chip {
@@ -257,6 +264,7 @@ _HTML_SHELL = """<!doctype html>
         <text x="16" y="21.5" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-weight="700" font-size="15" style="fill:var(--tan)">D</text>
       </svg>
       <span class="word">DOBERMAN</span>
+      <span class="project">%%DASH_PROJECT_NAME%%</span>
     </div>
     <div class="topbar-right">
       <span class="chip" id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></span>
@@ -274,6 +282,10 @@ _HTML_SHELL = """<!doctype html>
   <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
   <script>
     (function () {
+      // Rendered server-side per `create_app(repo_root=...)` call - this is
+      // why the tab title differs across dashboards opened for different
+      // projects instead of every tab reading the same "Doberman Dashboard".
+      var DASH_BASE_TITLE = %%DASH_JS_TITLE_JSON%%;
       // Verdict/risk/enforcement -> badge class lookups. Explicit,
       // exact-substring-matchable object literals (not an if/else chain) so
       // the served shell can be asserted against directly by a test.
@@ -537,7 +549,7 @@ _HTML_SHELL = """<!doctype html>
 
           pendingList.appendChild(li);
         });
-        document.title = (rows.length ? "(" + rows.length + ") " : "") + "Doberman Dashboard";
+        document.title = (rows.length ? "(" + rows.length + ") " : "") + DASH_BASE_TITLE;
         updateGuardStatus(rows.length);
       }
 
@@ -650,10 +662,55 @@ def _feed_token_matches(request: Request, token: str) -> bool:
     return hmac.compare_digest(supplied, token)
 
 
-async def _index(request: Request) -> Response:
-    # No auth: the shell carries no data, only the JS that reads the token
-    # back out of its own URL and calls the authenticated API routes.
-    return HTMLResponse(_HTML_SHELL)
+def _project_display_name(repo_root: str) -> str:
+    """The folder name of ``repo_root``, for telling dashboards apart.
+
+    Each ``doberman dash`` run is scoped to one repo (``--path``, default
+    cwd) - see :func:`create_app`. Resolving before taking ``.name`` handles
+    both a relative ``"."`` and a path with a trailing slash; falls back to
+    the resolved path itself for the rare case that has no name component
+    (e.g. ``repo_root="/"``).
+    """
+    resolved = Path(repo_root).resolve()
+    return resolved.name or str(resolved)
+
+
+def _js_string_literal(value: str) -> str:
+    """Encode ``value`` as a JS string literal, safe inside a ``<script>`` body.
+
+    ``json.dumps`` alone escapes quotes/backslashes but leaves ``<``, ``>``,
+    and ``&`` untouched - a value containing ``</script>`` would prematurely
+    close the enclosing script element, since the HTML tokenizer looks for
+    that literal byte sequence regardless of JS string context. Escaping
+    those three characters as unicode escapes closes that off entirely
+    (the same pattern used to embed untrusted JSON inside inline scripts
+    elsewhere), which matters here because the project name is a filesystem
+    folder name, not a value Doberman controls.
+    """
+    encoded = json.dumps(value)
+    return encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def _render_shell(repo_root: str) -> str:
+    project = _project_display_name(repo_root)
+    page_title = f"{project} — Doberman Dashboard"
+    return (
+        _HTML_SHELL.replace("%%DASH_PAGE_TITLE%%", html.escape(page_title))
+        .replace("%%DASH_PROJECT_NAME%%", html.escape(project))
+        .replace("%%DASH_JS_TITLE_JSON%%", _js_string_literal(page_title))
+    )
+
+
+def _make_index_route(repo_root: str) -> Route:
+    shell = _render_shell(repo_root)
+
+    async def index(request: Request) -> Response:
+        # No auth: the shell carries no data, only the JS that reads the
+        # token back out of its own URL and calls the authenticated API
+        # routes.
+        return HTMLResponse(shell)
+
+    return Route("/", index)
 
 
 def _make_health_route(token: str) -> Route:
@@ -827,7 +884,7 @@ def create_app(
     their defaults (real interval, unbounded).
     """
     routes = [
-        Route("/", _index),
+        _make_index_route(repo_root),
         _make_health_route(token),
         _make_stats_route(token, repo_root),
         _make_feed_route(

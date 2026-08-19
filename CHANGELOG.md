@@ -7,6 +7,12 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **Dashboard: per-project tab title.** `doberman dash` is already scoped to one repo per run
+  (`--path`, default the current directory), but every browser tab read the same "Doberman
+  Dashboard" title, so running several dashboards side by side (one per project) gave no way to
+  tell the tabs apart. The tab title and the topbar now carry the repo folder's name (e.g.
+  `widget-service — Doberman Dashboard`), safely escaped for both the HTML shell and the inline
+  JS unread-count title update.
 - **Plain-language auth messages — new `message_tone` setting:** the authorization prompt now
   speaks plainly by default — *"Your agent wants to run a command: … Approve this exact action?"* —
   instead of the terse `[RISK: …] role: … reason: …` block. `doberman message-tone human|technical`
