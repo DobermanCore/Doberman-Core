@@ -79,8 +79,10 @@ def test_two_different_projects_render_different_titles(tmp_path):
 
 
 def test_project_name_with_html_special_characters_is_escaped(tmp_path):
+    # Deliberately not .mkdir()'d: `<`/`>` are illegal in a real directory name on
+    # Windows (WinError 123). _render_shell only needs the string - Path.resolve()
+    # works fine on a path that was never created on disk.
     project_dir = tmp_path / "my <cool> & co"
-    project_dir.mkdir()
     html = _index_html(str(project_dir))
     # Never an unescaped "<cool>" landing anywhere in the page - neither the
     # HTML-escaped markup nor the JS string (which unicode-escapes <, >, &
@@ -91,8 +93,10 @@ def test_project_name_with_html_special_characters_is_escaped(tmp_path):
 
 
 def test_project_name_with_quotes_is_safe_inside_the_js_string(tmp_path):
+    # Deliberately not .mkdir()'d: `"` is illegal in a real directory name on
+    # Windows (WinError 123). _render_shell only needs the string - Path.resolve()
+    # works fine on a path that was never created on disk.
     project_dir = tmp_path / 'weird"name'
-    project_dir.mkdir()
     html = _index_html(str(project_dir))
     # json.dumps escapes the embedded quote, so the JS string literal stays
     # well-formed instead of terminating early.
