@@ -224,17 +224,48 @@ def test_window_is_topmost_dark_and_fixed_size(monkeypatch, fake_root):
     assert fake_root.resizable_args == (False, False)
 
 
-def test_palette_is_dark_black_and_orange():
-    """Design contract: dark/black surfaces, orange accent — no purple, no neon."""
+def test_palette_is_dark_tan_and_amber():
+    """Design contract: warm near-black surfaces, tan brand, amber Approve — no neon.
+
+    The hex must stay on the shared brand system (landing + explainer video): a tan
+    brand accent and an amber (AUTH-verdict) Approve action, never the old off-brand
+    orange. Both accents stay red/green-dominant with low blue (no purple, no neon).
+    """
 
     def _rgb(color: str) -> tuple[int, int, int]:
         return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
 
     for surface in (gui_prompter._BG, gui_prompter._PANEL):
         assert max(_rgb(surface)) < 48  # near-black surfaces
-    r, g, b = _rgb(gui_prompter._ACCENT)
-    assert r > 200 and r > g > b  # orange: red-dominant, green mid, low blue
-    assert b < 80  # nothing purple/neon-blue about the accent
+
+    br, bg_, bb = _rgb(gui_prompter._BRAND)
+    assert br > 200 and br > bg_ > bb and bb < 100  # tan: red-dominant, low blue
+
+    ar, ag, ab = _rgb(gui_prompter._APPROVE)
+    assert ar > 200 and ag > 150 and ab < 100  # amber: red + green high, low blue
+    assert ag > bg_  # amber is more yellow (greener) than the tan brand
+
+    assert max(_rgb(gui_prompter._APPROVE_FG)) < 60  # dark ink for contrast on amber
+
+
+def test_confirm_dialog_default_keyboard_action_denies():
+    """The Canvas-drawn buttons aren't real focusable widgets, so ``deny.focus_set()``
+    no longer guarantees a stray Enter can't approve -- ``_add_button_row`` always
+    starts the keyboard highlight on ``specs[0]`` and binds Return to invoke whichever
+    button is currently highlighted (see its docstring). That guarantee rests entirely
+    on ``_confirm_specs`` placing Deny first; this checks that contract directly,
+    without constructing any tkinter widget, so it runs deterministically even where
+    no display is available (unlike the real-widget test below, which skips there).
+    """
+    calls: list[bool] = []
+    specs = gui_prompter._confirm_specs(calls.append)
+
+    label, command, accent = specs[0]
+    assert label == "Deny"
+    assert accent is False  # never the amber/approve styling
+
+    command()  # invoking the button _add_button_row starts highlighted on
+    assert calls == [False]  # ... must deny, not approve
 
 
 def test_real_dialog_widgets_dark_theme_and_masked_entry(monkeypatch):
