@@ -7,6 +7,11 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **Auth dialog: the highlighted button takes the click again.** The Canvas focus ring was
+  drawn on top of the keyboard-highlighted button, and Tk hit-tests a polygon's whole interior
+  even when unfilled — so clicking Deny (or Approve, after Tab) did nothing and the hover
+  shade never showed. The ring now sits beneath the buttons; a real-Tk test pins the click
+  target and a faked-canvas test pins the stacking on headless CI.
 - **Rug-pull follow-through — approving a changed tool pin now resets learned familiarity:**
   `approve_pin` deletes every entity's `tool:<name>` baseline rows in the same transaction as the
   promote, so a schema-changed tool scores as brand-new after re-approval instead of inheriting
