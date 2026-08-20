@@ -170,21 +170,6 @@ def test_proposed_changes_clamps_at_the_weight_boundaries():
 # --- 4. baseline store never holds a raw secret-shaped value ---------------------
 
 
-@pytest.mark.skip(
-    reason=(
-        "KNOWN LEAK, 2026-08-19 hardening audit (not softened per H3 "
-        "instructions): scoring_keys() in src/doberman/subjective/baseline.py "
-        "(~L119-146) appends f'destination:{action.external_destination}' "
-        "VERBATIM into the feature key — unlike the path-class bucket (drops "
-        "the filename) and the command key (keeps only the verb), the "
-        "destination host is never coarsened or redacted. A marker embedded in "
-        "external_destination (e.g. a secret encoded into a destination "
-        "hostname) lands raw in baseline_counts.feature_key via observe(). "
-        "Needs a source fix (hash/coarsen the host, or exclude it the way "
-        "command-egress destinations already are) before this assert can go "
-        "green — do not remove this skip without one."
-    )
-)
 async def test_baseline_never_stores_a_raw_secret_shaped_value(tmp_path):
     """Feeds a marker through the file_write path (filename), the shell_exec
     path (command line, after the verb), and the external_destination path (a
