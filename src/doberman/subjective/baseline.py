@@ -13,8 +13,9 @@ Invariants (same as the legacy F9 baseline, now per entity):
 * **Update on ALLOW only.** :func:`observe` is called by the proxy after a
   successful forward — a blocked/denied attempt never teaches "normal".
 * **Classes, never payloads.** Feature keys are coarse classes (algebra
-  members, path classes, command verbs, destination hosts); the ``entity_id``
-  itself is a keyed HMAC fingerprint, never a raw role/path string.
+  members, path classes, command verbs) or keyed fingerprints (destination
+  hosts); the ``entity_id`` itself is a keyed HMAC fingerprint. A raw host,
+  role, or path string never lands in the store.
 * **Bounded cardinality.** Past :data:`MAX_FEATURE_KEYS` distinct keys per
   entity, new keys aggregate into an overflow bucket — no attacker-driven
   table blow-up.
@@ -139,7 +140,15 @@ def scoring_keys(action: SecurityObject) -> list[str]:
     # evidence that the tenant/host is normal. Keep it out of the learned
     # destination-host baseline so approval cannot poison future scoring.
     if action.external_destination and action.action_type not in _COMMAND_EGRESS_ACTIONS:
-        keys.append(f"destination:{action.external_destination}")
+        # Keyed fingerprint, never the raw host: a hostname can carry secret
+        # material (token-in-subdomain exfil), and this store holds classes and
+        # fingerprints only. Same equality class, so familiarity math is
+        # unchanged. On fingerprint failure the destination simply is not
+        # learned — no key beats a raw host (unlearned = more novel, raise-safe).
+        try:
+            keys.append(f"destination:{fingerprint(action.external_destination)}")
+        except Exception:  # noqa: BLE001 — raw host must never be the fallback
+            logger.warning("destination fingerprint unavailable; destination not learned")
     if action.action_type is ActionType.shell_exec and action.target:
         verb = str(action.target).strip().split()[0] if str(action.target).strip() else ""
         if verb:
