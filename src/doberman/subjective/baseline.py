@@ -18,9 +18,10 @@ Invariants (same as the legacy F9 baseline, now per entity):
 * **Bounded cardinality.** Past :data:`MAX_FEATURE_KEYS` distinct keys per
   entity, new keys aggregate into an overflow bucket — no attacker-driven
   table blow-up.
-* **A changed tool is a new tool.** :func:`reset_tool_contribution` drops a
-  tool's familiarity when its pinned schema changes (the MCP rug-pull tie-in),
-  so "familiar" status never survives a schema diff.
+* **A changed tool is a new tool.** Approving a changed pin
+  (:func:`doberman.storage.tool_pins.approve_pin`) deletes every entity's
+  ``tool:<name>`` familiarity in the same transaction as the promote (the MCP
+  rug-pull tie-in), so "familiar" status never survives a schema diff.
 
 This module is policy core: it may import ``doberman.storage`` but never
 ``doberman.proxy``.
@@ -668,21 +669,3 @@ async def budget_allows_step_up(
     if any(row[2] == "denied" for row in step_ups):
         return True
     return len(step_ups) < k
-
-
-async def reset_tool_contribution(tool_name: str, *, entity_id: str, repo_root: str) -> None:
-    """Forget a tool's familiarity after a pinned-schema change (rug-pull tie-in).
-
-    Deletes the tool's feature row so the changed tool scores as fully novel
-    again. Coarse aggregate keys (capability/target tiers) keep their counts —
-    the per-tool familiarity is the signal that must reset. Never raises.
-    """
-    try:
-        async with open_db(repo_root) as conn:
-            await conn.execute(
-                "DELETE FROM baseline_counts WHERE entity_id = ? AND feature_key = ?",
-                (entity_id, f"tool:{tool_name}"),
-            )
-            await conn.commit()
-    except Exception:  # noqa: BLE001 — best-effort hygiene must never crash the path
-        logger.warning("tool-contribution reset failed (entity %s); continuing", entity_id[:12])
