@@ -18,6 +18,9 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   Hosts are now HMAC-fingerprinted (familiarity math unchanged), a fingerprint failure drops
   the key rather than storing the raw host, and the v12 schema migration purges legacy raw
   rows (raise-safe: colder scores as more novel). Found by the hardening audit's redaction probe.
+- **Changed tool pins void live scope tokens:** the proxy's pin floor now revokes every
+  entity's "approve for this task" tokens for a tool the moment its changed contract is
+  sighted, so comfort granted against the old schema cannot mute the step-up on the new one.
 - **Plain-language auth messages — new `message_tone` setting:** the authorization prompt now
   speaks plainly by default — *"Your agent wants to run a command: … Approve this exact action?"* —
   instead of the terse `[RISK: …] role: … reason: …` block. `doberman message-tone human|technical`
