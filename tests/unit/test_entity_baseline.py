@@ -2,8 +2,7 @@
 
 Load-bearing properties: entity A's observations never shift entity B's
 baseline; feature keys are classes (and the entity id is an HMAC, never the
-raw role/path); cardinality is bounded; a schema-changed tool's familiarity is
-forgotten; the v2→v3 migration re-keys baselines (dropping old global rows is
+raw role/path); cardinality is bounded; the v2→v3 migration re-keys baselines (dropping old global rows is
 raise-safe: colder = more step-ups) and adds decisions.entity_id.
 """
 
@@ -21,7 +20,6 @@ from doberman.subjective.baseline import (
     markov_state,
     numeric_stats,
     observe,
-    reset_tool_contribution,
     scoring_keys,
     total_observations,
     transition_counts,
@@ -180,18 +178,6 @@ async def test_cardinality_is_bounded(tmp_path):
     distinct = int(row[0])
     assert distinct <= MAX_FEATURE_KEYS + len(scoring_keys(_file("x.y"))) + 2
     assert await frequency(OVERFLOW_KEY, entity_id="hmac:aaa", repo_root=root) > 0
-
-
-# --- rug-pull tie-in --------------------------------------------------------------
-
-
-async def test_schema_change_resets_only_that_tools_contribution(tmp_path):
-    root = str(tmp_path)
-    await _seed(root, "hmac:aaa", _file("a.txt", tool="fs_write"), 5)
-    await _seed(root, "hmac:aaa", _file("b.txt", tool="net_post"), 5)
-    await reset_tool_contribution("fs_write", entity_id="hmac:aaa", repo_root=root)
-    assert await frequency("tool:fs_write", entity_id="hmac:aaa", repo_root=root) == 0
-    assert await frequency("tool:net_post", entity_id="hmac:aaa", repo_root=root) == 5
 
 
 # --- migration ----------------------------------------------------------------

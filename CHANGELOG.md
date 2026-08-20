@@ -7,6 +7,11 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **Rug-pull follow-through — approving a changed tool pin now resets learned familiarity:**
+  `approve_pin` deletes every entity's `tool:<name>` baseline rows in the same transaction as the
+  promote, so a schema-changed tool scores as brand-new after re-approval instead of inheriting
+  pre-change trust. (The reset helper existed but nothing called it; found by the subjective-layer
+  hardening audit.)
 - **Plain-language auth messages — new `message_tone` setting:** the authorization prompt now
   speaks plainly by default — *"Your agent wants to run a command: … Approve this exact action?"* —
   instead of the terse `[RISK: …] role: … reason: …` block. `doberman message-tone human|technical`
