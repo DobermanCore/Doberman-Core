@@ -7,6 +7,7 @@ raising scorer is isolated; a per-model glitch list is honored; and the detector
 is wired into SubjectiveGuardrail as a built-in (escalates a soft-signal action).
 """
 
+import pathlib
 from datetime import datetime, timezone
 
 from doberman.engine.detectors.token_channels import TokenChannelDetector
@@ -18,7 +19,9 @@ from doberman.models import (
     SecurityObject,
     Verdict,
 )
-from doberman.tokens import GlitchFragmentStore
+from doberman.tokens import GlitchFragmentStore, calibrate_perplexity_threshold
+
+_GCG_FIXTURE = pathlib.Path(__file__).parents[1] / "redteam" / "fixtures" / "gcg_suffixes.txt"
 
 CYRILLIC_A = chr(0x0430)
 
@@ -97,6 +100,34 @@ def test_per_model_glitch_list_is_honored():
     det = TokenChannelDetector(glitch_store=store)
     result = det.evaluate(_action(target="x.ts"), _ctx(content="here is zzGlitchToken"))
     assert result.verdict is Verdict.AUTH
+
+
+def test_calibrated_threshold_escalates_gcg_suffix_and_passes_benign():
+    """calibrate_perplexity_threshold, wired through a stub scorer: a real
+    GCG adversarial suffix escalates to AUTH; ordinary benign text passes."""
+    if not _GCG_FIXTURE.exists():
+        import pytest
+
+        pytest.skip("No GCG suffix fixtures found")
+    suffix = next(
+        line.strip()
+        for line in _GCG_FIXTURE.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+    benign_scores = [0.30 + 0.001 * i for i in range(200)]  # deterministic, no RNG
+    threshold = calibrate_perplexity_threshold(benign_scores, target_fpr=0.05)
+
+    def stub_perplexity_fn(text: str) -> float:
+        return 0.99 if text == suffix else 0.10
+
+    det = TokenChannelDetector(perplexity_fn=stub_perplexity_fn, perplexity_threshold=threshold)
+
+    adversarial = det.evaluate(_action(target="x.ts"), _ctx(content=suffix))
+    assert adversarial.verdict is Verdict.AUTH
+    assert ReasonCode.anomalous_token_pattern in adversarial.reason_codes
+
+    benign = det.evaluate(_action(target="x.ts"), _ctx(content="please summarize this document"))
+    assert benign.verdict is Verdict.PASS
 
 
 def test_builtin_detector_is_wired_into_subjective_guardrail():
