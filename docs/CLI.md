@@ -60,7 +60,7 @@ Low-level harness integration (also installed via `install-hooks` / `setup`).
 |------|----------|-------|
 | `--json` | `status`, `scan`, `doctor`, `policy-history`, `tune` | One JSON document on stdout |
 | `--jsonl` | `log` | One redacted decision object per line (empty if none) |
-| `--quiet` / `-q` | `scan` | No human map; exit code preserved |
+| `--quiet` / `-q` | `scan`, `demo` | No human map/narration; exit code preserved |
 | `--path` / `-p` | most commands | Repository root (default `.`) |
 
 When both are passed, `--json` wins over `--quiet`: machine-readable JSON is still emitted.

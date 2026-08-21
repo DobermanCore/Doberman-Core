@@ -7,6 +7,11 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **`doberman demo --quiet`:** suppresses the banner, the per-scenario narration, and the closing
+  `doberman dash` hint, keeping only the summary line/table (silent on a full match, loud on a
+  mismatch) and the exit code — so `demo` can run as a CI smoke test ("is the engine alive")
+  without polluting build logs. Mirrors `scan --quiet`; display-only, the scenarios and the engine
+  path are untouched.
 - **Auth dialog: the highlighted button takes the click again.** The Canvas focus ring was
   drawn on top of the keyboard-highlighted button, and Tk hit-tests a polygon's whole interior
   even when unfilled — so clicking Deny (or Approve, after Tab) did nothing and the hover
