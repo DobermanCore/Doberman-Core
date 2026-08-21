@@ -235,6 +235,14 @@ _HTML_SHELL = """<!doctype html>
   #pending-list button.deny:hover { border-color: var(--block); background: var(--block-bg); }
   #pending-list button.approve { background: var(--auth); border: 1px solid var(--auth); color: var(--ink-0); }
   #pending-list button.approve:hover { background: var(--tan-hi); border-color: var(--tan-hi); }
+  .section-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: 1.4rem; }
+  #refresh-btn {
+    font-family: var(--font); font-size: .86rem; font-weight: 600; padding: .35rem 1rem;
+    border-radius: var(--r-sm); cursor: pointer;
+    background: transparent; border: 1px solid var(--rule); color: var(--fg);
+    transition: background-color var(--d), border-color var(--d);
+  }
+  #refresh-btn:hover { border-color: var(--tan-hi); color: var(--tan-hi); }
   #feed {
     max-height: 60vh; overflow-y: auto;
     border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--ink-1);
@@ -271,7 +279,10 @@ _HTML_SHELL = """<!doctype html>
   <h2>Pending approvals</h2>
   <ul id="pending-list" aria-live="polite"></ul>
   <div id="pending-empty" class="empty-state">Nothing pending. Doberman's watching.</div>
-  <h2>Recent decisions</h2>
+  <div class="section-head">
+    <h2>Recent decisions</h2>
+    <button type="button" id="refresh-btn">Refresh</button>
+  </div>
   <ul id="feed"></ul>
   <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
   <script>
@@ -555,6 +566,13 @@ _HTML_SHELL = """<!doctype html>
 
       refreshPending();
       setInterval(refreshPending, PENDING_POLL_MS);
+
+      // Manual refresh for the stats + pending views; both functions are safe
+      // to call at any time and no new endpoint is involved.
+      document.getElementById("refresh-btn").addEventListener("click", function () {
+        refreshStats();
+        refreshPending();
+      });
 
       // EventSource cannot set request headers, so the token travels as a
       // query param here only (see doberman.dash.app._feed_token_matches).
