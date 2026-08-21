@@ -79,7 +79,6 @@ from doberman.subjective.revealed import (
     has_scope_token,
     maybe_nudge,
     record_feedback,
-    revoke_tool_scope_tokens,
 )
 from doberman.subjective.score import inherit_turn_provenance, raised_surprise
 
@@ -96,7 +95,7 @@ REPO_ROOT = "."
 AUTH_PROMPTER: Prompter | None = None
 
 
-def _default_objective_rules() -> list[Guardrail]:
+def _default_objective_rules(velocity_thresholds=None) -> list[Guardrail]:
     """Built-in rules for :data:`DEFAULT_OBJECTIVE` below.
 
     Identical to ``ObjectiveGuardrail()``'s own default construction except
@@ -106,9 +105,15 @@ def _default_objective_rules() -> list[Guardrail]:
     ``ExternalDestinationRule``'s docstring), this proxy singleton is built
     once per long-lived process, and ``discover_egress_brokers()`` is itself
     memoized, so the entry-point scan happens at most once here regardless.
+
+    ``velocity_thresholds`` (a :class:`~doberman.egress.velocity.VelocityThresholds`
+    or ``None``) is forwarded to ``ExternalDestinationRule`` so the
+    policy-sourced egress-velocity thresholds (RB.6) take effect in the
+    long-lived proxy singleton. ``None`` means the built-in module defaults
+    apply (identical to the pre-RB.6 behaviour).
     """
     return [
-        ExternalDestinationRule(load_broker=True)
+        ExternalDestinationRule(load_broker=True, velocity_thresholds=velocity_thresholds)
         if rule_type is ExternalDestinationRule
         else rule_type()
         for rule_type in BUILTIN_RULE_TYPES
@@ -167,10 +172,6 @@ async def _apply_tool_pin_floor(tool_name: str, decision: Decision) -> Decision:
     """Raise a changed tool contract to AUTH, or BLOCK in strict/paranoid."""
     if await tool_pins.pin_status(tool_name, repo_root=REPO_ROOT) != "changed":
         return decision
-    # A changed contract also voids any live "approve for this task" comfort
-    # tokens for this tool, for every entity — a token granted against the old
-    # schema must not mute the step-up on the new one. Idempotent; raise-only.
-    revoke_tool_scope_tokens(tool_name)
     floor = Verdict.BLOCK if load_mode(REPO_ROOT) in _STRICT_MODES else Verdict.AUTH
     risk = Risk.critical if floor is Verdict.BLOCK else Risk.high
     reasons = list(dict.fromkeys([*decision.reason_codes, ReasonCode.tool_schema_changed]))

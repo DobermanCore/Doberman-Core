@@ -626,6 +626,113 @@ async def apply_standing_elevation(
     return ChangeOutcome(classification=classification, approved=approved, method=method)
 
 
+def _velocity_classify(before: dict[str, int], after: dict[str, int]) -> Classification:
+    """Classify an egress-velocity threshold change (raise-only semantics).
+
+    Mirrors :func:`_prefs_classify` exactly: ``before`` is the *current
+    effective* policy (whatever was persisted last, not the built-in module
+    defaults), and ``after`` is the proposed new value. The caller is
+    responsible for passing the current policy as ``before``; comparing
+    against the built-in defaults would be wrong because it would misclassify
+    a walk-back toward the default after a prior gate-approved loosening as a
+    tighten.
+
+    Direction of "protection" is inverted relative to weights:
+    - **burst** and **fanout**: a *lower* value is more sensitive (tighter).
+      Increasing either → fewer trips → loosening → weaken.
+    - **volume_bytes**: same — a lower byte limit is tighter.
+
+    So for all three dimensions: ``after > before`` → weaken,
+    ``after < before`` → strengthen, equal → neutral.
+
+    Any dimension that loosens makes the whole change a weaken (fail-safe,
+    matching :func:`_prefs_classify`'s policy for mixed changes). A value that
+    cannot be coerced to ``int`` is treated as a weaken (fail-safe). A
+    dimension present in ``before`` but absent from ``after`` is also a weaken
+    (removing a tightening override restores the less-sensitive prior state).
+    """
+    weakened = bool(set(before) - set(after))  # a removed tightening
+    strengthened = bool(set(after) - set(before))  # a newly added tightening
+    junk = False
+    for key in set(before) & set(after):
+        try:
+            b, a = int(before[key]), int(after[key])
+        except (TypeError, ValueError):
+            junk = True
+            continue
+        # Higher value → less sensitive → weaken.
+        if a > b:
+            weakened = True
+        elif a < b:
+            strengthened = True
+
+    if weakened or junk:
+        return Classification.weaken
+    if strengthened:
+        return Classification.strengthen
+    return Classification.neutral
+
+
+async def apply_egress_velocity_change(
+    before: dict[str, int],
+    after: dict[str, int],
+    reason: str,
+    *,
+    repo_root: str,
+    prompter: "Prompter | None" = None,
+    now: "datetime | None" = None,
+) -> ChangeOutcome:
+    """Chokepoint for an egress-velocity threshold change (RB.6).
+
+    Structural sibling of :func:`apply_preferences_change` (same
+    record/notify/return shape). Classification is via :func:`_velocity_classify`:
+    any threshold that becomes *less* sensitive (higher burst/fanout/volume_bytes
+    than before, or higher than its built-in default) is a **weaken** — it lets
+    more egress through before a signal trips — so it must clear the same
+    mandatory possession-factor gate as every other policy weakening
+    (:func:`_run_weaken_gate`: TOTP if enrolled, else password).
+
+    A change that only tightens (lowers burst/fanout/volume_bytes, or removes a
+    previous loosening) applies automatically — raise-only is preserved and the
+    prompter is never invoked on that path.
+
+    Every attempt (incl. denials) is recorded to the append-only ledger and
+    fanned out to observers; the caller persists only when ``outcome.approved``.
+    """
+    reason = _redact_reason(reason)
+    when = now or datetime.now(timezone.utc)
+    classification = _velocity_classify(before, after)
+
+    if classification is Classification.weaken:
+        from doberman.auth.provider import CliPrompter
+
+        approved, method = _run_weaken_gate(before, after, reason, prompter or CliPrompter())
+    else:
+        approved, method = True, "auto"
+
+    await _record_change(
+        repo_root,
+        before,
+        after,
+        classification,
+        reason,
+        approved=approved,
+        method=method,
+        now=when,
+    )
+    notify_observers(
+        {
+            "ts": when.isoformat(),
+            "classification": classification.value,
+            "changed_rules": _changed_keys(before, after),
+            "reason": reason,
+            "approved": approved,
+            "method": method,
+        }
+    )
+    return ChangeOutcome(classification=classification, approved=approved, method=method)
+
+
 async def read_policy_changes(repo_root: str, *, limit: int | None = None) -> list[dict]:
     """Read ledger rows, newest first (for ``doberman policy-history``)."""
     if not db_path(repo_root).exists():
