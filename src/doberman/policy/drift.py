@@ -634,7 +634,7 @@ async def read_policy_changes(repo_root: str, *, limit: int | None = None) -> li
         "SELECT ts, rule_id, from_state, to_state, classification, reason, "
         "approval_method, approved, approved_by FROM policy_changes ORDER BY id DESC"
     )
-    if limit:
+    if limit is not None:
         query += f" LIMIT {int(limit)}"
     cols = [
         "ts",
