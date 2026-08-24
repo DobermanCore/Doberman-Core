@@ -7,6 +7,8 @@ NEVER appears in any report field. Every non-ASCII channel character is built
 with ``chr()`` so the test source stays pure ASCII and encoding-robust.
 """
 
+import math
+
 import pytest
 
 from doberman.tokens import (
@@ -214,3 +216,12 @@ def test_calibrate_perplexity_threshold_rejects_too_few_samples():
 def test_calibrate_perplexity_threshold_handles_saturated_scores():
     threshold = calibrate_perplexity_threshold([1.0] * 25, target_fpr=0.1)
     assert threshold == 1.0
+
+
+def test_calibrate_perplexity_threshold_rejects_non_finite_scores():
+    scores = [i / 20 for i in range(19)] + [math.nan]
+    with pytest.raises(ValueError):
+        calibrate_perplexity_threshold(scores, 0.1)
+    scores[-1] = math.inf
+    with pytest.raises(ValueError):
+        calibrate_perplexity_threshold(scores, 0.1)
