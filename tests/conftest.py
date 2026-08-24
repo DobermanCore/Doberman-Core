@@ -99,9 +99,18 @@ def _neutralize_hosthook_auth_prompter(monkeypatch):
     AUTH verdict. Force the injected prompter to an unavailable channel so no test ever
     pops a real GUI dialog or blocks on a terminal — an AUTH then fails closed to deny
     unless a test injects its own approving/declining fake.
+
+    Every hosthook module with its own ``AUTH_PROMPTER`` injection seam must be patched
+    here — ``claude_code`` and ``codex`` today (see each module's ``AUTH_PROMPTER``
+    docstring; ``codex.py``'s explicitly says it "mirrors" ``claude_code``'s). Missing one
+    isn't just a coverage gap: any of that module's tests that reach an AUTH-tier decision
+    without injecting their own fake prompter falls through to
+    ``hookio._default_auth_prompter()``, which opens a REAL GUI dialog (blocking up to
+    ``DEFAULT_CHALLENGE_TIMEOUT_S`` = 20 minutes) on any machine with an active desktop
+    session — this previously happened to ``codex.AUTH_PROMPTER`` before it was added below.
     """
     from doberman.auth.gui_prompter import PrompterUnavailableError
-    from doberman.hosthooks import claude_code
+    from doberman.hosthooks import claude_code, codex
 
     class _NoChannel:
         def confirm(self, message):
@@ -111,6 +120,7 @@ def _neutralize_hosthook_auth_prompter(monkeypatch):
             raise PrompterUnavailableError("headless test: no auth channel")
 
     monkeypatch.setattr(claude_code, "AUTH_PROMPTER", _NoChannel())
+    monkeypatch.setattr(codex, "AUTH_PROMPTER", _NoChannel())
 
 
 # ── JSON output assertion helper (Issue #192) ─────────────────────────────────
