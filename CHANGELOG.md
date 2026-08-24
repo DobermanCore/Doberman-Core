@@ -7,6 +7,12 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **Dashboard: per-project tab title.** `doberman dash` is already scoped to one repo per run
+  (`--path`, default the current directory), but every browser tab read the same "Doberman
+  Dashboard" title, so running several dashboards side by side (one per project) gave no way to
+  tell the tabs apart. The tab title and the topbar now carry the repo folder's name (e.g.
+  `widget-service — Doberman Dashboard`), safely escaped for both the HTML shell and the inline
+  JS unread-count title update.
 - **Security fix (#399): a GUI auth dialog can no longer silently misbehave off the main thread on macOS.** Every real caller runs a `Prompter` on a background daemon thread (`doberman.auth.challenge._run_with_deadline`, or `asyncio.to_thread` on the MCP-proxy path) so a wall-clock deadline can be enforced on a channel that might otherwise block forever. Cocoa's Tk backend requires its event loop to start on the process's real main thread; constructing `Tk()` off it is a documented hazard that does not reliably surface as a catchable error the way a missing `$DISPLAY` does — it can silently fail to render, or abort the process, either of which could leave an `AUTH`-tier action looking approved with no human ever having seen a dialog. `GuiPrompter` now refuses before ever touching `tkinter` when it detects this exact condition (macOS + off the main thread), reporting the channel unavailable so `FallbackPrompter` moves on to the terminal — and if that is also unavailable, the action is denied. Windows/Linux behavior is unchanged.
 - **Deps: `river` capped below 0.26 on Python 3.11.** river 0.26.0 subscripts
   `csv.DictReader` at import time, which only Python >= 3.12 supports, so any
