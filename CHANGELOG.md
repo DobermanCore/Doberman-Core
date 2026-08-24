@@ -7,6 +7,30 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **Deps: `river` capped below 0.26 on Python 3.11.** river 0.26.0 subscripts
+  `csv.DictReader` at import time, which only Python >= 3.12 supports, so any
+  import of the subjective layer (and therefore the whole test suite) died on
+  3.11 with `TypeError: type 'DictReader' is not subscriptable`. 3.12+ keeps
+  the unpinned floor.
+- **Auth dialog: the highlighted button takes the click again.** The Canvas focus ring was
+  drawn on top of the keyboard-highlighted button, and Tk hit-tests a polygon's whole interior
+  even when unfilled — so clicking Deny (or Approve, after Tab) did nothing and the hover
+  shade never showed. The ring now sits beneath the buttons; a real-Tk test pins the click
+  target and a faked-canvas test pins the stacking on headless CI.
+- **Rug-pull follow-through — approving a changed tool pin now resets learned familiarity:**
+  `approve_pin` deletes every entity's `tool:<name>` baseline rows in the same transaction as the
+  promote, so a schema-changed tool scores as brand-new after re-approval instead of inheriting
+  pre-change trust. (The reset helper existed but nothing called it; found by the subjective-layer
+  hardening audit.)
+- **Destination baseline keys are now keyed fingerprints:** the per-entity baseline stored
+  `destination:<host>` verbatim — the one feature key that was neither a coarse class nor a
+  fingerprint, so a secret encoded into a hostname would persist after any allowed egress.
+  Hosts are now HMAC-fingerprinted (familiarity math unchanged), a fingerprint failure drops
+  the key rather than storing the raw host, and the v12 schema migration purges legacy raw
+  rows (raise-safe: colder scores as more novel). Found by the hardening audit's redaction probe.
+- **Changed tool pins void live scope tokens:** the proxy's pin floor now revokes every
+  entity's "approve for this task" tokens for a tool the moment its changed contract is
+  sighted, so comfort granted against the old schema cannot mute the step-up on the new one.
 - **Plain-language auth messages — new `message_tone` setting:** the authorization prompt now
   speaks plainly by default — *"Your agent wants to run a command: … Approve this exact action?"* —
   instead of the terse `[RISK: …] role: … reason: …` block. `doberman message-tone human|technical`

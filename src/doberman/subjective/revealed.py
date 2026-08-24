@@ -298,3 +298,19 @@ def has_scope_token(action: SecurityObject, *, entity_id: str, now: datetime | N
 def clear_scope_tokens() -> None:
     """Drop every in-process token (tests / session teardown)."""
     _SCOPE_TOKENS.clear()
+
+
+def revoke_tool_scope_tokens(tool_name: str) -> int:
+    """Drop every entity's live tokens for one tool (pinned-schema change).
+
+    A token is comfort granted for a tool as it was pinned; once the tool's
+    advertised contract changes, that comfort must not mute the step-up on the
+    new contract. Revoking only tightens (raise-only), so no gate. Returns the
+    number of tokens dropped. Tokens bind to ``tool_name|<algebra>`` keys, so a
+    prefix match is exact per tool.
+    """
+    prefix = f"{tool_name}|"
+    doomed = [key for key in _SCOPE_TOKENS if key[1].startswith(prefix)]
+    for key in doomed:
+        _SCOPE_TOKENS.pop(key, None)
+    return len(doomed)

@@ -34,7 +34,11 @@ dependencies = [
     "pyotp",
     "pyyaml",
     "typer",
-    "river>=0.21",
+    "river>=0.21; python_version >= '3.12'",
+    # river 0.26.0 subscripts csv.DictReader at import time (PEP 585 on a stdlib
+    # class that only grew __class_getitem__ in 3.12), so it cannot even be
+    # imported on 3.11. Cap it there; lift when river ships a 3.11-safe release.
+    "river>=0.21,<0.26; python_version < '3.12'",
     "numpy",
     "scipy",
 ]

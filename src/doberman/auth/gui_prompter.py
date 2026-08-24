@@ -398,6 +398,9 @@ def _add_button_row(
             outline=_BRAND,
             width=2,
         )
+        # Tk hit-tests a polygon's whole interior even with fill="" — left on top, the ring
+        # would swallow clicks (and hover) on the highlighted button. Keep it beneath them.
+        canvas.tag_lower(state["ring"], "_dobermanbtn0")
 
     def _move_highlight(_event: Any = None) -> str:
         state["index"] = (state["index"] + 1) % len(specs)
