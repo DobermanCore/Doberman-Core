@@ -31,6 +31,8 @@ from doberman.auth.dashboard_prompter import DashboardPrompter
 from doberman.auth.elicitation_prompter import ElicitationPrompter
 from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
 from doberman.auth.tty_prompter import TtyPrompter
+from doberman.config import load_policy
+from doberman.engine.objective import ObjectiveGuardrail
 from doberman.proxy import executor
 from doberman.proxy.mcp_proxy import build_proxy_server
 
@@ -48,6 +50,19 @@ async def serve_stdio(downstream: StdioServerParameters, *, repo_root: str = "."
     nothing).
     """
     executor.REPO_ROOT = repo_root
+
+    # Rebuild DEFAULT_OBJECTIVE now that REPO_ROOT is known, so any
+    # policy-stored egress-velocity thresholds (RB.6) take effect in the
+    # long-lived proxy singleton's ExternalDestinationRule.  The module-level
+    # DEFAULT_OBJECTIVE was constructed at import time with no REPO_ROOT, so
+    # it always used the built-in defaults.  A missing/corrupt policy falls
+    # back to None (built-in defaults apply — identical to pre-RB.6 behaviour).
+    _policy = load_policy(repo_root)
+    _velocity_thresholds = _policy.egress_velocity_thresholds if _policy is not None else None
+    executor.DEFAULT_OBJECTIVE = ObjectiveGuardrail(
+        rules=executor._default_objective_rules(velocity_thresholds=_velocity_thresholds)
+    )
+
     logger.info("starting downstream: %s", downstream.command)
     async with stdio_client(downstream) as (downstream_read, downstream_write):
         async with ClientSession(downstream_read, downstream_write) as session:

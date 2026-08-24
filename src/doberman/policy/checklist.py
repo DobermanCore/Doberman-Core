@@ -13,6 +13,7 @@ the proxy.
 from dataclasses import dataclass, replace
 from typing import Any
 
+from doberman.egress.velocity import VelocityThresholds
 from doberman.models import Verdict
 from doberman.policy.preferences import PreferenceVector
 from doberman.roles.roles import RoleDefinition
@@ -135,6 +136,13 @@ class PolicyDoc:
     items: tuple[PolicyItem, ...]
     mode: str = "balanced"
     preferences: PreferenceVector | None = None
+    #: Optional policy-supplied egress velocity thresholds (RB.6). When None
+    #: the built-in module defaults in doberman.egress.velocity apply.
+    #: Tightening (lower values) applies automatically; loosening (higher
+    #: values than the built-in defaults) must be gate-approved via
+    #: ``doberman.policy.drift.apply_egress_velocity_change`` before reaching
+    #: here — never applied silently.
+    egress_velocity_thresholds: VelocityThresholds | None = None
     #: Orthogonal enforcement state (independent of the strictness ``mode``):
     #: ``"enforce"`` (act on verdicts), ``"monitor"`` (evaluate + record but never
     #: block the discretionary layer — the objective floor stays live in every
@@ -205,6 +213,17 @@ class PolicyDoc:
     def with_preferences(self, preferences: PreferenceVector) -> "PolicyDoc":
         return replace(self, preferences=preferences)
 
+    def with_egress_velocity_thresholds(self, thresholds: VelocityThresholds | None) -> "PolicyDoc":
+        """Return a copy with the egress velocity thresholds set (or cleared).
+
+        Passing ``None`` restores the built-in module defaults.  The caller is
+        responsible for ensuring that any loosening (values above the built-in
+        defaults) has already cleared the weaken gate in
+        ``doberman.policy.drift.apply_egress_velocity_change`` — this method
+        carries the value like every other ``with_*`` and never gates itself.
+        """
+        return replace(self, egress_velocity_thresholds=thresholds)
+
     def with_default_role_enabled(self, enabled: bool) -> "PolicyDoc":
         """Return a copy with the D1 default-role opt-in flag set."""
         return replace(self, default_role_enabled=bool(enabled))
@@ -236,6 +255,13 @@ class PolicyDoc:
         }
         if self.preferences is not None:
             mapping["preferences"] = self.preferences.to_mapping()
+        if self.egress_velocity_thresholds is not None:
+            t = self.egress_velocity_thresholds
+            mapping["egress_velocity_thresholds"] = {
+                "burst": t.burst,
+                "volume_bytes": t.volume_bytes,
+                "fanout": t.fanout,
+            }
         # Only emit the timer fields when enforcement is actually softened, to keep
         # a normal (enforcing) policy file clean.
         if self.enforcement != "enforce":
@@ -274,11 +300,30 @@ class PolicyDoc:
                 # An invalid stored vector is ignored (the mode preset applies)
                 # rather than crashing the decision path.
                 preferences = None
+        egress_velocity_thresholds: VelocityThresholds | None = None
+        raw_evt = data.get("egress_velocity_thresholds")
+        if isinstance(raw_evt, dict):
+            try:
+                from doberman.egress.velocity import (
+                    _BURST_THRESHOLD,
+                    _FANOUT_THRESHOLD,
+                    _VOLUME_THRESHOLD_BYTES,
+                )
+
+                egress_velocity_thresholds = VelocityThresholds(
+                    burst=int(raw_evt.get("burst", _BURST_THRESHOLD)),
+                    volume_bytes=int(raw_evt.get("volume_bytes", _VOLUME_THRESHOLD_BYTES)),
+                    fanout=int(raw_evt.get("fanout", _FANOUT_THRESHOLD)),
+                )
+            except (TypeError, ValueError, KeyError):
+                # A malformed stored value is ignored; the built-in defaults apply.
+                egress_velocity_thresholds = None
         raw_expires = data.get("enforcement_expires_at")
         return cls(
             items=items,
             mode=str(data.get("mode", "balanced")),
             preferences=preferences,
+            egress_velocity_thresholds=egress_velocity_thresholds,
             enforcement=str(data.get("enforcement", "enforce")),
             enforcement_expires_at=(
                 # bool is an int subclass — `enforcement_expires_at: true` is a typo,
