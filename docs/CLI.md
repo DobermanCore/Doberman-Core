@@ -58,7 +58,7 @@ Low-level harness integration (also installed via `install-hooks` / `setup`).
 ## Machine-readable flags
 | Flag | Commands | Notes |
 |------|----------|-------|
-| `--json` | `status`, `scan`, `doctor`, `policy-history`, `tune` | One JSON document on stdout |
+| `--json` | `status`, `scan`, `doctor`, `policy-history`, `tune`, `memory` | One JSON document on stdout |
 | `--jsonl` | `log` | One redacted decision object per line (empty if none) |
 | `--quiet` / `-q` | `scan` | No human map; exit code preserved |
 | `--path` / `-p` | most commands | Repository root (default `.`) |
@@ -93,7 +93,7 @@ All four machine-readable modes share one contract. Understanding it once covers
 
 ### Flag naming
 
-- **`--json`** (`status`, `scan`, `doctor`, `policy-history`, `tune`) — emits **one JSON document** on
+- **`--json`** (`status`, `scan`, `doctor`, `policy-history`, `tune`, `memory`) — emits **one JSON document** on
   stdout: a single JSON object or array that can be piped directly into `jq`,
   `python -m json.tool`, or any JSON-aware tool.
 - **`--jsonl`** (`log`) — emits **one JSON object per line** (JSON Lines / NDJSON). Each line is

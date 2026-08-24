@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 from pydantic import AwareDatetime
 
 from doberman.egress.broker import BrokerVerdict, ConnectionEvent, EgressBroker, consult_broker
-from doberman.egress.velocity import EgressVelocityTracker
+from doberman.egress.velocity import EgressVelocityTracker, VelocityThresholds
 from doberman.engine.registry import discover_egress_brokers
 from doberman.models import (
     ActionType,
@@ -278,9 +278,10 @@ class ExternalDestinationRule:
         *,
         egress_broker: EgressBroker | None = None,
         load_broker: bool = False,
+        velocity_thresholds: VelocityThresholds | None = None,
     ) -> None:
         self._trusted = tuple(h.lower() for h in trusted_hosts)
-        self._velocity = EgressVelocityTracker()
+        self._velocity = EgressVelocityTracker(thresholds=velocity_thresholds)
         if egress_broker is not None:
             self._broker: EgressBroker | None = egress_broker
         elif load_broker:

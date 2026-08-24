@@ -7,6 +7,7 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **Security fix (#399): a GUI auth dialog can no longer silently misbehave off the main thread on macOS.** Every real caller runs a `Prompter` on a background daemon thread (`doberman.auth.challenge._run_with_deadline`, or `asyncio.to_thread` on the MCP-proxy path) so a wall-clock deadline can be enforced on a channel that might otherwise block forever. Cocoa's Tk backend requires its event loop to start on the process's real main thread; constructing `Tk()` off it is a documented hazard that does not reliably surface as a catchable error the way a missing `$DISPLAY` does — it can silently fail to render, or abort the process, either of which could leave an `AUTH`-tier action looking approved with no human ever having seen a dialog. `GuiPrompter` now refuses before ever touching `tkinter` when it detects this exact condition (macOS + off the main thread), reporting the channel unavailable so `FallbackPrompter` moves on to the terminal — and if that is also unavailable, the action is denied. Windows/Linux behavior is unchanged.
 - **Deps: `river` capped below 0.26 on Python 3.11.** river 0.26.0 subscripts
   `csv.DictReader` at import time, which only Python >= 3.12 supports, so any
   import of the subjective layer (and therefore the whole test suite) died on
@@ -78,6 +79,13 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   fact. New reason code `environment_dump_command`. Legitimate uses are unaffected: `env
   FOO=bar real_command` (env as a wrapper) and `export FOO=bar`/`declare -x FOO=bar` (setting one
   variable) still pass.
+- **New:** the dashboard can now change the strictness mode itself (`GET`/`POST /api/mode`,
+  a `change` control next to the mode badge) instead of requiring the terminal. It routes
+  through the exact same gate as `doberman mode`/`doberman setup` — a new shared
+  `doberman.policy.drift.apply_mode_change` — so raising strictness stays frictionless and
+  lowering it is denied without the same possession factor (2FA if enrolled, else the Doberman
+  password), recorded in the same append-only ledger. The dash server never verifies the code
+  itself, mirroring `/api/resolve`'s existing discipline.
 - **MCP tool-schema pinning** (#246): every proxied `tools/list` now records a keyed-HMAC
   trust-on-first-use pin for each tool's name, description, and input schema. A later mismatch
   raises live calls to AUTH in Light/Balanced or BLOCK in Strict/Paranoid until a human runs
