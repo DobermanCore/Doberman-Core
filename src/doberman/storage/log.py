@@ -284,7 +284,7 @@ async def read_decisions(repo_root: str, *, limit: int | None = None) -> list[di
 
     if not db_path(repo_root).exists():
         return []
-    query = _SELECT_DECISIONS + (f" LIMIT {int(limit)}" if limit else "")
+    query = _SELECT_DECISIONS + (f" LIMIT {int(limit)}" if limit is not None else "")
     try:
         async with open_db(repo_root) as conn:
             async with conn.execute(query) as cur:
@@ -307,7 +307,7 @@ async def read_decisions_since(
 
     if not db_path(repo_root).exists():
         return []
-    query = _SELECT_DECISIONS_SINCE + (f" LIMIT {int(limit)}" if limit else "")
+    query = _SELECT_DECISIONS_SINCE + (f" LIMIT {int(limit)}" if limit is not None else "")
     try:
         async with open_db(repo_root) as conn:
             async with conn.execute(query, (since_id,)) as cur:
