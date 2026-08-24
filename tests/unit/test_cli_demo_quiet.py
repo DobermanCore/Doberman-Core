@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
+import doberman.demo as demo
 from doberman.cli.main import app
+from doberman.demo import SCENARIOS, Scenario
+from doberman.models import Verdict
 
 runner = CliRunner()
 
@@ -31,3 +34,27 @@ def test_demo_quiet_still_reports_the_summary(tmp_path):
     result = runner.invoke(app, ["demo", "--path", str(tmp_path), "--fast", "--quiet"])
     assert result.exit_code == 0
     assert "scenarios matched" in result.stdout
+
+
+def test_mismatch_still_reported_loudly_under_quiet(tmp_path, monkeypatch):
+    """The one behavior --quiet exists to preserve: a scenario mismatch still fails
+    loudly (nonzero exit, MISMATCH detail) even with narration suppressed. Same
+    mismatch-forcing technique as test_demo.py's mismatch tests.
+    """
+    bad_scenarios = tuple(
+        Scenario(
+            name=s.name,
+            tool_name=s.tool_name,
+            args=s.args,
+            expected_verdict=Verdict.AUTH if s.name == "Benign file read" else s.expected_verdict,
+            label=s.label,
+        )
+        for s in SCENARIOS
+    )
+    monkeypatch.setattr(demo, "SCENARIOS", bad_scenarios)
+
+    result = runner.invoke(app, ["demo", "--path", str(tmp_path), "--fast", "--quiet"])
+    assert result.exit_code != 0
+    assert "MISMATCH" in result.output
+    assert "expected AUTH" in result.output
+    assert "got PASS" in result.output
