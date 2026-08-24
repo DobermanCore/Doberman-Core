@@ -1476,6 +1476,11 @@ def demo(
 def memory(
     ctx: typer.Context,
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the learned-memory summary as one JSON document.",
+    ),
 ) -> None:
     """Show a plain-language, redaction-safe profile of what Doberman has learned.
 
@@ -1490,6 +1495,10 @@ def memory(
     if ctx.invoked_subcommand is not None:
         return
     summary = asyncio.run(memory_summary(path))
+    if as_json:
+        # Same style as ``scan --json`` / ``status --json`` (#178 / #179).
+        typer.echo(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+        return
     typer.echo("Doberman learned memory")
     typer.echo("=" * 32)
     typer.echo(f"Decisions recorded: {summary['decisions']}")
