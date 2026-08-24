@@ -19,6 +19,7 @@ The tkinter machinery is monkeypatched at module seams (mirroring how the TTY te
 fake ``_open_tty``) so everything here runs headless and deterministically.
 """
 
+import threading
 import types
 
 import pytest
@@ -105,6 +106,160 @@ def test_open_root_raises_prompter_unavailable_when_tk_init_fails(monkeypatch):
     monkeypatch.setattr(tkinter, "Tk", _boom)
     with pytest.raises(PrompterUnavailableError):
         gui_prompter._open_root()
+
+
+# --- GuiPrompter: macOS thread-affinity guard (#399) -------------------------------
+#
+# Every real caller reaches GuiPrompter on a background daemon thread by
+# construction (doberman.auth.challenge._run_with_deadline / asyncio.to_thread),
+# never the process's main thread. Cocoa's Tk backend requires its event loop to
+# start on the real OS main thread; opening Tk() off it is a documented hazard
+# that does not reliably raise a catchable error the way a missing $DISPLAY does
+# -- it can silently fail to render or abort the process, which is how an AUTH
+# challenge could resolve as approved without a human ever seeing a dialog. The
+# guard must refuse BEFORE tkinter is ever touched.
+
+
+def test_macos_off_main_thread_refuses_before_touching_tkinter(monkeypatch):
+    tkinter = pytest.importorskip("tkinter")
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+
+    def _boom(*_a, **_k):
+        raise AssertionError("tkinter.Tk() must never be called off the main thread on macOS")
+
+    monkeypatch.setattr(tkinter, "Tk", _boom)
+    with pytest.raises(PrompterUnavailableError):
+        gui_prompter._open_root()
+
+
+def test_macos_on_main_thread_is_unaffected(monkeypatch):
+    """The guard checks thread AFFINITY, not platform alone -- on the real main
+    thread, macOS proceeds to the normal Tk-open attempt exactly as before."""
+    tkinter = pytest.importorskip("tkinter")
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+    same = object()
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: same)
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: same)
+
+    attempted = []
+    monkeypatch.setattr(tkinter, "Tk", lambda: attempted.append(True) or object())
+    gui_prompter._open_root()
+    assert attempted == [True]
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_non_macos_off_main_thread_is_unaffected(monkeypatch, platform):
+    """Windows/Linux users see zero behavior change -- this hazard is macOS-only."""
+    tkinter = pytest.importorskip("tkinter")
+    monkeypatch.setattr(gui_prompter.sys, "platform", platform)
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+
+    attempted = []
+    monkeypatch.setattr(tkinter, "Tk", lambda: attempted.append(True) or object())
+    gui_prompter._open_root()
+    assert attempted == [True]
+
+
+def test_real_background_thread_on_macos_is_refused(monkeypatch):
+    """End to end against the REAL stdlib threading module (no identity mocking):
+    a genuine background thread is refused when the platform is macOS."""
+    tkinter = pytest.importorskip("tkinter")
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("tkinter.Tk() must never be called off the main thread on macOS")
+
+    monkeypatch.setattr(tkinter, "Tk", _boom)
+
+    outcome: dict = {}
+
+    def _worker():
+        try:
+            gui_prompter._open_root()
+        except BaseException as exc:  # noqa: BLE001 — captured for the caller's thread to assert
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=_worker)
+    thread.start()
+    thread.join(timeout=5)
+    assert isinstance(outcome.get("error"), PrompterUnavailableError)
+
+
+def test_gui_prompter_confirm_refuses_off_main_thread_on_macos(monkeypatch):
+    """The guard is reachable through the public GuiPrompter API, not just _open_root."""
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+    with pytest.raises(PrompterUnavailableError):
+        GuiPrompter().confirm("Approve?")
+
+
+def test_fallback_chain_falls_through_gui_to_tty_on_macos_background_thread(monkeypatch):
+    """The #399 shape: GuiPrompter is refused (macOS, background thread), and the
+    chain falls through to the next channel rather than silently approving."""
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+
+    tty = _Recorder(confirm=True)
+    assert FallbackPrompter([GuiPrompter(), tty]).confirm("Approve?") is True
+    assert tty.calls == ["confirm"]
+
+
+def test_fallback_chain_denies_when_gui_and_tty_both_unavailable_on_macos(monkeypatch):
+    """Full #399 reproduction: macOS + background thread + no real terminal either
+    -- both channels report unavailable, and the provider denies, never approves."""
+    from datetime import datetime, timezone
+
+    from doberman.auth.challenge import AuthTier
+    from doberman.auth.provider import LocalAuthProvider
+    from doberman.models import (
+        ActionType,
+        Decision,
+        GuardrailResult,
+        ReasonCode,
+        Risk,
+        SecurityObject,
+        Verdict,
+    )
+
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+
+    now = datetime(2026, 6, 10, tzinfo=timezone.utc)
+    action = SecurityObject(
+        id="act-399-1",
+        ts=now,
+        agent_role="webdev",
+        action_type=ActionType.file_write,
+        tool_name="fs_write",
+        target="migrations/anything.sql",
+    )
+    objective = GuardrailResult(
+        verdict=Verdict.AUTH,
+        risk=Risk.medium,
+        reason_codes=[ReasonCode.sensitive_path_access],
+        explanation="why",
+    )
+    decision = Decision(
+        action_id="act-399-1",
+        final_verdict=Verdict.AUTH,
+        final_risk=Risk.medium,
+        objective=objective,
+        reason_codes=[ReasonCode.sensitive_path_access],
+        explanation="why",
+        decided_at=now,
+    )
+    no_tty = _Recorder(raises=PrompterUnavailableError("no controlling terminal"))
+    chain = FallbackPrompter([GuiPrompter(), no_tty])
+    result = LocalAuthProvider().authenticate(
+        decision, action, AuthTier.local_auth, prompter=chain, at=now
+    )
+    assert result.approved is False
 
 
 # --- GuiPrompter: custom dialog internals (faked root + faked widget builders) -----
