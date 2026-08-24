@@ -7,6 +7,11 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **Deps: `river` capped below 0.26 on Python 3.11.** river 0.26.0 subscripts
+  `csv.DictReader` at import time, which only Python >= 3.12 supports, so any
+  import of the subjective layer (and therefore the whole test suite) died on
+  3.11 with `TypeError: type 'DictReader' is not subscriptable`. 3.12+ keeps
+  the unpinned floor.
 - **Auth dialog: the highlighted button takes the click again.** The Canvas focus ring was
   drawn on top of the keyboard-highlighted button, and Tk hit-tests a polygon's whole interior
   even when unfilled — so clicking Deny (or Approve, after Tab) did nothing and the hover
