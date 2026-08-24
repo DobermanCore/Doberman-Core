@@ -34,7 +34,6 @@ from doberman.config import (
     load_preferences,
     save_default_role_enabled,
     save_message_tone,
-    save_mode,
     save_policy,
     save_preferences,
 )
@@ -46,9 +45,9 @@ from doberman.policy.drift import (
     _verify_possession_factor,
     apply_change,
     apply_enforcement_change,
+    apply_mode_change,
     apply_preferences_change,
     apply_standing_elevation,
-    log_change,
     read_policy_changes,
 )
 from doberman.policy.friction import build_friction_report, generate_proposals
@@ -359,35 +358,14 @@ def review(
 def _apply_mode_change(
     name: str, path: str, reason: str, *, establish_ok: bool = False
 ) -> str | None:
-    """Resolve ``name``, gate any weakening behind a possession factor, then persist it.
+    """Sync CLI wrapper around :func:`doberman.policy.drift.apply_mode_change`.
 
-    The mode dial is now gated at parity with the enforcement dial:
-    lowering strictness (a downgrade on the paranoid>strict>balanced>light
-    scale) is a ``weaken`` and must clear a possession factor — a 2FA code if
-    enrolled, otherwise the Doberman password set via ``doberman password set`` —
-    before it is persisted. Raising stays frictionless: ``apply_change`` auto-approves
-    a strengthen with no prompt. A no-op (unchanged mode) skips the gate/ledger entirely.
-    Every attempt (incl. denials) is recorded to the append-only ledger. Returns
-    ``None`` when the gate denies the change — fail closed, nothing persisted.
-
-    ``establish_ok`` (first-run onboarding via ``doberman setup``) writes the
-    INITIAL posture freely when no policy is persisted yet — choosing a starting
-    mode is not weakening an existing one, and 2FA is enrolled later in the
-    wizard. The change is still recorded to the ledger. Once a policy exists,
-    even a setup re-run falls through to the gate, so neither ``setup`` nor
-    ``mode`` can bypass the possession factor on a lowering.
+    The gate itself (possession-factor requirement on a lowering, frictionless
+    raising, ``establish_ok`` first-run bypass) lives there so the CLI and the
+    dashboard's ``/api/mode`` share one implementation instead of two that could
+    drift apart.
     """
-    old = load_mode(path)
-    new = resolve_mode(name).value  # raises ValueError for an unknown mode
-    if old == new:
-        return save_mode(name, path)
-    if establish_ok and load_policy(path) is None:
-        asyncio.run(log_change({"mode": old}, {"mode": new}, reason, repo_root=path))
-        return save_mode(name, path)
-    outcome = asyncio.run(apply_change({"mode": old}, {"mode": new}, reason, repo_root=path))
-    if not outcome.approved:
-        return None
-    return save_mode(name, path)
+    return asyncio.run(apply_mode_change(name, path, reason, establish_ok=establish_ok))
 
 
 @app.command(rich_help_panel="Policy")

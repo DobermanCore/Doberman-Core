@@ -65,6 +65,13 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   "no decisions yet" empty-state (it stayed visible even with rows); the wrapper is removed so the
   empty-state hides correctly again, and a test now guards the sibling structure the reveal needs.
   The README demo gif is refreshed to the new dark brand look.
+- **New:** the dashboard can now change the strictness mode itself (`GET`/`POST /api/mode`,
+  a `change` control next to the mode badge) instead of requiring the terminal. It routes
+  through the exact same gate as `doberman mode`/`doberman setup` — a new shared
+  `doberman.policy.drift.apply_mode_change` — so raising strictness stays frictionless and
+  lowering it is denied without the same possession factor (2FA if enrolled, else the Doberman
+  password), recorded in the same append-only ledger. The dash server never verifies the code
+  itself, mirroring `/api/resolve`'s existing discipline.
 - **MCP tool-schema pinning** (#246): every proxied `tools/list` now records a keyed-HMAC
   trust-on-first-use pin for each tool's name, description, and input schema. A later mismatch
   raises live calls to AUTH in Light/Balanced or BLOCK in Strict/Paranoid until a human runs

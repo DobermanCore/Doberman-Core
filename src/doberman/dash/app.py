@@ -48,6 +48,17 @@ D5 (polish) layers verdict/risk color badges, a mode + enforcement header bar,
 and CSS-only empty states onto this same inline shell - the dark-by-default
 palette is formalized as CSS custom properties. Still no build toolchain, no
 new endpoints, no change to auth/redaction/decision-path behavior.
+
+D6 lets the strictness mode itself be changed from the dashboard: ``GET
+/api/mode`` reports the current mode + the four valid names; ``POST
+/api/mode`` (body ``{"mode": <name>, "code"?: <str>}``) sets it. This goes
+through the SAME chokepoint as ``doberman mode``/``doberman setup`` -
+:func:`doberman.policy.drift.apply_mode_change` - so raising strictness stays
+frictionless and lowering it is gated behind the same possession factor (TOTP
+if enrolled, else the Doberman password), recorded in the same append-only
+ledger. Exactly like ``/api/resolve``, the dash server NEVER verifies the code
+itself - ``code`` rides through opaquely to the existing gate, which performs
+the real verification.
 """
 
 from __future__ import annotations
@@ -62,7 +73,10 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from doberman.config import load_mode
 from doberman.dash.stats import build_stats, reason_codes
+from doberman.policy.drift import apply_mode_change
+from doberman.policy.modes import SecurityMode
 from doberman.storage import approvals
 from doberman.storage.log import read_decisions, read_decisions_since
 
@@ -256,6 +270,31 @@ _HTML_SHELL = """<!doctype html>
   #feed li:last-child { border-bottom: none; }
   #feed li:hover { background: var(--ink-2); }
   #feed li .detail { color: var(--fg-3); overflow-wrap: anywhere; }
+  #mode-edit-btn {
+    font: inherit; font-size: .7rem; font-weight: 600; padding: .2rem .5rem;
+    border: 1px solid var(--rule); border-radius: 4px; background: transparent;
+    color: var(--fg-3); cursor: pointer;
+  }
+  #mode-edit-btn:hover { background: var(--neutral-bg); color: var(--fg); }
+  #mode-form {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+    margin: -.2rem 0 1.2rem; font-size: .82rem;
+  }
+  #mode-form select, #mode-form input {
+    font: inherit; font-size: .82rem; padding: .35rem .55rem;
+    background: var(--ink-2); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px;
+  }
+  #mode-form input { width: 16rem; letter-spacing: .04em; }
+  #mode-form button {
+    font: inherit; font-size: .8rem; font-weight: 600; padding: .35rem .85rem;
+    border: 1px solid var(--rule); border-radius: 4px; background: transparent;
+    color: inherit; cursor: pointer;
+  }
+  #mode-save-btn { border-color: var(--pass); color: var(--pass); }
+  #mode-save-btn:hover { background: var(--pass-bg); }
+  #mode-save-btn:disabled { opacity: .55; cursor: default; }
+  #mode-cancel-btn:hover { background: var(--neutral-bg); }
+  #mode-error { color: var(--block); font-family: var(--mono); font-size: .78rem; }
 </style>
 </head>
 <body>
@@ -271,9 +310,18 @@ _HTML_SHELL = """<!doctype html>
     <div class="topbar-right">
       <span class="chip" id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></span>
       <span class="badge badge-neutral" id="mode-badge">mode: -</span>
+      <button type="button" id="mode-edit-btn">change</button>
       <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
       <span class="status-pill ok" id="guard-status"><span class="pip" id="guard-pip" aria-hidden="true">●</span><span id="guard-label">ON GUARD</span></span>
     </div>
+  </div>
+  <div id="mode-form" hidden>
+    <select id="mode-select" aria-label="Security mode"></select>
+    <input id="mode-code" type="password" autocomplete="off"
+      placeholder="2FA code or password (only needed to lower strictness)">
+    <button type="button" id="mode-save-btn">Save</button>
+    <button type="button" id="mode-cancel-btn">Cancel</button>
+    <span id="mode-error"></span>
   </div>
   <div id="stats">stats loading...</div>
   <h2>Pending approvals</h2>
@@ -336,6 +384,14 @@ _HTML_SHELL = """<!doctype html>
       var statsEl = document.getElementById("stats");
       var modeBadge = document.getElementById("mode-badge");
       var enforcementBadge = document.getElementById("enforcement-badge");
+      var modeEditBtn = document.getElementById("mode-edit-btn");
+      var modeForm = document.getElementById("mode-form");
+      var modeSelect = document.getElementById("mode-select");
+      var modeCodeInput = document.getElementById("mode-code");
+      var modeSaveBtn = document.getElementById("mode-save-btn");
+      var modeCancelBtn = document.getElementById("mode-cancel-btn");
+      var modeErrorEl = document.getElementById("mode-error");
+      var modeEditing = false;
       var feedEl = document.getElementById("feed");
       var MAX_FEED_ROWS = 200;
 
@@ -411,6 +467,12 @@ _HTML_SHELL = """<!doctype html>
         modeBadge.textContent = "mode: " + s.mode;
         enforcementBadge.textContent = "enforcement: " + s.enforcement;
         enforcementBadge.className = ENFORCEMENT_BADGE_CLASS[s.enforcement] || "badge badge-neutral";
+        // Keep the (closed) mode selector's value in sync with reality - but
+        // never while the user has the form open with an in-progress choice,
+        // or a poll landing mid-edit would silently discard what they picked.
+        if (!modeEditing && modeSelect.options.length) {
+          modeSelect.value = s.mode;
+        }
       }
 
       // Stats refresh on an interval, not just at page load - otherwise the
@@ -429,6 +491,87 @@ _HTML_SHELL = """<!doctype html>
       }
       refreshStats();
       setInterval(refreshStats, STATS_REFRESH_MS);
+
+      // Mode control: fetch the valid mode names once to populate the
+      // selector, then let the user pick a new one. Raising strictness is
+      // frictionless server-side; lowering it needs a possession-factor code
+      // (2FA or password) in the same request - the server decides which is
+      // required and verifies it, this page just forwards whatever the user
+      // typed and shows the resulting error if any.
+      fetch("/api/mode", { headers: { "Authorization": "Bearer " + token } })
+        .then(function (res) {
+          if (!res.ok) { throw new Error("status " + res.status); }
+          return res.json();
+        })
+        .then(function (m) {
+          modeSelect.textContent = "";
+          (m.modes || []).forEach(function (name) {
+            var opt = document.createElement("option");
+            opt.value = name;
+            opt.textContent = name;
+            modeSelect.appendChild(opt);
+          });
+          modeSelect.value = m.mode;
+        })
+        .catch(function () {
+          // No modes loaded -> leave the selector empty and the edit button
+          // inert rather than let the user submit a change we can't populate.
+          modeEditBtn.disabled = true;
+        });
+
+      function openModeForm() {
+        modeEditing = true;
+        modeErrorEl.textContent = "";
+        modeCodeInput.value = "";
+        modeForm.hidden = false;
+      }
+
+      function closeModeForm() {
+        modeEditing = false;
+        modeForm.hidden = true;
+        modeCodeInput.value = "";
+        modeErrorEl.textContent = "";
+      }
+
+      modeEditBtn.addEventListener("click", function () {
+        if (modeForm.hidden) { openModeForm(); } else { closeModeForm(); }
+      });
+      modeCancelBtn.addEventListener("click", closeModeForm);
+
+      modeSaveBtn.addEventListener("click", function () {
+        var chosen = modeSelect.value;
+        if (!chosen) { return; }
+        var body = { mode: chosen };
+        if (modeCodeInput.value) { body.code = modeCodeInput.value; }
+        modeErrorEl.textContent = "";
+        modeSaveBtn.disabled = true;
+        fetch("/api/mode", {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(body)
+        }).then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, data: data };
+          });
+        }).then(function (result) {
+          modeSaveBtn.disabled = false;
+          if (result.ok) {
+            modeBadge.textContent = "mode: " + result.data.mode;
+            closeModeForm();
+            refreshStats();
+          } else {
+            // textContent only - never render a server error string as markup.
+            modeErrorEl.textContent = (result.data && result.data.error) || "mode change failed";
+            modeCodeInput.value = "";
+          }
+        }).catch(function () {
+          modeSaveBtn.disabled = false;
+          modeErrorEl.textContent = "network error - try again";
+        });
+      });
 
       var pendingList = document.getElementById("pending-list");
       var PENDING_POLL_MS = 2000;
@@ -829,6 +972,65 @@ def _make_resolve_route(token: str, repo_root: str) -> Route:
     return Route("/api/resolve/{approval_id}", resolve, methods=["POST"])
 
 
+class _ModeChangePrompter:
+    """Non-interactive :class:`~doberman.auth.challenge.Prompter` for ``POST /api/mode``.
+
+    The POST request itself is the human's confirmation (they explicitly chose
+    a new mode in the UI), so ``confirm`` always succeeds; ``read_code`` returns
+    the possession-factor code the request body carried, or raises if none was
+    supplied - the ``Prompter`` protocol requires a raise on no-input so the gate
+    treats a missing code as a denial (fail closed), never as an empty-but-valid
+    answer. Mirrors ``/api/resolve``: this module never verifies the code, only
+    carries it opaquely to :func:`doberman.policy.drift.apply_mode_change`.
+    """
+
+    def __init__(self, code: str | None) -> None:
+        self._code = code
+
+    def confirm(self, message: str) -> bool:
+        return True
+
+    def read_code(self, message: str) -> str:
+        if not self._code:
+            raise ValueError("no possession-factor code supplied")
+        return self._code
+
+
+def _make_mode_route(token: str, repo_root: str) -> Route:
+    async def mode_route(request: Request) -> Response:
+        if not _token_matches(request, token):
+            return _unauthorized()
+
+        if request.method == "GET":
+            return JSONResponse(
+                {"mode": load_mode(repo_root), "modes": [m.value for m in SecurityMode]}
+            )
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        name = body.get("mode")
+        if not isinstance(name, str) or not name:
+            return JSONResponse({"error": "mode is required"}, status_code=400)
+        code = body.get("code")
+
+        try:
+            saved = await apply_mode_change(
+                name,
+                repo_root,
+                "doberman dashboard",
+                prompter=_ModeChangePrompter(code if isinstance(code, str) else None),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if saved is None:
+            return JSONResponse({"error": "mode change denied"}, status_code=403)
+        return JSONResponse({"mode": saved})
+
+    return Route("/api/mode", mode_route, methods=["GET", "POST"])
+
+
 def create_app(
     token: str,
     repo_root: str = ".",
@@ -855,5 +1057,6 @@ def create_app(
         ),
         _make_pending_route(token, repo_root),
         _make_resolve_route(token, repo_root),
+        _make_mode_route(token, repo_root),
     ]
     return Starlette(routes=routes)
