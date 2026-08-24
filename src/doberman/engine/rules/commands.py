@@ -94,6 +94,17 @@ _SUBSTITUTION = re.compile(r"\$\((?P<paren>[^()]*)\)|`(?P<backtick>[^`]*)`")
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _TRANSPARENT_WRAPPERS = {"sudo", "nice", "ionice", "nohup", "time", "env", "command", "exec"}
 
+# `env`'s own no-op flags (no operand) and its unset flags (take one operand),
+# recognised so `env -i -0 -u FOO` with no trailing command still resolves to
+# "no command to run" -> a dump, same as bare `env`.
+_ENV_NOOP_FLAGS = {"-i", "-0", "--null", "--ignore-environment"}
+_ENV_UNSET_FLAGS = {"-u", "--unset"}
+# `Get-ChildItem`/`gci`/`dir`/`ls` are all valid PowerShell aliases for the
+# same provider cmdlet; `Env:` (optionally trailing `\`) is the environment
+# drive - listing it prints every variable and value, same as POSIX `env`.
+_POWERSHELL_LISTING_VERBS = {"get-childitem", "gci", "dir", "ls"}
+_POWERSHELL_ENV_DRIVE = re.compile(r"(?i)^env:\\?$")
+
 # Shells that take an opaque "-c <payload>" we cannot statically vet.
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 
@@ -565,6 +576,78 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
     return None
 
 
+def _is_environment_dump_segment(raw_tokens: list[str]) -> bool:
+    """True for a segment whose sole effect is to print the process
+    environment: bare ``env``, ``printenv`` (any form), ``export``/``export
+    -p``, ``declare -x``/``typeset -x`` with no named variable, or a
+    PowerShell ``Env:`` drive listing.
+
+    Runs on the RAW parsed segment, *before* :func:`_argv_from_tokens` strips
+    leading wrappers/assignments — that stripping is what makes bare ``env``
+    invisible to :func:`_segment_verdict` (stripping ``env`` off ``["env"]``
+    leaves an empty list, which the caller's ``if not tokens`` guard silently
+    skips). We look through non-``env`` wrappers (``sudo env`` etc.) and
+    env-assignment prefixes ourselves so this still fires under them, but stop
+    at ``env``/``printenv`` themselves so we can inspect what follows.
+
+    Known ceiling: ``dir``/``ls``/``gci`` are not in
+    ``_WINDOWS_PATH_TRIGGER_RE``, so a literal trailing backslash (``dir
+    env:\\``) fails POSIX shlex parsing before this function ever sees the
+    segment and falls back to the generic ``opaque_command`` AUTH instead —
+    still fails upward, just under a different reason code. The no-backslash
+    form (``dir env:``) is unaffected.
+    """
+    idx = 0
+    look_through = _TRANSPARENT_WRAPPERS - {"env"}
+    while idx < len(raw_tokens) and (
+        _ENV_ASSIGNMENT.match(raw_tokens[idx]) or raw_tokens[idx] in look_through
+    ):
+        idx += 1
+    rest = raw_tokens[idx:]
+    if not rest:
+        return False
+    cmd, tail = rest[0], rest[1:]
+
+    if cmd == "printenv":
+        return True  # every form reads the process environment
+
+    if cmd == "env":
+        i = 0
+        while i < len(tail):
+            token = tail[i]
+            if _ENV_ASSIGNMENT.match(token) or token in _ENV_NOOP_FLAGS:
+                i += 1
+                continue
+            if token in _ENV_UNSET_FLAGS:
+                i += 2  # flag + its variable-name operand
+                continue
+            if token.startswith("--unset="):
+                i += 1
+                continue
+            return False  # a real command to hand off to - not a dump
+        return True
+
+    if cmd in ("export", "declare", "typeset"):
+        flags = [t for t in tail if t.startswith("-")]
+        names = [t for t in tail if not t.startswith("-")]
+        if names:
+            return False  # names a specific variable, not a full listing
+        return cmd == "export" or "-x" in flags
+
+    if cmd.lower() in _POWERSHELL_LISTING_VERBS:
+        return any(_POWERSHELL_ENV_DRIVE.match(t) for t in tail)
+
+    return False
+
+
+def _environment_dump_auth() -> GuardrailResult:
+    return _auth(
+        ReasonCode.environment_dump_command,
+        "Command reads/prints the process environment, a common carrier for "
+        "secrets (API keys, tokens); authentication required.",
+    )
+
+
 def _segment_verdict(
     tokens: list[str], protected_branches: Iterable[str], bulk_threshold: int, root: str
 ) -> GuardrailResult | None:
@@ -802,7 +885,11 @@ class DestructiveCommandRule:
         processed = 0
         while pending and processed < _MAX_COMMAND_SEGMENTS:
             processed += 1
-            tokens = _argv_from_tokens(pending.pop())
+            raw_segment = pending.pop()
+            if _is_environment_dump_segment(raw_segment):
+                worst = _max_result(worst, _environment_dump_auth())
+                continue
+            tokens = _argv_from_tokens(raw_segment)
             if not tokens:
                 continue
             if _opaque_shell_payload(tokens):
