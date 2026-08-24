@@ -242,8 +242,10 @@ _HTML_SHELL = """<!doctype html>
   #pending-list button.deny:hover { border-color: var(--block); background: var(--block-bg); }
   #pending-list button.approve { background: var(--auth); border: 1px solid var(--auth); color: var(--ink-0); }
   #pending-list button.approve:hover { background: var(--tan-hi); border-color: var(--tan-hi); }
-  .feed-wrap { border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--ink-1); overflow: hidden; }
-  #feed { max-height: 60vh; overflow-y: auto; }
+  #feed {
+    max-height: 60vh; overflow-y: auto;
+    border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--ink-1);
+  }
   #feed li {
     display: flex; align-items: baseline; gap: .5rem;
     padding: .6rem 1.1rem; border-bottom: 1px solid var(--rule-2);
@@ -278,7 +280,7 @@ _HTML_SHELL = """<!doctype html>
   <ul id="pending-list" aria-live="polite"></ul>
   <div id="pending-empty" class="empty-state">Nothing pending. Doberman's watching.</div>
   <h2>Recent decisions</h2>
-  <div class="feed-wrap"><ul id="feed"></ul></div>
+  <ul id="feed"></ul>
   <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
   <script>
     (function () {

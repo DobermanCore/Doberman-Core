@@ -19,6 +19,8 @@ The tkinter machinery is monkeypatched at module seams (mirroring how the TTY te
 fake ``_open_tty``) so everything here runs headless and deterministically.
 """
 
+import types
+
 import pytest
 
 from doberman.auth import gui_prompter
@@ -295,6 +297,96 @@ def test_real_dialog_widgets_dark_theme_and_masked_entry(monkeypatch):
         assert entries, "code dialog must contain an entry field"
         assert entries[0].cget("show") == "*"  # the code must be masked on screen
         assert root.cget("bg") == gui_prompter._BG
+    finally:
+        root.destroy()
+
+
+class _FakeCanvas:
+    """Records the Canvas display list (bottom → top) and mirrors Tk's ``tag_lower``."""
+
+    def __init__(self):
+        self.items: list[int] = []  # display list: creation order = stacking order
+        self.tags: dict[int, tuple] = {}
+
+    def _create(self, tags):
+        item = len(self.tags) + 1
+        self.items.append(item)
+        self.tags[item] = tuple(tags)
+        return item
+
+    def create_polygon(self, _points, **kw):
+        return self._create(kw.get("tags", ()))
+
+    def create_text(self, _x, _y, **kw):
+        return self._create(kw.get("tags", ()))
+
+    def tag_lower(self, item, below):
+        # Tk: move `item` to just before the LOWEST item carrying tag `below`.
+        self.items.remove(item)
+        self.items.insert(
+            next(i for i, it in enumerate(self.items) if below in self.tags[it]), item
+        )
+
+    def delete(self, item):
+        self.items.remove(item)
+
+    def tag_bind(self, *_a, **_kw):
+        pass
+
+    def itemconfig(self, *_a, **_kw):
+        pass
+
+    def focus_set(self):
+        pass
+
+    def ring_is_beneath_every_button(self) -> bool:
+        [ring] = [i for i in self.items if not self.tags[i]]  # the ring is the only untagged item
+        return all(self.items.index(ring) < self.items.index(i) for i in self.items if self.tags[i])
+
+
+def test_focus_ring_is_stacked_beneath_the_buttons(monkeypatch):
+    """Tk hit-tests a polygon's WHOLE interior even when it is unfilled, so a focus ring
+    drawn on top of the highlighted button receives that button's clicks (and hover)
+    instead of the button — clicking Deny did nothing. The ring must sit beneath every
+    button item, both at the start and after each highlight move (it is redrawn each
+    time). Faked canvas, so this runs on headless CI; the real-Tk check is below.
+    """
+    tkfont = pytest.importorskip("tkinter.font")
+    monkeypatch.setattr(tkfont, "Font", lambda **_kw: types.SimpleNamespace(measure=len))
+    canvas, root = _FakeCanvas(), _FakeRoot()
+    specs = [("Deny", lambda: None, False), ("Approve", lambda: None, True)]
+
+    gui_prompter._add_button_row(root, canvas, y=100, specs=specs)
+    assert canvas.ring_is_beneath_every_button()
+
+    root.bindings["<Tab>"]()  # highlight → Approve; ring deleted and redrawn
+    assert canvas.ring_is_beneath_every_button()
+
+
+def test_real_canvas_click_target_is_the_highlighted_button_not_the_ring():
+    """With a real display: the item Tk would hand a click to — the topmost item under the
+    button's centre, which is exactly ``find_closest``'s tie-break — must be the button
+    itself (tagged), never the untagged focus ring, for Deny (highlighted at open) and
+    Approve alike. Skipped where Tk cannot open (headless CI); the faked-canvas test above
+    still covers the stacking contract there.
+    """
+    tkinter = pytest.importorskip("tkinter")
+    try:
+        root = tkinter.Tk()
+    except tkinter.TclError:
+        pytest.skip("no display available")
+    try:
+        root.withdraw()
+        canvas = tkinter.Canvas(root, width=gui_prompter._DIALOG_W, height=200)
+        canvas.pack()
+        specs = gui_prompter._confirm_specs(lambda _value: None)
+        gui_prompter._add_button_row(root, canvas, y=60, specs=specs)
+        root.update_idletasks()
+
+        for tag in ("_dobermanbtn0", "_dobermanbtn1"):
+            x1, y1, x2, y2 = canvas.bbox(tag)
+            topmost = canvas.find_closest((x1 + x2) / 2, (y1 + y2) / 2)[0]
+            assert tag in canvas.gettags(topmost), f"click on {tag} would land on item {topmost}"
     finally:
         root.destroy()
 

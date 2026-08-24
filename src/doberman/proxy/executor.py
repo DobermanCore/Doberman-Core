@@ -79,6 +79,7 @@ from doberman.subjective.revealed import (
     has_scope_token,
     maybe_nudge,
     record_feedback,
+    revoke_tool_scope_tokens,
 )
 from doberman.subjective.score import inherit_turn_provenance, raised_surprise
 
@@ -166,6 +167,10 @@ async def _apply_tool_pin_floor(tool_name: str, decision: Decision) -> Decision:
     """Raise a changed tool contract to AUTH, or BLOCK in strict/paranoid."""
     if await tool_pins.pin_status(tool_name, repo_root=REPO_ROOT) != "changed":
         return decision
+    # A changed contract also voids any live "approve for this task" comfort
+    # tokens for this tool, for every entity — a token granted against the old
+    # schema must not mute the step-up on the new one. Idempotent; raise-only.
+    revoke_tool_scope_tokens(tool_name)
     floor = Verdict.BLOCK if load_mode(REPO_ROOT) in _STRICT_MODES else Verdict.AUTH
     risk = Risk.critical if floor is Verdict.BLOCK else Risk.high
     reasons = list(dict.fromkeys([*decision.reason_codes, ReasonCode.tool_schema_changed]))
