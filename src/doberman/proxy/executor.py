@@ -96,7 +96,7 @@ REPO_ROOT = "."
 AUTH_PROMPTER: Prompter | None = None
 
 
-def _default_objective_rules() -> list[Guardrail]:
+def _default_objective_rules(velocity_thresholds=None) -> list[Guardrail]:
     """Built-in rules for :data:`DEFAULT_OBJECTIVE` below.
 
     Identical to ``ObjectiveGuardrail()``'s own default construction except
@@ -106,9 +106,15 @@ def _default_objective_rules() -> list[Guardrail]:
     ``ExternalDestinationRule``'s docstring), this proxy singleton is built
     once per long-lived process, and ``discover_egress_brokers()`` is itself
     memoized, so the entry-point scan happens at most once here regardless.
+
+    ``velocity_thresholds`` (a :class:`~doberman.egress.velocity.VelocityThresholds`
+    or ``None``) is forwarded to ``ExternalDestinationRule`` so the
+    policy-sourced egress-velocity thresholds (RB.6) take effect in the
+    long-lived proxy singleton. ``None`` means the built-in module defaults
+    apply (identical to the pre-RB.6 behaviour).
     """
     return [
-        ExternalDestinationRule(load_broker=True)
+        ExternalDestinationRule(load_broker=True, velocity_thresholds=velocity_thresholds)
         if rule_type is ExternalDestinationRule
         else rule_type()
         for rule_type in BUILTIN_RULE_TYPES

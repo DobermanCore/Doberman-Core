@@ -33,11 +33,16 @@ from pydantic import AwareDatetime
 
 from doberman.egress.broker import ConnectionEvent
 
-# ponytail: fixed module constants, not policy-configurable -- revisit if a
-# real deployment needs per-mode/per-policy tuning (see RB.5's mode gating
-# for the shape that would take).
+# Memory-safety caps against an attacker-controlled entity_id. These are NOT
+# detection-policy knobs — they bound the tracker's RAM footprint and must
+# never be loosened via policy config.
 _MAX_EVENTS_PER_ENTITY = 256
 _MAX_TRACKED_ENTITIES = 1024
+
+# Built-in detection defaults. Policy may tighten these (lower burst/fanout,
+# lower volume_bytes) without a gate. Loosening any of them above its default
+# must route through the possession-factor-gated weaken path in
+# doberman.policy.drift (apply_egress_velocity_change) or be rejected outright.
 _BURST_THRESHOLD = 20
 _VOLUME_THRESHOLD_BYTES = 50 * 1024 * 1024
 _FANOUT_THRESHOLD = 10
@@ -51,6 +56,24 @@ class VelocityFinding:
     signals: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class VelocityThresholds:
+    """The three policy-tunable detection thresholds for EgressVelocityTracker.
+
+    All three default to the built-in module constants so callers that don't
+    supply overrides get identical behaviour to the old hard-coded path.
+
+    Invariant (raise-only): any value that exceeds its built-in default makes
+    the detector *less* sensitive (a loosening). Such a value must never be
+    applied silently — it must arrive here only after clearing the weaken gate
+    in ``doberman.policy.drift.apply_egress_velocity_change``.
+    """
+
+    burst: int = _BURST_THRESHOLD
+    volume_bytes: int = _VOLUME_THRESHOLD_BYTES
+    fanout: int = _FANOUT_THRESHOLD
+
+
 class EgressVelocityTracker:
     """Bounded, in-memory per-entity egress-velocity detector.
 
@@ -58,10 +81,16 @@ class EgressVelocityTracker:
     long-lived proxy's ``ExternalDestinationRule``) accumulates each entity's
     observed connections call over call, bounded by the two caps above, so a
     burst spread across several tool calls is still caught.
+
+    ``thresholds`` defaults to ``VelocityThresholds()`` (the built-in module
+    constants) so existing callers that pass no argument are byte-for-byte
+    unchanged. Pass an explicit ``VelocityThresholds`` to apply a
+    policy-supplied tightening (or a gate-approved loosening).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, thresholds: VelocityThresholds | None = None) -> None:
         self._by_entity: OrderedDict[str, deque[ConnectionEvent]] = OrderedDict()
+        self._thresholds: VelocityThresholds = thresholds or VelocityThresholds()
 
     def assess(
         self,
@@ -86,12 +115,13 @@ class EgressVelocityTracker:
             tracked.append(event)
         recent = [event for event in tracked if start <= event.ts <= end]
 
+        t = self._thresholds
         signals: list[str] = []
-        if len(recent) > _BURST_THRESHOLD:
+        if len(recent) > t.burst:
             signals.append("burst")
-        if sum(event.bytes_sent for event in recent) > _VOLUME_THRESHOLD_BYTES:
+        if sum(event.bytes_sent for event in recent) > t.volume_bytes:
             signals.append("volume")
-        if len({event.host for event in recent}) > _FANOUT_THRESHOLD:
+        if len({event.host for event in recent}) > t.fanout:
             signals.append("fan_out")
         if not signals:
             return None

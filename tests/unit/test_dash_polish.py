@@ -161,3 +161,11 @@ def test_feed_row_renders_a_risk_badge(tmp_path):
 def test_feed_row_renders_source_context(tmp_path):
     html = _index_html(tmp_path)
     assert '" from:" + (row.source_context || "-") +' in html
+
+
+def test_recent_decisions_header_has_a_refresh_button(tmp_path):
+    html = _index_html(tmp_path)
+    assert '<button type="button" id="refresh-btn">Refresh</button>' in html
+    assert 'document.getElementById("refresh-btn").addEventListener' in html
+    assert "refreshStats();" in html
+    assert "refreshPending();" in html
