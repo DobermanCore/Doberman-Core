@@ -1,123 +1,128 @@
-# Doberman - Setup Guide
+# Setup guide
 
-The complete guide to running Doberman in front of your coding agent: install it, wire it to
-your agent, verify it, and watch it work. New here? The
-[README Quick Start](../README.md#quick-start) has the 30-second version.
+This is the complete guide to installing Doberman, wiring it to your coding agent, locking in a
+recovery factor, and confirming it works. New here? The [README](../README.md) has the 30-second
+version.
 
 **Contents**
 
 - [1. Install](#1-install)
-- [2. The fast path: `doberman setup`](#2-the-fast-path-doberman-setup)
+- [2. Run `doberman setup`](#2-run-doberman-setup)
 - [3. Wire it to your agent](#3-wire-it-to-your-agent)
-  - [Host hooks](#claude-code-hooks) - Claude Code and Codex CLI
-  - [MCP proxy](#mcp-proxy) - Claude Desktop, Cursor, any MCP client
-  - [OpenClaw](#openclaw)
-- [4. Lock it in: password and 2FA](#4-lock-it-in-password-and-2fa)
-- [5. Check it's healthy: `doberman doctor`](#5-check-its-healthy-doberman-doctor)
-- [6. Watch it work](#6-watch-it-work) - session summary, log and TUI, dashboard, demo
-- [Appendix: wrong or stale `doberman` on PATH](#path-troubleshooting)
+- [4. Set a password and 2FA](#4-set-a-password-and-2fa)
+- [5. Check its health](#5-check-its-health)
+- [6. Watch it work](#6-watch-it-work)
+- [Appendix: a stale `doberman` on PATH](#appendix-a-stale-doberman-on-path)
 
 ---
 
-### 1. Install
+## 1. Install
 
 ```bash
 pip install doberman-core
 ```
 
-> The distribution is **`doberman-core`** (the bare `doberman` name on PyPI belongs to an
-> unrelated, abandoned project). The import name and CLI are unchanged - after install you
-> still `import doberman` and run the `doberman` command.
+> **Note**
+> The distribution is `doberman-core` (the bare `doberman` name on PyPI belongs to an unrelated,
+> abandoned project). The import name and CLI command are unchanged: you still `import doberman`
+> and run `doberman`.
 
-Or install the latest from source:
+Install the latest from source instead:
 
 ```bash
-pip install git+https://github.com/fu351/Doberman-Core.git
+pip install git+https://github.com/DobermanCore/Doberman-Core.git
 ```
 
 Or for development:
 
 ```bash
-git clone https://github.com/fu351/Doberman-Core.git
+git clone https://github.com/DobermanCore/Doberman-Core.git
 cd Doberman-Core
 pip install -e ".[dev]"
 ```
 
-Either way you get the `doberman` CLI on your PATH. If `doberman` behaves oddly - an old
-version, a missing command - see the [PATH appendix](#path-troubleshooting).
-(Maintainers: see [`RELEASING.md`](../RELEASING.md).)
+Any of these puts `doberman` on your PATH. If it behaves oddly (an old version, a missing
+command), see the [PATH appendix](#appendix-a-stale-doberman-on-path). Maintainers: see
+[RELEASING.md](../RELEASING.md).
 
-### 2. The fast path: `doberman setup`
+## 2. Run `doberman setup`
 
-On Claude Code, one command does the whole job. An interactive wizard picks your alertness
-mode, tunes your guardrails, and wires the hooks:
+On Claude Code, one command does the whole job. An interactive wizard picks your alertness mode,
+tunes your guardrails, and wires the hooks:
 
 ```bash
-doberman setup          # interactive: choose mode, guardrails, install scope
-doberman setup --yes    # accept sensible defaults (balanced mode), non-interactively
+doberman setup
 ```
 
-Basic protection works immediately, out of the box. When the wizard finishes:
-[set a possession factor](#4-lock-it-in-password-and-2fa), then verify with
-[`doberman doctor`](#5-check-its-healthy-doberman-doctor).
+```bash
+doberman setup --yes
+```
 
-On a different host, or want to see what gets wired? The next section covers each path by hand.
+`--yes` accepts the defaults (balanced mode) with no prompts, useful for CI or scripting. Either
+way, basic protection works immediately. When the wizard finishes, [set a possession
+factor](#4-set-a-password-and-2fa), then verify with [`doberman doctor`](#5-check-its-health).
 
-### 3. Wire it to your agent
+On a different host, or want to see exactly what gets wired? The next section covers each path by
+hand.
 
-Pick the row that matches your host:
+## 3. Wire it to your agent
 
 | Your host | How Doberman attaches | Where |
 |---|---|---|
-| **Claude Code** | Hooks - gate every built-in *and* MCP tool call (recommended) | [`doberman setup`](#2-the-fast-path-doberman-setup) or [host hooks](#claude-code-hooks) |
-| **Codex CLI** | Hooks | `doberman install-hooks --host codex` - [host hooks](#claude-code-hooks) |
-| **Claude Desktop / Cursor / any MCP client** | MCP proxy - wrap your tool server | [MCP proxy](#mcp-proxy) |
-| **OpenClaw** | Native plugin adapter | [OpenClaw](#openclaw) |
+| Claude Code | Hooks: gate every built-in and MCP tool call (recommended) | [`doberman setup`](#2-run-doberman-setup) or [Claude Code hooks](#claude-code-hooks) |
+| Codex CLI | Hooks | `doberman install-hooks --host codex`, see [Claude Code hooks](#claude-code-hooks) |
+| Claude Desktop, Cursor, any MCP client | MCP proxy: wrap your tool server | [MCP proxy](#mcp-proxy) |
+| OpenClaw | Native plugin adapter | [OpenClaw](#openclaw) |
 
-<a name="claude-code-hooks"></a>
+### Claude Code hooks
 
-#### Host hooks (Claude Code and Codex CLI)
+Hooks make Doberman gate every tool call your agent makes: built-ins (`Bash`, `Edit`, `Write`,
+...) and any MCP tool, without rewiring your MCP config. The harness calls Doberman before each
+tool call, and Doberman answers allow or deny. A sensitive action opens Doberman's own in-session
+approval dialog (confirm or TOTP 2FA), so the agent can't bypass it by not "asking to use
+Doberman".
 
-Hooks make Doberman gate **every** tool call your agent makes - built-ins (`Bash`, `Edit`,
-`Write`, ...) *and* any MCP tool - without rewiring your MCP config. The harness calls Doberman
-before each tool call, and Doberman answers **allow / deny**. A sensitive action opens
-Doberman's own in-session approval dialog (confirm / TOTP 2FA), so the agent can't bypass it by
-simply not "asking to use Doberman".
-
-Install them with one command:
+Install with one command:
 
 ```bash
-doberman install-hooks               # Claude Code: writes .claude/settings.json (this project)
-doberman install-hooks --global      # ~/.claude/settings.json (every project)
-doberman install-hooks --host codex  # Codex CLI: wires `doberman hook codex-pre` instead
-doberman install-hooks --dry-run     # show what would change, write nothing
-doberman uninstall-hooks             # remove only Doberman's entries (leaves your other hooks intact)
-doberman uninstall                   # remove hooks AND this project's .doberman/ (gated - see below)
+doberman install-hooks
 ```
 
-`install-hooks` is idempotent (safe to re-run), backs up an existing `settings.json` before
-writing, and never touches your other settings or hooks. `doberman setup` above runs it for you.
+```bash
+doberman install-hooks --global
+```
 
-`uninstall-hooks` only strips the hook entries — the project's `.doberman/` (policy, decision
-database), `--global` hooks, and your device-wide password/2FA/fingerprint key are all left in
-place. To fully remove Doberman's protection from **this project**, use `doberman uninstall`
-instead: it removes the project-scope and local-scope hooks *and* `.doberman/` in one step. It is
-project-scoped only — `--global` hooks and device-wide auth state are never touched, even on
-success, since those protect every project on the machine. Because it also deletes state, it is
-gated the same way as `doberman taint clear` / `doberman memory reset`: it requires your enrolled
-possession factor (2FA if set up, otherwise your Doberman password) and, since it's irreversible,
-also asks you to type the project directory name back to confirm (skippable with `--yes`; the
-factor check never is). With neither factor enrolled it fails closed and removes nothing.
+```bash
+doberman install-hooks --host codex
+```
 
-> **Order matters when removing Doberman.** `pip uninstall doberman-core` has no way to also
-> clean up the hook entries it wrote - pip doesn't support that. Always run
-> `doberman uninstall-hooks` *first*. If you already uninstalled the package and every tool call
-> now fails with `doberman: command not found`, don't edit `settings.json` by hand - just
-> `pip install doberman-core` again. The hook entries were never touched, so they start working
-> the moment the binary is back; run `doberman uninstall-hooks` afterward if you still want it
-> gone.
+`install-hooks` writes `.claude/settings.json` for this project by default, `--global` writes
+`~/.claude/settings.json` for every project, and `--host codex` wires `doberman hook codex-pre`
+into a Codex CLI `hooks.json` instead. Add `--dry-run` to see what would change without writing
+anything. Remove hooks with `doberman uninstall-hooks` (same `--global` / `--host` flags); it
+strips only Doberman's entries and leaves your other hooks untouched.
 
-On Claude Code it writes this snippet - or add it by hand:
+`install-hooks` is idempotent, safe to re-run, and backs up an existing `settings.json` before
+writing. `doberman setup` runs it for you.
+
+`uninstall-hooks` only strips the hook entries. The project's `.doberman/` (policy, decision
+database), any `--global` hooks, and your device-wide password, 2FA, and fingerprint key are all
+left in place. To remove Doberman's protection from this project entirely, run `doberman
+uninstall` instead: it removes the project- and local-scope hooks and `.doberman/` in one step. It
+never touches `--global` hooks or device-wide auth state, since those protect every project on the
+machine. Because it deletes state, it requires your enrolled possession factor (2FA if set up,
+otherwise your password) and, being irreversible, also asks you to type the project directory name
+back to confirm (`--yes` skips that confirmation, never the factor check). With neither factor
+enrolled it fails closed and removes nothing.
+
+> **Note**
+> `pip uninstall doberman-core` cannot also clean up the hook entries it wrote; pip has no hook
+> for that. Run `doberman uninstall-hooks` first. If you already uninstalled the package and every
+> tool call now fails with `doberman: command not found`, don't edit `settings.json` by hand:
+> `pip install doberman-core` again and the existing hook entries start working the moment the
+> binary is back.
+
+On Claude Code it writes this, or add it by hand:
 
 ```jsonc
 // .claude/settings.json (this project) or ~/.claude/settings.json (all projects)
@@ -144,90 +149,75 @@ On Claude Code it writes this snippet - or add it by hand:
 }
 ```
 
-**What the pre-hook does.** `doberman hook pre` reads the tool call on stdin and runs
-Doberman's deterministic **objective floor**: path confinement, destructive commands,
-external-destination and secret-exfil checks, smuggled-token channels. Then it decides:
+**The pre-hook.** `doberman hook pre` reads the tool call on stdin and runs Doberman's
+deterministic objective floor: path confinement, destructive commands, external-destination and
+secret-exfil checks, smuggled-token channels. A routine action passes silently; Doberman is
+raise-only and never strips the harness's own prompts. A sensitive action opens Doberman's
+approval dialog, a topmost confirm or TOTP prompt bound to that exact action. Approve it and the
+call proceeds; decline it, or lose the channel, and it's denied, fail closed. A dangerous action
+is blocked outright, with a redaction-safe reason.
 
-- A routine action passes silently. Doberman is raise-only - it never strips the harness's
-  own prompts.
-- A sensitive action **opens Doberman's approval dialog**: a topmost confirm / TOTP-2FA prompt
-  bound to that exact action. Approve, and that single call is allowed. Decline - or if no GUI
-  or terminal channel is available - and it's denied, fail-closed.
-- A dangerous action is blocked, with a redaction-safe reason.
+**The post-hook.** `doberman hook post` runs after a tool executes and scans its output for
+credential-like material. Output containing a recognizable credential (a known key shape, a PEM
+block, a secret file's contents) is blocked from reaching the model; the secret is never echoed.
+A merely high-entropy token with no known credential shape (a hash, a UUID, a base64 fragment)
+passes through, since that heuristic false-positives on ordinary output, but it is still recorded
+and taints the session. Taint powers a multi-step exfiltration floor: the pre-hook raises any
+later egress (web, network, MCP) in a session that has already touched a secret, `ask` in
+light/balanced and a hard `deny` in strict/paranoid. When an outbound value exactly matches, by
+keyed-HMAC fingerprint, a secret that entered the session earlier, that confirmed read-then-send
+is a hard `deny` in every mode, even light.
 
-**What the post-hook does.** `doberman hook post` runs after a tool executes and scans the
-tool's **output** for credential-like material:
+Both handlers fail closed and stay import-light, so they add minimal latency to each call. Every
+decision lands in the same local, redacted history: `doberman log` shows PreToolUse AUTH/BLOCK
+outcomes alongside PostToolUse ones, and `doberman status` reports the installed version, which
+settings file(s) carry the hooks, and the last five decisions.
 
-- Output containing a **recognizable credential** (a known key shape, a PEM block, a secret
-  file's contents) is **blocked from reaching the model**. The secret is never echoed.
-- A merely **high-entropy** token with no known credential shape (a hash, a UUID, a base64
-  fragment) passes through - that heuristic false-positives on ordinary output - but it is
-  still **recorded and taints the session**.
-- Session taint powers a **multi-step exfiltration floor**: the pre-hook raises any later
-  egress (web, network, MCP) in a session that has already touched a secret - `ask` in
-  light/balanced, a hard `deny` in strict/paranoid. That catches read-secret-then-send-it
-  exfil no single-call rule can see.
-- When an outbound value *exactly* matches (by keyed-HMAC fingerprint) a secret that entered
-  the session earlier, that **confirmed** read-then-send is a hard `deny` in **every** mode,
-  even `light`.
+**Doberman protects its own hooks.** Once installed, the agent can't quietly remove them. A write
+or edit to `.claude/settings.json` is blocked, and other `.claude/` changes require
+authentication, so the agent can't disable enforcement by editing the harness config. This mirrors
+how Doberman already hard-blocks its own `.doberman/` control plane, and it holds through the
+shell too: a Bash command that writes or deletes the config, or runs `doberman uninstall-hooks`
+(or `uninstall`), is blocked, not only the `Write`/`Edit` tools. The same block extends to every
+posture- and auth-mutating verb (`mode`, `prefs`, `enforcement`, `2fa`, `password`, `revoke`,
+`taint`, `uninstall`), while read/utility verbs (`status`, `doctor`, `log`, `scan`, `review`) stay
+allowed.
 
-Both handlers **fail closed** and are import-light, so they add minimal latency to each call.
-Every decision lands in the same local, redacted history: `doberman log` shows PreToolUse
-AUTH/BLOCK outcomes alongside PostToolUse ones, and `doberman status` reports the installed
-version, which settings file(s) have the hooks wired in, and the last 5 recorded decisions.
+### MCP proxy
 
-**Doberman protects its own hooks.** Once installed, the agent can't quietly remove them. A
-write or edit to `.claude/settings.json` (the hook-install file) is **blocked**, and other
-`.claude/` changes require authentication - the agent can't disable enforcement by editing the
-harness config ("firing the cop"). This mirrors how Doberman already hard-blocks its own
-`.doberman/` control plane. The protection holds **through the shell** too: a Bash command that
-writes or deletes the config (`echo > .claude/settings.json`, `rm -rf .doberman`) or runs
-`doberman uninstall-hooks` (or `doberman uninstall`) is blocked, not just the `Write`/`Edit`
-tools. The same shell-layer block extends to every posture- and auth-mutating Doberman verb -
-`mode`, `prefs`, `enforcement`, `2fa`, `password`, `revoke`, `taint`, `uninstall` - treated as
-control-plane tampering and blocked fail-closed, while read/utility verbs (`status`, `doctor`,
-`log`, `scan`, `review`) stay allowed.
-
-<a name="mcp-proxy"></a>
-
-#### MCP proxy - wrap any tool server
-
-Doberman is a transparent MCP proxy. You give it your existing tool server command after `--`,
-and it intercepts everything in the middle:
+Doberman is a transparent MCP proxy. Give it your existing tool server command after `--`, and it
+intercepts everything in between:
 
 ```bash
-# Before - agent talks directly to your tool server:
+# Before: agent talks directly to your tool server
 npx -y @modelcontextprotocol/server-filesystem ~/my-project
 
-# After - wrap it with Doberman:
+# After: wrap it with Doberman
 doberman serve -- npx -y @modelcontextprotocol/server-filesystem ~/my-project
-#             ^^  the -- separator: everything after is your existing tool server command
 ```
 
-To specify which repo's policy governs decisions (defaults to the current directory):
+To choose which repo's policy governs decisions (defaults to the current directory):
 
 ```bash
 doberman serve --path ~/my-project -- npx -y @modelcontextprotocol/server-filesystem ~/my-project
 ```
 
-Doberman communicates over **stdio**: it spawns your tool server as a managed subprocess and
-speaks standard MCP. Your agent sees one server entry; the real tool server runs silently
-behind it.
+Doberman communicates over stdio: it spawns your tool server as a managed subprocess and speaks
+standard MCP. Your agent sees one server entry; the real tool server runs silently behind it.
+Your agent's MCP client spawns `doberman serve`, not you. Typed bare into a terminal it blocks on
+stdin waiting for a client to speak MCP (it prints one line saying so).
 
-> **You don't run `doberman serve` yourself, and it doesn't start your agent.** Your agent's
-> MCP client spawns it, using the config below. Typed bare into a terminal it just blocks on
-> stdin waiting for a client to speak MCP, which looks like a hang; it prints one line saying so.
-
-Then point your agent at Doberman - replace your agent's existing MCP server entry with the
-Doberman-wrapped version.
+Point your agent at Doberman by replacing its existing MCP server entry with the wrapped version.
 
 **Claude Code (CLI):**
+
 ```bash
 claude mcp add doberman -- doberman serve -- npx -y @modelcontextprotocol/server-filesystem ~/my-project
 ```
 
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json` on Mac,
 `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+
 ```json
 {
   "mcpServers": {
@@ -240,88 +230,94 @@ claude mcp add doberman -- doberman serve -- npx -y @modelcontextprotocol/server
 }
 ```
 
-**Cursor, Codex, or any MCP-compatible client**: use the same `mcpServers` format in your
-client's MCP config file, substituting your own tool server command after `--`.
+Cursor, Codex, or any MCP-compatible client uses the same `mcpServers` format in its own config
+file; substitute your own tool server command after `--`.
 
-Note the proxy protects the tools you route *through* it. To gate the agent's built-in tools
-too (`Bash`, `Edit`, `Write`, ...), use [host hooks](#claude-code-hooks) where your host
+The proxy protects only the tools you route through it. To gate the agent's built-in tools too
+(`Bash`, `Edit`, `Write`, ...), use [Claude Code hooks](#claude-code-hooks) where your host
 supports them.
 
-<a name="openclaw"></a>
-
-#### OpenClaw
+### OpenClaw
 
 [OpenClaw](https://docs.openclaw.ai) agents route through Doberman via a small local plugin
-instead of a hook-pack (OpenClaw's `before_tool_call` event is only reachable from a typed
-plugin hook). It spawns `doberman hook openclaw` per call - the same fail-closed, deterministic
-objective floor as the Claude Code hook - and maps the verdict to OpenClaw's own primitives:
-`allow` is a no-op, `block` is terminal, and `auth` delegates to OpenClaw's own `/approve` flow
-(the gateway has no interactive terminal of its own for Doberman's local challenge dialog). See
+instead of a hook-pack (OpenClaw's `before_tool_call` event is only reachable from a typed plugin
+hook). It spawns `doberman hook openclaw` per call, the same fail-closed, deterministic objective
+floor as the Claude Code hook, and maps the verdict to OpenClaw's own primitives: `allow` is a
+no-op, `block` is terminal, and `auth` delegates to OpenClaw's own `/approve` flow (the gateway has
+no interactive terminal of its own for Doberman's local challenge dialog). See
 [`adapters/openclaw/README.md`](../adapters/openclaw/README.md) for install steps and the
-mandatory "verify it's live" canary check - OpenClaw has shipped bugs where plugin hooks
-silently never fire, so that check isn't optional.
+mandatory "verify it's live" canary check. OpenClaw has shipped bugs where plugin hooks silently
+never fire, so that check isn't optional.
 
-### 4. Lock it in: password and 2FA
+## 4. Set a password and 2FA
 
-Doberman is raise-only: tightening is always free, but any later *permanent* policy lowering
-must prove possession of a local factor. Set the minimum factor now; TOTP enrollment is
-optional, but becomes the required (stronger) factor when present:
-
-```bash
-doberman password set   # always-available minimum for mode/prefs lowerings
-doberman 2fa setup      # optional TOTP; required instead of the password once enrolled
-```
-
-Rotating or dropping TOTP both need the code you currently hold, so a lost authenticator
-can't be swapped out by anyone who merely reaches your shell:
+Doberman is raise-only: tightening is always free, but a permanent policy lowering must prove
+possession of a local factor. Set the minimum factor now; TOTP enrollment is optional, but becomes
+the required, stronger factor once enrolled:
 
 ```bash
-doberman 2fa setup --force   # rotate to a new secret (proves the current code first)
-doberman 2fa remove          # unenroll; weakenings fall back to the password afterwards
+doberman password set
 ```
-
-Removing the last possession factor is allowed but fails *closed*: with neither TOTP nor a
-password enrolled, every policy weakening is denied until you enroll one again.
-
-The same enrolled factor also gates the one other recovery action: a secret read taints a
-session for the rest of it, and in strict/paranoid that raises later egress to AUTH or BLOCK
-with no automatic reset. If that's expected and you want the repo's egress back to the mode
-default, `doberman taint clear` wipes both taint stores after the same TOTP-or-password check.
-It still fails closed with neither factor enrolled, and a denied or failed check leaves
-everything untouched.
-
-### 5. Check it's healthy: `doberman doctor`
-
-One read-only self-check that answers *"is Doberman actually wired up and healthy?"* - host
-hooks, config, the decision DB, 2FA, the enforcement dial + strictness mode, and the
-fingerprint key:
 
 ```bash
-doberman doctor          # prints a green/red checklist; exits non-zero if a critical check fails
+doberman 2fa setup
 ```
 
-It only diagnoses (never changes state) and exits non-zero when a critical check - hooks,
-config, or the decision DB - isn't healthy, so it's safe to gate a script on
+Rotating or dropping TOTP both need the code you currently hold, so a lost authenticator can't be
+swapped out by anyone who merely reaches your shell:
+
+```bash
+doberman 2fa setup --force
+```
+
+```bash
+doberman 2fa remove
+```
+
+Too many wrong 2FA codes lock further attempts for a short, self-recovering cooldown.
+`doberman 2fa reset-lockout` clears it early by proving your password instead, since a locked-out
+factor can't verify itself. It never disables the rate limiter; fresh wrong codes lock it again.
+
+Removing the last possession factor is allowed but fails closed: with neither TOTP nor a password
+enrolled, every policy weakening is denied until you enroll one again.
+
+The same enrolled factor gates one other recovery action. Reading a secret taints a session for
+the rest of it, and in strict/paranoid that raises later egress to AUTH or BLOCK with no automatic
+reset. If that's expected and you want the repo's egress back to the mode default, `doberman taint
+clear` wipes both taint stores after the same TOTP-or-password check. It still fails closed with
+neither factor enrolled, and a denied or failed check leaves everything untouched.
+
+## 5. Check its health
+
+One read-only self-check that answers whether Doberman is wired up and healthy: host
+hooks, config, the decision database, 2FA, the enforcement dial and strictness mode, and the
+fingerprint key.
+
+```bash
+doberman doctor
+```
+
+It only diagnoses (it never changes state) and exits non-zero when a critical check (hooks,
+config, or the decision database) isn't healthy, so it's safe to gate a script on
 `doberman doctor && ...`.
 
 Optionally, map what Doberman can see:
 
 ```bash
-doberman scan   # discover local MCP capabilities and build a risk map
+doberman scan
 ```
 
-### 6. Watch it work
+## 6. Watch it work
 
-#### Session summary
+### Session summary
 
 `install-hooks` also wires a `SessionStart` hook that runs `doberman session-summary`: a
-print-and-exit (never interactive, never blocking) summary of a **device-global, lifetime
-rollup**. Every decision Doberman makes, across every repo and session on this machine,
-increments a tiny counter at `~/.doberman/metrics.db` - verdict class + count only, no path,
-no reason code, no per-action detail. The former `doberman dashboard` command remains as a
-hidden compatibility alias. It shows total interceptions and the PASS/AUTH/BLOCK split:
+print-and-exit summary (never interactive, never blocking) of a device-global, lifetime rollup.
+Every decision Doberman makes, across every repo and session on this machine, increments a tiny
+counter at `~/.doberman/metrics.db`: verdict class and count only, no path, no reason code, no
+per-action detail. It shows total interceptions and the PASS/AUTH/BLOCK split:
 
-```
+```text
 +------------------------------------------+
 | Doberman - session guard summary          |
 | Tracking since 2026-06-14 - this device   |
@@ -333,231 +329,140 @@ hidden compatibility alias. It shows total interceptions and the PASS/AUTH/BLOCK
 +------------------------------------------+
 ```
 
-Run it any time with `doberman session-summary`. Output is plain ASCII (no box-drawing runes
-or emoji) so it always renders on a legacy Windows console, and the command always exits `0`
-and never raises - a session summary must never break a session start.
+Run it any time with `doberman session-summary`. Output is plain ASCII, so it always renders on a
+legacy Windows console, and the command always exits `0` and never raises: a session summary must
+never break a session start.
 
-#### Decision log and TUI
+### Decision log and TUI
 
-`doberman log` prints the raw redacted rows; `doberman tui` browses the same rows
-interactively and adds a plain-language "why" for whichever row is highlighted - the verdict,
-the decided layer, and its reason codes turned into a sentence, using only that row's
-already-redacted data (never a raw path, argument, or secret). Arrow keys navigate, `r`
-reloads, `q` quits:
+`doberman log` prints the raw redacted rows; `doberman tui` browses the same rows interactively
+and adds a plain-language "why" for whichever row is highlighted, built only from that row's
+already-redacted verdict, layer, and reason codes. Arrow keys navigate, `r` reloads, `q` quits:
 
 ```bash
-pip install "doberman-core[tui]"   # optional extra (textual)
+pip install "doberman-core[tui]"
+```
+
+```bash
 doberman tui
 ```
 
-By default the "why" is a deterministic, offline template - no network call, always
-available. You can optionally enrich it with a short Claude-Haiku rewrite in plainer language:
+By default the "why" is a deterministic, offline template: no network call, always available.
+Enrich it with a short Claude-Haiku rewrite in plainer language if you want:
 
 ```bash
-pip install "doberman-core[explain]"     # optional extra (anthropic)
+pip install "doberman-core[explain]"
+```
+
+```bash
 export ANTHROPIC_API_KEY=...
-export DOBERMAN_EXPLAIN_LLM=1            # opt-in; off by default
+export DOBERMAN_EXPLAIN_LLM=1
 doberman tui
 ```
 
-The LLM is a **narrator, never a judge**: it only rewords a verdict Doberman already made
-from the redacted metadata above; it can never change a decision. It's strictly opt-in
-(installed *and* keyed *and* flagged, all three), and any failure - missing key, no network,
-timeout, bad response - silently falls back to the offline template, so the TUI never blocks
-on it or crashes because of it. There is no `doberman explain` command; the TUI and
+The LLM is a narrator, never a judge: it only rewords a verdict Doberman already made from the
+redacted metadata above, and it can never change a decision. It's strictly opt-in (installed,
+keyed, and flagged, all three), and any failure (missing key, no network, timeout, bad response)
+silently falls back to the offline template. There is no `doberman explain` command; the TUI and
 `doberman log` are the only surfaces for this.
 
-#### Dashboard (preview)
+### Dashboard
 
 ```bash
-pip install "doberman-core[dash]"    # optional extra: starlette + uvicorn
-doberman dash --path .                # prints a URL, e.g. http://127.0.0.1:8642/?token=...
+pip install "doberman-core[dash]"
 ```
 
-A localhost-only web dashboard, off by default. Binds to `127.0.0.1` only (never a public
-interface) and generates a fresh, single-use token for that run - open the printed URL to
-connect; every API call is authenticated with that token. `--path` selects the repo to report
-on (default: the current directory).
+```bash
+doberman dash --path .
+```
 
-Now live: a **summary stats line** (verdict counts, top reason codes, secret/taint event count,
-current mode + effective enforcement - `GET /api/stats`) and a **scrolling live decision feed**
-(`GET /api/feed`, Server-Sent Events) that backfills the most recent decisions on connect, then
-streams new ones as they're recorded. Both are read-only and serve only already-redacted decision-
-log fields (verdict, action type, path *class*, risk, source context, reason codes, timestamp) -
-never a raw target, argument, or secret. Risk and source context matter most on actions with no
-path class (e.g. a `shell_exec` PASS carries neither a path nor, usually, a reason code) - without
-them that row would otherwise render with no signal beyond the verdict. `EventSource` can't set
-request headers, so the feed also accepts the token as `?token=` (loopback-only + single-run
-token keeps this sound).
+A localhost-only web dashboard, off by default. It binds to `127.0.0.1` only and generates a
+fresh, single-use token for that run; open the printed URL to connect, since every API call is
+authenticated with that token. `--path` selects the repo to report on (default: the current
+directory).
 
-**Interactive AUTH approve/deny.** An `AUTH` challenge can now be answered from the dashboard
-instead of the terminal: `GET /api/pending` lists redacted pending approvals (action type, risk,
-reason codes, human explanation, path *class* - never a raw target or secret) and
-`POST /api/resolve/{id}` (body `{"decision": "approved"|"denied", "totp_code"?}`) answers one.
-Resolution is a single-use, race-safe state transition (`UPDATE ... WHERE status='pending'`) -
-two concurrent resolves of the same row can never both win, and a resolved/expired row 409s.
-The dashboard never verifies a TOTP code itself: it only relays the human's decision (and, for
-tiers that need one, the code) back to the *existing* auth-challenge machinery running in the
-decision path, which performs the real verification unchanged. The channel engages only while a
-dashboard's liveness heartbeat is fresh (< 5s old); a stale or missing heartbeat, or an
-unanswered approval, falls back to the next channel (MCP elicitation -> GUI dialog -> terminal)
-with no added latency and no denial invented on the dashboard's behalf.
+It shows a summary stats line (verdict counts, top reason codes, current mode, effective
+enforcement) and a live decision feed that backfills recent decisions, then streams new ones. Both
+are read-only and serve only already-redacted fields, never a raw target, argument, or secret.
 
-**Visual polish.** Dark-by-default (a `prefers-color-scheme: light` override is available),
-with color-coded PASS/AUTH/BLOCK and risk badges in the live feed and pending-approval cards, a
-header bar showing the current mode + effective enforcement at a glance, and a designed empty
-state before any decisions arrive - no build step, no external assets, works fully offline like
-the rest of the shell.
+An `AUTH` challenge can be answered from the dashboard instead of the terminal: it lists pending
+approvals and resolves one at a time, a single-use transition, so two concurrent resolves of the
+same row can never both win. The dashboard never verifies a TOTP code itself; it relays the
+human's decision (and, for tiers that need one, the code) to the same auth-challenge machinery
+already running in the decision path. This channel engages only while the dashboard's own
+heartbeat is fresh; a stale heartbeat or an unanswered approval falls back to the next channel
+(MCP elicitation, then GUI dialog, then terminal) with no added latency.
 
-**Changing the mode from the dashboard.** The `change` button next to the mode badge opens a
-small form (`GET`/`POST /api/mode`) to switch Light/Balanced/Strict/Paranoid without touching a
-terminal. This goes through the exact same gate as `doberman mode`: raising strictness applies
-immediately, and lowering it prompts for the same possession factor (a 2FA code if enrolled,
-otherwise the Doberman password set via `doberman password set`) - with neither enrolled, a
-lowering fails closed. Every attempt, approved or denied, is written to the same append-only
-policy-change ledger (`doberman policy-history`). Exactly like `/api/resolve`, the dash server
-never verifies the code itself - it only carries it through to the existing gate in
-`doberman.policy.drift`.
+You can also switch Light/Balanced/Strict/Paranoid from the dashboard. It goes through the same
+gate as `doberman mode`: raising applies immediately, and lowering prompts for the same possession
+factor; with neither enrolled it fails closed. Every attempt lands in the same append-only
+ledger (`doberman policy-history`).
 
-#### Try the demo
+### Run the demo
 
-Want to see real verdicts light up the dashboard without wiring up an agent? `doberman demo`
-runs a scripted "attack reel" - five malicious tool calls and two benign ones - through the
-**real** decision engine (no stubs) and logs every verdict, so the dashboard's live feed lights
-up with genuine PASS/AUTH/BLOCK decisions. Nothing is ever executed against a real tool or
-downstream server.
+Want to see real verdicts light up the dashboard without wiring up an agent? `doberman demo` runs
+a scripted attack reel, five malicious tool calls and two benign ones, through the real decision
+engine (no stubs) and logs every verdict, so the dashboard's live feed lights up with genuine
+PASS/AUTH/BLOCK decisions. Nothing is ever executed against a real tool or downstream server.
 
 ```bash
 # Terminal 1
 doberman dash --path .
-
-# Terminal 2
-doberman demo --path .          # add --fast to skip the pacing delay between scenarios
 ```
 
-Each scenario prints one line (verdict, reason codes, explanation - never the raw tool
-arguments or any synthetic secret used to trip a rule), then a summary table. Exit code is `0`
-only if every scenario matched its expected verdict, so `doberman demo` doubles as a smoke test
-of the engine itself.
+```bash
+# Terminal 2
+doberman demo --path .
+```
 
-<a name="path-troubleshooting"></a>
+Add `--fast` to skip the pacing delay between scenarios. Each scenario prints one line (verdict,
+reason codes, explanation, never the raw tool arguments or any synthetic secret used to trip a
+rule), then a summary table. Exit code is `0` only if every scenario matched its expected verdict,
+so `doberman demo` doubles as a smoke test of the engine itself.
 
-### Appendix: wrong or stale `doberman` on PATH
+## Appendix: a stale `doberman` on PATH
 
-If `doberman` behaves unexpectedly - missing a command you just added, using an
-old version, or ignoring changes from your dev install - the shell may be
-resolving a *different* `doberman` executable than the one in your active
-virtual environment. This is common when you have more than one installation
-method in play (global `pip`, `pipx`, and one or more venvs).
+If `doberman` behaves unexpectedly (missing a command you just added, running an old version,
+ignoring your dev install), the shell may be resolving a different `doberman` executable than the
+one in your active venv. This is common with more than one install method in play: a global
+`pip`, `pipx`, and one or more venvs. Nothing below modifies PATH or removes anything; it only
+reports.
 
-This section only lists and compares what's already on your PATH. It does not
-modify PATH, uninstall anything, or touch your environments.
+**List every `doberman` executable on PATH.** Each command lists every match, not only the first;
+the first result is the one your shell runs.
 
-**List every `doberman` executable currently resolvable.**
-
-Run the command for your shell. Each one lists **all** matches, not just the
-first - this matters because the *first* result is the one actually being run.
+```bash
+which -a doberman   # or: command -v doberman
+```
 
 ```powershell
-# PowerShell
 Get-Command -All doberman
 ```
 
-```cmd
-:: Command Prompt (cmd.exe)
-where.exe doberman
-```
+**Compare it against your active virtual environment.** With your intended venv activated:
 
 ```bash
-# Unix-like shells (bash/zsh/etc.)
-which -a doberman
-# or, more portable:
-command -v doberman
-```
-
-If more than one path is listed, the first one in the output is the one your
-shell will actually invoke when you type `doberman`.
-
-**Compare the resolved executable against your active virtual environment.**
-
-With your intended venv activated, check where Python thinks it's installed
-and compare it to what step 1 found.
-
-```bash
-# Unix-like shells
 python -c "import sys; print(sys.prefix)"
 command -v doberman
 ```
 
-```powershell
-# PowerShell / Command Prompt
-python -c "import sys; print(sys.prefix)"
-Get-Command doberman
-```
+If `sys.prefix` doesn't match the directory the resolved `doberman` lives in (for example, it's
+not under `.venv/bin` or `.venv/Scripts`), a different install is shadowing your venv's copy.
 
-If `sys.prefix` doesn't match the directory the resolved `doberman` lives in
-(e.g. it's not under `.venv/bin` or `.venv/Scripts`), a different install is
-shadowing your venv's copy.
-
-**Inspect common install locations safely.**
-
-These only report information - they don't remove or modify anything.
+**Check common install locations.** These only report information; they don't remove or modify
+anything.
 
 ```bash
-# Check a pip-installed copy inside a venv (Unix-like shells)
-.venv/bin/pip show doberman-core
-```
-
-```powershell
-# Same, on Windows
-.venv\Scripts\pip show doberman-core
+.venv/bin/pip show doberman-core   # a pip-installed copy inside a venv
 ```
 
 ```bash
-# Check a pipx-installed copy (any shell with pipx on PATH)
-pipx list
+pipx list   # every pipx-managed package and its pinned interpreter
 ```
 
-`pipx list` shows every pipx-managed package and the interpreter it's pinned
-to, including any global `doberman` install that could be shadowing your venv.
-
-```bash
-# See which python/pip your shell defaults to (Unix-like shells)
-which -a python python3 pip pip3
-```
-
-```powershell
-# PowerShell
-Get-Command -All python, pip
-```
-
-```cmd
-:: Command Prompt
-where.exe python
-where.exe pip
-```
-
-**Remediation (non-destructive).**
-
-Pick whichever fits your workflow - none of these require editing PATH or
-removing anything:
-
-- **Re-activate the intended virtual environment** in the current shell
-  session, then re-run step 1 to confirm it now resolves first:
-
-  ```bash
-  source .venv/bin/activate        # Unix-like shells
-  .venv\Scripts\activate           # Windows (cmd or PowerShell)
-  ```
-
-- **Invoke the venv's executable explicitly**, bypassing PATH resolution
-  entirely:
-
-  ```bash
-  ./.venv/bin/doberman --version        # Unix-like shells
-  .venv\Scripts\doberman.exe --version  # Windows
-  ```
-
-- **Open a new shell/terminal window** if you recently activated or
-  deactivated an environment - some shells cache the resolved path for the
-  current session (`hash -r` in bash clears this without restarting).
+**Fix it, without touching PATH.** Re-activate the intended environment in the current shell
+(`source .venv/bin/activate`, or `.venv\Scripts\activate` on Windows), then re-run the list step
+to confirm it now resolves first. Or invoke the venv's executable directly, bypassing PATH
+resolution: `./.venv/bin/doberman --version` (`.venv\Scripts\doberman.exe --version` on Windows).
+If you recently activated or deactivated an environment, open a new shell; some shells cache the
+resolved path for the current session (`hash -r` in bash clears this without restarting).
