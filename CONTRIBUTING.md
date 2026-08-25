@@ -2,8 +2,11 @@
 
 Doberman is an Apache-2.0 project for AI-agent runtime authorization. This guide
 gets you from a fresh clone to the same checks CI runs. `AGENTS.md` and
-`CLAUDE.md` remain the operating manual and source of truth for project
-invariants.
+`CLAUDE.md` are the operating manual and source of truth for project invariants.
+
+New here? Jump straight to [Pick a first task](#pick-a-first-task) for a
+`good first issue`, then come back to the setup below to get your environment
+running.
 
 ## Local setup
 
@@ -98,7 +101,7 @@ heading anchors, skips external URLs and fenced code blocks, and never makes net
 2. The call is normalized into a `SecurityObject`.
 3. The decision engine runs objective and adaptive guardrails.
 4. Guardrail verdicts merge through raise-only `combine()`.
-5. The execution gate returns PASS / AUTH / BLOCK: allow, authenticate, or block.
+5. The execution gate returns `PASS` / `AUTH` / `BLOCK`: allow, authenticate, or block.
 
 ## Where the docs live
 
@@ -116,9 +119,9 @@ heading anchors, skips external URLs and fenced code blocks, and never makes net
 
 Every change must preserve these two safety properties:
 
-- **Fail closed** - on any error, uncertainty, or unhandled case, deny or
+- **Fail closed**: on any error, uncertainty, or unhandled case, deny or
   `BLOCK`; a protected agent must not reach a tool around Doberman.
-- **Raise-only** - guardrails may auto-tighten, but may never silently loosen.
+- **Raise-only**: guardrails may auto-tighten, but may never silently loosen.
   Any permanent weakening goes through the human-gated policy path.
 
 Also keep secrets out of commits, logs, fixtures, and PR examples. Redacted
@@ -139,7 +142,7 @@ metadata, classifications, and fingerprints are fine; raw secrets are not.
 
 ## Pick a first task
 
-Every open issue carries a `level-1` through `level-10` label — a difficulty ladder:
+Every open issue carries a difficulty label from `level-1` through `level-10`:
 
 | Level | What it demands                                                                        |
 | ----- | -------------------------------------------------------------------------------------- |
@@ -173,6 +176,6 @@ label marks well-scoped issues a rung or two further up the ladder.
 
 ## Questions and community
 
-Ask questions on the issue you're working on — maintainers watch the threads. For
+Ask questions on the issue you're working on. Maintainers watch the threads. For
 roadmap and design conversation between PRs, join the
 [Discord](https://discord.gg/Sfy5XGNqty).
