@@ -40,10 +40,17 @@ from doberman.config import (
 from doberman.demo import format_outcome_line, format_summary_table, run_demo
 from doberman.discovery.mcp_scan import MCP_CONFIG_FILES, scan_mcp_configs
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
+from doberman.egress.velocity import (
+    _BURST_THRESHOLD,
+    _FANOUT_THRESHOLD,
+    _VOLUME_THRESHOLD_BYTES,
+    VelocityThresholds,
+)
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
     _verify_possession_factor,
     apply_change,
+    apply_egress_velocity_change,
     apply_enforcement_change,
     apply_mode_change,
     apply_preferences_change,
@@ -561,6 +568,97 @@ def prefs(
         raise typer.Exit(code=1)
     save_preferences(updated, path)
     typer.echo(f"{dimension} set to {value:.2f}")
+
+
+@app.command("egress-velocity", rich_help_panel="Policy")
+def egress_velocity(
+    knob: str = typer.Argument(
+        None,
+        help="Threshold to set: burst, volume-bytes, or fanout.",
+    ),
+    value: int = typer.Argument(None, help="New integer value (positive)."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show or set the egress-velocity detection thresholds (RB.6).
+
+    With no arguments, prints the three active thresholds and the built-in
+    defaults they override (if any).
+
+    The three knobs and their security direction:
+
+    \b
+      burst        max connection events before a burst signal trips (lower = tighter)
+      volume-bytes max bytes sent before a volume signal trips      (lower = tighter)
+      fanout       max unique destination hosts before fan-out trips (lower = tighter)
+
+    Tightening (lowering a threshold relative to the current stored value)
+    is frictionless. Loosening (raising it) requires a possession factor —
+    a TOTP code if enrolled, otherwise your Doberman password — because a
+    looser threshold means fewer egress anomalies are caught.
+    """
+    doc = load_policy(path) or recommend_policy()
+    current_thresholds = doc.egress_velocity_thresholds or VelocityThresholds()
+
+    if knob is None:
+        typer.echo("Egress-velocity thresholds")
+        typer.echo("=" * 32)
+        typer.echo(f"{'burst':<23} {current_thresholds.burst}  (built-in: {_BURST_THRESHOLD})")
+        typer.echo(
+            f"{'volume-bytes':<23} {current_thresholds.volume_bytes}"
+            f"  (built-in: {_VOLUME_THRESHOLD_BYTES})"
+        )
+        typer.echo(f"{'fanout':<23} {current_thresholds.fanout}  (built-in: {_FANOUT_THRESHOLD})")
+        return
+
+    knob = knob.lower().replace("_", "-")
+    _VALID_KNOBS = {"burst", "volume-bytes", "fanout"}
+    if knob not in _VALID_KNOBS:
+        typer.echo(
+            f"error: unknown knob {knob!r}; choose from: {', '.join(sorted(_VALID_KNOBS))}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if value is None:
+        typer.echo(
+            f"error: provide a value (e.g. `doberman egress-velocity {knob} 10`)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if value <= 0:
+        typer.echo("error: value must be a positive integer", err=True)
+        raise typer.Exit(code=2)
+
+    # Build the updated VelocityThresholds from the current effective values.
+    before = {
+        "burst": current_thresholds.burst,
+        "volume_bytes": current_thresholds.volume_bytes,
+        "fanout": current_thresholds.fanout,
+    }
+    # Normalise the CLI knob name to the internal dict key.
+    key = knob.replace("-", "_")
+    after = {**before, key: value}
+
+    outcome = asyncio.run(
+        apply_egress_velocity_change(
+            before,
+            after,
+            f"doberman egress-velocity CLI: {knob}={value}",
+            repo_root=path,
+        )
+    )
+    if not outcome.approved:
+        typer.echo("error: egress-velocity change denied; unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    updated_thresholds = VelocityThresholds(
+        burst=after["burst"],
+        volume_bytes=after["volume_bytes"],
+        fanout=after["fanout"],
+    )
+    updated_doc = doc.with_egress_velocity_thresholds(updated_thresholds)
+    save_policy(updated_doc, path)
+    typer.echo(f"{knob} set to {value}")
 
 
 @app.command("message-tone", rich_help_panel="Policy")
