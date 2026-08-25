@@ -27,6 +27,9 @@ Day-to-day posture, status, and review commands.
 | `doberman tune` | Friction report (interventions per session, top AUTH reasons) plus gated standing-elevation proposals. | `--path`/`-p`, `--json`, `--last`, `--min-occurrences`, `--accept` |
 | `doberman memory` | Learned-memory profile: decision counts, verdict mix, most-touched path classes. Never shows a fingerprint value or raw secret. | `--path`/`-p`, `--json` |
 | `doberman setup` | First-run wizard: pick a security posture and wire Claude Code hooks. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--path`/`-p` |
+| `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
+| `doberman telemetry off` | Opt out after one final best-effort disabled event. | none |
+| `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches. | none |
 | `doberman session-summary` | Print the device-global session-guard summary and exit. Always exits 0; never blocks a session. | none |
 | `doberman serve` | Run Doberman as an MCP proxy in front of a downstream MCP tool server. | `--path`/`-p` |
 | `doberman version` | Print the installed Doberman version. `doberman --version` / `-V` does the same. | none |
