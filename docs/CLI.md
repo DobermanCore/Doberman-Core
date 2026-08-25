@@ -20,6 +20,7 @@ Day-to-day posture, status, and review commands.
 | `doberman doctor` | Read-only health self-check; exits non-zero if a critical check fails. | `--path`/`-p`, `--json` |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
 | `doberman log` | Recent redacted decision log, newest first. | `--last`/`-n`, `--path`/`-p`, `--jsonl` |
+| `doberman decision-log-prune` | Delete resolved decisions by age and/or retained-row budget. Never touches pending AUTH rows or the policy-change ledger. | `--older-than-days`, `--max-rows`, `--path`/`-p` |
 | `doberman tui` | Interactive decision log with a plain-language "why" panel. Needs the `tui` extra. | `--path`/`-p` |
 | `doberman dash` | Localhost-only dashboard: live decision feed, stats, and an AUTH approve/deny queue. Needs the `dash` extra. | `--port`, `--path`/`-p` |
 | `doberman demo` | Scripted attack reel through the real decision engine. Nothing runs against a real tool or downstream server. | `--path`/`-p`, `--mode`, `--fast` |
@@ -173,6 +174,8 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `demo` | `1` | Invalid mode name, or a scenario did not match its expected outcome. |
 | `memory reset` | `1` | No possession factor enrolled, gate denied, or the DB reset failed. |
 | `memory prune` | `1` | The DB prune operation failed. |
+| `decision-log-prune` | `2` | Neither `--older-than-days` nor `--max-rows` was provided. |
+| `decision-log-prune` | `1` | The DB prune operation failed. |
 | `uninstall` | `1` | No possession factor enrolled, confirmation declined, name mismatch, gate denied, or some items were not removed. |
 
 Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `setup`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.
