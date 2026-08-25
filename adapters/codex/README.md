@@ -72,4 +72,4 @@ taint bump. The dedupe is a UX concern, never a gate: any doubt re-evaluates.
 ## Learn more
 
 - Which guarantee holds on which host: the [parity matrix](../../docs/PARITY.md).
-- The project: <https://github.com/fu351/Doberman-Core>.
+- The project: <https://github.com/DobermanCore/Doberman-Core>.

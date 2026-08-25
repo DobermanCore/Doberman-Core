@@ -2,9 +2,9 @@
   "name": "doberman",
   "version": "0.1.0",
   "description": "Gate every Codex tool call through Doberman's decision engine (allow / authenticate / block) before it runs.",
-  "author": { "name": "fu351", "url": "https://github.com/fu351/Doberman-Core" },
-  "homepage": "https://github.com/fu351/Doberman-Core",
-  "repository": "https://github.com/fu351/Doberman-Core",
+  "author": { "name": "fu351", "url": "https://github.com/DobermanCore/Doberman-Core" },
+  "homepage": "https://github.com/DobermanCore/Doberman-Core",
+  "repository": "https://github.com/DobermanCore/Doberman-Core",
   "license": "Apache-2.0",
   "keywords": [
     "security",
@@ -22,7 +22,7 @@
     "developerName": "fu351",
     "category": "Developer Tools",
     "capabilities": ["Read"],
-    "websiteURL": "https://github.com/fu351/Doberman-Core",
+    "websiteURL": "https://github.com/DobermanCore/Doberman-Core",
     "defaultPrompt": [
       "Try a destructive shell command and watch Doberman block it",
       "Read a secret then try to send it out, and confirm the exfil is blocked"

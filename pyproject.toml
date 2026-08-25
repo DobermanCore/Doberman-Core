@@ -54,9 +54,9 @@ sbom = ["pip-audit"]
 doberman = "doberman.cli.main:app"
 
 [project.urls]
-Homepage = "https://github.com/fu351/Doberman-Core"
-Repository = "https://github.com/fu351/Doberman-Core"
-Issues = "https://github.com/fu351/Doberman-Core/issues"
+Homepage = "https://github.com/DobermanCore/Doberman-Core"
+Repository = "https://github.com/DobermanCore/Doberman-Core"
+Issues = "https://github.com/DobermanCore/Doberman-Core/issues"
 
 [build-system]
 requires = ["hatchling"]

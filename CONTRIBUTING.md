@@ -13,7 +13,7 @@ running.
 You need Python 3.11 or newer (CI tests 3.11, 3.12, and 3.13).
 
 ```bash
-git clone https://github.com/fu351/Doberman-Core.git
+git clone https://github.com/DobermanCore/Doberman-Core.git
 cd Doberman-Core
 python -m venv .venv
 source .venv/bin/activate  # Unix/macOS
@@ -164,14 +164,14 @@ Commenting on an issue claims it. Level-8 and above additionally expect a design
 with a maintainer, before any code.
 
 Start with the
-[`good first issue`](https://github.com/fu351/Doberman-Core/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+[`good first issue`](https://github.com/DobermanCore/Doberman-Core/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 or
-[`help wanted`](https://github.com/fu351/Doberman-Core/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+[`help wanted`](https://github.com/DobermanCore/Doberman-Core/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
 labels to find level-1/2/3 work, or browse a specific rung directly, e.g.
-[`level-1`](https://github.com/fu351/Doberman-Core/labels/level-1) (swap the number for any level
+[`level-1`](https://github.com/DobermanCore/Doberman-Core/labels/level-1) (swap the number for any level
 1-10). Good first PRs are usually narrow docs, tests, or guardrail hardening changes with a clear
 issue to close. Ready for something meatier, the
-[`good first challenge`](https://github.com/fu351/Doberman-Core/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+challenge%22)
+[`good first challenge`](https://github.com/DobermanCore/Doberman-Core/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+challenge%22)
 label marks well-scoped issues a rung or two further up the ladder.
 
 ## Questions and community

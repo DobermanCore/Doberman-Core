@@ -30,13 +30,13 @@ pip install doberman-core
 Install the latest from source instead:
 
 ```bash
-pip install git+https://github.com/fu351/Doberman-Core.git
+pip install git+https://github.com/DobermanCore/Doberman-Core.git
 ```
 
 Or for development:
 
 ```bash
-git clone https://github.com/fu351/Doberman-Core.git
+git clone https://github.com/DobermanCore/Doberman-Core.git
 cd Doberman-Core
 pip install -e ".[dev]"
 ```

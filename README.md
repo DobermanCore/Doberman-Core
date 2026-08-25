@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/fu351/Doberman-Core/main/logo.png" alt="Doberman logo" width="200">
+<img src="https://raw.githubusercontent.com/DobermanCore/Doberman-Core/main/logo.png" alt="Doberman logo" width="200">
 
 # Doberman
 
 **Adaptive Authorization & Runtime Guardrails for AI Coding Agents**
 
-[![CI](https://github.com/fu351/Doberman-Core/actions/workflows/ci.yml/badge.svg)](https://github.com/fu351/Doberman-Core/actions/workflows/ci.yml)
+[![CI](https://github.com/DobermanCore/Doberman-Core/actions/workflows/ci.yml/badge.svg)](https://github.com/DobermanCore/Doberman-Core/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)](#roadmap)
@@ -17,7 +17,7 @@ Your AI coding agent can `rm -rf` your repo, leak your API keys, or get prompt-i
 </div>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/fu351/Doberman-Core/main/docs/assets/dash-demo.gif" alt="The doberman demo attack reel against the live dashboard: a secret exfiltration, a destructive rm -rf, a protected-branch force push, a smuggled-token egress and a .env read are blocked in the live feed, then a human denies a high-risk SSH-trust-file write from the pending-approvals queue" width="820">
+  <img src="https://raw.githubusercontent.com/DobermanCore/Doberman-Core/main/docs/assets/dash-demo.gif" alt="The doberman demo attack reel against the live dashboard: a secret exfiltration, a destructive rm -rf, a protected-branch force push, a smuggled-token egress and a .env read are blocked in the live feed, then a human denies a high-risk SSH-trust-file write from the pending-approvals queue" width="820">
   <br>
   <em><code>doberman demo</code> against the live dashboard (<code>doberman dash</code>): five attacks blocked as they happen, then a human denies a high-risk approval.</em>
 </p>
@@ -273,7 +273,7 @@ and never makes network requests.
 ## License
 
 Apache-2.0. The core is standalone: no proprietary dependency (CI-enforced). Each
-[release](https://github.com/fu351/Doberman-Core/releases) also ships a CycloneDX SBOM listing the
+[release](https://github.com/DobermanCore/Doberman-Core/releases) also ships a CycloneDX SBOM listing the
 exact dependency set, see [SECURITY.md](SECURITY.md#software-bill-of-materials).
 
 ---

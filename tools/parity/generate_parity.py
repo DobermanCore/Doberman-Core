@@ -21,7 +21,7 @@ from tools.parity.guarantees import GUARANTEES, HOSTS, NOT_APPLICABLE
 
 REPO = Path(__file__).resolve().parents[2]
 DOC = REPO / "docs" / "PARITY.md"
-_REPO_URL = "https://github.com/fu351/Doberman-Core/blob/main"
+_REPO_URL = "https://github.com/DobermanCore/Doberman-Core/blob/main"
 
 HEADER = """# Parity matrix
 
