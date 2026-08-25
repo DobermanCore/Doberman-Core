@@ -128,6 +128,12 @@ type = "forbidden"
 source_modules = ["doberman"]
 forbidden_modules = ["doberman_enterprise"]
 
+[[tool.importlinter.contracts]]
+name = "CLI telemetry must not depend on a tool-call hot path"
+type = "forbidden"
+source_modules = ["doberman.telemetry"]
+forbidden_modules = ["doberman.proxy", "doberman.hosthooks"]
+
 # Hot-path decoupling: the objective-rules package is built by the host hooks on
 # EVERY tool call, in a cold-start CLI process, so it must never drag in the
 # subjective layer's heavy ML import chain (river/numpy/scipy, pulled in via

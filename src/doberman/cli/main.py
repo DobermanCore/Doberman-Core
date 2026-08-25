@@ -22,6 +22,7 @@ from doberman import __version__
 from doberman.auth import password, totp
 from doberman.auth.challenge import TIMEOUT_METHOD
 from doberman.auth.provider import CliPrompter
+from doberman.cli import telemetry_cmd
 from doberman.config import (
     CONFIG_DIR,
     MESSAGE_TONES,
@@ -126,6 +127,9 @@ role_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(role_app, name="role")
+telemetry_cmd.register_cli_telemetry(
+    app, twofa_app, password_app, taint_app, tools_app, memory_app, role_app
+)
 
 
 def _print_version_and_exit(show_version: bool) -> None:
@@ -136,6 +140,7 @@ def _print_version_and_exit(show_version: bool) -> None:
 
 @app.callback()
 def _main_callback(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
@@ -145,7 +150,7 @@ def _main_callback(
         is_eager=True,
     ),
 ) -> None:
-    pass
+    telemetry_cmd.record_root_command(ctx.invoked_subcommand)
 
 
 def _configure_stderr_logging(level: int = logging.INFO) -> None:
@@ -2076,6 +2081,8 @@ def setup(
             except ValueError as exc:
                 typer.echo(f"  {exc} - try again")
 
+    telemetry_cmd.configure_setup_consent(yes)
+
     # Save the chosen mode. First-run onboarding establishes the initial posture
     # freely (establish_ok); a re-run over an existing policy still gates a
     # lowering behind a possession factor, so setup can't bypass the mode gate.
@@ -2169,6 +2176,7 @@ def setup(
     typer.echo("")
     typer.echo("Doberman is now active.")
     typer.echo("Restart your Claude Code session to pick up the hooks.")
+    telemetry_cmd.capture_setup_completed(chosen_mode.value, scope, yes)
     typer.echo(
         "Next steps: `doberman password set`  |  `doberman 2fa setup` (optional)  |  "
         "`doberman status`  |  `doberman uninstall-hooks` (exit)"

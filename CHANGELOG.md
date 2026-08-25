@@ -7,6 +7,9 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **Anonymous CLI telemetry is available as an explicit opt-in.** It is off by default, uses only
+  stdlib networking, sends allowlisted counts and command names to PostHog, and never runs on the
+  per-tool hook or proxy paths. `doberman telemetry on|off|status` controls the local consent state.
 - **Docs rewrite, and a docs site.** Every page under `docs/`, the README, `CONTRIBUTING.md`, and the
   OpenClaw adapter README were rewritten for accuracy against the v0.18.1 `--help` output and for voice
   (plain, specific, no marketing). The README is now a front door (6.9k → 3.5k words); its deep sections
