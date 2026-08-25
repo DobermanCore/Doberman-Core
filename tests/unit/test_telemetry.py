@@ -117,7 +117,7 @@ def test_enable_and_capture_posts_allowlisted_payload(tmp_path, monkeypatch):
 def test_enable_emits_enabled_event_and_disable_emits_final_event(tmp_path, monkeypatch):
     from doberman import telemetry
 
-    monkeypatch.setenv(telemetry.ENV_KEY, _KEY)
+    _ready(telemetry, tmp_path, monkeypatch)
     requests = _capture_requests(telemetry, monkeypatch)
     enabled = telemetry.enable(home=tmp_path)
     disabled = telemetry.disable(home=tmp_path)
