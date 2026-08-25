@@ -67,6 +67,27 @@ def test_log_shows_rows_and_reasons(tmp_path):
     assert _SECRET not in result.stdout
 
 
+def test_decision_log_prune_requires_a_policy(tmp_path):
+    result = runner.invoke(app, ["decision-log-prune", "--path", str(tmp_path)])
+    assert result.exit_code == 2
+    assert "specify --older-than-days and/or --max-rows" in result.output
+
+
+def test_decision_log_prune_reports_count_only(tmp_path):
+    root = str(tmp_path)
+    _seed_auth_secret_read(root)
+
+    result = runner.invoke(
+        app,
+        ["decision-log-prune", "--older-than-days", "90", "--max-rows", "1", "--path", root],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Decision log pruned: 0 row(s)." in result.output
+    assert "hmac:abc123" not in result.output  # no fingerprint value
+    assert _SECRET not in result.stdout
+
+
 def test_memory_shows_classes_and_counts_only(tmp_path):
     root = str(tmp_path)
     _seed_auth_secret_read(root)
