@@ -128,7 +128,7 @@ Capabilities are sorted by `(category, name)` for deterministic output. Each cap
 
 ### `doberman doctor --json`
 
-Emits `{version, path, ok, checks[], critical_failures[]}`. `ok` is `true` only when every critical check (host hooks, config, decision DB) passed. Exit code stays non-zero when a critical check fails, even though the payload still prints.
+Emits `{version, path, ok, checks[], critical_failures[]}`. `ok` is `true` only when every critical check (host hooks, hook command, config, decision DB) passed. Exit code stays non-zero when a critical check fails, even though the payload still prints.
 
 ### `doberman log --jsonl`
 

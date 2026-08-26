@@ -53,7 +53,8 @@ never shell out to run them itself.
 > Run `doberman uninstall --global` instead of uninstalling `doberman-core` directly. Removing the
 > package first leaves hook entries pointing at a missing binary, and every tool call then fails with
 > `doberman: command not found`. Already hit this? Reinstall `doberman-core`; the existing entries
-> start working again. Then run the global uninstall below.
+> start working again. Then run the global uninstall below. `doberman doctor` confirms the entries
+> resolve (its `Hook command` line) and fails, naming the fix, when `doberman` is not on PATH for the host.
 
 `doberman uninstall-hooks` only strips the hook entries: it never touches `.doberman/`, and needs no
 authentication, which means nothing stops a protected agent that reaches a shell from disabling its
