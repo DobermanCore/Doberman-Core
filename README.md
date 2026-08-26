@@ -99,11 +99,11 @@ pip install doberman-core
 After installing, run `doberman --install-completion` to enable shell tab completion.
 
 > **Note**
-> Run `doberman uninstall-hooks` before `pip uninstall doberman-core`. Uninstalling the package first
-> leaves the hook entries in `settings.json` pointing at a binary that's gone, and every tool call
-> then fails with `doberman: command not found`. Already hit this? `pip install doberman-core` again;
-> the existing entries are still correct and start working immediately, no repair needed. More
-> recovery steps: [Recover](docs/RECOVERY.md).
+> Run `doberman uninstall --global` to remove Doberman from the whole machine. It removes the
+> writable Claude Code and Codex hooks, project and device state, and enrolled factors before it
+> removes the `doberman-core` package with pip or pipx. Uninstalling the package first leaves hooks
+> pointing at a missing binary. Already hit this? Reinstall `doberman-core`, then run the global
+> uninstall. More recovery steps: [Recover](docs/RECOVERY.md).
 
 | Your agent | How Doberman plugs in | Get started |
 |---|---|---|

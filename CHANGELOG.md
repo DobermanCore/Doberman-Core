@@ -5,6 +5,14 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 [git log](https://github.com/DobermanCore/Doberman-Core/commits/main) and
 [releases](https://github.com/DobermanCore/Doberman-Core/releases) (latest: **v0.18.3**, the second friction-reduction patch — opt-in tap-to-approve 2FA (a Windows Hello / Touch ID biometric can stand in for the TOTP code) — atop **v0.18.2**'s friction-reduction patch — spurious secret-detector prompts on ordinary ids/paths/UUIDs fixed, and the detector now self-checks and fails closed — atop **v0.18.1**'s README-image docs patch and **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
 
+## Unreleased
+
+- **Device-wide uninstall:** `doberman uninstall --global` now removes writable Claude Code and Codex
+  hooks, project state, possession factors, the fingerprint key, and device state before removing the
+  package through pip or pipx. The same fail-closed factor gate runs before any removal; `--yes` skips
+  only the typed `DOBERMAN` confirmation, `--dry-run` changes nothing, and `--keep-package` preserves
+  the package. Codex plugin hooks remain under `codex plugin` control.
+
 ## v0.18.3 — 2026-08-26
 
 > **Friction reduction, part two.** The second factor no longer has to be a typed code. Turn on an

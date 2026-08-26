@@ -61,7 +61,7 @@ Gated recovery actions for a stuck or compromised state. Each requires an enroll
 | `doberman tools approve TOOL_NAME` | Approve a changed MCP tool fingerprint after possession-factor verification. | `--path`/`-p` |
 | `doberman memory reset` | Wipe learned behavioral memory for this repo. Raise-safe by construction: a colder baseline scores everything as more novel, never less protected. | `--entity`, `--path`/`-p` |
 | `doberman memory prune` | Drop stale entities' learned memory past a retention window. A maintenance operation, so it is not gated. | `--older-than-days` (required), `--path`/`-p` |
-| `doberman uninstall` | Fully remove Doberman from this project: host hooks plus `.doberman/`. Does not touch `--global` hooks or your device-wide password, 2FA, or fingerprint key. | `--path`/`-p`, `--yes`/`-y`, `--dry-run` |
+| `doberman uninstall` | Remove Doberman from one project, or use `--global` for ordered machine-wide removal: all writable hooks, project and device state, enrolled factors, then the pip/pipx package. Codex plugin hooks remain under `codex plugin` control. | `--path`/`-p`, `--yes`/`-y`, `--dry-run`, `--global`/`-g`, `--keep-package` |
 
 ## Host hooks
 

@@ -10,14 +10,18 @@ import asyncio
 import importlib.util
 import json
 import logging
+import os
 import secrets
+import shlex
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
 
+import doberman
 from doberman import __version__
 from doberman.auth import password, totp
 from doberman.auth.challenge import TIMEOUT_METHOD
@@ -83,6 +87,8 @@ def _ensure_encode_safe_stdio() -> None:
 
 
 _ensure_encode_safe_stdio()
+
+_WINDOWS = os.name == "nt"
 
 app = typer.Typer(
     help="Doberman - adaptive authorization layer for coding agents.",
@@ -1977,6 +1983,217 @@ def _project_uninstall_targets(path: str) -> list[tuple[str, str]]:
     return targets
 
 
+def _path_is_in_pipx_venv(value: str | None) -> bool:
+    if not value:
+        return False
+    parts = {part.casefold() for part in Path(value).parts}
+    return "pipx" in parts and "venvs" in parts
+
+
+def _package_remover() -> tuple[str, list[str]]:
+    """Return the detected package-install kind and its removal argv."""
+    if _path_is_in_pipx_venv(sys.executable) or _path_is_in_pipx_venv(shutil.which("doberman")):
+        return "pipx", ["pipx", "uninstall", "doberman-core"]
+
+    package_file = Path(doberman.__file__ or "").resolve()
+    package_dir = package_file.parent
+    if (
+        package_dir.name == "doberman"
+        and package_dir.parent.name == "src"
+        and (package_dir.parent.parent / "pyproject.toml").is_file()
+    ):
+        return "development", []
+
+    return "pip", [sys.executable, "-m", "pip", "uninstall", "-y", "doberman-core"]
+
+
+def _format_command(argv: list[str]) -> str:
+    return subprocess.list2cmdline(argv) if _WINDOWS else shlex.join(argv)
+
+
+def _global_uninstall_targets(path: str) -> tuple[list[tuple[str, str]], str, list[str]]:
+    """Every global-uninstall plan entry, including absent and read-only targets."""
+    from doberman.hosthooks.install_codex import codex_hook_install_states
+    from doberman.storage import device_metrics, fingerprint
+
+    claude_states = {scope: settings_path for scope, settings_path, _ in _hook_install_states(path)}
+    codex_states = {scope: hooks_path for scope, hooks_path, _ in codex_hook_install_states(path)}
+    kind, argv = _package_remover()
+    targets = [
+        ("Claude Code hooks (global)", claude_states["global"]),
+        ("Claude Code hooks (project)", claude_states["project"]),
+        ("Claude Code hooks (local)", claude_states["local"]),
+        ("Codex CLI hooks (user)", codex_states["user"]),
+        ("Codex CLI hooks (repo)", codex_states["repo"]),
+        ("Codex CLI hooks (plugin scope; not writable)", codex_states["plugin"]),
+        (".doberman/ (policy + decision database)", str(Path(path) / CONFIG_DIR)),
+        ("TOTP enrollment", str(totp.resolve_path())),
+        ("password enrollment", str(password.resolve_path())),
+        ("fingerprint key", str(fingerprint.resolve_path())),
+        ("device-wide state directory", str(device_metrics.resolve_path())),
+        ("package", _format_command(argv) if argv else "development install; left in place"),
+    ]
+    return targets, kind, argv
+
+
+def _remove_file(path: Path, errors: list[str]) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        errors.append(f"{path}: {exc}")
+
+
+def _launch_package_removal(argv: list[str], errors: list[str]) -> None:
+    command = _format_command(argv)
+    typer.echo(f"package removal command: {command}")
+    if _WINDOWS:
+        try:
+            subprocess.Popen(  # noqa: S603 — fixed package-manager argv, delayed for locked files
+                ["cmd", "/c", f"ping -n 3 127.0.0.1 >nul & {command}"],  # noqa: S607 — ping = 2 s delay; `timeout` aborts on redirected stdin
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200),
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            errors.append(f"package removal ({command}): {exc}")
+            return
+        typer.echo(f"package removal scheduled: {command} (runs after this command exits)")
+        return
+
+    try:
+        completed = subprocess.run(argv, check=False)  # noqa: S603 — fixed package-manager argv
+    except OSError as exc:
+        errors.append(f"package removal ({command}): {exc}")
+        return
+    typer.echo(f"package removal exit code: {completed.returncode}")
+    if completed.returncode != 0:
+        errors.append(f"package removal ({command}): exit code {completed.returncode}")
+
+
+def _uninstall_global(path: str, yes: bool, dry_run: bool, keep_package: bool) -> None:
+    from doberman.hosthooks.install import (
+        load_settings,
+        remove_doberman_hooks,
+        resolve_settings_path,
+        write_settings,
+    )
+    from doberman.hosthooks.install_codex import (
+        codex_hook_install_states,
+        remove_codex_hooks,
+        resolve_codex_hooks_path,
+    )
+    from doberman.storage import device_metrics, fingerprint
+
+    targets, package_kind, package_argv = _global_uninstall_targets(path)
+    typer.echo(f"Doberman GLOBAL UNINSTALL requested for this device ({Path(path).resolve()}):")
+    for description, target_path in targets:
+        typer.echo(f"  - {description}: {target_path}")
+    typer.echo("")
+    typer.echo("Codex plugin-scope hooks are not writable by Doberman.")
+    typer.echo("  Run `codex plugin remove doberman` if that plugin is installed.")
+
+    if dry_run:
+        typer.echo("")
+        typer.echo("[dry-run] nothing removed.")
+        return
+
+    if not totp.is_enrolled() and not password.is_enrolled():
+        typer.echo(
+            "\nerror: uninstalling requires an enrolled possession factor - "
+            "run `doberman 2fa setup` or `doberman password set` first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    prompter = CliPrompter()
+    try:
+        if not yes:
+            typed = typer.prompt("Type DOBERMAN to confirm device-wide removal")
+            if typed.strip() != "DOBERMAN":
+                typer.echo("error: uninstall denied (DOBERMAN did not match); unchanged", err=True)
+                raise typer.Exit(code=1)
+        approved, method = _verify_possession_factor(
+            prompter, action_label="uninstalling Doberman from this device"
+        )
+    except typer.Exit:
+        raise
+    except Exception:  # noqa: BLE001 — any input/EOF/timeout error denies the uninstall
+        approved, method = False, "denied"
+    if not approved:
+        typer.echo(f"error: uninstall denied ({method}); unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    errors: list[str] = []
+    claude_installed = {
+        scope: installed for scope, _settings_path, installed in _hook_install_states(path)
+    }
+    for scope in ("global", "project", "local"):
+        if not claude_installed.get(scope):
+            continue
+        target = resolve_settings_path(scope, path)
+        try:
+            write_settings(target, remove_doberman_hooks(load_settings(target)))
+        except (ValueError, OSError) as exc:
+            errors.append(f"{target}: {exc}")
+
+    codex_installed = {
+        scope: installed
+        for scope, _hooks_path, installed in codex_hook_install_states(path)
+        if scope != "plugin"
+    }
+    for scope in ("user", "repo"):
+        if not codex_installed.get(scope):
+            continue
+        target = resolve_codex_hooks_path(scope, path)
+        try:
+            write_settings(target, remove_codex_hooks(load_settings(target)))
+        except (ValueError, OSError) as exc:
+            errors.append(f"{target}: {exc}")
+
+    project_dir = Path(path) / CONFIG_DIR
+    if project_dir.exists():
+        try:
+            shutil.rmtree(project_dir)
+        except OSError as exc:
+            errors.append(f"{project_dir}: {exc}")
+
+    for target in (totp.resolve_path(), password.resolve_path(), fingerprint.resolve_path()):
+        _remove_file(target, errors)
+
+    device_dir = device_metrics.resolve_path()
+    if device_dir.exists():
+        try:
+            shutil.rmtree(device_dir)
+        except OSError as exc:
+            errors.append(f"{device_dir}: {exc}")
+
+    typer.echo(
+        "warning: device-wide 2FA enrollment, password, and fingerprint key are removed; "
+        "a fresh `doberman setup` re-enrolls them."
+    )
+
+    if keep_package:
+        if package_argv:
+            typer.echo(f"package left in place (--keep-package): {_format_command(package_argv)}")
+        else:
+            typer.echo("development install detected; package left in place")
+    elif package_kind == "development":
+        typer.echo("development install detected; package left in place")
+    else:
+        _launch_package_removal(package_argv, errors)
+
+    if errors:
+        typer.echo("error: uninstall finished with errors - some items were NOT removed:", err=True)
+        for error in errors:
+            typer.echo(f"  - {error}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo("\nDoberman removed from this device.")
+
+
 @app.command(rich_help_panel="Getting started")
 def uninstall(
     path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
@@ -1988,6 +2205,12 @@ def uninstall(
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print what would be removed; remove nothing."
+    ),
+    global_: bool = typer.Option(
+        False, "--global", "-g", help="Remove Doberman from the whole device."
+    ),
+    keep_package: bool = typer.Option(
+        False, "--keep-package", help="Remove hooks and state, but leave the package installed."
     ),
 ) -> None:
     """Fully remove Doberman from this project: host hooks + `.doberman/`.
@@ -2004,6 +2227,10 @@ def uninstall(
     irreversible action, so it also asks you to type the project directory name
     back before proceeding (skippable with `--yes`; the factor check is not).
     """
+    if global_:
+        _uninstall_global(path, yes, dry_run, keep_package)
+        return
+
     targets = _project_uninstall_targets(path)
     if not targets:
         typer.echo("Nothing to remove for this project.")
