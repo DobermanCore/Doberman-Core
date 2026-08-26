@@ -173,6 +173,9 @@ class PolicyDoc:
     #: ordering to fail closed on, but a corrupt value must still resolve to a
     #: safe, known choice rather than propagate garbage.
     message_tone: str = "human"
+    #: Seconds an exact factor-verified approval may qualify for a fresh
+    #: soft-confirm prompt. Zero disables; malformed storage fails closed to 0.
+    approval_memory_seconds: int = 300
 
     def get(self, item_id: str) -> PolicyItem | None:
         return next((it for it in self.items if it.id == item_id), None)
@@ -236,6 +239,11 @@ class PolicyDoc:
         """
         return replace(self, message_tone=tone)
 
+    def with_approval_memory_seconds(self, seconds: int) -> "PolicyDoc":
+        if isinstance(seconds, bool) or not 0 <= seconds <= 900:
+            raise ValueError("approval_memory_seconds must be between 0 and 900")
+        return replace(self, approval_memory_seconds=seconds)
+
     def to_mapping(self) -> dict[str, Any]:
         mapping: dict[str, Any] = {
             "mode": self.mode,
@@ -274,6 +282,8 @@ class PolicyDoc:
         # Only emit when non-default, to keep a normal (human-tone) policy file clean.
         if self.message_tone != "human":
             mapping["message_tone"] = self.message_tone
+        if self.approval_memory_seconds != 300:
+            mapping["approval_memory_seconds"] = self.approval_memory_seconds
         return mapping
 
     @classmethod
@@ -319,6 +329,14 @@ class PolicyDoc:
                 # A malformed stored value is ignored; the built-in defaults apply.
                 egress_velocity_thresholds = None
         raw_expires = data.get("enforcement_expires_at")
+        raw_memory = data.get("approval_memory_seconds", 300)
+        memory_seconds = (
+            raw_memory
+            if isinstance(raw_memory, int)
+            and not isinstance(raw_memory, bool)
+            and 0 <= raw_memory <= 900
+            else 0
+        )
         return cls(
             items=items,
             mode=str(data.get("mode", "balanced")),
@@ -345,6 +363,7 @@ class PolicyDoc:
                 if data.get("message_tone") in ("human", "technical")
                 else "human"
             ),
+            approval_memory_seconds=memory_seconds,
         )
 
 

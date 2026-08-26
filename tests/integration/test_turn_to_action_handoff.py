@@ -207,7 +207,7 @@ async def test_executor_applies_turn_context_to_surprise_and_provenance(monkeypa
 
     monkeypatch.setattr(executor, "surprise_blended", _flat_surprise)
     forced = _trusted_action()
-    monkeypatch.setattr(executor, "normalize", lambda tool, args: forced)
+    monkeypatch.setattr(executor, "normalize", lambda tool, args, ctx=None: forced)
 
     from doberman.subjective.baseline import entity_id as real_entity_id
 

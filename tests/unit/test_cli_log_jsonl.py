@@ -141,6 +141,19 @@ def test_log_jsonl_emits_the_risk_column(tmp_path):
     assert [o["risk"] for o in objs] == ["high", "low"]
 
 
+def test_log_human_view_names_memory_approval(tmp_path):
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return [{**_ROWS[0], "auth_result": "soft_confirm+memory"}]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "approved via 5-minute memory (soft_confirm)" in result.stdout
+
+
 def test_log_jsonl_never_emits_a_planted_secret(tmp_path):
     """Round-trip through the real storage layer with a secret in the raw target."""
     root = str(tmp_path)

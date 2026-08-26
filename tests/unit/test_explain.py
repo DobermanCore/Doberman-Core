@@ -127,6 +127,12 @@ def test_template_explanation_for_auth_row_mentions_reauth_path():
     assert "authentic" in text.lower() or "elevation" in text.lower()
 
 
+def test_template_explanation_names_five_minute_memory_approval():
+    text = template_explanation(_row(final_verdict="AUTH", auth_result="soft_confirm+memory"))
+    assert "approved via 5-minute memory" in text
+    assert "soft_confirm" in text
+
+
 def test_unknown_reason_code_is_humanized_not_a_keyerror():
     row = _row(reason_codes_json=json.dumps(["some_future_code"]))
     text = template_explanation(row)

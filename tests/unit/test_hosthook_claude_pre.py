@@ -324,7 +324,7 @@ def test_pre_hook_auth_approved_is_recorded_in_decision_log(cwd, monkeypatch):
     assert rows
     latest = rows[0]
     assert latest["final_verdict"] == "AUTH"
-    assert latest["auth_result"] == "executed"
+    assert latest["auth_result"] == "local_auth"
 
 
 def test_pre_hook_auth_denied_is_recorded_in_decision_log(cwd, monkeypatch):
@@ -335,7 +335,7 @@ def test_pre_hook_auth_denied_is_recorded_in_decision_log(cwd, monkeypatch):
     assert rows
     latest = rows[0]
     assert latest["final_verdict"] == "AUTH"
-    assert latest["auth_result"] == "blocked"
+    assert latest["auth_result"] == "local_auth"
 
 
 def test_pre_hook_pass_is_not_recorded(cwd):

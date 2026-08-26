@@ -12,6 +12,10 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   package through pip or pipx. The same fail-closed factor gate runs before any removal; `--yes` skips
   only the typed `DOBERMAN` confirmation, `--dry-run` changes nothing, and `--keep-package` preserves
   the package. Codex plugin hooks remain under `codex plugin` control.
+- **Five-minute exact-action approval memory.** A repeat of an action approved with local auth or
+  2FA still prompts, but at one-click `soft_confirm`, keyed only by an HMAC of the exact pre-redaction
+  action. Destructive, critical, excluded, or tainted-session actions never downgrade; soft confirms
+  never chain; `doberman approvals status|clear|ttl` exposes bounded human controls.
 
 ## v0.18.3 — 2026-08-26
 

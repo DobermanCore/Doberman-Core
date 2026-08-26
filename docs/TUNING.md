@@ -107,6 +107,30 @@ Accepting one with `doberman tune --accept <id>` routes through the same possess
 weaken chokepoint as any other policy loosening, and the resulting grant is revocable early with
 `doberman revoke <elevation-id>`.
 
+## Approval memory (5 minutes)
+
+After a human completes a real `local_auth` or `two_factor` proof, Doberman remembers only a keyed
+HMAC fingerprint of that exact action for 300 seconds. An identical repeat still prompts; it uses
+`soft_confirm` and says how many minutes ago the exact action was approved. A soft-confirm approval
+never extends or chains the window. The decision, risk, and reason codes do not change, and the
+decision log records `soft_confirm+memory` distinctly.
+
+Identity includes action type, tool name, unredacted command or structured arguments, canonical
+target paths, and repo root. The raw values are HMAC input only and are never retained. Host hooks
+also require matching session ids when both sides have one; the raw MCP proxy has no session id and
+uses repo scope, as do entries where either side lacks a session id. Missing fingerprint keys,
+storage errors, missing repo roots, and tainted sessions all fall back to the full tier.
+
+Memory never reduces authentication for file deletion, critical risk, role-boundary violations,
+encoded exfiltration, opaque commands, protected paths, destructive or history-rewriting commands,
+bulk operations, irreversible high-blast actions, or correlated destructive flows. Role elevation
+keeps its own narrow, time-limited, single-use grant and never participates.
+
+Use `doberman approvals status`, `doberman approvals clear`, or
+`doberman approvals ttl <seconds>`. The allowed TTL is 0–900 seconds; `0` disables all reads and
+writes. Raising the TTL, including enabling from 0, is a weakening and requires the existing
+possession-factor gate. Lowering, disabling, and clearing are strengthenings and are ungated.
+
 ## Plain or technical wording, `doberman message-tone`
 
 The authorization prompt speaks plain English by default, for example *"Your agent wants to run a

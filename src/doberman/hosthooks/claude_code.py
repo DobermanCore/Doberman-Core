@@ -139,13 +139,17 @@ def _hook_output(permission: str, reason: str) -> dict[str, Any]:
     return hookio.hook_output(_HOOK_EVENT, permission, reason)
 
 
-def _resolve_auth(decision: Decision, action: SecurityObject, repo_root: str) -> dict[str, Any]:
-    return hookio.resolve_auth(
+def _resolve_auth(
+    decision: Decision, action: SecurityObject, repo_root: str, session_id: str | None = None
+) -> tuple[dict[str, Any], str]:
+    return hookio.resolve_auth_result(
         decision,
         action,
         event=_HOOK_EVENT,
         prompter=AUTH_PROMPTER,
         message_tone=load_message_tone(repo_root),
+        repo_root=repo_root,
+        session_id=session_id,
     )
 
 
@@ -197,11 +201,19 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
         if result.acted is Verdict.AUTH:
             # Run Doberman's own action-bound challenge so the human can actually
             # approve in-session (issues #65/#67) — not just be told to.
-            hook_result = _resolve_auth(result.decision, result.action, result.repo_root)
+            hook_result, auth_method = _resolve_auth(
+                result.decision, result.action, result.repo_root, result.session_id
+            )
         else:
             hook_result = _decision_payload(result.decision)  # BLOCK -> deny
+            auth_method = "blocked"
         _record_pre_history(
-            result.decision, result.action, result.repo_root, result.session_id, hook_result
+            result.decision,
+            result.action,
+            result.repo_root,
+            result.session_id,
+            hook_result,
+            auth_result=auth_method,
         )
         return hook_result
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
@@ -221,6 +233,8 @@ def _record_pre_history(
     repo_root: str,
     session_id: str | None,
     hook_result: dict[str, Any],
+    *,
+    auth_result: str | None = None,
 ) -> None:
     """Best-effort: record a PreToolUse AUTH/BLOCK decision in ``doberman log``.
 
@@ -242,7 +256,7 @@ def _record_pre_history(
             action,
             repo_root,
             session_id,
-            auth_result=_pre_auth_result(hook_result),
+            auth_result=auth_result or _pre_auth_result(hook_result),
         )
     except Exception:  # noqa: BLE001,S110 — history must never alter the hook's return value
         pass

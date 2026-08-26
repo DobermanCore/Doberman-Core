@@ -26,6 +26,9 @@ Day-to-day posture, status, and review commands.
 | `doberman revoke ELEVATION_ID` | Revoke an active role elevation by id (see `doberman status`). | `--path`/`-p` |
 | `doberman tune` | Friction report (interventions per session, top AUTH reasons) plus gated standing-elevation proposals. | `--path`/`-p`, `--json`, `--last`, `--min-occurrences`, `--accept` |
 | `doberman memory` | Learned-memory profile: decision counts, verdict mix, most-touched path classes. Never shows a fingerprint value or raw secret. | `--path`/`-p`, `--json` |
+| `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
+| `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
+| `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
 | `doberman setup` | First-run wizard: pick a security posture and wire Claude Code hooks. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--path`/`-p` |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
 | `doberman telemetry off` | Opt out after one final best-effort disabled event. | none |
@@ -171,6 +174,8 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `2fa reset-lockout` | `1` | Not enrolled, no password enrolled, or an incorrect password. |
 | `taint clear` | `1` | No possession factor enrolled, gate denied, or the DB clear failed. |
 | `tools approve` | `1` | No possession factor enrolled, gate denied, storage failed, or no pin exists for that tool. |
+| `approvals ttl` | `1` | A TTL increase was denied by the possession-factor gate. |
+| `approvals ttl` | `2` | TTL is outside `0..900`. |
 | `revoke` | `1` | Elevation id not found, or revoke failed. |
 | `tui` | `1` | The optional `textual` extra is not installed. |
 | `dash` | `1` | The optional `dash` extra is not installed. |

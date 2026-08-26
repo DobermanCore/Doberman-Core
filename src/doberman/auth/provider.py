@@ -116,16 +116,18 @@ def _challenge_message(
     facts — reason codes stay on the Decision and in the logs either way.
     """
     target = action.target or "(no target)"
+    notice = action.metadata.get("approval_memory_notice")
+    prefix = f"{notice}\n\n" if isinstance(notice, str) and notice else ""
     if tone == "technical":
         reasons = ", ".join(decision.reason_codes) or "unspecified"
-        return (
+        return prefix + (
             f"[RISK: {decision.final_risk.upper()}]  Doberman authentication required [{tier.value}]\n"
             f"  role:   {action.agent_role}\n"
             f"  action: {action.tool_name} -> {target}\n"
             f"  reason: {reasons} - {decision.explanation.strip() or 'no further detail'}\n"
             f"Approve THIS exact action?"
         )
-    return (
+    return prefix + (
         f"Your agent wants to {_plain_verb(action.action_type)}:\n"
         f"\n"
         f"    {target}\n"
