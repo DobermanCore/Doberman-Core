@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from typer.testing import CliRunner
 
 from doberman.cli.main import app
 
 runner = CliRunner()
+
+
+def _check_by_name(payload: dict[str, Any], name: str) -> dict[str, Any]:
+    return next(check for check in payload["checks"] if check["name"] == name)
 
 
 def test_doctor_json_is_parseable(tmp_path):
@@ -24,3 +29,25 @@ def test_doctor_json_is_parseable(tmp_path):
         assert result.exit_code == 0
     else:
         assert result.exit_code == 1
+
+
+def test_doctor_json_reports_enrolled_password(tmp_path, monkeypatch):
+    monkeypatch.setattr("doberman.auth.password.is_enrolled", lambda: True)
+
+    result = runner.invoke(app, ["doctor", "--path", str(tmp_path), "--json"])
+
+    payload = json.loads(result.stdout)
+    check = _check_by_name(payload, "Password")
+    assert check["status"] == "ok"
+    assert check["detail"] == "set"
+
+
+def test_doctor_json_reports_missing_password(tmp_path, monkeypatch):
+    monkeypatch.setattr("doberman.auth.password.is_enrolled", lambda: False)
+
+    result = runner.invoke(app, ["doctor", "--path", str(tmp_path), "--json"])
+
+    payload = json.loads(result.stdout)
+    check = _check_by_name(payload, "Password")
+    assert check["status"] == "warn"
+    assert check["detail"] == "not set (optional) — run `doberman password set`"
