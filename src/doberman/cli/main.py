@@ -41,6 +41,7 @@ from doberman.config import (
 from doberman.demo import format_outcome_line, format_summary_table, run_demo
 from doberman.discovery.mcp_scan import MCP_CONFIG_FILES, scan_mcp_configs
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
+from doberman.models import ActionType
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
     _verify_possession_factor,
@@ -83,6 +84,8 @@ def _ensure_encode_safe_stdio() -> None:
 
 
 _ensure_encode_safe_stdio()
+
+_ACTION_WIDTH = max(len(action.value) for action in ActionType)
 
 app = typer.Typer(
     help="Doberman - adaptive authorization layer for coding agents.",
@@ -1325,7 +1328,7 @@ def log(
         reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
         auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
         typer.echo(
-            f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<13} "
+            f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<{_ACTION_WIDTH}} "
             f"{target}  [{reasons}]{auth}"
         )
 

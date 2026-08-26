@@ -197,3 +197,32 @@ def test_log_default_human_empty_message(tmp_path):
         result = runner.invoke(app, ["log", "--path", str(tmp_path)])
     assert result.exit_code == 0
     assert "(no decisions recorded yet)" in result.stdout
+
+
+def test_log_human_columns_stay_aligned_for_long_action_types(tmp_path):
+    """Long action names must not shift the target and reason columns (#428)."""
+    import doberman.cli.main as main_mod
+
+    rows = [
+        {**_ROWS[0], "action_type": "git_op", "target_path_class": None},
+        {
+            **_ROWS[0],
+            "id": 3,
+            "action_id": "act-3",
+            "action_type": "network_request",
+            "target_path_class": None,
+        },
+    ]
+
+    async def _rows(*_a, **_k):
+        return list(rows)
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    lines = [line for line in result.stdout.splitlines() if line.startswith("2026-")]
+    assert len(lines) == 2
+    # The target is always the "-" placeholder, followed by two spaces and reasons.
+    target_offsets = {line.index(" - ") for line in lines}
+    assert len(target_offsets) == 1
