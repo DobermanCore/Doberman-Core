@@ -91,6 +91,11 @@ app = typer.Typer(
 
 twofa_app = typer.Typer(help="Two-factor (TOTP) enrollment.", no_args_is_help=True)
 app.add_typer(twofa_app, name="2fa")
+methods_app = typer.Typer(
+    help="Approval methods (biometric/push) that replace the 2FA code with a tap.",
+    no_args_is_help=True,
+)
+twofa_app.add_typer(methods_app, name="methods")
 
 password_app = typer.Typer(
     help="Local password possession factor (the minimum lowering-gate auth).",
@@ -995,6 +1000,89 @@ def twofa_setup(
     typer.echo("2FA enrolled. Add this to your authenticator app (or scan it as a QR):")
     typer.echo(uri)
     typer.echo("This secret is stored locally with owner-only permissions and is never committed.")
+
+
+def _method_available(method: object) -> bool:
+    """Best-effort ``is_available`` for CLI display — never raises."""
+    try:
+        return bool(method.is_available())  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 — display only
+        return False
+
+
+@methods_app.command("list")
+def twofa_methods_list() -> None:
+    """List approval methods, whether each is available here, and if it's enabled."""
+    from doberman.auth import approval_config
+    from doberman.engine.registry import discover_approval_methods
+
+    enabled = approval_config.enabled_methods()
+    methods = discover_approval_methods()
+    if not methods:
+        typer.echo("No approval methods are installed; TOTP is the second factor.")
+        return
+    typer.echo("Approval methods (enable one to replace the 2FA code with a tap):")
+    for method in methods:
+        name = getattr(method, "name", "?")
+        avail = "available" if _method_available(method) else "unavailable here"
+        state = "ENABLED" if name in enabled else "disabled"
+        typer.echo(f"  {name:16s} {state:9s} ({avail})")
+    if enabled:
+        typer.echo(
+            f"\nPreference order: {', '.join(enabled)} — first available wins, TOTP is the fallback."
+        )
+
+
+@methods_app.command("enable")
+def twofa_methods_enable(
+    name: str = typer.Argument(..., help="Method name, e.g. windows_hello."),
+) -> None:
+    """Enable an approval method (opt-in). It replaces the 2FA code when available."""
+    from doberman.auth import approval_config
+    from doberman.engine.registry import discover_approval_methods
+
+    known = {getattr(m, "name", None) for m in discover_approval_methods()}
+    known.discard(None)
+    if name not in known:
+        listed = ", ".join(sorted(str(n) for n in known)) or "(none installed)"
+        typer.echo(f"error: unknown method {name!r}. Installed: {listed}", err=True)
+        raise typer.Exit(code=1)
+    try:
+        approval_config.enable(name)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Enabled {name}; it will handle 2FA when available. TOTP remains the fallback.")
+    if not totp.is_enrolled():
+        typer.echo(
+            "note: enroll TOTP too (`doberman 2fa setup`) so a fallback exists when the "
+            "device is unavailable."
+        )
+
+
+@methods_app.command("disable")
+def twofa_methods_disable(
+    name: str = typer.Argument(..., help="Method name to disable."),
+) -> None:
+    """Disable an approval method. 2FA then falls back to the next method or TOTP."""
+    from doberman.auth import approval_config
+
+    approval_config.disable(name)
+    typer.echo(f"Disabled {name}.")
+
+
+@methods_app.command("status")
+def twofa_methods_status() -> None:
+    """Show which proof the next 2FA challenge would use."""
+    from doberman.auth.approval import resolve_approval_method
+
+    active = resolve_approval_method()
+    if active is None:
+        typer.echo("Active 2FA proof: TOTP code (no approval method enabled and available).")
+    else:
+        typer.echo(
+            f"Active 2FA proof: {active.name} — a tap replaces the code; TOTP is the fallback."
+        )
 
 
 @twofa_app.command("remove")

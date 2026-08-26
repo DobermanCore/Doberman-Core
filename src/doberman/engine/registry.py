@@ -43,6 +43,8 @@ POLICY_SOURCE_GROUP = "doberman.policy_sources"
 AUTH_PROVIDER_GROUP = "doberman.auth_providers"
 #: Audit sinks (Feature 8.4) register here; resolved by the storage layer.
 AUDIT_SINK_GROUP = "doberman.audit_sinks"
+#: Approval methods (2FA push/biometric) register here; resolved by the auth layer.
+APPROVAL_METHOD_GROUP = "doberman.approval_methods"
 #: Drift observers (Feature 10.4) register here; resolved by the policy layer.
 DRIFT_OBSERVER_GROUP = "doberman.drift_observers"
 #: Cost observers (CB.2) register here; resolved by the storage layer.
@@ -239,6 +241,41 @@ def discover_auth_providers() -> list[object]:
             continue
         providers.append(candidate)
     return providers
+
+
+def discover_approval_methods() -> list[object]:
+    """Discover approval methods (2FA push/biometric, group ``doberman.approval_methods``).
+
+    Returns the built-in methods (Windows Hello, ...) followed by any registered
+    plugins, loaded defensively: an import/constructor failure, or an object that is
+    not approval-method-shaped (no callable ``is_available`` / ``request``), is
+    logged and skipped. A plugin whose ``name`` shadows a built-in is skipped so a
+    third party cannot silently replace a core factor. Core never imports a plugin
+    by name.
+    """
+    # Local imports avoid an engine<->auth import cycle at module load.
+    from doberman.auth.approval import ApprovalMethod
+    from doberman.auth.methods import builtin_methods
+
+    methods: list[object] = list(builtin_methods())
+    seen_names: set[str | None] = {getattr(m, "name", None) for m in methods}
+    for entry_point in _iter_entry_points(APPROVAL_METHOD_GROUP):
+        candidate = _load_and_construct(entry_point)
+        if candidate is None:
+            continue
+        if not isinstance(candidate, ApprovalMethod):
+            logger.warning(
+                "skipping approval method %r: not approval-method-shaped",
+                getattr(entry_point, "name", "?"),
+            )
+            continue
+        name = getattr(candidate, "name", None)
+        if name in seen_names:
+            logger.warning("skipping approval method %r: duplicate name", name)
+            continue
+        seen_names.add(name)
+        methods.append(candidate)
+    return methods
 
 
 def discover_audit_sinks() -> list[object]:

@@ -7,7 +7,14 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased
 
-_Nothing yet._
+- **Approve 2FA with a tap instead of a code (opt-in, pluggable).** A new approval-method framework lets
+  a Windows Hello / Touch ID biometric — or a future push channel — stand in for the TOTP code on a
+  2FA-tier challenge: one tap proves presence and possession. It is strictly opt-in
+  (`doberman 2fa methods enable <name>`); with nothing enabled the flow is unchanged. **Fail-closed and
+  never a bypass:** a timeout, cancel, error, or an unavailable device denies or falls back to TOTP —
+  only an explicit human approval (or a valid code) satisfies the tier. Windows Hello ships as the first
+  backend (`pip install "doberman-core[winhello]"`, Windows-only); Duo and Telegram/ntfy/webhook follow.
+  Third-party backends register through the `doberman.approval_methods` entry-point group.
 
 ## v0.18.2 — 2026-08-25
 
