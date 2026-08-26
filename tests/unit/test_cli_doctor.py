@@ -296,6 +296,52 @@ def test_codex_cli_not_found_when_which_resolves_nothing(tmp_path, monkeypatch):
     assert "not found" in codex_check.detail
 
 
+@pytest.mark.parametrize(
+    ("row_name", "module", "install_hint"),
+    [
+        ("Dash extra", "starlette", "doberman[dash]"),
+        ("TUI extra", "textual", "doberman[tui]"),
+    ],
+)
+def test_doctor_reports_optional_extra_missing(
+    tmp_path, monkeypatch, row_name, module, install_hint
+):
+    monkeypatch.setattr("doberman.cli.doctor.find_spec", lambda name: None)
+
+    results = run_checks(str(tmp_path))
+
+    check = next(result for result in results if result.name == row_name)
+    assert check.status is CheckStatus.WARN
+    assert check.detail == f"not installed (optional) - pip install '{install_hint}'"
+    assert check.critical is False
+
+
+@pytest.mark.parametrize(
+    ("row_name", "module"),
+    [
+        ("Dash extra", "starlette"),
+        ("TUI extra", "textual"),
+    ],
+)
+def test_doctor_reports_optional_extra_installed(tmp_path, monkeypatch, row_name, module):
+    monkeypatch.setattr("doberman.cli.doctor.find_spec", lambda name: object())
+
+    results = run_checks(str(tmp_path))
+
+    check = next(result for result in results if result.name == row_name)
+    assert check.status is CheckStatus.OK
+    assert check.detail == "installed"
+    assert check.critical is False
+
+
+def test_doctor_lists_optional_extras_after_codex_cli(tmp_path):
+    results = run_checks(str(tmp_path))
+    names = [result.name for result in results]
+
+    assert names.index("Dash extra") == names.index("Codex CLI") + 1
+    assert names.index("TUI extra") == names.index("Dash extra") + 1
+
+
 # ---------------------------------------------------------------------------
 # Read-only invariant: diagnosing never mutates state
 # ---------------------------------------------------------------------------
