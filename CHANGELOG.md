@@ -7,6 +7,15 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased (merged since v0.18.1)
 
+- **Weak-secret false positives on identifiers, paths, and ids fixed; the rule now self-checks.** The
+  generic high-entropy heuristic no longer steps an ordinary identifier, a relative path, a UUID/digest,
+  or a `word+number` build tag up to an `AUTH` prompt. That false positive trained click-through fatigue
+  and, through the host-hook taint ledger, could gate a whole session's egress after a single
+  UUID-bearing scratch path. The new exemption is shape-based and raise-only — every real credential
+  still fires, and the measured cost is documented under README → Known limitations. Separately,
+  `SecretLeakageRule` runs an invariant self-check at import and **degrades to a fail-closed `AUTH`** if it
+  ever cannot evaluate, so a bad edit can neither let a secret through (never `PASS`) nor brick tool
+  mediation into a `rule_error` on every action.
 - **Anonymous CLI telemetry is available as an explicit opt-in.** It is off by default, uses only
   stdlib networking, sends allowlisted counts and command names to PostHog, and never runs on the
   per-tool hook or proxy paths. `doberman telemetry on|off|status` controls the local consent state.
