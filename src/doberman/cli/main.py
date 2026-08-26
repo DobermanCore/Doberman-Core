@@ -32,6 +32,7 @@ from doberman.config import (
     MESSAGE_TONES,
     default_role_enabled,
     load_active_role,
+    load_approval_memory_seconds,
     load_enforcement,
     load_message_tone,
     load_mode,
@@ -47,6 +48,7 @@ from doberman.discovery.mcp_scan import MCP_CONFIG_FILES, scan_mcp_configs
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
+    _run_weaken_gate,
     _verify_possession_factor,
     apply_change,
     apply_enforcement_change,
@@ -59,6 +61,8 @@ from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.render import verdict_label, verdict_label_str
+from doberman.storage.approval_memory import clear as clear_approval_memory
+from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
 from doberman.storage.log import memory_summary, read_decisions
 from doberman.storage.memory import prune_stale_entities, reset_memory
@@ -120,6 +124,12 @@ tools_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(tools_app, name="tools")
+
+approvals_app = typer.Typer(
+    help="Bounded exact-action approval memory.",
+    no_args_is_help=True,
+)
+app.add_typer(approvals_app, name="approvals")
 
 memory_app = typer.Typer(
     help="Learned behavioral memory: profile, gated reset, and retention pruning.",
@@ -1236,6 +1246,48 @@ def tools_approve(
     typer.echo(f"Tool pin approved for {tool_name}: {approved_fp}")
 
 
+@approvals_app.command("status")
+def approvals_status(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show live count and policy TTL without exposing fingerprints."""
+    seconds = load_approval_memory_seconds(path)
+    live = asyncio.run(count_live_approval_memory(datetime.now(timezone.utc), repo_root=path))
+    state = "enabled" if seconds else "disabled"
+    typer.echo(f"Approval memory: {state}; TTL: {seconds} second(s); live entries: {live}")
+
+
+@approvals_app.command("clear")
+def approvals_clear(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Clear all exact-action approval memory (ungated strengthening)."""
+    removed = asyncio.run(clear_approval_memory(path))
+    typer.echo(f"Approval memory cleared ({removed} record(s)).")
+
+
+@approvals_app.command("ttl")
+def approvals_ttl(
+    seconds: int = typer.Argument(..., min=0, max=900, help="Memory TTL in seconds (0 disables)."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Set the 0-900 second TTL; raising it is a gated weakening."""
+    current = load_approval_memory_seconds(path)
+    if seconds > current:
+        approved, method = _run_weaken_gate(
+            {"approval_memory_seconds": current},
+            {"approval_memory_seconds": seconds},
+            "doberman approvals ttl CLI",
+            CliPrompter(),
+        )
+        if not approved:
+            typer.echo(f"error: approval-memory TTL change denied ({method}); unchanged", err=True)
+            raise typer.Exit(code=1)
+    doc = load_policy(path) or recommend_policy()
+    save_policy(doc.with_approval_memory_seconds(seconds), path)
+    typer.echo(f"Approval memory TTL set to {seconds} second(s).")
+
+
 @app.command(rich_help_panel="Auth")
 def revoke(
     elevation_id: str = typer.Argument(..., help="Id of the elevation to revoke."),
@@ -1417,7 +1469,10 @@ def log(
     for row in rows:
         target = row["target_path_class"] or "-"
         reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
-        auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
+        if row["auth_result"] == "soft_confirm+memory":
+            auth = "; approved via 5-minute memory (soft_confirm)"
+        else:
+            auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
         typer.echo(
             f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<13} "
             f"{target}  [{reasons}]{auth}"

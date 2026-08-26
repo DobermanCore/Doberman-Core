@@ -29,7 +29,7 @@ Doberman sits between the agent and its tools (a transparent **MCP proxy** or **
 | Verdict | What happens |
 |---|---|
 | `PASS` | Routine work, straight through, zero friction. |
-| `AUTH` | Sensitive, paused for your one-tap approval. |
+| `AUTH` | Sensitive, paused for your approval. Repeat the exact same action within five minutes and it re-prompts with a one-click confirm (never for destructive work). |
 | `BLOCK` | Dangerous, stopped cold. It never runs. |
 
 ```

@@ -107,7 +107,31 @@ def resolve_auth(
     event: str,
     prompter: "Prompter | None",
     message_tone: str = "human",
+    repo_root: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
+    """Compatibility wrapper returning only the host payload."""
+    return resolve_auth_result(
+        decision,
+        action,
+        event=event,
+        prompter=prompter,
+        message_tone=message_tone,
+        repo_root=repo_root,
+        session_id=session_id,
+    )[0]
+
+
+def resolve_auth_result(
+    decision: Decision,
+    action: SecurityObject,
+    *,
+    event: str,
+    prompter: "Prompter | None",
+    message_tone: str = "human",
+    repo_root: str | None = None,
+    session_id: str | None = None,
+) -> tuple[dict[str, Any], str]:
     """Run Doberman's tiered challenge for an AUTH and answer the host hook.
 
     The proxy path (``proxy.executor._handle_auth``) already does this for MCP tools;
@@ -136,27 +160,41 @@ def resolve_auth(
 
         active_prompter = prompter if prompter is not None else _default_auth_prompter()
         result = run_auth_challenge(
-            decision, action, prompter=active_prompter, message_tone=message_tone
+            decision,
+            action,
+            prompter=active_prompter,
+            message_tone=message_tone,
+            repo_root=repo_root,
+            session_id=session_id,
         )
     except Exception:  # noqa: BLE001 — any challenge/prompter error is a denial (fail closed)
-        return hook_output(event, "deny", _auth_denied_reason(decision, channel_error=True))
+        return hook_output(
+            event, "deny", _auth_denied_reason(decision, channel_error=True)
+        ), "error"
 
     # Approval is bound to THIS action id — never honor a result meant for another call.
     if result.approved and result.action_id == action.id:
         reason = format_reason(decision, "AUTH")
-        return hook_output(
-            event,
-            "allow",
-            f"{reason} Approved via Doberman's action-bound authentication ({result.method}).",
+        return (
+            hook_output(
+                event,
+                "allow",
+                f"{reason} Approved via Doberman's action-bound authentication ({result.method}).",
+            ),
+            result.method,
         )
-    return hook_output(
-        event,
-        "deny",
-        _auth_denied_reason(
-            decision,
-            channel_error=result.method == "error",
-            timed_out=result.method == TIMEOUT_METHOD,
+    method = result.method if not result.approved else "denied"
+    return (
+        hook_output(
+            event,
+            "deny",
+            _auth_denied_reason(
+                decision,
+                channel_error=result.method == "error",
+                timed_out=result.method == TIMEOUT_METHOD,
+            ),
         ),
+        method,
     )
 
 

@@ -27,7 +27,6 @@ from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, EmbeddedResource, TextContent, TextResourceContents
 
 from doberman.auth.challenge import (
-    TIMEOUT_METHOD,
     AuthResult,
     AuthTier,
     Prompter,
@@ -696,6 +695,8 @@ async def _handle_auth(
             action,
             prompter=AUTH_PROMPTER,
             message_tone=load_message_tone(REPO_ROOT),
+            repo_root=REPO_ROOT,
+            session_id=None,
         )
     except Exception:  # noqa: BLE001 — a challenge failure must fail closed, not crash/leak
         _engine_logger.warning("auth challenge raised; failing closed (action %s)", action.id)
@@ -708,10 +709,10 @@ async def _handle_auth(
         # An expired challenge and a human "no" both deny — but only the log can
         # tell them apart, and they call for different operator responses (an
         # unwatched approval channel vs. a rejected action).
-        timed_out = auth_result is not None and auth_result.method == TIMEOUT_METHOD
-        await _persist(
-            decision, action, auth_result=TIMEOUT_METHOD if timed_out else "denied", eid=eid
-        )
+        method = auth_result.method if auth_result is not None else "error"
+        if auth_result is not None and auth_result.approved:
+            method = "denied"  # approved for a different action id is still a denial here
+        await _persist(decision, action, auth_result=method, eid=eid)
         return _verdict_result(decision)
 
     # A satisfied role elevation grants a narrow, temporary permission first.
@@ -743,7 +744,7 @@ async def _handle_auth(
     redecision = await _apply_tool_pin_floor(tool_name, redecision)
     if redecision.final_verdict is Verdict.BLOCK:
         log_action(action, redecision.final_verdict)
-        await _persist(redecision, action, auth_result="approved", eid=eid)
+        await _persist(redecision, action, auth_result=auth_result.method, eid=eid)
         return _verdict_result(redecision)
 
     result = await _forward(downstream, tool_name, arguments, action)
@@ -775,7 +776,9 @@ async def _handle_auth(
             )
             return _verdict_result(artifact_gate)
         await _observe_allowed(action, eid, surprise_score)
-    await _persist(decision, action, auth_result="approved", elevation_id=elevation_id, eid=eid)
+    await _persist(
+        decision, action, auth_result=auth_result.method, elevation_id=elevation_id, eid=eid
+    )
     return result
 
 
@@ -789,7 +792,7 @@ async def decide_and_execute(
     This is THE chokepoint: normalize → decide → enforce. The downstream forward
     happens only on a PASS decision or a successfully-authenticated AUTH.
     """
-    action: SecurityObject = normalize(tool_name, arguments)
+    action: SecurityObject = normalize(tool_name, arguments, {"repo_root": REPO_ROOT})
     now = datetime.now(timezone.utc)
     eid = entity_id(action.agent_role, REPO_ROOT)
     # TG3.3: actions tracing to a flagged pasted turn inherit untrusted
