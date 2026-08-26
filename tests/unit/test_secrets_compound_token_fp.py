@@ -20,7 +20,8 @@ must still fire on the weak path. Credential-shaped fixtures are assembled from
 fragments so this source file never contains a contiguous live-secret shape.
 """
 
-import secrets as _sec
+import random as _random
+import string as _string
 from datetime import datetime, timezone
 
 import pytest
@@ -99,11 +100,21 @@ def _akia() -> str:
     return "AKIA" + "IOSFODNN7EXAMPLE1"[:16]
 
 
+def _rand_token(n: int, seed: int) -> str:
+    # Deterministic high-entropy token: a FIXED seed so every pytest-xdist worker
+    # generates the identical parametrize id (a random one differs across workers,
+    # which aborts the whole run with a collection mismatch), and no high-entropy
+    # literal in the source (so gitleaks stays quiet and this file does not
+    # self-trip the detector on write).
+    r = _random.Random(seed)
+    return "".join(r.choice(_string.ascii_letters + _string.digits) for _ in range(n))
+
+
 # Tokens that DO reach the weak path (>= 24 chars, no benign word structure).
 REAL_WEAK_SECRET_TEXTS = [
     _gh_token(),  # GitHub token: word prefix + long hex body must NOT be exempted
-    "sk-" + "ant-" + _sec.token_urlsafe(24),  # Anthropic-style key
-    _sec.token_urlsafe(32),  # a shapeless high-entropy token (no word structure)
+    "sk-" + "ant-" + _rand_token(28, 101),  # Anthropic-style key (deterministic body)
+    _rand_token(32, 202),  # a shapeless high-entropy token (no word structure)
 ]
 
 
