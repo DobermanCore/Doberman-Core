@@ -43,6 +43,10 @@ Security-posture commands used by [the setup guide](SETUP.md). These groups also
 | `doberman 2fa setup` | Enroll TOTP two-factor and print the provisioning URI for your authenticator app. | `--force` (rotate an existing secret) |
 | `doberman 2fa remove` | Remove TOTP enrollment. Requires your current 2FA code; not delegable to the password. | none |
 | `doberman 2fa reset-lockout` | Clear an early TOTP lockout. Gated on your password, since a locked-out factor cannot verify itself. | none |
+| `doberman 2fa methods list` | List approval methods (biometric/push), whether each is available here, and which are enabled. | none |
+| `doberman 2fa methods enable <name>` | Enable an approval method (opt-in) so a tap replaces the 2FA code when available; TOTP stays as the fallback. | none |
+| `doberman 2fa methods disable <name>` | Disable an approval method; 2FA falls back to the next enabled method or to TOTP. | none |
+| `doberman 2fa methods status` | Show which proof the next 2FA challenge would use — an approval method, or the TOTP code. | none |
 | `doberman password set` | Set or rotate the local password possession factor. | `--force` (rotate after proving the current password) |
 
 Note that the `2fa` subcommands take no `--path`: TOTP enrollment is a device-wide factor, not a per-repo one.
