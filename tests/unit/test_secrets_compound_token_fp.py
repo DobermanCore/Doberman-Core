@@ -106,8 +106,11 @@ def _rand_token(n: int, seed: int) -> str:
     # which aborts the whole run with a collection mismatch), and no high-entropy
     # literal in the source (so gitleaks stays quiet and this file does not
     # self-trip the detector on write).
-    r = _random.Random(seed)
-    return "".join(r.choice(_string.ascii_letters + _string.digits) for _ in range(n))
+    r = _random.Random(seed)  # noqa: S311 — deterministic test fixture, not cryptographic
+    return "".join(
+        r.choice(_string.ascii_letters + _string.digits)  # noqa: S311 — see above
+        for _ in range(n)
+    )
 
 
 # Tokens that DO reach the weak path (>= 24 chars, no benign word structure).
