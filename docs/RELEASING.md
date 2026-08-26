@@ -10,7 +10,7 @@ The checklist for cutting a release, kept in sync with `.github/workflows/publis
    - Synthetic (deterministic, from a cold clone): `python -m tests.benchmarks.run --suite synthetic --profile before_after`.
    - AgentDojo (operator-supplied): `pip install agentdojo` at a pinned commit, then `python -m tests.benchmarks.run --suite agentdojo --profile before_after`. Record the pinned commit and the run date. Keep the raw run out of git (`test-logs/`); transcribe only the aggregate numbers.
    - Update the "Fixed bypasses" wall with anything disclosed and fixed since the last release.
-4. **Version and changelog.** Bump `version` in `pyproject.toml` (follow semver). Move shipped items into `CHANGELOG.md`. Confirm the README roadmap and versioning reflect reality.
+4. **Version and changelog.** Run `python scripts/compile_changelog.py --write` to collect all pending `changelog.d/<PR-number>.md` files into a fresh `Unreleased` section; review that output before promoting it to the new version heading. Bump `version` in `pyproject.toml` (follow semver). Confirm the README roadmap and versioning reflect reality.
 5. **Docs sweep.** Every protection claim in the README resolves to a parity cell or a benchmark number. No orphan adjectives.
 
 ## Cut a release
