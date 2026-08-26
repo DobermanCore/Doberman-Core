@@ -197,3 +197,36 @@ def test_log_default_human_empty_message(tmp_path):
         result = runner.invoke(app, ["log", "--path", str(tmp_path)])
     assert result.exit_code == 0
     assert "(no decisions recorded yet)" in result.stdout
+
+
+def test_log_human_action_column_does_not_shift_for_long_types(tmp_path):
+    """`network_request` is wider than `git_op`; both targets must align (#428)."""
+    import doberman.cli.main as main_mod
+
+    def _row(action_type: str, action_id: str, ts: str):
+        return {
+            "id": int(action_id.split("-")[1]),
+            "ts": ts,
+            "action_id": action_id,
+            "agent_role": "backend",
+            "action_type": action_type,
+            "final_verdict": "ALLOW",
+            "target_path_class": "src/**/*.py",
+            "reason_codes_json": "[]",
+            "auth_result": None,
+        }
+
+    async def _rows(*_a, **_k):
+        return [
+            _row("network_request", "act-2", "2026-07-30T00:00:02Z"),
+            _row("git_op", "act-1", "2026-07-30T00:00:01Z"),
+        ]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    lines = [line for line in result.stdout.splitlines() if " src/**/*.py" in line]
+    assert len(lines) == 2
+    offsets = [line.index(" src/**/*.py") for line in lines]
+    assert offsets[0] == offsets[1]
