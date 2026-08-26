@@ -49,7 +49,7 @@ if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth st
 _EVENT = "PreToolUse"
 
 #: Supported Codex CLI version range (inclusive min, exclusive max). ``doberman
-#: doctor`` (a later slice) reports an installed Codex outside this range as a
+#: doctor`` reports an installed Codex outside this range as a
 #: WARN, never a critical failure — a newer Codex is not "Doberman may not be
 #: protecting you". Verified against 0.146.1; widen the max as the CI canary
 #: stays green on newer releases.
