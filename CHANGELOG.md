@@ -3,9 +3,18 @@
 Shipped history for Doberman. Planned work lives on the [roadmap](README.md#roadmap) and the
 [project board](https://github.com/users/fu351/projects/5); exact per-commit detail is in the
 [git log](https://github.com/DobermanCore/Doberman-Core/commits/main) and
-[releases](https://github.com/DobermanCore/Doberman-Core/releases) (latest: **v0.18.1**, a docs patch fixing the README images on PyPI, atop **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
+[releases](https://github.com/DobermanCore/Doberman-Core/releases) (latest: **v0.18.2**, the friction-reduction patch — spurious secret-detector prompts on ordinary ids/paths/UUIDs fixed, and the detector now self-checks and fails closed — atop **v0.18.1**'s README-image docs patch and **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
 
-## Unreleased (merged since v0.18.1)
+## Unreleased
+
+_Nothing yet._
+
+## v0.18.2 — 2026-08-25
+
+> **Friction reduction.** This release is about getting out of your way. The secret detector no longer
+> fires spurious approval prompts on ordinary identifiers, paths, and UUIDs — the single biggest source
+> of click-through fatigue — and it now self-checks at import so a bad change can't silently break it.
+> The opt-in usage telemetry and the rewritten docs from the last cycle ride along.
 
 - **Weak-secret false positives on identifiers, paths, and ids fixed; the rule now self-checks.** The
   generic high-entropy heuristic no longer steps an ordinary identifier, a relative path, a UUID/digest,
