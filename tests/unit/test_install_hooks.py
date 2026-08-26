@@ -330,6 +330,8 @@ class TestInstallHooksCLI:
         )
         assert "doberman hook pre" in result.output
         assert "doberman hook post" in result.output
+        assert DASHBOARD_COMMAND in result.output
+        assert "doberman dashboard" not in result.output
 
     def test_install_is_idempotent(self, tmp_path):
         runner.invoke(cli_module.app, ["install-hooks", "--path", str(tmp_path)])

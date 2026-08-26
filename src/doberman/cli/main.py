@@ -41,6 +41,7 @@ from doberman.config import (
 from doberman.demo import format_outcome_line, format_summary_table, run_demo
 from doberman.discovery.mcp_scan import MCP_CONFIG_FILES, scan_mcp_configs
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
+from doberman.hosthooks.install import DASHBOARD_COMMAND
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
     _verify_possession_factor,
@@ -1690,7 +1691,7 @@ def install_hooks(
         typer.echo("[dry-run] would add:")
         typer.echo("  PreToolUse   -> doberman hook pre")
         typer.echo("  PostToolUse  -> doberman hook post")
-        typer.echo("  SessionStart -> doberman dashboard")
+        typer.echo(f"  SessionStart -> {DASHBOARD_COMMAND}")
         return
 
     write_settings(settings_path, merged)
@@ -1849,7 +1850,7 @@ def uninstall_hooks(
         typer.echo("[dry-run] would remove:")
         typer.echo("  PreToolUse   -> doberman hook pre")
         typer.echo("  PostToolUse  -> doberman hook post")
-        typer.echo("  SessionStart -> doberman dashboard")
+        typer.echo(f"  SessionStart -> {DASHBOARD_COMMAND}")
         return
 
     write_settings(settings_path, cleaned)
