@@ -66,6 +66,11 @@ def _key_path() -> Path:
     return Path(override) if override else _default_key_path()
 
 
+def resolve_path() -> Path:
+    """Resolve the active fingerprint key file, including env overrides."""
+    return _key_path()
+
+
 def _load_or_create_key() -> bytes:
     """Return the local HMAC key, generating it on first use.
 

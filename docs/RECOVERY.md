@@ -50,11 +50,10 @@ never shell out to run them itself.
 ## Fully removing a project, `doberman uninstall`
 
 > **Note**
-> Run `doberman uninstall-hooks` *before* `pip uninstall doberman-core`, not after. Uninstalling the
-> package first leaves the hook entries in `settings.json` pointing at a binary that's gone, and every
-> tool call then fails with `doberman: command not found`. Already hit this? `pip install
-> doberman-core` again restores the binary; the existing hook entries are still correct and start
-> working immediately, no repair needed.
+> Run `doberman uninstall --global` instead of uninstalling `doberman-core` directly. Removing the
+> package first leaves hook entries pointing at a missing binary, and every tool call then fails with
+> `doberman: command not found`. Already hit this? Reinstall `doberman-core`; the existing entries
+> start working again. Then run the global uninstall below.
 
 `doberman uninstall-hooks` only strips the hook entries: it never touches `.doberman/`, and needs no
 authentication, which means nothing stops a protected agent that reaches a shell from disabling its
@@ -63,8 +62,37 @@ project- and local-scope hooks and the project's `.doberman/` control plane (pol
 database) in one step, gated behind an enrolled possession factor, with no confirm-only fallback and
 a hard fail-closed refusal if neither factor is enrolled. Because it's destructive and irreversible,
 it also asks you to type the project directory name back before proceeding (`--yes` skips that
-prompt; it never skips the factor check). It is deliberately project-scoped only: `--global` hooks
-and your device-wide password, 2FA, fingerprint key, and `~/.doberman/metrics.db` are shared across
-every project Doberman protects on the machine and are never touched, even on success. `uninstall` is
-itself control-plane-blocked, so a mediated agent can never shell out to run it. Same protection as
+prompt; it never skips the factor check). Without `--global`, the command remains project-scoped:
+global hooks and device-wide password, 2FA, fingerprint key, and state survive unchanged. `uninstall`
+is itself control-plane-blocked, so a mediated agent can never shell out to run it. Same protection as
 `uninstall-hooks`.
+
+## Removing Doberman from the whole machine — `doberman uninstall --global`
+
+Run this command from a regular terminal outside the protected agent session:
+
+```bash
+doberman uninstall --global --path /path/to/project
+```
+
+The command first prints every target and the package-removal command. `--dry-run` stops there and
+changes nothing. Otherwise, it requires the enrolled possession factor before removing anything,
+then asks you to type the literal word `DOBERMAN`. `--yes` skips only that typed confirmation; it
+never skips the factor check.
+
+After approval, Doberman removes these targets in order:
+
+1. Claude Code hooks from the global, project, and local settings for `--path`.
+2. Codex hooks from the user and repository settings. Plugin-scope hooks are read-only; run the
+   printed `codex plugin remove` command separately.
+3. The project's `.doberman/` directory.
+4. The TOTP enrollment, password enrollment, fingerprint key, and device-wide `.doberman/` state.
+5. The `doberman-core` package through pipx or the active Python's pip.
+
+On Windows, package removal starts in a detached helper after the command exits, which lets Windows
+release the running executable. On POSIX, removal runs before the command returns. Development
+checkouts stay installed. Add `--keep-package` to remove hooks and state but keep the package.
+
+The command continues after an individual removal failure, reports every error, and exits 1 if any
+target remains. Removing device state deletes 2FA enrollment, the password, and the fingerprint key;
+a fresh `doberman setup` enrolls new factors.

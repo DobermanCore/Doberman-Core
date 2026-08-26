@@ -192,6 +192,7 @@ def test_doberman_setup_is_blocked():
         "doberman tools approve fs_read",
         "doberman uninstall",
         "doberman uninstall --yes",
+        "doberman uninstall --global",
     ],
 )
 def test_doberman_posture_and_auth_mutating_verbs_are_blocked(command):
