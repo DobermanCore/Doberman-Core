@@ -7,6 +7,11 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased
 
+- **`doberman doctor` catches dangling hook entries.** New critical `Hook command` check: when hooks are
+  installed but the bare `doberman` they invoke is not on PATH (package removed, bin dir not on PATH), the
+  host fails the hook and carries on unmediated, so `doctor` now fails and names the fix - put the binary
+  back on PATH, or strip the entries with `doberman uninstall-hooks`. Diagnosis only; `doctor` stays
+  read-only.
 - **Device-wide uninstall:** `doberman uninstall --global` now removes writable Claude Code and Codex
   hooks, project state, possession factors, the fingerprint key, and device state before removing the
   package through pip or pipx. The same fail-closed factor gate runs before any removal; `--yes` skips

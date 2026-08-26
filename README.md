@@ -103,7 +103,8 @@ After installing, run `doberman --install-completion` to enable shell tab comple
 > writable Claude Code and Codex hooks, project and device state, and enrolled factors before it
 > removes the `doberman-core` package with pip or pipx. Uninstalling the package first leaves hooks
 > pointing at a missing binary. Already hit this? Reinstall `doberman-core`, then run the global
-> uninstall. More recovery steps: [Recover](docs/RECOVERY.md).
+> uninstall; `doberman doctor` flags any hook entry whose `doberman` is not on PATH. More recovery
+> steps: [Recover](docs/RECOVERY.md).
 
 | Your agent | How Doberman plugs in | Get started |
 |---|---|---|

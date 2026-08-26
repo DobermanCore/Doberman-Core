@@ -44,6 +44,22 @@ runner = CliRunner()
 _NOW = datetime(2026, 7, 11, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _doberman_on_path(monkeypatch):
+    """Pin `doberman` as resolvable so the healthy fixture never depends on the test
+    runner's PATH; the hook-command tests below override this explicitly."""
+    import shutil
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: (
+            "/venv/bin/doberman" if name == "doberman" else real_which(name, *a, **k)
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixture builders
 # ---------------------------------------------------------------------------
@@ -320,3 +336,61 @@ def test_doctor_hooks_detected_per_scope(tmp_path, scope):
     hooks = next(r for r in results if r.name == "Host hooks")
     assert hooks.status is CheckStatus.OK
     assert scope in hooks.detail
+
+
+# ---------------------------------------------------------------------------
+# Hook command: the bare `doberman` the host will run must resolve (ADR 0086 follow-up)
+# ---------------------------------------------------------------------------
+
+
+def test_hook_command_resolves_reports_ok(tmp_path, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/venv/bin/doberman" if name == "doberman" else None
+    )
+
+    results = run_checks(str(tmp_path))
+    check = next(r for r in results if r.name == "Hook command")
+    assert check.status is CheckStatus.OK
+    assert "/venv/bin/doberman" in check.detail
+
+
+def test_dangling_hooks_fail_critical_and_name_the_fix(tmp_path, monkeypatch):
+    import shutil
+
+    root = str(tmp_path)
+    _make_healthy(root)  # hooks installed and everything else green
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    result = runner.invoke(app, ["doctor", "--path", root])
+    assert result.exit_code == 1
+    assert "[FAIL] Hook command: hooks call `doberman`" in result.stdout
+    assert "uninstall-hooks" in result.stdout
+    assert "error: 1 critical check(s) not healthy" in result.stdout
+
+
+def test_missing_binary_without_hooks_only_warns(tmp_path, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    results = run_checks(str(tmp_path))
+    check = next(r for r in results if r.name == "Hook command")
+    assert check.status is CheckStatus.WARN
+    assert not check.critical
+
+
+def test_dangling_hooks_surface_in_json(tmp_path, monkeypatch):
+    import json
+    import shutil
+
+    root = str(tmp_path)
+    _make_healthy(root)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    result = runner.invoke(app, ["doctor", "--path", root, "--json"])
+    payload = json.loads(result.stdout)
+    assert result.exit_code == 1
+    assert payload["ok"] is False
+    assert "Hook command" in payload["critical_failures"]
