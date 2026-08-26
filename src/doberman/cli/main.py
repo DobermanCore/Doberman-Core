@@ -1217,7 +1217,14 @@ def tune(
 
     report = build_friction_report(rows)
     if json_out:
-        typer.echo(json.dumps({**report, "proposals": proposals}, sort_keys=True, default=str))
+        typer.echo(
+            json.dumps(
+                {**report, "proposals": proposals},
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        )
         return
 
     if not rows:
