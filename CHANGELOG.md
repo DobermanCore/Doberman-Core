@@ -57,6 +57,15 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   action. Destructive, critical, excluded, or tainted-session actions never downgrade; soft confirms
   never chain; `doberman approvals status|clear|ttl` exposes bounded human controls.
 
+## Unreleased
+
+- **`doberman update` — and a passive "new version available" nudge.** Doberman now tells you when the
+  installed version is behind PyPI, so a friction fix reaches you without watching the releases page.
+  `doberman update` does one timeout-bounded PyPI check and prints the `pip install -U` command (it never
+  installs anything); `doberman status` shows a one-line nudge when a newer version is cached. The check is
+  best-effort and fail-open (an unreachable PyPI is silent, never an error), caches for 24h, never runs on
+  the hook/proxy hot paths, and is off under `DO_NOT_TRACK`, `CI`, or `DOBERMAN_UPDATE_CHECK=off`.
+
 ## v0.18.3 — 2026-08-26
 
 > **Friction reduction, part two.** The second factor no longer has to be a typed code. Turn on an
