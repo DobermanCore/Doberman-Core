@@ -10,23 +10,29 @@ import asyncio
 import importlib.util
 import json
 import logging
+import os
 import secrets
+import shlex
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
 
+import doberman
 from doberman import __version__
 from doberman.auth import password, totp
 from doberman.auth.challenge import TIMEOUT_METHOD
 from doberman.auth.provider import CliPrompter
+from doberman.cli import telemetry_cmd
 from doberman.config import (
     CONFIG_DIR,
     MESSAGE_TONES,
     default_role_enabled,
     load_active_role,
+    load_approval_memory_seconds,
     load_enforcement,
     load_message_tone,
     load_mode,
@@ -34,7 +40,6 @@ from doberman.config import (
     load_preferences,
     save_default_role_enabled,
     save_message_tone,
-    save_mode,
     save_policy,
     save_preferences,
 )
@@ -43,19 +48,23 @@ from doberman.discovery.mcp_scan import MCP_CONFIG_FILES, scan_mcp_configs
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
+    _run_weaken_gate,
     _verify_possession_factor,
     apply_change,
     apply_enforcement_change,
+    apply_mode_change,
     apply_preferences_change,
     apply_standing_elevation,
-    log_change,
     read_policy_changes,
 )
 from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.render import verdict_label, verdict_label_str
+from doberman.storage.approval_memory import clear as clear_approval_memory
+from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
+from doberman.storage.exclusions import add_exclusion, is_excluded, remove_exclusion
 from doberman.storage.log import memory_summary, read_decisions
 from doberman.storage.memory import prune_stale_entities, reset_memory
 from doberman.storage.taint import clear_taint, entity_scope, read_taint
@@ -84,6 +93,8 @@ def _ensure_encode_safe_stdio() -> None:
 
 _ensure_encode_safe_stdio()
 
+_WINDOWS = os.name == "nt"
+
 app = typer.Typer(
     help="Doberman - adaptive authorization layer for coding agents.",
     no_args_is_help=True,
@@ -91,6 +102,11 @@ app = typer.Typer(
 
 twofa_app = typer.Typer(help="Two-factor (TOTP) enrollment.", no_args_is_help=True)
 app.add_typer(twofa_app, name="2fa")
+methods_app = typer.Typer(
+    help="Approval methods (biometric/push) that replace the 2FA code with a tap.",
+    no_args_is_help=True,
+)
+twofa_app.add_typer(methods_app, name="methods")
 
 password_app = typer.Typer(
     help="Local password possession factor (the minimum lowering-gate auth).",
@@ -110,6 +126,12 @@ tools_app = typer.Typer(
 )
 app.add_typer(tools_app, name="tools")
 
+approvals_app = typer.Typer(
+    help="Bounded exact-action approval memory.",
+    no_args_is_help=True,
+)
+app.add_typer(approvals_app, name="approvals")
+
 memory_app = typer.Typer(
     help="Learned behavioral memory: profile, gated reset, and retention pruning.",
     no_args_is_help=False,
@@ -127,6 +149,9 @@ role_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(role_app, name="role")
+telemetry_cmd.register_cli_telemetry(
+    app, twofa_app, password_app, taint_app, tools_app, memory_app, role_app
+)
 
 
 def _print_version_and_exit(show_version: bool) -> None:
@@ -137,6 +162,7 @@ def _print_version_and_exit(show_version: bool) -> None:
 
 @app.callback()
 def _main_callback(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
@@ -146,7 +172,7 @@ def _main_callback(
         is_eager=True,
     ),
 ) -> None:
-    pass
+    telemetry_cmd.record_root_command(ctx.invoked_subcommand)
 
 
 def _configure_stderr_logging(level: int = logging.INFO) -> None:
@@ -359,35 +385,14 @@ def review(
 def _apply_mode_change(
     name: str, path: str, reason: str, *, establish_ok: bool = False
 ) -> str | None:
-    """Resolve ``name``, gate any weakening behind a possession factor, then persist it.
+    """Sync CLI wrapper around :func:`doberman.policy.drift.apply_mode_change`.
 
-    The mode dial is now gated at parity with the enforcement dial:
-    lowering strictness (a downgrade on the paranoid>strict>balanced>light
-    scale) is a ``weaken`` and must clear a possession factor — a 2FA code if
-    enrolled, otherwise the Doberman password set via ``doberman password set`` —
-    before it is persisted. Raising stays frictionless: ``apply_change`` auto-approves
-    a strengthen with no prompt. A no-op (unchanged mode) skips the gate/ledger entirely.
-    Every attempt (incl. denials) is recorded to the append-only ledger. Returns
-    ``None`` when the gate denies the change — fail closed, nothing persisted.
-
-    ``establish_ok`` (first-run onboarding via ``doberman setup``) writes the
-    INITIAL posture freely when no policy is persisted yet — choosing a starting
-    mode is not weakening an existing one, and 2FA is enrolled later in the
-    wizard. The change is still recorded to the ledger. Once a policy exists,
-    even a setup re-run falls through to the gate, so neither ``setup`` nor
-    ``mode`` can bypass the possession factor on a lowering.
+    The gate itself (possession-factor requirement on a lowering, frictionless
+    raising, ``establish_ok`` first-run bypass) lives there so the CLI and the
+    dashboard's ``/api/mode`` share one implementation instead of two that could
+    drift apart.
     """
-    old = load_mode(path)
-    new = resolve_mode(name).value  # raises ValueError for an unknown mode
-    if old == new:
-        return save_mode(name, path)
-    if establish_ok and load_policy(path) is None:
-        asyncio.run(log_change({"mode": old}, {"mode": new}, reason, repo_root=path))
-        return save_mode(name, path)
-    outcome = asyncio.run(apply_change({"mode": old}, {"mode": new}, reason, repo_root=path))
-    if not outcome.approved:
-        return None
-    return save_mode(name, path)
+    return asyncio.run(apply_mode_change(name, path, reason, establish_ok=establish_ok))
 
 
 @app.command(rich_help_panel="Policy")
@@ -697,6 +702,7 @@ def _status_payload(path: str) -> dict:
             {"scope": scope, "path": settings_path, "installed": installed}
             for scope, settings_path, installed in hook_states
         ],
+        "excluded_from_global": is_excluded(path),
         "recent_decisions": recent_decisions,
         "missed_challenges_24h": missed_challenges,
     }
@@ -766,6 +772,8 @@ def _render_status_text(payload: dict) -> None:
     for hook in payload["hooks"]:
         state = "installed" if hook["installed"] else "not installed"
         typer.echo(f"  {hook['scope']:<8} {hook['path']}  [{state}]")
+    if payload.get("excluded_from_global"):
+        typer.echo("  excluded from global/Codex-user hooks (run `doberman install-hooks` to undo)")
     typer.echo("")
 
     typer.echo("Recent decisions:")
@@ -1014,6 +1022,89 @@ def twofa_setup(
     typer.echo("This secret is stored locally with owner-only permissions and is never committed.")
 
 
+def _method_available(method: object) -> bool:
+    """Best-effort ``is_available`` for CLI display — never raises."""
+    try:
+        return bool(method.is_available())  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 — display only
+        return False
+
+
+@methods_app.command("list")
+def twofa_methods_list() -> None:
+    """List approval methods, whether each is available here, and if it's enabled."""
+    from doberman.auth import approval_config
+    from doberman.engine.registry import discover_approval_methods
+
+    enabled = approval_config.enabled_methods()
+    methods = discover_approval_methods()
+    if not methods:
+        typer.echo("No approval methods are installed; TOTP is the second factor.")
+        return
+    typer.echo("Approval methods (enable one to replace the 2FA code with a tap):")
+    for method in methods:
+        name = getattr(method, "name", "?")
+        avail = "available" if _method_available(method) else "unavailable here"
+        state = "ENABLED" if name in enabled else "disabled"
+        typer.echo(f"  {name:16s} {state:9s} ({avail})")
+    if enabled:
+        typer.echo(
+            f"\nPreference order: {', '.join(enabled)} — first available wins, TOTP is the fallback."
+        )
+
+
+@methods_app.command("enable")
+def twofa_methods_enable(
+    name: str = typer.Argument(..., help="Method name, e.g. windows_hello."),
+) -> None:
+    """Enable an approval method (opt-in). It replaces the 2FA code when available."""
+    from doberman.auth import approval_config
+    from doberman.engine.registry import discover_approval_methods
+
+    known = {getattr(m, "name", None) for m in discover_approval_methods()}
+    known.discard(None)
+    if name not in known:
+        listed = ", ".join(sorted(str(n) for n in known)) or "(none installed)"
+        typer.echo(f"error: unknown method {name!r}. Installed: {listed}", err=True)
+        raise typer.Exit(code=1)
+    try:
+        approval_config.enable(name)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Enabled {name}; it will handle 2FA when available. TOTP remains the fallback.")
+    if not totp.is_enrolled():
+        typer.echo(
+            "note: enroll TOTP too (`doberman 2fa setup`) so a fallback exists when the "
+            "device is unavailable."
+        )
+
+
+@methods_app.command("disable")
+def twofa_methods_disable(
+    name: str = typer.Argument(..., help="Method name to disable."),
+) -> None:
+    """Disable an approval method. 2FA then falls back to the next method or TOTP."""
+    from doberman.auth import approval_config
+
+    approval_config.disable(name)
+    typer.echo(f"Disabled {name}.")
+
+
+@methods_app.command("status")
+def twofa_methods_status() -> None:
+    """Show which proof the next 2FA challenge would use."""
+    from doberman.auth.approval import resolve_approval_method
+
+    active = resolve_approval_method()
+    if active is None:
+        typer.echo("Active 2FA proof: TOTP code (no approval method enabled and available).")
+    else:
+        typer.echo(
+            f"Active 2FA proof: {active.name} — a tap replaces the code; TOTP is the fallback."
+        )
+
+
 @twofa_app.command("remove")
 def twofa_remove() -> None:
     """Remove TOTP enrollment, proving possession of the factor being dropped.
@@ -1157,6 +1248,48 @@ def tools_approve(
         typer.echo(f"error: no last-seen pin exists for tool {tool_name}", err=True)
         raise typer.Exit(code=1)
     typer.echo(f"Tool pin approved for {tool_name}: {approved_fp}")
+
+
+@approvals_app.command("status")
+def approvals_status(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show live count and policy TTL without exposing fingerprints."""
+    seconds = load_approval_memory_seconds(path)
+    live = asyncio.run(count_live_approval_memory(datetime.now(timezone.utc), repo_root=path))
+    state = "enabled" if seconds else "disabled"
+    typer.echo(f"Approval memory: {state}; TTL: {seconds} second(s); live entries: {live}")
+
+
+@approvals_app.command("clear")
+def approvals_clear(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Clear all exact-action approval memory (ungated strengthening)."""
+    removed = asyncio.run(clear_approval_memory(path))
+    typer.echo(f"Approval memory cleared ({removed} record(s)).")
+
+
+@approvals_app.command("ttl")
+def approvals_ttl(
+    seconds: int = typer.Argument(..., min=0, max=900, help="Memory TTL in seconds (0 disables)."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Set the 0-900 second TTL; raising it is a gated weakening."""
+    current = load_approval_memory_seconds(path)
+    if seconds > current:
+        approved, method = _run_weaken_gate(
+            {"approval_memory_seconds": current},
+            {"approval_memory_seconds": seconds},
+            "doberman approvals ttl CLI",
+            CliPrompter(),
+        )
+        if not approved:
+            typer.echo(f"error: approval-memory TTL change denied ({method}); unchanged", err=True)
+            raise typer.Exit(code=1)
+    doc = load_policy(path) or recommend_policy()
+    save_policy(doc.with_approval_memory_seconds(seconds), path)
+    typer.echo(f"Approval memory TTL set to {seconds} second(s).")
 
 
 @app.command(rich_help_panel="Auth")
@@ -1340,7 +1473,10 @@ def log(
     for row in rows:
         target = row["target_path_class"] or "-"
         reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
-        auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
+        if row["auth_result"] == "soft_confirm+memory":
+            auth = "; approved via 5-minute memory (soft_confirm)"
+        else:
+            auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
         typer.echo(
             f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<13} "
             f"{target}  [{reasons}]{auth}"
@@ -1437,7 +1573,7 @@ def demo(
         False,
         "--quiet",
         "-q",
-        help="Suppress human-readable stdout (exit code unchanged; useful for CI).",
+        help="Suppress the banner, narration, and closing hint; the summary and exit code stay.",
     ),
 ) -> None:
     """Run a scripted attack reel through the REAL decision engine.
@@ -1485,6 +1621,11 @@ def demo(
 def memory(
     ctx: typer.Context,
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the learned-memory summary as one JSON document.",
+    ),
 ) -> None:
     """Show a plain-language, redaction-safe profile of what Doberman has learned.
 
@@ -1499,6 +1640,10 @@ def memory(
     if ctx.invoked_subcommand is not None:
         return
     summary = asyncio.run(memory_summary(path))
+    if as_json:
+        # Same style as ``scan --json`` / ``status --json`` (#178 / #179).
+        typer.echo(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+        return
     typer.echo("Doberman learned memory")
     typer.echo("=" * 32)
     typer.echo(f"Decisions recorded: {summary['decisions']}")
@@ -1714,6 +1859,8 @@ def install_hooks(
     typer.echo(f"wrote {settings_path}")
     typer.echo("Doberman will now gate every tool call in this project.")
     typer.echo("The session dashboard will print at the start of every session.")
+    if remove_exclusion(path):
+        typer.echo("This project is no longer excluded from global hooks.")
 
 
 def _install_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> None:
@@ -1749,6 +1896,8 @@ def _install_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> N
     write_settings(hooks_path, merged)
     typer.echo(f"wrote {hooks_path}")
     typer.echo("Doberman will now gate Codex's tool calls in this scope.")
+    if remove_exclusion(path):
+        typer.echo("This project is no longer excluded from global hooks.")
     typer.echo("")
     typer.echo("Codex requires you to TRUST this hook before it runs:")
     typer.echo("  run a Codex command and approve the hook when prompted, or launch with")
@@ -1906,6 +2055,217 @@ def _project_uninstall_targets(path: str) -> list[tuple[str, str]]:
     return targets
 
 
+def _path_is_in_pipx_venv(value: str | None) -> bool:
+    if not value:
+        return False
+    parts = {part.casefold() for part in Path(value).parts}
+    return "pipx" in parts and "venvs" in parts
+
+
+def _package_remover() -> tuple[str, list[str]]:
+    """Return the detected package-install kind and its removal argv."""
+    if _path_is_in_pipx_venv(sys.executable) or _path_is_in_pipx_venv(shutil.which("doberman")):
+        return "pipx", ["pipx", "uninstall", "doberman-core"]
+
+    package_file = Path(doberman.__file__ or "").resolve()
+    package_dir = package_file.parent
+    if (
+        package_dir.name == "doberman"
+        and package_dir.parent.name == "src"
+        and (package_dir.parent.parent / "pyproject.toml").is_file()
+    ):
+        return "development", []
+
+    return "pip", [sys.executable, "-m", "pip", "uninstall", "-y", "doberman-core"]
+
+
+def _format_command(argv: list[str]) -> str:
+    return subprocess.list2cmdline(argv) if _WINDOWS else shlex.join(argv)
+
+
+def _global_uninstall_targets(path: str) -> tuple[list[tuple[str, str]], str, list[str]]:
+    """Every global-uninstall plan entry, including absent and read-only targets."""
+    from doberman.hosthooks.install_codex import codex_hook_install_states
+    from doberman.storage import device_metrics, fingerprint
+
+    claude_states = {scope: settings_path for scope, settings_path, _ in _hook_install_states(path)}
+    codex_states = {scope: hooks_path for scope, hooks_path, _ in codex_hook_install_states(path)}
+    kind, argv = _package_remover()
+    targets = [
+        ("Claude Code hooks (global)", claude_states["global"]),
+        ("Claude Code hooks (project)", claude_states["project"]),
+        ("Claude Code hooks (local)", claude_states["local"]),
+        ("Codex CLI hooks (user)", codex_states["user"]),
+        ("Codex CLI hooks (repo)", codex_states["repo"]),
+        ("Codex CLI hooks (plugin scope; not writable)", codex_states["plugin"]),
+        (".doberman/ (policy + decision database)", str(Path(path) / CONFIG_DIR)),
+        ("TOTP enrollment", str(totp.resolve_path())),
+        ("password enrollment", str(password.resolve_path())),
+        ("fingerprint key", str(fingerprint.resolve_path())),
+        ("device-wide state directory", str(device_metrics.resolve_path())),
+        ("package", _format_command(argv) if argv else "development install; left in place"),
+    ]
+    return targets, kind, argv
+
+
+def _remove_file(path: Path, errors: list[str]) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        errors.append(f"{path}: {exc}")
+
+
+def _launch_package_removal(argv: list[str], errors: list[str]) -> None:
+    command = _format_command(argv)
+    typer.echo(f"package removal command: {command}")
+    if _WINDOWS:
+        try:
+            subprocess.Popen(  # noqa: S603 — fixed package-manager argv, delayed for locked files
+                ["cmd", "/c", f"ping -n 3 127.0.0.1 >nul & {command}"],  # noqa: S607 — ping = 2 s delay; `timeout` aborts on redirected stdin
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200),
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            errors.append(f"package removal ({command}): {exc}")
+            return
+        typer.echo(f"package removal scheduled: {command} (runs after this command exits)")
+        return
+
+    try:
+        completed = subprocess.run(argv, check=False)  # noqa: S603 — fixed package-manager argv
+    except OSError as exc:
+        errors.append(f"package removal ({command}): {exc}")
+        return
+    typer.echo(f"package removal exit code: {completed.returncode}")
+    if completed.returncode != 0:
+        errors.append(f"package removal ({command}): exit code {completed.returncode}")
+
+
+def _uninstall_global(path: str, yes: bool, dry_run: bool, keep_package: bool) -> None:
+    from doberman.hosthooks.install import (
+        load_settings,
+        remove_doberman_hooks,
+        resolve_settings_path,
+        write_settings,
+    )
+    from doberman.hosthooks.install_codex import (
+        codex_hook_install_states,
+        remove_codex_hooks,
+        resolve_codex_hooks_path,
+    )
+    from doberman.storage import device_metrics, fingerprint
+
+    targets, package_kind, package_argv = _global_uninstall_targets(path)
+    typer.echo(f"Doberman GLOBAL UNINSTALL requested for this device ({Path(path).resolve()}):")
+    for description, target_path in targets:
+        typer.echo(f"  - {description}: {target_path}")
+    typer.echo("")
+    typer.echo("Codex plugin-scope hooks are not writable by Doberman.")
+    typer.echo("  Run `codex plugin remove doberman` if that plugin is installed.")
+
+    if dry_run:
+        typer.echo("")
+        typer.echo("[dry-run] nothing removed.")
+        return
+
+    if not totp.is_enrolled() and not password.is_enrolled():
+        typer.echo(
+            "\nerror: uninstalling requires an enrolled possession factor - "
+            "run `doberman 2fa setup` or `doberman password set` first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    prompter = CliPrompter()
+    try:
+        if not yes:
+            typed = typer.prompt("Type DOBERMAN to confirm device-wide removal")
+            if typed.strip() != "DOBERMAN":
+                typer.echo("error: uninstall denied (DOBERMAN did not match); unchanged", err=True)
+                raise typer.Exit(code=1)
+        approved, method = _verify_possession_factor(
+            prompter, action_label="uninstalling Doberman from this device"
+        )
+    except typer.Exit:
+        raise
+    except Exception:  # noqa: BLE001 — any input/EOF/timeout error denies the uninstall
+        approved, method = False, "denied"
+    if not approved:
+        typer.echo(f"error: uninstall denied ({method}); unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    errors: list[str] = []
+    claude_installed = {
+        scope: installed for scope, _settings_path, installed in _hook_install_states(path)
+    }
+    for scope in ("global", "project", "local"):
+        if not claude_installed.get(scope):
+            continue
+        target = resolve_settings_path(scope, path)
+        try:
+            write_settings(target, remove_doberman_hooks(load_settings(target)))
+        except (ValueError, OSError) as exc:
+            errors.append(f"{target}: {exc}")
+
+    codex_installed = {
+        scope: installed
+        for scope, _hooks_path, installed in codex_hook_install_states(path)
+        if scope != "plugin"
+    }
+    for scope in ("user", "repo"):
+        if not codex_installed.get(scope):
+            continue
+        target = resolve_codex_hooks_path(scope, path)
+        try:
+            write_settings(target, remove_codex_hooks(load_settings(target)))
+        except (ValueError, OSError) as exc:
+            errors.append(f"{target}: {exc}")
+
+    project_dir = Path(path) / CONFIG_DIR
+    if project_dir.exists():
+        try:
+            shutil.rmtree(project_dir)
+        except OSError as exc:
+            errors.append(f"{project_dir}: {exc}")
+
+    for target in (totp.resolve_path(), password.resolve_path(), fingerprint.resolve_path()):
+        _remove_file(target, errors)
+
+    device_dir = device_metrics.resolve_path()
+    if device_dir.exists():
+        try:
+            shutil.rmtree(device_dir)
+        except OSError as exc:
+            errors.append(f"{device_dir}: {exc}")
+
+    typer.echo(
+        "warning: device-wide 2FA enrollment, password, and fingerprint key are removed; "
+        "a fresh `doberman setup` re-enrolls them."
+    )
+
+    if keep_package:
+        if package_argv:
+            typer.echo(f"package left in place (--keep-package): {_format_command(package_argv)}")
+        else:
+            typer.echo("development install detected; package left in place")
+    elif package_kind == "development":
+        typer.echo("development install detected; package left in place")
+    else:
+        _launch_package_removal(package_argv, errors)
+
+    if errors:
+        typer.echo("error: uninstall finished with errors - some items were NOT removed:", err=True)
+        for error in errors:
+            typer.echo(f"  - {error}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo("\nDoberman removed from this device.")
+
+
 @app.command(rich_help_panel="Getting started")
 def uninstall(
     path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
@@ -1918,14 +2278,24 @@ def uninstall(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print what would be removed; remove nothing."
     ),
+    global_: bool = typer.Option(
+        False, "--global", "-g", help="Remove Doberman from the whole device."
+    ),
+    keep_package: bool = typer.Option(
+        False, "--keep-package", help="Remove hooks and state, but leave the package installed."
+    ),
 ) -> None:
     """Fully remove Doberman from this project: host hooks + `.doberman/`.
 
-    Project-scoped only. This does **not** touch `--global` hooks (they protect
-    every project on this machine) or your device-wide password / 2FA / fingerprint
-    key / `~/.doberman/metrics.db` (all shared across every project Doberman
-    protects) — removing those is a separate, deliberate action, not a side effect
-    of cleaning up one project.
+    Project-scoped only. This does **not** touch `--global` hooks themselves (they
+    protect every project on this machine) or your device-wide password / 2FA /
+    fingerprint key / `~/.doberman/metrics.db` — removing those is a separate,
+    deliberate action, not a side effect of cleaning up one project. But a global
+    (or Codex user-scope) hook would otherwise keep firing here even after this
+    project's own hooks/`.doberman/` are gone, so when one is detected as still
+    installed, this project is also added to a device-wide exclusion list that the
+    global hook checks and skips — closing that gap without touching the hook file
+    itself. Run `doberman install-hooks` here again to clear the exclusion.
 
     Requires an enrolled possession factor (2FA if set up, otherwise your Doberman
     password) — the same gate as `doberman taint clear` / `doberman memory reset`.
@@ -1933,10 +2303,25 @@ def uninstall(
     irreversible action, so it also asks you to type the project directory name
     back before proceeding (skippable with `--yes`; the factor check is not).
     """
+    if global_:
+        _uninstall_global(path, yes, dry_run, keep_package)
+        return
+    from doberman.hosthooks.install_codex import (
+        codex_hook_install_states,
+        remove_codex_hooks,
+        resolve_codex_hooks_path,
+    )
+
     targets = _project_uninstall_targets(path)
     if not targets:
         typer.echo("Nothing to remove for this project.")
         return
+
+    global_hook_active = any(
+        scope == "global" and installed for scope, _, installed in _hook_install_states(path)
+    ) or any(
+        scope == "user" and installed for scope, _, installed in codex_hook_install_states(path)
+    )
 
     project_name = Path(path).resolve().name
     typer.echo(f"Doberman UNINSTALL requested for this project ({Path(path).resolve()}):")
@@ -1947,6 +2332,12 @@ def uninstall(
     typer.echo("  - hooks installed with --global")
     typer.echo("  - your Doberman password / 2FA enrollment / fingerprint key")
     typer.echo("  - ~/.doberman/metrics.db (device metrics)")
+    if global_hook_active:
+        typer.echo("")
+        typer.echo(
+            "A global (or Codex user-scope) hook is still installed on this machine — this "
+            "project will also be added to the device-wide exclusion list, so it skips it too."
+        )
 
     if dry_run:
         typer.echo("")
@@ -1988,11 +2379,6 @@ def uninstall(
         resolve_settings_path,
         write_settings,
     )
-    from doberman.hosthooks.install_codex import (
-        codex_hook_install_states,
-        remove_codex_hooks,
-        resolve_codex_hooks_path,
-    )
 
     errors: list[str] = []
     for scope, settings_path, installed in _hook_install_states(path):
@@ -2027,6 +2413,14 @@ def uninstall(
         raise typer.Exit(code=1)
 
     typer.echo("\nDoberman removed from this project.")
+
+    if global_hook_active:
+        add_exclusion(path)
+        typer.echo(
+            "This project has been added to the device-wide exclusion list, so the global "
+            "(or Codex user-scope) hook will skip it too. Run `doberman install-hooks` here "
+            "to bring protection back."
+        )
 
 
 @app.command(rich_help_panel="Getting started")
@@ -2097,6 +2491,8 @@ def setup(
                 break
             except ValueError as exc:
                 typer.echo(f"  {exc} - try again")
+
+    telemetry_cmd.configure_setup_consent(yes)
 
     # Save the chosen mode. First-run onboarding establishes the initial posture
     # freely (establish_ok); a re-run over an existing policy still gates a
@@ -2191,6 +2587,7 @@ def setup(
     typer.echo("")
     typer.echo("Doberman is now active.")
     typer.echo("Restart your Claude Code session to pick up the hooks.")
+    telemetry_cmd.capture_setup_completed(chosen_mode.value, scope, yes)
     typer.echo(
         "Next steps: `doberman password set`  |  `doberman 2fa setup` (optional)  |  "
         "`doberman status`  |  `doberman uninstall-hooks` (exit)"

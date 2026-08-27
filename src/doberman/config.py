@@ -297,3 +297,13 @@ def save_message_tone(tone: str, repo_root: str = ".") -> str:
     doc = load_policy(repo_root) or recommend_policy()
     save_policy(doc.with_message_tone(tone), repo_root)
     return tone
+
+
+def load_approval_memory_seconds(repo_root: str = ".") -> int:
+    """Return the bounded exact-approval TTL (default five minutes)."""
+    doc = load_policy(repo_root)
+    if doc is not None:
+        return doc.approval_memory_seconds
+    # A missing policy uses the product default; an existing but unreadable or
+    # malformed policy disables memory so corruption cannot silently loosen auth.
+    return 0 if _policy_file_path(repo_root).exists() else 300

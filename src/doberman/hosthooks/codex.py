@@ -136,6 +136,9 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
     NEVER raises — any failure becomes a deny.
     """
     try:
+        if spine.is_excluded(payload.get("cwd")):
+            return None  # device-wide excluded project — full abstain, no I/O
+
         tool_name = payload.get("tool_name")
         if not isinstance(tool_name, str) or not tool_name:
             return hookio.deny(_EVENT)  # no identifiable action -> refuse
@@ -158,21 +161,24 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
         if result.acted is Verdict.PASS:
             return None  # raise-only; monitor-softened history recorded by the spine
         if result.acted is Verdict.AUTH:
-            hook_result = hookio.resolve_auth(
+            hook_result, auth_method = hookio.resolve_auth_result(
                 result.decision,
                 result.action,
                 event=_EVENT,
                 prompter=AUTH_PROMPTER,
                 message_tone=load_message_tone(result.repo_root),
+                repo_root=result.repo_root,
+                session_id=result.session_id,
             )
         else:
             hook_result = hookio.decision_payload(result.decision, event=_EVENT)
+            auth_method = "blocked"
         spine.record_history(
             result.decision,
             result.action,
             result.repo_root,
             result.session_id,
-            auth_result=_auth_result(hook_result),
+            auth_result=auth_method,
         )
         return hook_result
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error

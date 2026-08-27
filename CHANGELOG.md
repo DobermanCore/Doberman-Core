@@ -2,16 +2,104 @@
 
 Shipped history for Doberman. Planned work lives on the [roadmap](README.md#roadmap) and the
 [project board](https://github.com/users/fu351/projects/5); exact per-commit detail is in the
-[git log](https://github.com/fu351/Doberman-Core/commits/main) and
-[releases](https://github.com/fu351/Doberman-Core/releases) (latest: **v0.18.1**, a docs patch fixing the README images on PyPI, atop **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
+[git log](https://github.com/DobermanCore/Doberman-Core/commits/main) and
+[releases](https://github.com/DobermanCore/Doberman-Core/releases) (latest: **v0.18.3**, the second friction-reduction patch — opt-in tap-to-approve 2FA (a Windows Hello / Touch ID biometric can stand in for the TOTP code) — atop **v0.18.2**'s friction-reduction patch — spurious secret-detector prompts on ordinary ids/paths/UUIDs fixed, and the detector now self-checks and fails closed — atop **v0.18.1**'s README-image docs patch and **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
 
-## Unreleased (merged since v0.18.1)
+## Unreleased
 
 - **`doberman demo --quiet`:** suppresses the banner, the per-scenario narration, and the closing
   `doberman dash` hint, keeping only the summary line/table (silent on a full match, loud on a
   mismatch) and the exit code — so `demo` can run as a CI smoke test ("is the engine alive")
   without polluting build logs. Mirrors `scan --quiet`; display-only, the scenarios and the engine
   path are untouched.
+- **`doberman uninstall` now actually stops protection when hooks are global.** Previously,
+  `uninstall` was project-scoped only: if a global (`--global`) Claude Code hook or a Codex
+  `user`-scope hook was still installed, it kept firing in the "uninstalled" project and silently
+  recreated `.doberman/` there the next time any decision needed recording. `uninstall` now
+  detects this and automatically adds the project to a device-wide exclusion list
+  (`~/.doberman/excluded_projects.json`) that the (unchanged) global hook checks — first, before
+  anything else — on every call, so an excluded project gets a true no-op instead. The list is
+  only ever written by the already possession-factor-gated `uninstall` flow; reading it is a pure,
+  side-effect-free check that fails closed. Run `doberman install-hooks` in that project again to
+  clear the exclusion (no gate needed — re-arming protection is a strengthen). `doberman status`
+  reports whether the current project is excluded.
+- **`doberman doctor` catches dangling hook entries.** New critical `Hook command` check: when hooks are
+  installed but the bare `doberman` they invoke is not on PATH (package removed, bin dir not on PATH), the
+  host fails the hook and carries on unmediated, so `doctor` now fails and names the fix - put the binary
+  back on PATH, or strip the entries with `doberman uninstall-hooks`. Diagnosis only; `doctor` stays
+  read-only.
+- **Device-wide uninstall:** `doberman uninstall --global` now removes writable Claude Code and Codex
+  hooks, project state, possession factors, the fingerprint key, and device state before removing the
+  package through pip or pipx. The same fail-closed factor gate runs before any removal; `--yes` skips
+  only the typed `DOBERMAN` confirmation, `--dry-run` changes nothing, and `--keep-package` preserves
+  the package. Codex plugin hooks remain under `codex plugin` control.
+- **Five-minute exact-action approval memory.** A repeat of an action approved with local auth or
+  2FA still prompts, but at one-click `soft_confirm`, keyed only by an HMAC of the exact pre-redaction
+  action. Destructive, critical, excluded, or tainted-session actions never downgrade; soft confirms
+  never chain; `doberman approvals status|clear|ttl` exposes bounded human controls.
+
+## v0.18.3 — 2026-08-26
+
+> **Friction reduction, part two.** The second factor no longer has to be a typed code. Turn on an
+> approval method and a single Windows Hello / Touch ID tap satisfies a 2FA-tier challenge — presence
+> and possession in one gesture — with TOTP still there as the fallback. Opt-in, fail-closed, and
+> pluggable, so phone-push backends can register without touching the core.
+
+- **Approve 2FA with a tap instead of a code (opt-in, pluggable).** A new approval-method framework lets
+  a Windows Hello / Touch ID biometric — or a future push channel — stand in for the TOTP code on a
+  2FA-tier challenge: one tap proves presence and possession. It is strictly opt-in
+  (`doberman 2fa methods enable <name>`); with nothing enabled the flow is unchanged. **Fail-closed and
+  never a bypass:** a timeout, cancel, error, or an unavailable device denies or falls back to TOTP —
+  only an explicit human approval (or a valid code) satisfies the tier. Windows Hello ships as the first
+  backend (`pip install "doberman-core[winhello]"`, Windows-only); Duo and Telegram/ntfy/webhook follow.
+  Third-party backends register through the `doberman.approval_methods` entry-point group.
+
+## v0.18.2 — 2026-08-25
+
+> **Friction reduction.** This release is about getting out of your way. The secret detector no longer
+> fires spurious approval prompts on ordinary identifiers, paths, and UUIDs — the single biggest source
+> of click-through fatigue — and it now self-checks at import so a bad change can't silently break it.
+> The opt-in usage telemetry and the rewritten docs from the last cycle ride along.
+
+- **Weak-secret false positives on identifiers, paths, and ids fixed; the rule now self-checks.** The
+  generic high-entropy heuristic no longer steps an ordinary identifier, a relative path, a UUID/digest,
+  or a `word+number` build tag up to an `AUTH` prompt. That false positive trained click-through fatigue
+  and, through the host-hook taint ledger, could gate a whole session's egress after a single
+  UUID-bearing scratch path. The new exemption is shape-based and raise-only — every real credential
+  still fires, and the measured cost is documented under README → Known limitations. Separately,
+  `SecretLeakageRule` runs an invariant self-check at import and **degrades to a fail-closed `AUTH`** if it
+  ever cannot evaluate, so a bad edit can neither let a secret through (never `PASS`) nor brick tool
+  mediation into a `rule_error` on every action.
+- **Anonymous CLI telemetry is available as an explicit opt-in.** It is off by default, uses only
+  stdlib networking, sends allowlisted counts and command names to PostHog, and never runs on the
+  per-tool hook or proxy paths. `doberman telemetry on|off|status` controls the local consent state.
+- **Docs rewrite, and a docs site.** Every page under `docs/`, the README, `CONTRIBUTING.md`, and the
+  OpenClaw adapter README were rewritten for accuracy against the v0.18.1 `--help` output and for voice
+  (plain, specific, no marketing). The README is now a front door (6.9k → 3.5k words); its deep sections
+  moved to `docs/TUNING.md`, `docs/PLUGINS.md`, `docs/RECOVERY.md`, and `docs/TURN_GATE.md`. The CLI
+  reference covers all 37 commands (the `2fa` group, `uninstall`, `message-tone`, and `tools approve` were
+  missing); the reason-code catalogue header says 57, matching the enum, and five raise-site columns were
+  corrected; the two overlapping release docs merged into `docs/RELEASING.md`; the OTel sink doc now
+  states the real log level for failed posts (`warning`, not `debug`). These files are also the source of
+  the new documentation site at [docs.trydoberman.dev](https://docs.trydoberman.dev).
+- **Dashboard: per-project tab title.** `doberman dash` is already scoped to one repo per run
+  (`--path`, default the current directory), but every browser tab read the same "Doberman
+  Dashboard" title, so running several dashboards side by side (one per project) gave no way to
+  tell the tabs apart. The tab title and the topbar now carry the repo folder's name (e.g.
+  `widget-service — Doberman Dashboard`), safely escaped for both the HTML shell and the inline
+  JS unread-count title update.
+- **Security fix (#399): a GUI auth dialog can no longer silently misbehave off the main thread on macOS.** Every real caller runs a `Prompter` on a background daemon thread (`doberman.auth.challenge._run_with_deadline`, or `asyncio.to_thread` on the MCP-proxy path) so a wall-clock deadline can be enforced on a channel that might otherwise block forever. Cocoa's Tk backend requires its event loop to start on the process's real main thread; constructing `Tk()` off it is a documented hazard that does not reliably surface as a catchable error the way a missing `$DISPLAY` does — it can silently fail to render, or abort the process, either of which could leave an `AUTH`-tier action looking approved with no human ever having seen a dialog. `GuiPrompter` now refuses before ever touching `tkinter` when it detects this exact condition (macOS + off the main thread), reporting the channel unavailable so `FallbackPrompter` moves on to the terminal — and if that is also unavailable, the action is denied. Windows/Linux behavior is unchanged.
+- **Deps: `river` capped below 0.26 on Python 3.11.** river 0.26.0 subscripts
+  `csv.DictReader` at import time, which only Python >= 3.12 supports, so any
+  import of the subjective layer (and therefore the whole test suite) died on
+  3.11 with `TypeError: type 'DictReader' is not subscriptable`. 3.12+ keeps
+  the unpinned floor.
+- **`calibrate_perplexity_threshold`, the model-agnostic half of the OT.4 perplexity seam:**
+  `doberman.tokens.calibrate_perplexity_threshold(benign_scores, target_fpr)` returns the
+  nearest-rank empirical `(1 - target_fpr)` quantile of a benign score corpus, for the
+  `TokenChannelDetector` `perplexity_fn`/`perplexity_threshold` seam. Fails closed (raises
+  `ValueError`) on an out-of-range `target_fpr` or fewer than 20 benign scores. No model, no
+  new dependency; the reference scorer that calls it lands separately as an optional extra.
 - **Auth dialog: the highlighted button takes the click again.** The Canvas focus ring was
   drawn on top of the keyboard-highlighted button, and Tk hit-tests a polygon's whole interior
   even when unfilled — so clicking Deny (or Approve, after Tab) did nothing and the hover
@@ -50,7 +138,7 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   denies, and the 2FA code entry stays masked.
 - **Release SBOM:** every GitHub Release now ships a CycloneDX SBOM (`sbom.json`) listing the
   exact resolved dependency set, generated by `pip-audit` and attached automatically by the
-  publish workflow. See [RELEASING.md](RELEASING.md#software-bill-of-materials-sbom).
+  publish workflow. See [RELEASING.md](docs/RELEASING.md#software-bill-of-materials-sbom).
 - **New:** `doberman tune` — friction telemetry report (interventions/session, top AUTH reasons,
   approval rates, weekly trend) plus possession-gated standing-elevation proposals where an AUTH
   class has been approved every time; never applies anything itself, `--accept <id>` routes through
@@ -65,6 +153,26 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   "no decisions yet" empty-state (it stayed visible even with rows); the wrapper is removed so the
   empty-state hides correctly again, and a test now guards the sibling structure the reveal needs.
   The README demo gif is refreshed to the new dark brand look.
+- **Environment-variable dump detection** (thanks @QY-25123): a shell command whose sole effect
+  is to enumerate/print the process environment — bare `env`, any form of `printenv`, `export`/
+  `export -p`, `declare -x`/`typeset -x` with no named variable, or a PowerShell `Env:` drive
+  listing (`Get-ChildItem Env:`/`gci env:`/`dir env:`/`ls Env:`) — now steps up to authentication
+  before it runs. Previously these fell through a gap between the destructive-command rule (no
+  file/network target to check) and the secrets rule (nothing secret-shaped in the *command
+  text* itself, only in output the command hadn't produced yet): `env`'s own listing in
+  `_TRANSPARENT_WRAPPERS` stripped it down to an empty token list pre-execution, so the process
+  environment — a common carrier for API keys and tokens — could be printed straight into an
+  agent's context with no pre-execution check at all, only a same-turn output scan after the
+  fact. New reason code `environment_dump_command`. Legitimate uses are unaffected: `env
+  FOO=bar real_command` (env as a wrapper) and `export FOO=bar`/`declare -x FOO=bar` (setting one
+  variable) still pass.
+- **New:** the dashboard can now change the strictness mode itself (`GET`/`POST /api/mode`,
+  a `change` control next to the mode badge) instead of requiring the terminal. It routes
+  through the exact same gate as `doberman mode`/`doberman setup` — a new shared
+  `doberman.policy.drift.apply_mode_change` — so raising strictness stays frictionless and
+  lowering it is denied without the same possession factor (2FA if enrolled, else the Doberman
+  password), recorded in the same append-only ledger. The dash server never verifies the code
+  itself, mirroring `/api/resolve`'s existing discipline.
 - **MCP tool-schema pinning** (#246): every proxied `tools/list` now records a keyed-HMAC
   trust-on-first-use pin for each tool's name, description, and input schema. A later mismatch
   raises live calls to AUTH in Light/Balanced or BLOCK in Strict/Paranoid until a human runs

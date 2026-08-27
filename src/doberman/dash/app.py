@@ -48,21 +48,37 @@ D5 (polish) layers verdict/risk color badges, a mode + enforcement header bar,
 and CSS-only empty states onto this same inline shell - the dark-by-default
 palette is formalized as CSS custom properties. Still no build toolchain, no
 new endpoints, no change to auth/redaction/decision-path behavior.
+
+D6 lets the strictness mode itself be changed from the dashboard: ``GET
+/api/mode`` reports the current mode + the four valid names; ``POST
+/api/mode`` (body ``{"mode": <name>, "code"?: <str>}``) sets it. This goes
+through the SAME chokepoint as ``doberman mode``/``doberman setup`` -
+:func:`doberman.policy.drift.apply_mode_change` - so raising strictness stays
+frictionless and lowering it is gated behind the same possession factor (TOTP
+if enrolled, else the Doberman password), recorded in the same append-only
+ledger. Exactly like ``/api/resolve``, the dash server NEVER verifies the code
+itself - ``code`` rides through opaquely to the existing gate, which performs
+the real verification.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hmac
+import html
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from doberman.config import load_mode
 from doberman.dash.stats import build_stats, reason_codes
+from doberman.policy.drift import apply_mode_change
+from doberman.policy.modes import SecurityMode
 from doberman.storage import approvals
 from doberman.storage.log import read_decisions, read_decisions_since
 
@@ -82,7 +98,7 @@ _HTML_SHELL = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Doberman Dashboard</title>
+<title>%%DASH_PAGE_TITLE%%</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root {
@@ -151,6 +167,11 @@ _HTML_SHELL = """<!doctype html>
   .brand .word {
     font-family: var(--mono); font-weight: 700; font-size: .95rem;
     letter-spacing: .06em; color: var(--tan);
+  }
+  .brand .project {
+    font-family: var(--mono); font-weight: 600; font-size: .95rem;
+    color: var(--fg-2); padding-left: .6rem; margin-left: .6rem;
+    border-left: 1px solid var(--rule);
   }
   .topbar-right { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
   .chip {
@@ -235,6 +256,14 @@ _HTML_SHELL = """<!doctype html>
   #pending-list button.deny:hover { border-color: var(--block); background: var(--block-bg); }
   #pending-list button.approve { background: var(--auth); border: 1px solid var(--auth); color: var(--ink-0); }
   #pending-list button.approve:hover { background: var(--tan-hi); border-color: var(--tan-hi); }
+  .section-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: 1.4rem; }
+  #refresh-btn {
+    font-family: var(--font); font-size: .86rem; font-weight: 600; padding: .35rem 1rem;
+    border-radius: var(--r-sm); cursor: pointer;
+    background: transparent; border: 1px solid var(--rule); color: var(--fg);
+    transition: background-color var(--d), border-color var(--d);
+  }
+  #refresh-btn:hover { border-color: var(--tan-hi); color: var(--tan-hi); }
   #feed {
     max-height: 60vh; overflow-y: auto;
     border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--ink-1);
@@ -248,6 +277,31 @@ _HTML_SHELL = """<!doctype html>
   #feed li:last-child { border-bottom: none; }
   #feed li:hover { background: var(--ink-2); }
   #feed li .detail { color: var(--fg-3); overflow-wrap: anywhere; }
+  #mode-edit-btn {
+    font: inherit; font-size: .7rem; font-weight: 600; padding: .2rem .5rem;
+    border: 1px solid var(--rule); border-radius: 4px; background: transparent;
+    color: var(--fg-3); cursor: pointer;
+  }
+  #mode-edit-btn:hover { background: var(--neutral-bg); color: var(--fg); }
+  #mode-form {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+    margin: -.2rem 0 1.2rem; font-size: .82rem;
+  }
+  #mode-form select, #mode-form input {
+    font: inherit; font-size: .82rem; padding: .35rem .55rem;
+    background: var(--ink-2); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px;
+  }
+  #mode-form input { width: 16rem; letter-spacing: .04em; }
+  #mode-form button {
+    font: inherit; font-size: .8rem; font-weight: 600; padding: .35rem .85rem;
+    border: 1px solid var(--rule); border-radius: 4px; background: transparent;
+    color: inherit; cursor: pointer;
+  }
+  #mode-save-btn { border-color: var(--pass); color: var(--pass); }
+  #mode-save-btn:hover { background: var(--pass-bg); }
+  #mode-save-btn:disabled { opacity: .55; cursor: default; }
+  #mode-cancel-btn:hover { background: var(--neutral-bg); }
+  #mode-error { color: var(--block); font-family: var(--mono); font-size: .78rem; }
 </style>
 </head>
 <body>
@@ -259,23 +313,40 @@ _HTML_SHELL = """<!doctype html>
         <text x="16" y="21.5" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-weight="700" font-size="15" style="fill:var(--tan)">D</text>
       </svg>
       <span class="word">DOBERMAN</span>
+      <span class="project">%%DASH_PROJECT_NAME%%</span>
     </div>
     <div class="topbar-right">
       <span class="chip" id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></span>
       <span class="badge badge-neutral" id="mode-badge">mode: -</span>
+      <button type="button" id="mode-edit-btn">change</button>
       <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
       <span class="status-pill ok" id="guard-status"><span class="pip" id="guard-pip" aria-hidden="true">●</span><span id="guard-label">ON GUARD</span></span>
     </div>
+  </div>
+  <div id="mode-form" hidden>
+    <select id="mode-select" aria-label="Security mode"></select>
+    <input id="mode-code" type="password" autocomplete="off"
+      placeholder="2FA code or password (only needed to lower strictness)">
+    <button type="button" id="mode-save-btn">Save</button>
+    <button type="button" id="mode-cancel-btn">Cancel</button>
+    <span id="mode-error"></span>
   </div>
   <div id="stats">stats loading...</div>
   <h2>Pending approvals</h2>
   <ul id="pending-list" aria-live="polite"></ul>
   <div id="pending-empty" class="empty-state">Nothing pending. Doberman's watching.</div>
-  <h2>Recent decisions</h2>
+  <div class="section-head">
+    <h2>Recent decisions</h2>
+    <button type="button" id="refresh-btn">Refresh</button>
+  </div>
   <ul id="feed"></ul>
   <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
   <script>
     (function () {
+      // Rendered server-side per `create_app(repo_root=...)` call - this is
+      // why the tab title differs across dashboards opened for different
+      // projects instead of every tab reading the same "Doberman Dashboard".
+      var DASH_BASE_TITLE = %%DASH_JS_TITLE_JSON%%;
       // Verdict/risk/enforcement -> badge class lookups. Explicit,
       // exact-substring-matchable object literals (not an if/else chain) so
       // the served shell can be asserted against directly by a test.
@@ -325,6 +396,14 @@ _HTML_SHELL = """<!doctype html>
       var statsEl = document.getElementById("stats");
       var modeBadge = document.getElementById("mode-badge");
       var enforcementBadge = document.getElementById("enforcement-badge");
+      var modeEditBtn = document.getElementById("mode-edit-btn");
+      var modeForm = document.getElementById("mode-form");
+      var modeSelect = document.getElementById("mode-select");
+      var modeCodeInput = document.getElementById("mode-code");
+      var modeSaveBtn = document.getElementById("mode-save-btn");
+      var modeCancelBtn = document.getElementById("mode-cancel-btn");
+      var modeErrorEl = document.getElementById("mode-error");
+      var modeEditing = false;
       var feedEl = document.getElementById("feed");
       var MAX_FEED_ROWS = 200;
 
@@ -400,6 +479,12 @@ _HTML_SHELL = """<!doctype html>
         modeBadge.textContent = "mode: " + s.mode;
         enforcementBadge.textContent = "enforcement: " + s.enforcement;
         enforcementBadge.className = ENFORCEMENT_BADGE_CLASS[s.enforcement] || "badge badge-neutral";
+        // Keep the (closed) mode selector's value in sync with reality - but
+        // never while the user has the form open with an in-progress choice,
+        // or a poll landing mid-edit would silently discard what they picked.
+        if (!modeEditing && modeSelect.options.length) {
+          modeSelect.value = s.mode;
+        }
       }
 
       // Stats refresh on an interval, not just at page load - otherwise the
@@ -418,6 +503,87 @@ _HTML_SHELL = """<!doctype html>
       }
       refreshStats();
       setInterval(refreshStats, STATS_REFRESH_MS);
+
+      // Mode control: fetch the valid mode names once to populate the
+      // selector, then let the user pick a new one. Raising strictness is
+      // frictionless server-side; lowering it needs a possession-factor code
+      // (2FA or password) in the same request - the server decides which is
+      // required and verifies it, this page just forwards whatever the user
+      // typed and shows the resulting error if any.
+      fetch("/api/mode", { headers: { "Authorization": "Bearer " + token } })
+        .then(function (res) {
+          if (!res.ok) { throw new Error("status " + res.status); }
+          return res.json();
+        })
+        .then(function (m) {
+          modeSelect.textContent = "";
+          (m.modes || []).forEach(function (name) {
+            var opt = document.createElement("option");
+            opt.value = name;
+            opt.textContent = name;
+            modeSelect.appendChild(opt);
+          });
+          modeSelect.value = m.mode;
+        })
+        .catch(function () {
+          // No modes loaded -> leave the selector empty and the edit button
+          // inert rather than let the user submit a change we can't populate.
+          modeEditBtn.disabled = true;
+        });
+
+      function openModeForm() {
+        modeEditing = true;
+        modeErrorEl.textContent = "";
+        modeCodeInput.value = "";
+        modeForm.hidden = false;
+      }
+
+      function closeModeForm() {
+        modeEditing = false;
+        modeForm.hidden = true;
+        modeCodeInput.value = "";
+        modeErrorEl.textContent = "";
+      }
+
+      modeEditBtn.addEventListener("click", function () {
+        if (modeForm.hidden) { openModeForm(); } else { closeModeForm(); }
+      });
+      modeCancelBtn.addEventListener("click", closeModeForm);
+
+      modeSaveBtn.addEventListener("click", function () {
+        var chosen = modeSelect.value;
+        if (!chosen) { return; }
+        var body = { mode: chosen };
+        if (modeCodeInput.value) { body.code = modeCodeInput.value; }
+        modeErrorEl.textContent = "";
+        modeSaveBtn.disabled = true;
+        fetch("/api/mode", {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(body)
+        }).then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, data: data };
+          });
+        }).then(function (result) {
+          modeSaveBtn.disabled = false;
+          if (result.ok) {
+            modeBadge.textContent = "mode: " + result.data.mode;
+            closeModeForm();
+            refreshStats();
+          } else {
+            // textContent only - never render a server error string as markup.
+            modeErrorEl.textContent = (result.data && result.data.error) || "mode change failed";
+            modeCodeInput.value = "";
+          }
+        }).catch(function () {
+          modeSaveBtn.disabled = false;
+          modeErrorEl.textContent = "network error - try again";
+        });
+      });
 
       var pendingList = document.getElementById("pending-list");
       var PENDING_POLL_MS = 2000;
@@ -539,7 +705,7 @@ _HTML_SHELL = """<!doctype html>
 
           pendingList.appendChild(li);
         });
-        document.title = (rows.length ? "(" + rows.length + ") " : "") + "Doberman Dashboard";
+        document.title = (rows.length ? "(" + rows.length + ") " : "") + DASH_BASE_TITLE;
         updateGuardStatus(rows.length);
       }
 
@@ -555,6 +721,13 @@ _HTML_SHELL = """<!doctype html>
 
       refreshPending();
       setInterval(refreshPending, PENDING_POLL_MS);
+
+      // Manual refresh for the stats + pending views; both functions are safe
+      // to call at any time and no new endpoint is involved.
+      document.getElementById("refresh-btn").addEventListener("click", function () {
+        refreshStats();
+        refreshPending();
+      });
 
       // EventSource cannot set request headers, so the token travels as a
       // query param here only (see doberman.dash.app._feed_token_matches).
@@ -652,10 +825,55 @@ def _feed_token_matches(request: Request, token: str) -> bool:
     return hmac.compare_digest(supplied, token)
 
 
-async def _index(request: Request) -> Response:
-    # No auth: the shell carries no data, only the JS that reads the token
-    # back out of its own URL and calls the authenticated API routes.
-    return HTMLResponse(_HTML_SHELL)
+def _project_display_name(repo_root: str) -> str:
+    """The folder name of ``repo_root``, for telling dashboards apart.
+
+    Each ``doberman dash`` run is scoped to one repo (``--path``, default
+    cwd) - see :func:`create_app`. Resolving before taking ``.name`` handles
+    both a relative ``"."`` and a path with a trailing slash; falls back to
+    the resolved path itself for the rare case that has no name component
+    (e.g. ``repo_root="/"``).
+    """
+    resolved = Path(repo_root).resolve()
+    return resolved.name or str(resolved)
+
+
+def _js_string_literal(value: str) -> str:
+    """Encode ``value`` as a JS string literal, safe inside a ``<script>`` body.
+
+    ``json.dumps`` alone escapes quotes/backslashes but leaves ``<``, ``>``,
+    and ``&`` untouched - a value containing ``</script>`` would prematurely
+    close the enclosing script element, since the HTML tokenizer looks for
+    that literal byte sequence regardless of JS string context. Escaping
+    those three characters as unicode escapes closes that off entirely
+    (the same pattern used to embed untrusted JSON inside inline scripts
+    elsewhere), which matters here because the project name is a filesystem
+    folder name, not a value Doberman controls.
+    """
+    encoded = json.dumps(value)
+    return encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def _render_shell(repo_root: str) -> str:
+    project = _project_display_name(repo_root)
+    page_title = f"{project} — Doberman Dashboard"
+    return (
+        _HTML_SHELL.replace("%%DASH_PAGE_TITLE%%", html.escape(page_title))
+        .replace("%%DASH_PROJECT_NAME%%", html.escape(project))
+        .replace("%%DASH_JS_TITLE_JSON%%", _js_string_literal(page_title))
+    )
+
+
+def _make_index_route(repo_root: str) -> Route:
+    shell = _render_shell(repo_root)
+
+    async def index(request: Request) -> Response:
+        # No auth: the shell carries no data, only the JS that reads the
+        # token back out of its own URL and calls the authenticated API
+        # routes.
+        return HTMLResponse(shell)
+
+    return Route("/", index)
 
 
 def _make_health_route(token: str) -> Route:
@@ -811,6 +1029,65 @@ def _make_resolve_route(token: str, repo_root: str) -> Route:
     return Route("/api/resolve/{approval_id}", resolve, methods=["POST"])
 
 
+class _ModeChangePrompter:
+    """Non-interactive :class:`~doberman.auth.challenge.Prompter` for ``POST /api/mode``.
+
+    The POST request itself is the human's confirmation (they explicitly chose
+    a new mode in the UI), so ``confirm`` always succeeds; ``read_code`` returns
+    the possession-factor code the request body carried, or raises if none was
+    supplied - the ``Prompter`` protocol requires a raise on no-input so the gate
+    treats a missing code as a denial (fail closed), never as an empty-but-valid
+    answer. Mirrors ``/api/resolve``: this module never verifies the code, only
+    carries it opaquely to :func:`doberman.policy.drift.apply_mode_change`.
+    """
+
+    def __init__(self, code: str | None) -> None:
+        self._code = code
+
+    def confirm(self, message: str) -> bool:
+        return True
+
+    def read_code(self, message: str) -> str:
+        if not self._code:
+            raise ValueError("no possession-factor code supplied")
+        return self._code
+
+
+def _make_mode_route(token: str, repo_root: str) -> Route:
+    async def mode_route(request: Request) -> Response:
+        if not _token_matches(request, token):
+            return _unauthorized()
+
+        if request.method == "GET":
+            return JSONResponse(
+                {"mode": load_mode(repo_root), "modes": [m.value for m in SecurityMode]}
+            )
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        name = body.get("mode")
+        if not isinstance(name, str) or not name:
+            return JSONResponse({"error": "mode is required"}, status_code=400)
+        code = body.get("code")
+
+        try:
+            saved = await apply_mode_change(
+                name,
+                repo_root,
+                "doberman dashboard",
+                prompter=_ModeChangePrompter(code if isinstance(code, str) else None),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if saved is None:
+            return JSONResponse({"error": "mode change denied"}, status_code=403)
+        return JSONResponse({"mode": saved})
+
+    return Route("/api/mode", mode_route, methods=["GET", "POST"])
+
+
 def create_app(
     token: str,
     repo_root: str = ".",
@@ -829,7 +1106,7 @@ def create_app(
     their defaults (real interval, unbounded).
     """
     routes = [
-        Route("/", _index),
+        _make_index_route(repo_root),
         _make_health_route(token),
         _make_stats_route(token, repo_root),
         _make_feed_route(
@@ -837,5 +1114,6 @@ def create_app(
         ),
         _make_pending_route(token, repo_root),
         _make_resolve_route(token, repo_root),
+        _make_mode_route(token, repo_root),
     ]
     return Starlette(routes=routes)

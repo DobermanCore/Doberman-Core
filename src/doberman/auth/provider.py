@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from doberman.auth import totp
+from doberman.auth.approval import ApprovalOutcome, request_approval, resolve_approval_method
 from doberman.auth.challenge import AuthResult, AuthTier, Prompter
 from doberman.explain import _describe_reason
 from doberman.models import ActionType, Decision, SecurityObject
@@ -115,16 +116,18 @@ def _challenge_message(
     facts — reason codes stay on the Decision and in the logs either way.
     """
     target = action.target or "(no target)"
+    notice = action.metadata.get("approval_memory_notice")
+    prefix = f"{notice}\n\n" if isinstance(notice, str) and notice else ""
     if tone == "technical":
         reasons = ", ".join(decision.reason_codes) or "unspecified"
-        return (
+        return prefix + (
             f"[RISK: {decision.final_risk.upper()}]  Doberman authentication required [{tier.value}]\n"
             f"  role:   {action.agent_role}\n"
             f"  action: {action.tool_name} -> {target}\n"
             f"  reason: {reasons} - {decision.explanation.strip() or 'no further detail'}\n"
             f"Approve THIS exact action?"
         )
-    return (
+    return prefix + (
         f"Your agent wants to {_plain_verb(action.action_type)}:\n"
         f"\n"
         f"    {target}\n"
@@ -155,7 +158,7 @@ class LocalAuthProvider:
         message = _challenge_message(decision, action, tier, message_tone)
 
         try:
-            approved, method = self._run_tier(tier, message, prompter)
+            approved, method = self._run_tier(tier, message, prompter, action.id)
         except Exception:  # noqa: BLE001 — any input/timeout error is a denial
             logger.info("local auth challenge failed for action %s; denying", action.id)
             approved, method = False, "error"
@@ -169,16 +172,38 @@ class LocalAuthProvider:
         )
 
     @staticmethod
-    def _run_tier(tier: AuthTier, message: str, prompter: Prompter) -> tuple[bool, str]:
-        """Collect tier-appropriate proof. Returns (approved, method)."""
+    def _run_tier(
+        tier: AuthTier, message: str, prompter: Prompter, action_id: str = ""
+    ) -> tuple[bool, str]:
+        """Collect tier-appropriate proof. Returns (approved, method).
+
+        For the 2FA tiers, a configured approval method (a Windows Hello / Touch ID
+        biometric, a phone push — :mod:`doberman.auth.approval`) is presence AND
+        possession in a single tap and **replaces the TOTP code**. It runs only when
+        the user has explicitly enabled an available method; if none is enabled, or
+        the method reports itself unavailable, the flow falls back to confirm + TOTP
+        — still a real second factor, never a bypass. Only an explicit human
+        ``approved`` (or a valid TOTP code) satisfies the tier; a timeout, cancel,
+        error, or ``denied`` all deny.
+        """
         if tier in (AuthTier.soft_confirm, AuthTier.local_auth):
             return prompter.confirm(message), tier.value
 
-        # two_factor and role_elevation both require presence AND a TOTP code.
+        # two_factor and role_elevation require presence AND possession.
+        elevation = tier is AuthTier.role_elevation
+        method = resolve_approval_method()
+        if method is not None:
+            outcome = request_approval(method, message, action_id=action_id)
+            if outcome is ApprovalOutcome.approved:
+                return True, f"{method.name}+elevation" if elevation else method.name
+            if outcome is ApprovalOutcome.denied:
+                return False, "denied"
+            # ApprovalOutcome.unavailable -> fall through to the TOTP path below.
+
         if not prompter.confirm(message):
             return False, "denied"
         code = prompter.read_code("Enter your 2FA code")
-        return totp.verify(code), "totp" if tier is AuthTier.two_factor else "totp+elevation"
+        return totp.verify(code), "totp+elevation" if elevation else "totp"
 
 
 #: The single built-in provider, constructed once.

@@ -1,6 +1,6 @@
 [project]
 name = "doberman-core"
-version = "0.18.1"
+version = "0.18.3"
 description = "Adaptive authorization layer for coding agents (open core)"
 readme = "README.md"
 license = "Apache-2.0"
@@ -34,7 +34,11 @@ dependencies = [
     "pyotp",
     "pyyaml",
     "typer",
-    "river>=0.21",
+    "river>=0.21; python_version >= '3.12'",
+    # river 0.26.0 subscripts csv.DictReader at import time (PEP 585 on a stdlib
+    # class that only grew __class_getitem__ in 3.12), so it cannot even be
+    # imported on 3.11. Cap it there; lift when river ships a 3.11-safe release.
+    "river>=0.21,<0.26; python_version < '3.12'",
     "numpy",
     "scipy",
 ]
@@ -45,14 +49,17 @@ explain = ["anthropic"]
 tui = ["textual"]
 dash = ["starlette", "uvicorn"]
 sbom = ["pip-audit"]
+# Windows Hello biometric approval (2FA). Windows-only; the backend degrades to a
+# TOTP fallback when this is absent or off-Windows, so it is never a hard dependency.
+winhello = ["winsdk; sys_platform == 'win32'"]
 
 [project.scripts]
 doberman = "doberman.cli.main:app"
 
 [project.urls]
-Homepage = "https://github.com/fu351/Doberman-Core"
-Repository = "https://github.com/fu351/Doberman-Core"
-Issues = "https://github.com/fu351/Doberman-Core/issues"
+Homepage = "https://github.com/DobermanCore/Doberman-Core"
+Repository = "https://github.com/DobermanCore/Doberman-Core"
+Issues = "https://github.com/DobermanCore/Doberman-Core/issues"
 
 [build-system]
 requires = ["hatchling"]
@@ -123,6 +130,12 @@ name = "Public core must not depend on the private enterprise package"
 type = "forbidden"
 source_modules = ["doberman"]
 forbidden_modules = ["doberman_enterprise"]
+
+[[tool.importlinter.contracts]]
+name = "CLI telemetry must not depend on a tool-call hot path"
+type = "forbidden"
+source_modules = ["doberman.telemetry"]
+forbidden_modules = ["doberman.proxy", "doberman.hosthooks"]
 
 # Hot-path decoupling: the objective-rules package is built by the host hooks on
 # EVERY tool call, in a cold-start CLI process, so it must never drag in the

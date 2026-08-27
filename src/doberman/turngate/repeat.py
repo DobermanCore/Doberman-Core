@@ -215,6 +215,8 @@ def challenge_repeat(
     prompter: Prompter | None = None,
     at: datetime | None = None,
     message_tone: str = "human",
+    repo_root: str | None = None,
+    session_id: str | None = None,
 ) -> AuthResult:
     """Run the F7 challenge for a repeated, just-blocked turn and return the result.
 
@@ -227,5 +229,11 @@ def challenge_repeat(
     when = _now(at)
     action, decision = _repeat_decision(turn, record, when)
     return run_auth_challenge(
-        decision, action, prompter=prompter, at=when, message_tone=message_tone
+        decision,
+        action,
+        prompter=prompter,
+        at=when,
+        message_tone=message_tone,
+        repo_root=repo_root,
+        session_id=session_id,
     )
