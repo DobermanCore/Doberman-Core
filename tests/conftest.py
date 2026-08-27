@@ -9,6 +9,7 @@ need to exercise key generation/rotation override this with their own
 """
 
 import json as _json
+import logging
 from typing import Any
 
 import pytest
@@ -212,3 +213,24 @@ def _telemetry_forced_off(monkeypatch):
     """Telemetry is on by default, so every test runs with the kill switch set; the telemetry
     tests that exercise sending clear it explicitly and stub the transport."""
     monkeypatch.setenv("DOBERMAN_TELEMETRY", "0")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_doberman_logger_state(monkeypatch):
+    """Restore the shared ``doberman``/root loggers after every test.
+
+    ``cli.main._configure_stderr_logging`` (run by the ``hook pre/post/openclaw/
+    codex-pre`` and ``serve`` commands) permanently flips
+    ``logging.getLogger("doberman").propagate`` to ``False`` and replaces its
+    handlers — correct for a real one-shot hook/serve subprocess, but Typer's
+    ``CliRunner`` invokes the command function in-process, so without this fixture
+    the mutation leaks into every later test in the same pytest worker. Concretely:
+    once ``propagate`` is ``False``, records from a ``doberman.*`` child logger
+    (e.g. ``doberman.storage.sinks``) never reach ``caplog``'s handler on the root
+    logger, so an unrelated later test's ``caplog.records`` assertion goes empty.
+    """
+    root = logging.getLogger()
+    doberman_logger = logging.getLogger("doberman")
+    monkeypatch.setattr(root, "handlers", root.handlers[:])
+    monkeypatch.setattr(doberman_logger, "handlers", doberman_logger.handlers[:])
+    monkeypatch.setattr(doberman_logger, "propagate", doberman_logger.propagate)
