@@ -98,6 +98,16 @@ def test_index_serves_the_brand_mark_inline(client: TestClient):
     assert base64.b64decode(payload, validate=True).startswith(png_signature)
 
 
+def test_index_feed_handler_keeps_stats_in_step(client: TestClient):
+    """A new feed row schedules a (debounced) stats refresh, so the counters never sit
+    up to STATS_REFRESH_MS behind the list. The JS ships inline in the shell, so the
+    served page is the only place this wiring can be checked without a browser."""
+    shell = client.get("/").text
+    assert "function syncStatsSoon()" in shell
+    decision_handler = shell[shell.index('source.addEventListener("decision"') :]
+    assert "syncStatsSoon();" in decision_handler
+
+
 def test_cli_dash_missing_extra_exits_nonzero_with_install_hint(monkeypatch):
     from doberman.cli.main import app as cli_app
 

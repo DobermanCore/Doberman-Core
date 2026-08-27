@@ -501,6 +501,14 @@ _HTML_SHELL = """<!doctype html>
       }
       refreshStats();
       setInterval(refreshStats, STATS_REFRESH_MS);
+      // The counters follow the feed: a new row re-fetches the stats right away
+      // (trailing-debounced, so a backfill burst on connect costs one request)
+      // instead of lagging up to STATS_REFRESH_MS behind the list.
+      var statsSyncTimer = null;
+      function syncStatsSoon() {
+        clearTimeout(statsSyncTimer);
+        statsSyncTimer = setTimeout(refreshStats, 150);
+      }
 
       // Mode control: fetch the valid mode names once to populate the
       // selector, then let the user pick a new one. Raising strictness is
@@ -783,6 +791,7 @@ _HTML_SHELL = """<!doctype html>
           if (nearBottom) {
             feedEl.scrollTop = feedEl.scrollHeight;
           }
+          syncStatsSoon();
         });
       } catch (e) {
         // EventSource unsupported/blocked - the feed just stays empty.
