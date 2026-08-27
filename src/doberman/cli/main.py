@@ -1569,6 +1569,12 @@ def demo(
         "balanced", "--mode", help="Security mode to evaluate scenarios under."
     ),
     fast: bool = typer.Option(False, "--fast", help="Skip the pacing delay between scenarios."),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Suppress the banner, narration, and closing hint; the summary and exit code stay.",
+    ),
 ) -> None:
     """Run a scripted attack reel through the REAL decision engine.
 
@@ -1589,20 +1595,23 @@ def demo(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    typer.echo("Doberman demo -- scripted attack reel (real engine, nothing executed)")
-    typer.echo("")
+    if not quiet:
+        typer.echo("Doberman demo -- scripted attack reel (real engine, nothing executed)")
+        typer.echo("")
 
     outcomes = run_demo(
         mode=resolved_mode.value,
         repo_root=path,
         fast=fast,
-        on_scenario=lambda outcome: typer.echo(format_outcome_line(outcome)),
+        on_scenario=None if quiet else lambda outcome: typer.echo(format_outcome_line(outcome)),
     )
 
-    typer.echo("")
+    if not quiet:
+        typer.echo("")
     typer.echo(format_summary_table(outcomes))
-    typer.echo("")
-    typer.echo("Run `doberman dash` in another terminal to watch this live.")
+    if not quiet:
+        typer.echo("")
+        typer.echo("Run `doberman dash` in another terminal to watch this live.")
 
     if not all(outcome.matched for outcome in outcomes):
         raise typer.Exit(code=1)
