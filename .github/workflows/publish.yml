@@ -85,6 +85,7 @@ jobs:
         if: hashFiles('sbom/sbom.json') != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}   # no checkout in this job, so gh cannot infer the repo
           TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           if [ -n "$TAG" ]; then
