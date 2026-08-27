@@ -99,21 +99,40 @@ async def pin_status(tool_name: str, *, repo_root: str) -> PinStatus:
 async def approve_pin(tool_name: str, *, repo_root: str) -> str | None:
     """Promote the last-seen fingerprint and clear the changed marker.
 
+    Approving a *changed* pin also deletes every entity's learned
+    ``tool:<name>`` familiarity (the key emitted by
+    ``doberman.subjective.baseline.scoring_keys``): a changed tool is a new
+    tool and must score as novel again, never against pre-change history. The
+    delete is all-entities because pins are per-repo and the cold-start peer
+    prior pools ``baseline_counts`` across entities — a per-entity reset would
+    leak stale familiarity to immature peers. It rides in the same transaction
+    as the promote, so either both land or the pin stays "changed" and the
+    executor floor keeps firing. Deleting familiarity only raises surprise (a
+    tightening), so it needs no gate beyond the caller's.
+
     Authentication belongs to the CLI caller; this storage operation contains
     no gate of its own. Returns the promoted fingerprint, or ``None`` when no
     last-seen pin exists.
     """
     async with open_db(repo_root) as conn:
         async with conn.execute(
-            "SELECT last_seen_fp FROM tool_pins WHERE tool_name = ?", (tool_name,)
+            "SELECT pinned_fp, last_seen_fp, changed_at FROM tool_pins WHERE tool_name = ?",
+            (tool_name,),
         ) as cursor:
             row = await cursor.fetchone()
-        if row is None or row[0] is None:
+        if row is None or row[1] is None:
             return None
-        approved_fp = row[0]
+        pinned_fp, approved_fp, changed_at = row
         await conn.execute(
             "UPDATE tool_pins SET pinned_fp = ?, changed_at = NULL WHERE tool_name = ?",
             (approved_fp, tool_name),
         )
+        # Same disjunction as pin_status(), evaluated inside this transaction:
+        # a caller-side status read before approving would race reconcile_pins.
+        if pinned_fp != approved_fp or changed_at is not None:
+            await conn.execute(
+                "DELETE FROM baseline_counts WHERE feature_key = ?",
+                (f"tool:{tool_name}",),
+            )
         await conn.commit()
         return approved_fp

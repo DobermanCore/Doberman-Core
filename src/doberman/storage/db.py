@@ -59,7 +59,10 @@ DB_FILE = "doberman.db"
 #: gate, never the raw prompt text).
 #: Version 11 adds issue #246's tool-schema TOFU pins (additive CREATE TABLE;
 #: keyed HMAC fingerprints only, never raw tool descriptions/input schemas).
-SCHEMA_VERSION = 11
+#: Version 12 fingerprints the baseline's destination feature keys and purges
+#: legacy raw-host rows (H4 — a hostname can embed secret material). Version 13
+#: adds bounded exact-action approval memory (keyed HMAC identity only).
+SCHEMA_VERSION = 13
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -277,6 +280,19 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     decision           TEXT,
     totp_code          TEXT
 );
+
+-- Slice B approval memory: a bounded record of a real local/2FA approval for
+-- one exact HMAC-identified action. Raw commands, arguments, and paths are
+-- structurally absent.
+CREATE TABLE IF NOT EXISTS approval_memory (
+    fingerprint  TEXT PRIMARY KEY,
+    session_id   TEXT,
+    required_tier TEXT,
+    action_type  TEXT,
+    method       TEXT,
+    approved_at  TEXT,
+    expires_at   TEXT
+);
 """
 
 
@@ -344,6 +360,16 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
             await conn.execute(f"ALTER TABLE {table} ADD COLUMN last_touched TEXT")  # noqa: S608 — table is a fixed literal above
             if backfill_from:
                 await conn.execute(f"UPDATE {table} SET last_touched = {backfill_from}")  # noqa: S608 — fixed literals above
+    # v11 -> v12: destination feature keys become keyed fingerprints — the raw
+    # host must leave the store (a hostname can embed secret material). Legacy
+    # raw rows are DROPPED, not re-keyed; losing that familiarity is raise-safe
+    # (colder = more novel = more step-ups). Idempotent: fingerprinted
+    # ``destination:hmac:*`` rows are untouched.
+    if await _table_columns(conn, "baseline_counts"):
+        await conn.execute(
+            "DELETE FROM baseline_counts WHERE feature_key LIKE 'destination:%' "
+            "AND feature_key NOT LIKE 'destination:hmac:%'"
+        )
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

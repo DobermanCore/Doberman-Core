@@ -240,39 +240,43 @@ _ENTROPY_MIN_LEN = 24
 _ENTROPY_BITS_PER_CHAR = 3.6  # ~ base64 randomness; below this is likely text
 _ENTROPY_TOKEN = re.compile(r"^[A-Za-z0-9+/=_\-]+$")
 
-# A git SHA-1 (40 hex) / SHA-256 (64 hex), content digest, or AST hash is long,
-# pure hex, and high-entropy — but it is NOT a credential. These are a common
-# false positive in tool output (manifests, lockfiles, git output), and a
-# spurious ``sensitive_secret_access`` here also poisons the host-hook taint
-# ledger. A token that is *entirely* hex of hash length (>= 40) is excluded from
-# the WEAK-entropy verdict path. Scope is deliberately narrow: a real base64
-# secret is virtually never all-hex; a hex value carrying a credential KEY name
-# is still caught by the strong env-assignment path; and the read-vs-send
-# fingerprint path (``_candidate_secret_tokens``) is unchanged, so a hex secret
-# that does fire is still fingerprinted.
-_HASH_LIKE_HEX = re.compile(r"[0-9a-fA-F]{40,}")
+# A git SHA / SHA-256 digest, a UUID (32 hex, dashed or bare), or an MD5 is long,
+# pure hex, and high-entropy — but it is an identifier, not a credential, and the
+# most common weak-path false positive (manifests, git output, temp dirs, request
+# and session ids). One such id in a scratch path poisoned a whole session's taint
+# ledger. Exclude a token that is entirely hex of digest/identifier length (>= 32)
+# or a dashed UUID. The strong path (credential shapes / KEY=value) is untouched,
+# so this only removes false positives; the fingerprint path applies the same
+# exclusion so a benign id never seeds a false confirmed-exfil.
+_HASH_LIKE_HEX = re.compile(r"[0-9a-fA-F]{32,}")
+_UUID_LIKE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
-# An identifier or relative path — ``DEFAULT_CHALLENGE_TIMEOUT_S``,
-# ``migrations/0002_add_last_login``, ``fix/auth/challenge-deadline-fail-closed``
-# — is a run of ordinary words joined by separators. It clears the length floor
-# and, because the separators add symbol variety, the entropy floor too, so the
-# WEAK path flagged it as a possible secret. Measured in the field at roughly a
-# 6:1 false-positive ratio, which is the click-through-fatigue failure mode: it
-# trains a human to approve without reading and so devalues every GENUINE prompt.
+
+def _is_structured_hex_id(token: str) -> bool:
+    """A digest- or UUID-shaped hex identifier (an id, never a credential)."""
+    return bool(_HASH_LIKE_HEX.fullmatch(token) or _UUID_LIKE.fullmatch(token))
+
+
+# An identifier or path is words joined by separators; it clears the length and
+# entropy floors (entropy per character measures alphabet variety, not
+# randomness) so the weak path over-flagged it — roughly 6:1 in the field, the
+# alert-fatigue source that trains a human to approve without reading. Prior
+# relief was conditioned on a leading slash, an arbitrary line: a relative path
+# and a bare identifier are exactly as non-credential as an absolute one.
 #
-# Relief for this already existed but was conditioned on a LEADING ``/`` (see
-# ``_token_looks_like_weak_secret``), which is an arbitrary line — a relative
-# path is exactly as non-credential as an absolute one, and a bare identifier
-# has no slash at all.
-#
-# The discriminator is SHAPE, not a threshold: a token is exempt only when it
-# decomposes entirely into short, purely-alphabetic or purely-numeric segments.
-# A credential does not have that shape. Base64/base64url/hex/JWT segments are
-# long and mix letters with digits, so they fail ``_WORD_SEGMENT`` and are still
-# judged whole — no secret can be fragmented below the length floor and dropped.
+# The discriminator is SHAPE, not a threshold: a token is exempt only when every
+# separator-split segment is a word, a number, a short word+number atom
+# (length-capped, since that is the one shape a random fragment can wear), or a
+# digest/UUID id. Base64 and JWT segments are long and interleave classes, so
+# they fail and the token is judged whole — no secret is fragmented below the
+# floor and silently dropped.
 _WORD_SEGMENT = re.compile(r"^(?:[A-Za-z]+|[0-9]+)$")
+_COMPOUND_SEGMENT = re.compile(r"^(?:[A-Za-z]+[0-9]+[A-Za-z]*|[0-9]+[A-Za-z]+)$")
 _SEGMENT_SPLIT = re.compile(r"[/_.\-]")
 _MAX_WORD_SEGMENT_LEN = 20
+_MAX_COMPOUND_SEGMENT_LEN = 10
 
 # Bounds for the encoded-exfil decoder: avoid decode bombs / runaway recursion.
 # One decode layer only (no recursive base64 peeling), bounded token count/size.
@@ -353,17 +357,36 @@ def contains_strong_secret(text: str) -> bool:
     return bool(text) and _strong_secret_in_text(text)
 
 
+def _segment_is_wordlike(segment: str) -> bool:
+    """One separator-split segment of an identifier/path shape (see above).
+
+    A word, a number, or a short word+number atom. A long bare-hex segment is
+    deliberately NOT accepted: a prefixed credential (a ``gh`` token, ``AKIA…``)
+    splits into a word plus a long-hex run, and treating that run as an id would
+    exempt a real token (the raise-only guard in test_secrets_identifier_fp.py).
+    A bare digest/UUID is excluded as a WHOLE token instead
+    (``_is_structured_hex_id`` at the top of the weak-secret check); a dashed UUID
+    inside a path is folded to a word before the split.
+    """
+    if len(segment) > _MAX_WORD_SEGMENT_LEN:
+        return False
+    if _WORD_SEGMENT.match(segment):
+        return True
+    return len(segment) <= _MAX_COMPOUND_SEGMENT_LEN and bool(_COMPOUND_SEGMENT.match(segment))
+
+
 def _looks_like_identifier_or_path(token: str) -> bool:
     """Is this token a separator-joined run of ordinary words (not a credential)?
 
-    Requires at least two segments and EVERY segment to be short and either
-    all-alphabetic or all-numeric. ``a3f5-9c2e-...`` (hex, mixed classes) and a
-    base64 blob both fail, so this only ever exempts identifier/path shapes.
+    Two or more segments, each word-like (``_segment_is_wordlike``): a word, a
+    number, a short word+number atom, or a digest/UUID id. A base64 blob fails, so
+    this only exempts identifier/path shapes. A dashed UUID splits into five hex
+    groups; it is one id, so it is folded to a word before splitting.
     """
-    segments = [seg for seg in _SEGMENT_SPLIT.split(token) if seg]
+    segments = [seg for seg in _SEGMENT_SPLIT.split(_UUID_LIKE.sub("uuid", token)) if seg]
     if len(segments) < 2:
         return False
-    return all(len(seg) <= _MAX_WORD_SEGMENT_LEN and _WORD_SEGMENT.match(seg) for seg in segments)
+    return all(_segment_is_wordlike(seg) for seg in segments)
 
 
 def _token_looks_like_weak_secret(token: str, *, exempt_identifiers: bool = True) -> bool:
@@ -379,8 +402,14 @@ def _token_looks_like_weak_secret(token: str, *, exempt_identifiers: bool = True
     floor and silently drop it. This keeps the rule raise-only: it removes a
     false positive without ever weakening detection.
 
-    A token that is entirely hash-shaped hex (a git SHA / content digest) is not
-    a credential and is excluded up front (#56) — see ``_HASH_LIKE_HEX``.
+    A token that is entirely a digest- or UUID-shaped hex identifier is not a
+    credential and is excluded up front (#56) — see ``_is_structured_hex_id``.
+
+    On an egress path (``exempt_identifiers=False``) the identifier exemption is
+    withheld because a word-joined payload (a passphrase) has the same shape — but
+    a token containing ``/`` is a path, a URL path, or a git ref, not a passphrase,
+    so the exemption still applies to it. Without that, every ``gh api`` repo path
+    and ``feat/...`` branch ref cleared the floor and prompted on egress.
 
     A value that is regex-pattern source text or an obvious hand-written fixture
     (an EXAMPLE/SAMPLE/FAKE/DUMMY marker, or ordered ``0-9``/``a-z`` filler) is
@@ -388,7 +417,7 @@ def _token_looks_like_weak_secret(token: str, *, exempt_identifiers: bool = True
     below, so it judges the *value*, never a ``KEY=`` name: a variable merely
     *named* ``DUMMY_...`` must not suppress a real secret on its right-hand side.
     """
-    if _HASH_LIKE_HEX.fullmatch(token):
+    if _is_structured_hex_id(token):
         return False
     if "=" in token.rstrip("="):
         # An assignment-shaped token ("name=value", interior '='; base64 padding is
@@ -400,10 +429,16 @@ def _token_looks_like_weak_secret(token: str, *, exempt_identifiers: bool = True
         )
     if _is_benign_fixture_token(token):
         return False
-    if exempt_identifiers and _looks_like_identifier_or_path(token):
+    # A '/'-bearing token is a path / URL path / git ref, not a passphrase, so the
+    # identifier exemption applies even on egress (stops gh-api and branch-ref
+    # prompts); a slash-free word-shaped payload on egress is still judged.
+    if (exempt_identifiers or "/" in token) and _looks_like_identifier_or_path(token):
         return False
     if token.startswith("/"):
-        return any(_looks_high_entropy_secret(segment) for segment in token.split("/"))
+        return any(
+            _looks_high_entropy_secret(segment) and not _is_structured_hex_id(segment)
+            for segment in token.split("/")
+        )
     return _looks_high_entropy_secret(token)
 
 
@@ -643,7 +678,7 @@ def _candidate_secret_tokens(strings: Iterable[str]) -> list[str]:
             break
         sample = text[:_SCAN_MAX_CHARS]
         for token in re.findall(r"[A-Za-z0-9+/=_\-]{%d,}" % _ENTROPY_MIN_LEN, sample):
-            if _HASH_LIKE_HEX.fullmatch(token):
+            if _is_structured_hex_id(token):
                 continue
             if _looks_high_entropy_secret(token):
                 tokens.append(token)
@@ -683,6 +718,22 @@ def candidate_secret_fingerprints(text: str) -> set[str]:
     return out
 
 
+def _degraded_result() -> GuardrailResult:
+    """Fail-closed verdict for when the rule cannot evaluate (self-check failed or
+    an unexpected error). AUTH, never PASS: an unevaluable secret rule must not let
+    an action through, but it also must not hard-block every action, so it requires
+    a human rather than crashing the decision path (fail closed, stay available)."""
+    return GuardrailResult(
+        verdict=Verdict.AUTH,
+        risk=Risk.high,
+        reason_codes=[ReasonCode.objective_guardrail_error],
+        explanation=(
+            "The secret-leakage rule could not evaluate cleanly; "
+            "requiring authentication (fail closed)."
+        ),
+    )
+
+
 class SecretLeakageRule:
     """Detect secret material and block clear exfiltration of it.
 
@@ -697,6 +748,23 @@ class SecretLeakageRule:
     """
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
+        """Total wrapper — never raises, never mutates the action (idempotent).
+
+        A degraded rule (import self-check failed) or an unexpected internal error
+        both resolve to a fail-closed AUTH via :func:`_degraded_result`, so one bad
+        edit can neither silently let a secret through (never PASS) nor brick tool
+        mediation into a confusing ``rule_error`` on every action. This backstops
+        the engine's own per-rule exception handling — belt and suspenders on the
+        most safety-critical rule."""
+        if not _HEALTHY:
+            return _degraded_result()
+        try:
+            return self._evaluate(action, ctx)
+        except Exception:  # noqa: BLE001 — fail closed, never propagate a raw error
+            logger.exception("SecretLeakageRule.evaluate failed; failing closed to AUTH")
+            return _degraded_result()
+
+    def _evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         strings = _scan_strings(action, ctx)
         strong = _strong_secret_present(strings)
         secret_path = _path_is_secret_store(action.target)
@@ -759,3 +827,48 @@ class SecretLeakageRule:
 
         # 4) Nothing secret-shaped detected — this rule abstains (PASS/low).
         return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
+
+
+def _run_invariant_check() -> bool:
+    """Self-test the rule's core invariants once at import (the redundancy check).
+
+    Returns ``False`` and logs critically if any invariant fails, so a broken build
+    DEGRADES to fail-closed AUTH via :meth:`SecretLeakageRule.evaluate` instead of
+    raising on every action (the exact failure this guards against — an edit that
+    leaves a helper referencing an undefined name). Cheap and pure: no I/O, clock,
+    or network. Credential-shaped inputs are assembled from fragments so this
+    source cannot itself be read as containing a live secret."""
+    try:
+        # Plain booleans, not ``assert`` — asserts are stripped under ``python -O``,
+        # which would silently turn this self-check into a no-op.
+        checks = {
+            "strong path fires on a credential shape": _strong_secret_in_text(
+                "AKIA" + "1234567890ABCDEF"
+            ),
+            "strong path abstains on prose": not _strong_secret_in_text(
+                "just an ordinary english sentence"
+            ),
+            "a digest is a structured id": _is_structured_hex_id("a1b2c3d4" + "e5f6" * 8),
+            "a UUID does not weak-fire": not _weak_secret_in_text(
+                "0f8e7d6c-1234-4321-9abc-0123456789ab"
+            ),
+            "an identifier path is exempt": _looks_like_identifier_or_path(
+                "feat/some/branch-name-here"
+            ),
+        }
+        failed = [name for name, ok in checks.items() if not ok]
+        if failed:
+            raise RuntimeError("secret-rule invariants failed: " + ", ".join(failed))
+        return True
+    except Exception:  # noqa: BLE001 — a failed self-check must degrade, never crash import
+        logger.critical(
+            "SecretLeakageRule invariant self-check FAILED; the rule will fail closed "
+            "to AUTH on every action until it is fixed",
+            exc_info=True,
+        )
+        return False
+
+
+#: Set once at import; read by :meth:`SecretLeakageRule.evaluate` to degrade safely
+#: (fail-closed AUTH) rather than raising when the rule is broken.
+_HEALTHY: bool = _run_invariant_check()

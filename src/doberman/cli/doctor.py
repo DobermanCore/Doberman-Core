@@ -18,6 +18,7 @@ Two safety rules, straight from the Prime Directives:
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import stat
 from dataclasses import dataclass
@@ -75,6 +76,43 @@ def _check_hooks(path: str) -> CheckResult:
         "Host hooks",
         CheckStatus.FAIL,
         "not installed in any scope — run `doberman install-hooks` (add `--host codex` for Codex)",
+        critical=True,
+    )
+
+
+def _check_hook_command(path: str) -> CheckResult:
+    """Every hook entry runs the bare ``doberman`` command, so the host can only
+    execute them if ``doberman`` is on PATH. A dangling entry (package removed, or
+    its bin dir not on PATH) makes the host fail the hook and carry on
+    **unmediated** - critical whenever hooks are installed (ADR 0086 follow-up).
+
+    Diagnosis only: the fix is putting the binary back on PATH or stripping the
+    entries with ``uninstall-hooks``; ``doctor`` never edits settings. Resolution
+    happens on *this* process's PATH, which can differ from the host's, so the
+    detail says so.
+    """
+    from doberman.hosthooks.install import hook_install_states
+    from doberman.hosthooks.install_codex import codex_hook_install_states
+
+    resolved = shutil.which("doberman")
+    if resolved:
+        return CheckResult("Hook command", CheckStatus.OK, f"`doberman` resolves to {resolved}")
+    installed = any(ok for _scope, _p, ok in hook_install_states(path)) or any(
+        ok for scope, _p, ok in codex_hook_install_states(path) if scope != "plugin"
+    )
+    if not installed:
+        return CheckResult(
+            "Hook command",
+            CheckStatus.WARN,
+            "`doberman` is not on PATH (checked from this shell) - hooks installed later would not run",
+        )
+    return CheckResult(
+        "Hook command",
+        CheckStatus.FAIL,
+        "hooks call `doberman`, which is not on PATH (checked from this shell): the host cannot run "
+        "them, so tool calls go unmediated. Put the install's bin dir on PATH (or `pipx install "
+        "doberman-core`), or strip the dangling entries with `doberman uninstall-hooks` "
+        "(`--global` for the user-wide ones)",
         critical=True,
     )
 
@@ -253,6 +291,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
     """Run every health check against *path* and return the results in display order."""
     return [
         _safe_check("Host hooks", True, lambda: _check_hooks(path)),
+        _safe_check("Hook command", True, lambda: _check_hook_command(path)),
         _safe_check("Config", True, lambda: _check_config(path)),
         _safe_check("Decision DB", True, lambda: _check_db(path)),
         _safe_check("Enforcement", False, lambda: _check_enforcement(path)),

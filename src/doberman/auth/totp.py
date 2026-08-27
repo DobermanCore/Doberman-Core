@@ -72,6 +72,11 @@ def _secret_path() -> Path:
     return Path(override) if override else _default_secret_path()
 
 
+def resolve_path() -> Path:
+    """Resolve the active TOTP enrollment file, including env overrides."""
+    return _secret_path()
+
+
 def _lockout_path(secret_path: Path) -> Path:
     """Lockout-state file colocated with the secret (same dir, same isolation).
 

@@ -72,6 +72,13 @@ def test_feed_has_a_designed_empty_state(tmp_path):
     assert 'class="empty-state"' in html
     # CSS-only reveal via a sibling combinator - no JS toggles display here.
     assert "#feed:not(:empty)" in html
+    # The combinator only fires if #feed and #feed-empty are DOM siblings.
+    # Wrapping #feed in another element silently breaks the reveal (the selector
+    # string still "exists" but no longer matches), so guard the structure, not
+    # just the text - this exact regression shipped in the brand restyle.
+    assert "feed-wrap" not in html
+    feed_close = html.index("</ul>", html.index('<ul id="feed"'))
+    assert html[feed_close + len("</ul>") :].lstrip().startswith('<div id="feed-empty"')
 
 
 def test_pending_list_still_has_a_designed_empty_state(tmp_path):
@@ -154,3 +161,11 @@ def test_feed_row_renders_a_risk_badge(tmp_path):
 def test_feed_row_renders_source_context(tmp_path):
     html = _index_html(tmp_path)
     assert '" from:" + (row.source_context || "-") +' in html
+
+
+def test_recent_decisions_header_has_a_refresh_button(tmp_path):
+    html = _index_html(tmp_path)
+    assert '<button type="button" id="refresh-btn">Refresh</button>' in html
+    assert 'document.getElementById("refresh-btn").addEventListener' in html
+    assert "refreshStats();" in html
+    assert "refreshPending();" in html

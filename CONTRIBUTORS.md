@@ -30,7 +30,7 @@ In alphabetical order by handle (ordering is not a ranking):
 - [@tomatotomata](https://github.com/tomatotomata)
 
 The living list of everyone who has landed a commit is always on the
-[GitHub contributors graph](https://github.com/fu351/Doberman-Core/graphs/contributors).
+[GitHub contributors graph](https://github.com/DobermanCore/Doberman-Core/graphs/contributors).
 
 ## How to join the list
 
@@ -39,7 +39,7 @@ rule all count. Please:
 
 - Keep one slice per PR, with tests (CI must be green).
 - Note any AI-assistance you used in the PR description (we value the
-  transparency — see [PR #58](https://github.com/fu351/Doberman-Core/pull/58) for
+  transparency — see [PR #58](https://github.com/DobermanCore/Doberman-Core/pull/58) for
   an example).
 - Preserve Doberman's two non-negotiable properties: **fail closed** and
   **raise-only** (guardrails may auto-tighten, never silently loosen).

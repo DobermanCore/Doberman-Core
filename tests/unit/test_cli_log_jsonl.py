@@ -141,6 +141,19 @@ def test_log_jsonl_emits_the_risk_column(tmp_path):
     assert [o["risk"] for o in objs] == ["high", "low"]
 
 
+def test_log_human_view_names_memory_approval(tmp_path):
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return [{**_ROWS[0], "auth_result": "soft_confirm+memory"}]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "approved via 5-minute memory (soft_confirm)" in result.stdout
+
+
 def test_log_jsonl_never_emits_a_planted_secret(tmp_path):
     """Round-trip through the real storage layer with a secret in the raw target."""
     root = str(tmp_path)
@@ -175,6 +188,16 @@ def test_log_jsonl_omits_columns_outside_the_allowlist(tmp_path):
     obj = json.loads(result.stdout.splitlines()[0])
     assert "future_raw_column" not in obj
     assert "source_context" not in obj
+
+
+def test_log_last_zero_prints_no_rows(tmp_path):
+    """`--last 0` asks for zero rows; truthiness used to turn it into ALL rows (#430)."""
+    root = str(tmp_path)
+    _seed_secret_read(root)
+
+    result = runner.invoke(app, ["log", "--path", root, "--jsonl", "--last", "0"])
+    assert result.exit_code == 0
+    assert result.stdout == ""
 
 
 def test_log_default_human_empty_message(tmp_path):

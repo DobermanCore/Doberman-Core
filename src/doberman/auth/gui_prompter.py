@@ -30,10 +30,17 @@ be re-asked on another — that would be answer-shopping.
 
 SECURITY: nothing here reads ``sys.stdin`` or writes ``sys.stdout`` (the agent's
 MCP channel). tkinter is stdlib; no new dependency.
+
+SECURITY (#399): every real caller runs this prompter on a background daemon
+thread (see :func:`_open_root`'s docstring) so :func:`~doberman.auth.challenge`'s
+wall-clock deadline can be enforced. On macOS, opening ``Tk()`` off the process's
+real main thread is a Cocoa-level hazard that :func:`_open_root` refuses before
+it ever happens — see that function for the full rationale.
 """
 
 import importlib.resources as _ir
 import sys
+import threading
 from collections.abc import Iterable
 from typing import Any
 
@@ -103,7 +110,29 @@ def _open_root() -> Any:
     A fresh root per challenge (never cached): Tk objects are not thread-safe to
     share and a display that was missing earlier may be available now. The caller
     must destroy it.
+
+    macOS thread-affinity guard (#399): every real caller reaches this function
+    from a background daemon thread, never the process's main thread —
+    :func:`~doberman.auth.challenge.run_auth_challenge` always dispatches the
+    challenge through :func:`~doberman.auth.challenge._run_with_deadline`
+    (a spawned ``threading.Thread``) precisely so a wall-clock deadline can be
+    enforced on a channel that might otherwise block forever, and the MCP-proxy
+    path does the equivalent via ``asyncio.to_thread``. Tk's Cocoa (macOS)
+    backend requires its ``NSApplication`` event loop to start on the real OS
+    main thread; constructing ``Tk()`` off it is a documented hazard that does
+    **not** reliably surface as a catchable ``TclError`` the way a missing
+    ``$DISPLAY`` does on X11 — it can silently fail to render (the dialog never
+    appears, but the call also never raises) or abort the whole process, either
+    of which defeats the fail-closed contract this module exists to provide.
+    Refuse before ever touching ``tkinter`` so this channel reports itself
+    unavailable — exactly like the "no display" case below — so
+    :class:`FallbackPrompter` moves on to the terminal, and if that is also
+    unavailable, the action is denied (never silently approved).
     """
+    if sys.platform == "darwin" and threading.current_thread() is not threading.main_thread():
+        raise PrompterUnavailableError(
+            "GUI auth dialog cannot safely open off the main thread on macOS"
+        )
     try:
         import tkinter
     except Exception as exc:  # pragma: no cover — needs a tkinter-less interpreter
@@ -398,6 +427,9 @@ def _add_button_row(
             outline=_BRAND,
             width=2,
         )
+        # Tk hit-tests a polygon's whole interior even with fill="" — left on top, the ring
+        # would swallow clicks (and hover) on the highlighted button. Keep it beneath them.
+        canvas.tag_lower(state["ring"], "_dobermanbtn0")
 
     def _move_highlight(_event: Any = None) -> str:
         state["index"] = (state["index"] + 1) % len(specs)

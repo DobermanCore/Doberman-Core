@@ -27,7 +27,6 @@ from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, EmbeddedResource, TextContent, TextResourceContents
 
 from doberman.auth.challenge import (
-    TIMEOUT_METHOD,
     AuthResult,
     AuthTier,
     Prompter,
@@ -79,6 +78,7 @@ from doberman.subjective.revealed import (
     has_scope_token,
     maybe_nudge,
     record_feedback,
+    revoke_tool_scope_tokens,
 )
 from doberman.subjective.score import inherit_turn_provenance, raised_surprise
 
@@ -95,7 +95,7 @@ REPO_ROOT = "."
 AUTH_PROMPTER: Prompter | None = None
 
 
-def _default_objective_rules() -> list[Guardrail]:
+def _default_objective_rules(velocity_thresholds=None) -> list[Guardrail]:
     """Built-in rules for :data:`DEFAULT_OBJECTIVE` below.
 
     Identical to ``ObjectiveGuardrail()``'s own default construction except
@@ -105,9 +105,15 @@ def _default_objective_rules() -> list[Guardrail]:
     ``ExternalDestinationRule``'s docstring), this proxy singleton is built
     once per long-lived process, and ``discover_egress_brokers()`` is itself
     memoized, so the entry-point scan happens at most once here regardless.
+
+    ``velocity_thresholds`` (a :class:`~doberman.egress.velocity.VelocityThresholds`
+    or ``None``) is forwarded to ``ExternalDestinationRule`` so the
+    policy-sourced egress-velocity thresholds (RB.6) take effect in the
+    long-lived proxy singleton. ``None`` means the built-in module defaults
+    apply (identical to the pre-RB.6 behaviour).
     """
     return [
-        ExternalDestinationRule(load_broker=True)
+        ExternalDestinationRule(load_broker=True, velocity_thresholds=velocity_thresholds)
         if rule_type is ExternalDestinationRule
         else rule_type()
         for rule_type in BUILTIN_RULE_TYPES
@@ -166,6 +172,10 @@ async def _apply_tool_pin_floor(tool_name: str, decision: Decision) -> Decision:
     """Raise a changed tool contract to AUTH, or BLOCK in strict/paranoid."""
     if await tool_pins.pin_status(tool_name, repo_root=REPO_ROOT) != "changed":
         return decision
+    # A changed contract also voids any live "approve for this task" comfort
+    # tokens for this tool, for every entity — a token granted against the old
+    # schema must not mute the step-up on the new one. Idempotent; raise-only.
+    revoke_tool_scope_tokens(tool_name)
     floor = Verdict.BLOCK if load_mode(REPO_ROOT) in _STRICT_MODES else Verdict.AUTH
     risk = Risk.critical if floor is Verdict.BLOCK else Risk.high
     reasons = list(dict.fromkeys([*decision.reason_codes, ReasonCode.tool_schema_changed]))
@@ -685,6 +695,8 @@ async def _handle_auth(
             action,
             prompter=AUTH_PROMPTER,
             message_tone=load_message_tone(REPO_ROOT),
+            repo_root=REPO_ROOT,
+            session_id=None,
         )
     except Exception:  # noqa: BLE001 — a challenge failure must fail closed, not crash/leak
         _engine_logger.warning("auth challenge raised; failing closed (action %s)", action.id)
@@ -697,10 +709,10 @@ async def _handle_auth(
         # An expired challenge and a human "no" both deny — but only the log can
         # tell them apart, and they call for different operator responses (an
         # unwatched approval channel vs. a rejected action).
-        timed_out = auth_result is not None and auth_result.method == TIMEOUT_METHOD
-        await _persist(
-            decision, action, auth_result=TIMEOUT_METHOD if timed_out else "denied", eid=eid
-        )
+        method = auth_result.method if auth_result is not None else "error"
+        if auth_result is not None and auth_result.approved:
+            method = "denied"  # approved for a different action id is still a denial here
+        await _persist(decision, action, auth_result=method, eid=eid)
         return _verdict_result(decision)
 
     # A satisfied role elevation grants a narrow, temporary permission first.
@@ -732,7 +744,7 @@ async def _handle_auth(
     redecision = await _apply_tool_pin_floor(tool_name, redecision)
     if redecision.final_verdict is Verdict.BLOCK:
         log_action(action, redecision.final_verdict)
-        await _persist(redecision, action, auth_result="approved", eid=eid)
+        await _persist(redecision, action, auth_result=auth_result.method, eid=eid)
         return _verdict_result(redecision)
 
     result = await _forward(downstream, tool_name, arguments, action)
@@ -764,7 +776,9 @@ async def _handle_auth(
             )
             return _verdict_result(artifact_gate)
         await _observe_allowed(action, eid, surprise_score)
-    await _persist(decision, action, auth_result="approved", elevation_id=elevation_id, eid=eid)
+    await _persist(
+        decision, action, auth_result=auth_result.method, elevation_id=elevation_id, eid=eid
+    )
     return result
 
 
@@ -778,7 +792,7 @@ async def decide_and_execute(
     This is THE chokepoint: normalize → decide → enforce. The downstream forward
     happens only on a PASS decision or a successfully-authenticated AUTH.
     """
-    action: SecurityObject = normalize(tool_name, arguments)
+    action: SecurityObject = normalize(tool_name, arguments, {"repo_root": REPO_ROOT})
     now = datetime.now(timezone.utc)
     eid = entity_id(action.agent_role, REPO_ROOT)
     # TG3.3: actions tracing to a flagged pasted turn inherit untrusted

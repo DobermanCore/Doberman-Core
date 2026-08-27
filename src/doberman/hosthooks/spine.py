@@ -89,7 +89,7 @@ def evaluate_action(
     """Run one translated action through the full shared decision flow."""
     repo_root, mode = resolve_root_and_mode(cwd)
     session_id = extract_session_id(raw_session_id)
-    action = normalize(canonical, args)
+    action = normalize(canonical, args, {"repo_root": repo_root})
     # The objective rules inspect the UN-redacted call via metadata['raw_arguments']
     # (in-memory only, never logged). The active role rides along (parity with
     # the proxy's own ctx-build path); no .doberman/role.yaml -> role=None (opt-in).

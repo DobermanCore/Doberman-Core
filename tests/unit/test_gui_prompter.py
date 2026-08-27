@@ -19,6 +19,9 @@ The tkinter machinery is monkeypatched at module seams (mirroring how the TTY te
 fake ``_open_tty``) so everything here runs headless and deterministically.
 """
 
+import threading
+import types
+
 import pytest
 
 from doberman.auth import gui_prompter
@@ -103,6 +106,160 @@ def test_open_root_raises_prompter_unavailable_when_tk_init_fails(monkeypatch):
     monkeypatch.setattr(tkinter, "Tk", _boom)
     with pytest.raises(PrompterUnavailableError):
         gui_prompter._open_root()
+
+
+# --- GuiPrompter: macOS thread-affinity guard (#399) -------------------------------
+#
+# Every real caller reaches GuiPrompter on a background daemon thread by
+# construction (doberman.auth.challenge._run_with_deadline / asyncio.to_thread),
+# never the process's main thread. Cocoa's Tk backend requires its event loop to
+# start on the real OS main thread; opening Tk() off it is a documented hazard
+# that does not reliably raise a catchable error the way a missing $DISPLAY does
+# -- it can silently fail to render or abort the process, which is how an AUTH
+# challenge could resolve as approved without a human ever seeing a dialog. The
+# guard must refuse BEFORE tkinter is ever touched.
+
+
+def test_macos_off_main_thread_refuses_before_touching_tkinter(monkeypatch):
+    tkinter = pytest.importorskip("tkinter")
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+
+    def _boom(*_a, **_k):
+        raise AssertionError("tkinter.Tk() must never be called off the main thread on macOS")
+
+    monkeypatch.setattr(tkinter, "Tk", _boom)
+    with pytest.raises(PrompterUnavailableError):
+        gui_prompter._open_root()
+
+
+def test_macos_on_main_thread_is_unaffected(monkeypatch):
+    """The guard checks thread AFFINITY, not platform alone -- on the real main
+    thread, macOS proceeds to the normal Tk-open attempt exactly as before."""
+    tkinter = pytest.importorskip("tkinter")
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+    same = object()
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: same)
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: same)
+
+    attempted = []
+    monkeypatch.setattr(tkinter, "Tk", lambda: attempted.append(True) or object())
+    gui_prompter._open_root()
+    assert attempted == [True]
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_non_macos_off_main_thread_is_unaffected(monkeypatch, platform):
+    """Windows/Linux users see zero behavior change -- this hazard is macOS-only."""
+    tkinter = pytest.importorskip("tkinter")
+    monkeypatch.setattr(gui_prompter.sys, "platform", platform)
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+
+    attempted = []
+    monkeypatch.setattr(tkinter, "Tk", lambda: attempted.append(True) or object())
+    gui_prompter._open_root()
+    assert attempted == [True]
+
+
+def test_real_background_thread_on_macos_is_refused(monkeypatch):
+    """End to end against the REAL stdlib threading module (no identity mocking):
+    a genuine background thread is refused when the platform is macOS."""
+    tkinter = pytest.importorskip("tkinter")
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("tkinter.Tk() must never be called off the main thread on macOS")
+
+    monkeypatch.setattr(tkinter, "Tk", _boom)
+
+    outcome: dict = {}
+
+    def _worker():
+        try:
+            gui_prompter._open_root()
+        except BaseException as exc:  # noqa: BLE001 — captured for the caller's thread to assert
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=_worker)
+    thread.start()
+    thread.join(timeout=5)
+    assert isinstance(outcome.get("error"), PrompterUnavailableError)
+
+
+def test_gui_prompter_confirm_refuses_off_main_thread_on_macos(monkeypatch):
+    """The guard is reachable through the public GuiPrompter API, not just _open_root."""
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+    with pytest.raises(PrompterUnavailableError):
+        GuiPrompter().confirm("Approve?")
+
+
+def test_fallback_chain_falls_through_gui_to_tty_on_macos_background_thread(monkeypatch):
+    """The #399 shape: GuiPrompter is refused (macOS, background thread), and the
+    chain falls through to the next channel rather than silently approving."""
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+
+    tty = _Recorder(confirm=True)
+    assert FallbackPrompter([GuiPrompter(), tty]).confirm("Approve?") is True
+    assert tty.calls == ["confirm"]
+
+
+def test_fallback_chain_denies_when_gui_and_tty_both_unavailable_on_macos(monkeypatch):
+    """Full #399 reproduction: macOS + background thread + no real terminal either
+    -- both channels report unavailable, and the provider denies, never approves."""
+    from datetime import datetime, timezone
+
+    from doberman.auth.challenge import AuthTier
+    from doberman.auth.provider import LocalAuthProvider
+    from doberman.models import (
+        ActionType,
+        Decision,
+        GuardrailResult,
+        ReasonCode,
+        Risk,
+        SecurityObject,
+        Verdict,
+    )
+
+    monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
+    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
+    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+
+    now = datetime(2026, 6, 10, tzinfo=timezone.utc)
+    action = SecurityObject(
+        id="act-399-1",
+        ts=now,
+        agent_role="webdev",
+        action_type=ActionType.file_write,
+        tool_name="fs_write",
+        target="migrations/anything.sql",
+    )
+    objective = GuardrailResult(
+        verdict=Verdict.AUTH,
+        risk=Risk.medium,
+        reason_codes=[ReasonCode.sensitive_path_access],
+        explanation="why",
+    )
+    decision = Decision(
+        action_id="act-399-1",
+        final_verdict=Verdict.AUTH,
+        final_risk=Risk.medium,
+        objective=objective,
+        reason_codes=[ReasonCode.sensitive_path_access],
+        explanation="why",
+        decided_at=now,
+    )
+    no_tty = _Recorder(raises=PrompterUnavailableError("no controlling terminal"))
+    chain = FallbackPrompter([GuiPrompter(), no_tty])
+    result = LocalAuthProvider().authenticate(
+        decision, action, AuthTier.local_auth, prompter=chain, at=now
+    )
+    assert result.approved is False
 
 
 # --- GuiPrompter: custom dialog internals (faked root + faked widget builders) -----
@@ -295,6 +452,96 @@ def test_real_dialog_widgets_dark_theme_and_masked_entry(monkeypatch):
         assert entries, "code dialog must contain an entry field"
         assert entries[0].cget("show") == "*"  # the code must be masked on screen
         assert root.cget("bg") == gui_prompter._BG
+    finally:
+        root.destroy()
+
+
+class _FakeCanvas:
+    """Records the Canvas display list (bottom → top) and mirrors Tk's ``tag_lower``."""
+
+    def __init__(self):
+        self.items: list[int] = []  # display list: creation order = stacking order
+        self.tags: dict[int, tuple] = {}
+
+    def _create(self, tags):
+        item = len(self.tags) + 1
+        self.items.append(item)
+        self.tags[item] = tuple(tags)
+        return item
+
+    def create_polygon(self, _points, **kw):
+        return self._create(kw.get("tags", ()))
+
+    def create_text(self, _x, _y, **kw):
+        return self._create(kw.get("tags", ()))
+
+    def tag_lower(self, item, below):
+        # Tk: move `item` to just before the LOWEST item carrying tag `below`.
+        self.items.remove(item)
+        self.items.insert(
+            next(i for i, it in enumerate(self.items) if below in self.tags[it]), item
+        )
+
+    def delete(self, item):
+        self.items.remove(item)
+
+    def tag_bind(self, *_a, **_kw):
+        pass
+
+    def itemconfig(self, *_a, **_kw):
+        pass
+
+    def focus_set(self):
+        pass
+
+    def ring_is_beneath_every_button(self) -> bool:
+        [ring] = [i for i in self.items if not self.tags[i]]  # the ring is the only untagged item
+        return all(self.items.index(ring) < self.items.index(i) for i in self.items if self.tags[i])
+
+
+def test_focus_ring_is_stacked_beneath_the_buttons(monkeypatch):
+    """Tk hit-tests a polygon's WHOLE interior even when it is unfilled, so a focus ring
+    drawn on top of the highlighted button receives that button's clicks (and hover)
+    instead of the button — clicking Deny did nothing. The ring must sit beneath every
+    button item, both at the start and after each highlight move (it is redrawn each
+    time). Faked canvas, so this runs on headless CI; the real-Tk check is below.
+    """
+    tkfont = pytest.importorskip("tkinter.font")
+    monkeypatch.setattr(tkfont, "Font", lambda **_kw: types.SimpleNamespace(measure=len))
+    canvas, root = _FakeCanvas(), _FakeRoot()
+    specs = [("Deny", lambda: None, False), ("Approve", lambda: None, True)]
+
+    gui_prompter._add_button_row(root, canvas, y=100, specs=specs)
+    assert canvas.ring_is_beneath_every_button()
+
+    root.bindings["<Tab>"]()  # highlight → Approve; ring deleted and redrawn
+    assert canvas.ring_is_beneath_every_button()
+
+
+def test_real_canvas_click_target_is_the_highlighted_button_not_the_ring():
+    """With a real display: the item Tk would hand a click to — the topmost item under the
+    button's centre, which is exactly ``find_closest``'s tie-break — must be the button
+    itself (tagged), never the untagged focus ring, for Deny (highlighted at open) and
+    Approve alike. Skipped where Tk cannot open (headless CI); the faked-canvas test above
+    still covers the stacking contract there.
+    """
+    tkinter = pytest.importorskip("tkinter")
+    try:
+        root = tkinter.Tk()
+    except tkinter.TclError:
+        pytest.skip("no display available")
+    try:
+        root.withdraw()
+        canvas = tkinter.Canvas(root, width=gui_prompter._DIALOG_W, height=200)
+        canvas.pack()
+        specs = gui_prompter._confirm_specs(lambda _value: None)
+        gui_prompter._add_button_row(root, canvas, y=60, specs=specs)
+        root.update_idletasks()
+
+        for tag in ("_dobermanbtn0", "_dobermanbtn1"):
+            x1, y1, x2, y2 = canvas.bbox(tag)
+            topmost = canvas.find_closest((x1 + x2) / 2, (y1 + y2) / 2)[0]
+            assert tag in canvas.gettags(topmost), f"click on {tag} would land on item {topmost}"
     finally:
         root.destroy()
 

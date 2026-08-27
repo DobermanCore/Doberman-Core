@@ -232,6 +232,11 @@ class ReasonCode(StrEnum):
     protected_path_blocked = "protected_path_blocked"
     sensitive_path_access = "sensitive_path_access"
     destructive_command = "destructive_command"
+    # A shell command whose sole effect is to enumerate/print the process
+    # environment (bare `env`, `printenv`, `export -p`, `declare -x`, the
+    # PowerShell `Env:` drive) — a locally-scoped read of a common secret
+    # carrier, parallel to `sensitive_secret_access` for files.
+    environment_dump_command = "environment_dump_command"
     bulk_operation = "bulk_operation"
     opaque_command = "opaque_command"
     unknown_external_destination = "unknown_external_destination"
@@ -412,6 +417,9 @@ class SecurityObject(BaseModel):
     #: all-unknown / zero-confidence algebra when nothing has inferred it yet.
     algebra: Algebra = Field(default_factory=Algebra)
     payload_fingerprints: list[str] = Field(default_factory=list)
+    #: Keyed HMAC of the exact unredacted canonical action. The raw input is
+    #: never retained; ``None`` disables approval memory for this action.
+    action_fingerprint: str | None = None
     # Values must already be redacted before entering the object; redaction is
     # enforced by normalize() and its tests, not by this type.
     raw_args_redacted: dict[str, Any] = Field(default_factory=dict)

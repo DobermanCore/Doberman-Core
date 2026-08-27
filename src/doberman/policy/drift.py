@@ -53,7 +53,9 @@ from typing import Protocol, runtime_checkable
 
 from doberman.auth import password, totp
 from doberman.auth.challenge import Prompter
+from doberman.config import load_mode, load_policy, save_mode
 from doberman.models import Decision, ReasonCode, Verdict
+from doberman.policy.modes import resolve_mode
 from doberman.storage.db import db_path, open_db
 
 logger = logging.getLogger("doberman.policy.drift")
@@ -387,6 +389,46 @@ async def log_change(
     return ChangeOutcome(classification=classification, approved=True, method="logged")
 
 
+async def apply_mode_change(
+    name: str,
+    repo_root: str,
+    reason: str,
+    *,
+    prompter: Prompter | None = None,
+    establish_ok: bool = False,
+) -> str | None:
+    """Resolve ``name``, gate any weakening behind :func:`apply_change`, then persist it.
+
+    The one entry point for changing the strictness-mode dial, shared by every
+    caller (CLI ``doberman mode``/``doberman setup``, the dashboard's ``/api/mode``)
+    so the gate can never drift out of sync between them. Lowering strictness (a
+    downgrade on the paranoid>strict>balanced>light scale) is a ``weaken`` and must
+    clear a possession factor via ``prompter`` (a 2FA code if enrolled, otherwise
+    the Doberman password) before it is persisted; raising stays frictionless. A
+    no-op (unchanged mode) skips the gate/ledger entirely. Returns ``None`` when
+    the gate denies the change — fail closed, nothing persisted.
+
+    ``establish_ok`` (first-run onboarding) writes the INITIAL posture freely when
+    no policy is persisted yet — choosing a starting mode is not weakening an
+    existing one. Once a policy exists, even an ``establish_ok`` caller falls
+    through to the gate, so first-run onboarding can never be replayed to bypass
+    the possession factor on a later lowering.
+    """
+    old = load_mode(repo_root)
+    new = resolve_mode(name).value  # raises ValueError for an unknown mode
+    if old == new:
+        return save_mode(name, repo_root)
+    if establish_ok and load_policy(repo_root) is None:
+        await log_change({"mode": old}, {"mode": new}, reason, repo_root=repo_root)
+        return save_mode(name, repo_root)
+    outcome = await apply_change(
+        {"mode": old}, {"mode": new}, reason, repo_root=repo_root, prompter=prompter
+    )
+    if not outcome.approved:
+        return None
+    return save_mode(name, repo_root)
+
+
 def _run_enforcement_gate(
     before: dict, after: dict, reason: str, prompter: Prompter
 ) -> tuple[bool, str]:
@@ -626,6 +668,113 @@ async def apply_standing_elevation(
     return ChangeOutcome(classification=classification, approved=approved, method=method)
 
 
+def _velocity_classify(before: dict[str, int], after: dict[str, int]) -> Classification:
+    """Classify an egress-velocity threshold change (raise-only semantics).
+
+    Mirrors :func:`_prefs_classify` exactly: ``before`` is the *current
+    effective* policy (whatever was persisted last, not the built-in module
+    defaults), and ``after`` is the proposed new value. The caller is
+    responsible for passing the current policy as ``before``; comparing
+    against the built-in defaults would be wrong because it would misclassify
+    a walk-back toward the default after a prior gate-approved loosening as a
+    tighten.
+
+    Direction of "protection" is inverted relative to weights:
+    - **burst** and **fanout**: a *lower* value is more sensitive (tighter).
+      Increasing either → fewer trips → loosening → weaken.
+    - **volume_bytes**: same — a lower byte limit is tighter.
+
+    So for all three dimensions: ``after > before`` → weaken,
+    ``after < before`` → strengthen, equal → neutral.
+
+    Any dimension that loosens makes the whole change a weaken (fail-safe,
+    matching :func:`_prefs_classify`'s policy for mixed changes). A value that
+    cannot be coerced to ``int`` is treated as a weaken (fail-safe). A
+    dimension present in ``before`` but absent from ``after`` is also a weaken
+    (removing a tightening override restores the less-sensitive prior state).
+    """
+    weakened = bool(set(before) - set(after))  # a removed tightening
+    strengthened = bool(set(after) - set(before))  # a newly added tightening
+    junk = False
+    for key in set(before) & set(after):
+        try:
+            b, a = int(before[key]), int(after[key])
+        except (TypeError, ValueError):
+            junk = True
+            continue
+        # Higher value → less sensitive → weaken.
+        if a > b:
+            weakened = True
+        elif a < b:
+            strengthened = True
+
+    if weakened or junk:
+        return Classification.weaken
+    if strengthened:
+        return Classification.strengthen
+    return Classification.neutral
+
+
+async def apply_egress_velocity_change(
+    before: dict[str, int],
+    after: dict[str, int],
+    reason: str,
+    *,
+    repo_root: str,
+    prompter: "Prompter | None" = None,
+    now: "datetime | None" = None,
+) -> ChangeOutcome:
+    """Chokepoint for an egress-velocity threshold change (RB.6).
+
+    Structural sibling of :func:`apply_preferences_change` (same
+    record/notify/return shape). Classification is via :func:`_velocity_classify`:
+    any threshold that becomes *less* sensitive (higher burst/fanout/volume_bytes
+    than before, or higher than its built-in default) is a **weaken** — it lets
+    more egress through before a signal trips — so it must clear the same
+    mandatory possession-factor gate as every other policy weakening
+    (:func:`_run_weaken_gate`: TOTP if enrolled, else password).
+
+    A change that only tightens (lowers burst/fanout/volume_bytes, or removes a
+    previous loosening) applies automatically — raise-only is preserved and the
+    prompter is never invoked on that path.
+
+    Every attempt (incl. denials) is recorded to the append-only ledger and
+    fanned out to observers; the caller persists only when ``outcome.approved``.
+    """
+    reason = _redact_reason(reason)
+    when = now or datetime.now(timezone.utc)
+    classification = _velocity_classify(before, after)
+
+    if classification is Classification.weaken:
+        from doberman.auth.provider import CliPrompter
+
+        approved, method = _run_weaken_gate(before, after, reason, prompter or CliPrompter())
+    else:
+        approved, method = True, "auto"
+
+    await _record_change(
+        repo_root,
+        before,
+        after,
+        classification,
+        reason,
+        approved=approved,
+        method=method,
+        now=when,
+    )
+    notify_observers(
+        {
+            "ts": when.isoformat(),
+            "classification": classification.value,
+            "changed_rules": _changed_keys(before, after),
+            "reason": reason,
+            "approved": approved,
+            "method": method,
+        }
+    )
+    return ChangeOutcome(classification=classification, approved=approved, method=method)
+
+
 async def read_policy_changes(repo_root: str, *, limit: int | None = None) -> list[dict]:
     """Read ledger rows, newest first (for ``doberman policy-history``)."""
     if not db_path(repo_root).exists():
@@ -634,7 +783,7 @@ async def read_policy_changes(repo_root: str, *, limit: int | None = None) -> li
         "SELECT ts, rule_id, from_state, to_state, classification, reason, "
         "approval_method, approved, approved_by FROM policy_changes ORDER BY id DESC"
     )
-    if limit:
+    if limit is not None:
         query += f" LIMIT {int(limit)}"
     cols = [
         "ts",

@@ -190,8 +190,12 @@ def test_doberman_setup_is_blocked():
         "doberman memory reset",
         "doberman memory prune --older-than-days 30",
         "doberman tools approve fs_read",
+        "doberman approvals status",
+        "doberman approvals clear",
+        "doberman approvals ttl 600",
         "doberman uninstall",
         "doberman uninstall --yes",
+        "doberman uninstall --global",
     ],
 )
 def test_doberman_posture_and_auth_mutating_verbs_are_blocked(command):
