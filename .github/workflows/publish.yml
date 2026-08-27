@@ -6,7 +6,17 @@ name: Publish
 on:
   release:
     types: [published]     # tag a GitHub Release -> publish to PyPI
-  workflow_dispatch: {}    # manual run -> dry-run publish to TestPyPI
+  workflow_dispatch:       # manual run -> TestPyPI dry run by default; target=pypi republishes
+    inputs:
+      target:
+        description: "Where to publish (testpypi is a dry run; pypi republishes main's version)"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+      tag:
+        description: "Existing release tag to attach the SBOM to when target=pypi (e.g. v0.18.4)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -32,19 +42,27 @@ jobs:
         # continue-on-error (not `|| true`) so a finding still shows as a warning in the run,
         # instead of a clean green check hiding it. Add a blocking `pip-audit` step separately
         # if/when an actual release gate is wanted.
+        # The SBOM lives OUTSIDE dist/: the publish action uploads every file in dist/ and
+        # rejects anything that is not a wheel or sdist (this broke v0.18.2–v0.18.4).
         continue-on-error: true
         run: |
           python -m pip install --upgrade pip-audit
-          pip-audit -f cyclonedx-json -o dist/sbom.json .
+          mkdir -p sbom
+          pip-audit -f cyclonedx-json -o sbom/sbom.json .
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('sbom/sbom.json') != ''
+        with:
+          name: sbom
+          path: sbom/sbom.json
 
   pypi-publish:
     name: Publish to PyPI
     needs: build
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -57,17 +75,28 @@ jobs:
         with:
           name: dist
           path: dist/
+      - uses: actions/download-artifact@v4
+        continue-on-error: true   # no SBOM artifact when pip-audit failed in build
+        with:
+          name: sbom
+          path: sbom/
       - uses: pypa/gh-action-pypi-publish@release/v1
       - name: Attach SBOM to the GitHub Release
-        if: hashFiles('dist/sbom.json') != ''
+        if: hashFiles('sbom/sbom.json') != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/sbom.json --clobber
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          if [ -n "$TAG" ]; then
+            gh release upload "$TAG" sbom/sbom.json --clobber
+          else
+            echo "no release tag given; SBOM kept as a workflow artifact only"
+          fi
 
   testpypi-publish:
     name: Publish to TestPyPI (dry run)
     needs: build
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.target != 'pypi'
     runs-on: ubuntu-latest
     environment:
       name: testpypi
