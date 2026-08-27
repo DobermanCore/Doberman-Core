@@ -1,11 +1,12 @@
-"""Typer commands and small CLI-only wiring for opt-in telemetry."""
+"""Typer commands and small CLI-only wiring for default-on, opt-out telemetry."""
 
 from __future__ import annotations
 
 import typer
 
 telemetry_app = typer.Typer(
-    help="Anonymous usage telemetry (off by default).", no_args_is_help=True
+    help="Anonymous usage telemetry (on by default; `doberman telemetry off` stops it).",
+    no_args_is_help=True,
 )
 
 _NESTED_GROUPS = ("2fa", "password", "taint", "tools", "memory", "role")
@@ -17,6 +18,9 @@ def _record_command(command: str | None) -> None:
         return
     from doberman import telemetry
 
+    notice = telemetry.first_run_notice()
+    if notice:
+        typer.echo(notice, err=True)
     telemetry.capture("cli_command", {"command": command})
     telemetry.maybe_send_usage_summary()
 
@@ -43,17 +47,20 @@ def register_cli_telemetry(root_app: typer.Typer, *sub_apps: typer.Typer) -> Non
 
 
 def configure_setup_consent(non_interactive: bool) -> None:
-    """Ask the setup-only consent question; ``--yes`` stays silent and off."""
-    if non_interactive:
-        return
+    """Ask the setup-only consent question; ``--yes`` keeps the default (on) and prints the notice."""
     from doberman import telemetry
 
+    if non_interactive:
+        notice = telemetry.first_run_notice()
+        if notice:
+            typer.echo(notice, err=True)
+        return
     typer.echo("")
     typer.echo(
         "Counts and command names only. Never paths, prompts, secrets, or reason payloads. "
         "See docs/TELEMETRY.md."
     )
-    if typer.confirm("Send anonymous usage stats to help improve Doberman?", default=False):
+    if typer.confirm("Send anonymous usage stats to help improve Doberman?", default=True):
         telemetry.enable()
     else:
         telemetry.disable()
@@ -99,7 +106,11 @@ def telemetry_status() -> None:
     from doberman import telemetry
 
     state = telemetry.status()
-    typer.echo(f"Telemetry: {'enabled' if telemetry.is_enabled() else 'disabled'}")
+    enabled = telemetry.is_enabled()
+    label = "enabled" if enabled else "disabled"
+    if enabled and state.consent_at is None:
+        label += " (default; `doberman telemetry off` to stop)"
+    typer.echo(f"Telemetry: {label}")
     typer.echo(f"Distinct id: {state.distinct_id or '(not created)'}")
     for reason in state.forced_off_reasons:
         typer.echo(f"Forced off: {reason}")

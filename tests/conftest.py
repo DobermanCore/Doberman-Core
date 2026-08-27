@@ -205,3 +205,10 @@ def assert_json_stdout(result: Result, *, jsonl: bool = False) -> Any:
             )
             records.append(obj)
         return records
+
+
+@pytest.fixture(autouse=True)
+def _telemetry_forced_off(monkeypatch):
+    """Telemetry is on by default, so every test runs with the kill switch set; the telemetry
+    tests that exercise sending clear it explicitly and stub the transport."""
+    monkeypatch.setenv("DOBERMAN_TELEMETRY", "0")

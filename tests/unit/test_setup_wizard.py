@@ -272,7 +272,7 @@ def test_interactive_telemetry_yes_persists_and_emits_setup_event(
 
     assert result.exit_code == 0, result.output
     assert telemetry.status().enabled is True
-    question = "Send anonymous usage stats to help improve Doberman? [y/N]"
+    question = "Send anonymous usage stats to help improve Doberman? [Y/n]"
     note = "Counts and command names only. Never paths, prompts, secrets, or reason payloads."
     assert result.output.index(note) < result.output.index(question)
     assert (
@@ -287,7 +287,7 @@ def test_interactive_telemetry_yes_persists_and_emits_setup_event(
     ) in events
 
 
-def test_interactive_telemetry_default_no_persists_disabled(tmp_path: Path) -> None:
+def test_interactive_telemetry_default_yes_records_the_choice(tmp_path: Path) -> None:
     from doberman import telemetry
 
     result = runner.invoke(
@@ -295,19 +295,33 @@ def test_interactive_telemetry_default_no_persists_disabled(tmp_path: Path) -> N
         ["setup", "--path", str(tmp_path)],
         input="balanced\n\nn\nn\n",
     )
+    assert result.exit_code == 0, result.output
+    state = telemetry.status()
+    assert state.enabled is True
+    assert state.consent_at is not None  # an explicit yes, not the silent default
 
+
+def test_interactive_telemetry_no_persists_disabled(tmp_path: Path) -> None:
+    from doberman import telemetry
+
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="balanced\nn\nn\nn\n",
+    )
     assert result.exit_code == 0, result.output
     assert telemetry.status().enabled is False
 
 
-def test_yes_does_not_prompt_for_or_enable_telemetry(tmp_path: Path) -> None:
+def test_yes_does_not_prompt_and_keeps_the_default(tmp_path: Path) -> None:
     from doberman import telemetry
 
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)], input="")
-
     assert result.exit_code == 0, result.output
-    assert "anonymous usage" not in result.output
-    assert telemetry.status().enabled is False
+    assert "Send anonymous usage stats" not in result.output  # no question asked
+    state = telemetry.status()
+    assert state.enabled is True
+    assert state.consent_at is None  # default kept, nothing recorded as a choice
 
 
 # ---------------------------------------------------------------------------

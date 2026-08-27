@@ -120,7 +120,9 @@ After installing, run `doberman --install-completion` to enable shell tab comple
 doberman setup      # pick a strictness mode, tune guardrails, wire the hooks
 ```
 
-Setup asks once whether to send anonymous usage counts (off by default); see [Telemetry](docs/TELEMETRY.md).
+Anonymous usage counts are on by default (command names and daily totals, never paths, prompts, or
+secrets); the first command prints a notice, and `doberman telemetry off` or `DO_NOT_TRACK=1` turns
+them off. See [Telemetry](docs/TELEMETRY.md).
 
 Doberman now reviews every tool call your agent makes. Confirm it with `doberman doctor`, or watch
 real verdicts with `doberman demo`. MCP-proxy wiring, the dashboard, the TUI, scan, and 2FA are in the

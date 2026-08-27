@@ -1,8 +1,11 @@
 # Telemetry
 
 Doberman can send anonymous usage counts so we know which commands and modes people use, and
-whether they keep using it. Telemetry is off by default. `doberman setup` asks once on its
-interactive path; `doberman setup --yes` leaves it off and does not ask.
+whether they keep using it. Telemetry is **on by default**: the first command you run prints a
+one-line notice saying so, and nothing is sent until that notice has been shown. `doberman setup`
+asks once on its interactive path (default Yes); `doberman setup --yes` keeps the default and
+prints the notice instead of asking. Turn it off at any time with `doberman telemetry off` or any
+kill switch below; that choice is recorded and never asked again.
 
 ## What is sent
 
@@ -53,7 +56,8 @@ doberman telemetry status
 doberman telemetry off
 ```
 
-The interactive `doberman setup` flow can also turn it on. The default answer is No.
+`doberman telemetry status` says `enabled (default; ...)` until you make an explicit choice. The
+interactive `doberman setup` flow asks once; the default answer is Yes.
 
 These environment variables force telemetry off even when the local state says enabled:
 

@@ -7,6 +7,12 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased
 
+- **Telemetry is now on by default (opt-out).** Anonymous usage counts (the same five allowlisted
+  events, no paths, prompts, secrets, or profiles) are sent unless you turn them off; the first CLI
+  command prints a one-line notice to stderr before anything is sent, `doberman setup` asks with a
+  default of Yes, and `doberman telemetry off`, `DO_NOT_TRACK`, `DOBERMAN_TELEMETRY=0`, and `CI`
+  still switch it off. The PostHog project key ships in the package, so events flow from this
+  version on.
 - **`doberman demo --quiet`:** suppresses the banner, the per-scenario narration, and the closing
   `doberman dash` hint, keeping only the summary line/table (silent on a full match, loud on a
   mismatch) and the exit code — so `demo` can run as a CI smoke test ("is the engine alive")

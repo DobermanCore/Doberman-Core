@@ -24,8 +24,16 @@ from doberman import __version__
 from doberman.storage.device_metrics import HOME_ENV, read_metrics
 
 POSTHOG_HOST = "https://us.i.posthog.com"
-POSTHOG_PROJECT_KEY = "phc_REPLACE_ME"
+POSTHOG_PROJECT_KEY = "phc_znQ8ksFQhXYhQKTvA3Qr8QpqH5NfbE9cQropAxefUDWs"
 ENV_KEY = "DOBERMAN_POSTHOG_KEY"
+_PLACEHOLDER_PREFIX = "phc_REPLACE"
+
+#: Printed once, to stderr, by the first CLI command that runs under the default-on state.
+FIRST_RUN_NOTICE = (
+    "Doberman sends anonymous usage counts (command names and daily totals; never paths, "
+    "prompts, or secrets). Turn it off with `doberman telemetry off` or DO_NOT_TRACK=1. "
+    "Details: docs/TELEMETRY.md"
+)
 
 _STATE_NAME = "telemetry.json"
 _VALUE_PATTERN = re.compile(r"^[A-Za-z0-9_.+-]*$")
@@ -43,12 +51,17 @@ _SUMMARY_LOCK = threading.Lock()
 
 @dataclass(frozen=True)
 class TelemetryState:
-    """Local consent state; ``forced_off_reasons`` is computed, never persisted."""
+    """Local consent state; ``forced_off_reasons`` is computed, never persisted.
 
-    enabled: bool = False
+    Default-on: with no state file telemetry is enabled, ``consent_at`` stays ``None`` until
+    the person makes an explicit choice, and ``notice_shown`` records the one-time notice.
+    """
+
+    enabled: bool = True
     distinct_id: str = ""
     consent_at: datetime | None = None
     last_summary_at: datetime | None = None
+    notice_shown: bool = False
     forced_off_reasons: tuple[str, ...] = ()
 
 
@@ -83,10 +96,11 @@ def _read_state(home: Path | None = None) -> TelemetryState:
     try:
         raw = json.loads(_state_path(home).read_text(encoding="utf-8"))
         return TelemetryState(
-            enabled=raw.get("enabled") is True,
+            enabled=raw.get("enabled") is not False,
             distinct_id=raw.get("distinct_id") if isinstance(raw.get("distinct_id"), str) else "",
             consent_at=_parse_time(raw.get("consent_at")),
             last_summary_at=_parse_time(raw.get("last_summary_at")),
+            notice_shown=raw.get("notice_shown") is True,
         )
     except Exception:  # noqa: BLE001 — telemetry state must never affect the CLI
         return TelemetryState()
@@ -103,6 +117,7 @@ def _write_state(state: TelemetryState, home: Path | None = None) -> None:
                     "distinct_id": state.distinct_id,
                     "consent_at": _iso(state.consent_at),
                     "last_summary_at": _iso(state.last_summary_at),
+                    "notice_shown": state.notice_shown,
                 },
                 separators=(",", ":"),
             ),
@@ -130,7 +145,7 @@ def _forced_off_reasons() -> tuple[str, ...]:
         reasons.append("DOBERMAN_TELEMETRY disables telemetry")
     if os.environ.get("CI", ""):
         reasons.append("CI is set")
-    if _project_key() == POSTHOG_PROJECT_KEY:
+    if _project_key().startswith(_PLACEHOLDER_PREFIX):
         reasons.append("PostHog project key is still the placeholder")
     return tuple(reasons)
 
@@ -147,9 +162,31 @@ def is_enabled(home: Path | None = None) -> bool:
     """Return whether consent, environment, and project key permit a send."""
     try:
         state = status(home)
-        return state.enabled and not state.forced_off_reasons and bool(state.distinct_id)
+        return state.enabled and not state.forced_off_reasons
     except Exception:  # noqa: BLE001 — telemetry must default off
         return False
+
+
+def _ensure_id(home: Path | None = None) -> TelemetryState:
+    """Return the state with a persisted anonymous id, creating one on the first send."""
+    current = _read_state(home)
+    if current.distinct_id:
+        return current
+    state = replace(current, distinct_id=str(uuid.uuid4()))
+    _write_state(state, home)
+    return state
+
+
+def first_run_notice(home: Path | None = None) -> str | None:
+    """Return the one-time notice the first time the default-on state can actually send."""
+    try:
+        state = _read_state(home)
+        if state.notice_shown or not is_enabled(home):
+            return None
+        _write_state(replace(state, notice_shown=True), home)
+        return FIRST_RUN_NOTICE
+    except Exception:  # noqa: BLE001 — a notice must never affect the CLI
+        return None
 
 
 def enable(home: Path | None = None) -> TelemetryState:
@@ -161,6 +198,7 @@ def enable(home: Path | None = None) -> TelemetryState:
             enabled=True,
             distinct_id=current.distinct_id or str(uuid.uuid4()),
             consent_at=current.consent_at or _utc_now(),
+            notice_shown=True,
             forced_off_reasons=(),
         )
         _write_state(state, home)
@@ -176,7 +214,15 @@ def disable(home: Path | None = None) -> TelemetryState:
         current = _read_state(home)
         if current.enabled:
             capture("telemetry_disabled", home=home)
-        _write_state(replace(current, enabled=False), home)
+        _write_state(
+            replace(
+                current,
+                enabled=False,
+                consent_at=current.consent_at or _utc_now(),
+                notice_shown=True,
+            ),
+            home,
+        )
         return status(home)
     except Exception:  # noqa: BLE001 — telemetry controls must never affect the CLI
         return status(home)
@@ -239,7 +285,7 @@ def capture(
         event_properties = base_properties() | extras
         if not all(_valid_value(value) for value in event_properties.values()):
             return
-        state = _read_state(home)
+        state = _ensure_id(home)
         uuid.UUID(state.distinct_id, version=4)
         payload = json.dumps(
             {

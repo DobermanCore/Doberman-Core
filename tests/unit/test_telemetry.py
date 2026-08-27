@@ -1,4 +1,4 @@
-"""Tests for opt-in, anonymous CLI telemetry."""
+"""Tests for default-on, opt-out, anonymous CLI telemetry."""
 
 from __future__ import annotations
 
@@ -56,9 +56,36 @@ def _bodies(telemetry, requests):
     return [json.loads(request.data) for request, _timeout in requests]
 
 
-def test_default_off_and_capture_does_not_call_http(tmp_path, monkeypatch):
+def _clear_kill_switches(monkeypatch):
+    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
+    monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+
+
+def test_default_on_first_capture_creates_id_and_posts(tmp_path, monkeypatch):
     from doberman import telemetry
 
+    _clear_kill_switches(monkeypatch)
+    monkeypatch.setenv(telemetry.ENV_KEY, _KEY)
+    requests = _capture_requests(telemetry, monkeypatch)
+
+    assert telemetry.is_enabled(home=tmp_path) is True
+    assert telemetry.status(home=tmp_path).distinct_id == ""  # nothing persisted before a send
+    telemetry.capture("cli_command", {"command": "doctor"}, home=tmp_path)
+
+    bodies = _bodies(telemetry, requests)
+    assert [body["event"] for body in bodies] == ["cli_command"]
+    uuid.UUID(bodies[0]["distinct_id"], version=4)
+    persisted = telemetry.status(home=tmp_path)
+    assert persisted.distinct_id == bodies[0]["distinct_id"]
+    assert persisted.consent_at is None  # default-on is not a recorded choice
+
+
+def test_kill_switch_wins_over_the_default(tmp_path, monkeypatch):
+    from doberman import telemetry
+
+    _clear_kill_switches(monkeypatch)
+    monkeypatch.setenv("DOBERMAN_TELEMETRY", "0")
     monkeypatch.setenv(telemetry.ENV_KEY, _KEY)
     monkeypatch.setattr(
         "urllib.request.urlopen",
@@ -66,6 +93,59 @@ def test_default_off_and_capture_does_not_call_http(tmp_path, monkeypatch):
     )
     assert telemetry.is_enabled(home=tmp_path) is False
     telemetry.capture("cli_command", {"command": "doctor"}, home=tmp_path)
+    telemetry._join_sender_threads(timeout=1.0)
+
+
+def test_opted_out_state_blocks_http(tmp_path, monkeypatch):
+    from doberman import telemetry
+
+    _clear_kill_switches(monkeypatch)
+    telemetry.disable(home=tmp_path)  # placeholder key here, so the final event is a no-op
+    monkeypatch.setenv(telemetry.ENV_KEY, _KEY)
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("HTTP called")),
+    )
+    assert telemetry.is_enabled(home=tmp_path) is False
+    assert telemetry.status(home=tmp_path).consent_at is not None
+    telemetry.capture("cli_command", {"command": "doctor"}, home=tmp_path)
+    telemetry._join_sender_threads(timeout=1.0)
+
+
+def test_first_run_notice_prints_once_and_never_after_a_choice(tmp_path, monkeypatch):
+    from doberman import telemetry
+
+    _clear_kill_switches(monkeypatch)
+    monkeypatch.setenv(telemetry.ENV_KEY, _KEY)
+    assert telemetry.first_run_notice(home=tmp_path) == telemetry.FIRST_RUN_NOTICE
+    assert telemetry.first_run_notice(home=tmp_path) is None
+    assert telemetry.status(home=tmp_path).notice_shown is True
+
+    opted_out = tmp_path / "opted-out"
+    monkeypatch.delenv(telemetry.ENV_KEY, raising=False)
+    telemetry.disable(home=opted_out)
+    monkeypatch.setenv(telemetry.ENV_KEY, _KEY)
+    assert telemetry.first_run_notice(home=opted_out) is None
+
+    forced = tmp_path / "forced"
+    monkeypatch.setenv("CI", "1")
+    assert telemetry.first_run_notice(home=forced) is None  # cannot send, so nothing to announce
+
+
+def test_first_cli_command_prints_the_notice_to_stderr_once(tmp_path, monkeypatch):
+    from doberman import telemetry
+
+    _clear_kill_switches(monkeypatch)
+    monkeypatch.setenv("DOBERMAN_HOME", str(tmp_path))
+    monkeypatch.setenv(telemetry.ENV_KEY, _KEY)
+    _capture_requests(telemetry, monkeypatch)
+
+    first = runner.invoke(cli_module.app, ["status", "--path", str(tmp_path)])
+    second = runner.invoke(cli_module.app, ["status", "--path", str(tmp_path)])
+    assert telemetry.FIRST_RUN_NOTICE in first.stderr
+    assert telemetry.FIRST_RUN_NOTICE not in first.stdout
+    assert telemetry.FIRST_RUN_NOTICE not in second.stderr
+    telemetry._join_sender_threads(timeout=1.0)
 
 
 def test_enable_and_capture_posts_allowlisted_payload(tmp_path, monkeypatch):
@@ -179,8 +259,9 @@ def test_kill_switches_prevent_http_and_status_names_reason(
 def test_placeholder_key_prevents_http(tmp_path, monkeypatch):
     from doberman import telemetry
 
+    _clear_kill_switches(monkeypatch)
     telemetry.enable(home=tmp_path)
-    monkeypatch.delenv(telemetry.ENV_KEY, raising=False)
+    monkeypatch.setenv(telemetry.ENV_KEY, "phc_REPLACE_ME")
     requests = _capture_requests(telemetry, monkeypatch)
     telemetry.capture("cli_command", {"command": "doctor"}, home=tmp_path)
     assert requests == []
