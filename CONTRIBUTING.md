@@ -33,7 +33,13 @@ ruff format --check .
 python scripts/check_markdown_links.py
 lint-imports
 pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=80
+python -m tools.parity.generate_parity --check
 ```
+
+CI runs exactly these (on Linux 3.11–3.13 and Windows 3.12) plus a wheel smoke test and a
+full-history secret scan. The optional extras `explain` (Anthropic SDK) and `winhello`
+(Windows Hello) are not installed in CI; their tests use fakes, so exercise the real thing
+locally when you touch them.
 
 `-n auto` runs the suite in parallel (pytest-xdist ships in the `dev` extra), the
 same way CI runs it.

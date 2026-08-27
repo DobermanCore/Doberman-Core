@@ -12,6 +12,7 @@ concurrency:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40   # the Windows leg takes ~22 min; a hang must not run to the 6 h default
     # Windows runners default `run:` to PowerShell; pin bash (Git Bash ships on
     # GitHub's Windows images) so the shell-scripted steps below — the `grep`-based
     # standalone-guarantee check in particular — behave identically on every OS.
@@ -31,8 +32,8 @@ jobs:
           - os: "windows-latest"
             python-version: "3.12"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -55,9 +56,10 @@ jobs:
         run: python -m tools.parity.generate_parity --check
   package-smoke-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -79,8 +81,9 @@ jobs:
           assert load_builtin_roles(), 'builtin_roles.yaml missing from the wheel'"
   secret-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0 }
       # The gitleaks CLI, not gitleaks-action: the action demands GITLEAKS_LICENSE on
       # org repos, and fork PRs cannot read secrets, so every contributor PR failed here
