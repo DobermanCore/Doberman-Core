@@ -7,10 +7,15 @@ NEVER appears in any report field. Every non-ASCII channel character is built
 with ``chr()`` so the test source stays pure ASCII and encoding-robust.
 """
 
+import math
+
+import pytest
+
 from doberman.tokens import (
     HARD_CHANNELS,
     SOFT_CHANNELS,
     GlitchFragmentStore,
+    calibrate_perplexity_threshold,
     decode_tag_block,
     scan_text,
 )
@@ -172,3 +177,51 @@ def test_glitch_store_accepts_extra_fragments():
     assert store.count("nothing here") == 0
     # An empty fragment must not match everything.
     assert GlitchFragmentStore(extra=[""]).count("anything") == 0
+
+
+# --- perplexity threshold calibration -----------------------------------------
+
+
+def test_calibrate_perplexity_threshold_meets_target_fpr():
+    # 1000 distinct benign scores, evenly spaced across [0, 1).
+    scores = [i / 1000 for i in range(1000)]
+    target_fpr = 0.05
+    threshold = calibrate_perplexity_threshold(scores, target_fpr)
+    measured_fpr = sum(1 for s in scores if s >= threshold) / len(scores)
+    assert abs(measured_fpr - target_fpr) <= 2 / len(scores)
+
+
+def test_calibrate_perplexity_threshold_ignores_input_order():
+    ascending = [i / 100 for i in range(100)]
+    descending = list(reversed(ascending))
+    assert calibrate_perplexity_threshold(ascending, 0.1) == calibrate_perplexity_threshold(
+        descending, 0.1
+    )
+
+
+def test_calibrate_perplexity_threshold_rejects_bad_target_fpr():
+    scores = [i / 20 for i in range(20)]
+    for bad_fpr in (0.0, 1.0, -0.1, 1.5):
+        with pytest.raises(ValueError):
+            calibrate_perplexity_threshold(scores, bad_fpr)
+
+
+def test_calibrate_perplexity_threshold_rejects_too_few_samples():
+    with pytest.raises(ValueError):
+        calibrate_perplexity_threshold([0.1] * 19, 0.1)
+    # 20 is the floor, not itself rejected.
+    calibrate_perplexity_threshold([0.1] * 20, 0.1)
+
+
+def test_calibrate_perplexity_threshold_handles_saturated_scores():
+    threshold = calibrate_perplexity_threshold([1.0] * 25, target_fpr=0.1)
+    assert threshold == 1.0
+
+
+def test_calibrate_perplexity_threshold_rejects_non_finite_scores():
+    scores = [i / 20 for i in range(19)] + [math.nan]
+    with pytest.raises(ValueError):
+        calibrate_perplexity_threshold(scores, 0.1)
+    scores[-1] = math.inf
+    with pytest.raises(ValueError):
+        calibrate_perplexity_threshold(scores, 0.1)

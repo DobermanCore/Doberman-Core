@@ -89,6 +89,12 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   import of the subjective layer (and therefore the whole test suite) died on
   3.11 with `TypeError: type 'DictReader' is not subscriptable`. 3.12+ keeps
   the unpinned floor.
+- **`calibrate_perplexity_threshold`, the model-agnostic half of the OT.4 perplexity seam:**
+  `doberman.tokens.calibrate_perplexity_threshold(benign_scores, target_fpr)` returns the
+  nearest-rank empirical `(1 - target_fpr)` quantile of a benign score corpus, for the
+  `TokenChannelDetector` `perplexity_fn`/`perplexity_threshold` seam. Fails closed (raises
+  `ValueError`) on an out-of-range `target_fpr` or fewer than 20 benign scores. No model, no
+  new dependency; the reference scorer that calls it lands separately as an optional extra.
 - **Auth dialog: the highlighted button takes the click again.** The Canvas focus ring was
   drawn on top of the keyboard-highlighted button, and Tk hit-tests a polygon's whole interior
   even when unfilled — so clicking Deny (or Approve, after Tab) did nothing and the hover
