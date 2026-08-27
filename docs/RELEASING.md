@@ -23,7 +23,7 @@ Publishing uses **PyPI Trusted Publishing (OIDC)** via `.github/workflows/publis
    pip install -i https://test.pypi.org/simple/ \
        --extra-index-url https://pypi.org/simple/ doberman-core
    ```
-3. Create a **GitHub Release** with tag `vX.Y.Z` (matching the version). Publishing the release triggers the `pypi-publish` job, which uploads to PyPI and attaches a CycloneDX SBOM (`sbom.json`) to the release as a downloadable asset. The public core must build, test, and run with zero enterprise code installed (the standalone guarantee); CI's standalone step enforces this.
+3. Create a **GitHub Release** with tag `vX.Y.Z` (matching the version; the publish job refuses to upload when `pyproject.toml`'s version and the tag disagree). Publishing the release triggers the `pypi-publish` job, which uploads to PyPI and attaches a CycloneDX SBOM (`sbom.json`) to the release as a downloadable asset. The public core must build, test, and run with zero enterprise code installed (the standalone guarantee); CI's standalone step enforces this.
    **If that run fails after the tag exists** (a trusted-publisher or workflow bug), fix `main`, then run the workflow manually with target `pypi` and `tag` set to the release tag (`gh workflow run publish.yml -f target=pypi -f tag=vX.Y.Z`). A rerun of the failed run reuses the old workflow snapshot and cannot pick up the fix; the manual run builds `main`, whose `pyproject.toml` already carries the version.
 4. Verify from a clean environment:
    ```bash
