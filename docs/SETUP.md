@@ -114,6 +114,9 @@ machine. Because it deletes state, it requires your enrolled possession factor (
 otherwise your password) and, being irreversible, also asks you to type the project directory name
 back to confirm (`--yes` skips that confirmation, never the factor check). With neither factor
 enrolled it fails closed and removes nothing.
+If a global (or Codex `user`-scope) hook is still installed, `doberman uninstall` also adds the
+project to a device-wide exclusion list that the global hook checks first, so the project gets a
+true no-op; `doberman install-hooks` there clears it again (no gate, re-arming is a strengthen).
 
 > **Note**
 > `pip uninstall doberman-core` cannot also clean up the hook entries it wrote; pip has no hook

@@ -136,6 +136,9 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
     NEVER raises — any failure becomes a deny.
     """
     try:
+        if spine.is_excluded(payload.get("cwd")):
+            return None  # device-wide excluded project — full abstain, no I/O
+
         tool_name = payload.get("tool_name")
         if not isinstance(tool_name, str) or not tool_name:
             return hookio.deny(_EVENT)  # no identifiable action -> refuse

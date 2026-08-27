@@ -64,6 +64,7 @@ from doberman.render import verdict_label, verdict_label_str
 from doberman.storage.approval_memory import clear as clear_approval_memory
 from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
+from doberman.storage.exclusions import add_exclusion, is_excluded, remove_exclusion
 from doberman.storage.log import memory_summary, read_decisions
 from doberman.storage.memory import prune_stale_entities, reset_memory
 from doberman.storage.taint import clear_taint, entity_scope, read_taint
@@ -701,6 +702,7 @@ def _status_payload(path: str) -> dict:
             {"scope": scope, "path": settings_path, "installed": installed}
             for scope, settings_path, installed in hook_states
         ],
+        "excluded_from_global": is_excluded(path),
         "recent_decisions": recent_decisions,
         "missed_challenges_24h": missed_challenges,
     }
@@ -770,6 +772,8 @@ def _render_status_text(payload: dict) -> None:
     for hook in payload["hooks"]:
         state = "installed" if hook["installed"] else "not installed"
         typer.echo(f"  {hook['scope']:<8} {hook['path']}  [{state}]")
+    if payload.get("excluded_from_global"):
+        typer.echo("  excluded from global/Codex-user hooks (run `doberman install-hooks` to undo)")
     typer.echo("")
 
     typer.echo("Recent decisions:")
@@ -1846,6 +1850,8 @@ def install_hooks(
     typer.echo(f"wrote {settings_path}")
     typer.echo("Doberman will now gate every tool call in this project.")
     typer.echo("The session dashboard will print at the start of every session.")
+    if remove_exclusion(path):
+        typer.echo("This project is no longer excluded from global hooks.")
 
 
 def _install_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> None:
@@ -1881,6 +1887,8 @@ def _install_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> N
     write_settings(hooks_path, merged)
     typer.echo(f"wrote {hooks_path}")
     typer.echo("Doberman will now gate Codex's tool calls in this scope.")
+    if remove_exclusion(path):
+        typer.echo("This project is no longer excluded from global hooks.")
     typer.echo("")
     typer.echo("Codex requires you to TRUST this hook before it runs:")
     typer.echo("  run a Codex command and approve the hook when prompted, or launch with")
@@ -2270,11 +2278,15 @@ def uninstall(
 ) -> None:
     """Fully remove Doberman from this project: host hooks + `.doberman/`.
 
-    Project-scoped only. This does **not** touch `--global` hooks (they protect
-    every project on this machine) or your device-wide password / 2FA / fingerprint
-    key / `~/.doberman/metrics.db` (all shared across every project Doberman
-    protects) — removing those is a separate, deliberate action, not a side effect
-    of cleaning up one project.
+    Project-scoped only. This does **not** touch `--global` hooks themselves (they
+    protect every project on this machine) or your device-wide password / 2FA /
+    fingerprint key / `~/.doberman/metrics.db` — removing those is a separate,
+    deliberate action, not a side effect of cleaning up one project. But a global
+    (or Codex user-scope) hook would otherwise keep firing here even after this
+    project's own hooks/`.doberman/` are gone, so when one is detected as still
+    installed, this project is also added to a device-wide exclusion list that the
+    global hook checks and skips — closing that gap without touching the hook file
+    itself. Run `doberman install-hooks` here again to clear the exclusion.
 
     Requires an enrolled possession factor (2FA if set up, otherwise your Doberman
     password) — the same gate as `doberman taint clear` / `doberman memory reset`.
@@ -2285,11 +2297,22 @@ def uninstall(
     if global_:
         _uninstall_global(path, yes, dry_run, keep_package)
         return
+    from doberman.hosthooks.install_codex import (
+        codex_hook_install_states,
+        remove_codex_hooks,
+        resolve_codex_hooks_path,
+    )
 
     targets = _project_uninstall_targets(path)
     if not targets:
         typer.echo("Nothing to remove for this project.")
         return
+
+    global_hook_active = any(
+        scope == "global" and installed for scope, _, installed in _hook_install_states(path)
+    ) or any(
+        scope == "user" and installed for scope, _, installed in codex_hook_install_states(path)
+    )
 
     project_name = Path(path).resolve().name
     typer.echo(f"Doberman UNINSTALL requested for this project ({Path(path).resolve()}):")
@@ -2300,6 +2323,12 @@ def uninstall(
     typer.echo("  - hooks installed with --global")
     typer.echo("  - your Doberman password / 2FA enrollment / fingerprint key")
     typer.echo("  - ~/.doberman/metrics.db (device metrics)")
+    if global_hook_active:
+        typer.echo("")
+        typer.echo(
+            "A global (or Codex user-scope) hook is still installed on this machine — this "
+            "project will also be added to the device-wide exclusion list, so it skips it too."
+        )
 
     if dry_run:
         typer.echo("")
@@ -2341,11 +2370,6 @@ def uninstall(
         resolve_settings_path,
         write_settings,
     )
-    from doberman.hosthooks.install_codex import (
-        codex_hook_install_states,
-        remove_codex_hooks,
-        resolve_codex_hooks_path,
-    )
 
     errors: list[str] = []
     for scope, settings_path, installed in _hook_install_states(path):
@@ -2380,6 +2404,14 @@ def uninstall(
         raise typer.Exit(code=1)
 
     typer.echo("\nDoberman removed from this project.")
+
+    if global_hook_active:
+        add_exclusion(path)
+        typer.echo(
+            "This project has been added to the device-wide exclusion list, so the global "
+            "(or Codex user-scope) hook will skip it too. Run `doberman install-hooks` here "
+            "to bring protection back."
+        )
 
 
 @app.command(rich_help_panel="Getting started")

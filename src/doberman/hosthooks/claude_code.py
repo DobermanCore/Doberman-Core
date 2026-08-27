@@ -175,6 +175,9 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
     NEVER raises — any failure becomes a deny.
     """
     try:
+        if spine.is_excluded(payload.get("cwd")):
+            return None  # device-wide excluded project — full abstain, no I/O
+
         tool_name = payload.get("tool_name")
         if not isinstance(tool_name, str) or not tool_name:
             return _deny()  # no identifiable action -> refuse
@@ -358,6 +361,9 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
         Wrapped in a broad except so it can never affect the return value.
     """
     try:
+        if spine.is_excluded(payload.get("cwd")):
+            return None  # device-wide excluded project — full abstain, no I/O
+
         tool_name = payload.get("tool_name")
         if not isinstance(tool_name, str) or not tool_name:
             # No identifiable tool — fail closed.

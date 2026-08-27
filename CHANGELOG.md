@@ -7,6 +7,17 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 
 ## Unreleased
 
+- **`doberman uninstall` now actually stops protection when hooks are global.** Previously,
+  `uninstall` was project-scoped only: if a global (`--global`) Claude Code hook or a Codex
+  `user`-scope hook was still installed, it kept firing in the "uninstalled" project and silently
+  recreated `.doberman/` there the next time any decision needed recording. `uninstall` now
+  detects this and automatically adds the project to a device-wide exclusion list
+  (`~/.doberman/excluded_projects.json`) that the (unchanged) global hook checks — first, before
+  anything else — on every call, so an excluded project gets a true no-op instead. The list is
+  only ever written by the already possession-factor-gated `uninstall` flow; reading it is a pure,
+  side-effect-free check that fails closed. Run `doberman install-hooks` in that project again to
+  clear the exclusion (no gate needed — re-arming protection is a strengthen). `doberman status`
+  reports whether the current project is excluded.
 - **`doberman doctor` catches dangling hook entries.** New critical `Hook command` check: when hooks are
   installed but the bare `doberman` they invoke is not on PATH (package removed, bin dir not on PATH), the
   host fails the hook and carries on unmediated, so `doctor` now fails and names the fix - put the binary

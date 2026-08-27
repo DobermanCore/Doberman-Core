@@ -68,6 +68,18 @@ global hooks and device-wide password, 2FA, fingerprint key, and state survive u
 is itself control-plane-blocked, so a mediated agent can never shell out to run it. Same protection as
 `uninstall-hooks`.
 
+That project-scoping used to leave a gap: a global (`--global`) Claude Code hook, or a Codex
+`user`-scope hook, keeps firing for every project, and there is no way to make the hook file itself
+skip one (its matcher keys off tool name, not path). `doberman uninstall` now closes this too: when it
+detects a still-active global or Codex-user hook it adds the project to a device-wide exclusion list
+(`~/.doberman/excluded_projects.json`) that the global hook checks first on every call, so an excluded
+project gets a true no-op instead of the hook silently recreating `.doberman/`. The list is only ever
+written by this already-gated `uninstall` flow (never by a mediated agent, never on the hot hook path),
+and reading it is a pure check that fails closed: a missing or corrupt list means *not* excluded. To
+bring protection back, run `doberman install-hooks` in that project again, any scope, no possession
+factor needed, since re-arming protection is a strengthen. `doberman status` reports whether the
+current project is excluded.
+
 ## Removing Doberman from the whole machine — `doberman uninstall --global`
 
 Run this command from a regular terminal outside the protected agent session:
