@@ -3,9 +3,15 @@
 Shipped history for Doberman. Planned work lives on the [roadmap](README.md#roadmap) and the
 [project board](https://github.com/users/fu351/projects/5); exact per-commit detail is in the
 [git log](https://github.com/DobermanCore/Doberman-Core/commits/main) and
-[releases](https://github.com/DobermanCore/Doberman-Core/releases) (latest: **v0.18.3**, the second friction-reduction patch — opt-in tap-to-approve 2FA (a Windows Hello / Touch ID biometric can stand in for the TOTP code) — atop **v0.18.2**'s friction-reduction patch — spurious secret-detector prompts on ordinary ids/paths/UUIDs fixed, and the detector now self-checks and fails closed — atop **v0.18.1**'s README-image docs patch and **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
+[releases](https://github.com/DobermanCore/Doberman-Core/releases) (latest: **v0.18.4**, the third friction-reduction patch — a five-minute approval memory for exact repeats, `uninstall --global`, a `doctor` check for dangling hooks, and usage telemetry on by default — atop **v0.18.3**'s tap-to-approve 2FA (a Windows Hello / Touch ID biometric can stand in for the TOTP code) — atop **v0.18.2**'s friction-reduction patch — spurious secret-detector prompts on ordinary ids/paths/UUIDs fixed, and the detector now self-checks and fails closed — atop **v0.18.1**'s README-image docs patch and **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
 
-## Unreleased
+## v0.18.4 — 2026-08-26
+
+> **Friction reduction, part three, and the lights come on.** A repeat of an approved action now
+> re-prompts at a one-click confirm instead of the full ladder; `uninstall --global` and the doctor's
+> `Hook command` check close the dangling-hook trap; `demo --quiet` and the global-hook exclusion
+> round out the CLI. Usage telemetry is on by default with a one-time notice, the same allowlist, and
+> the kill switches unchanged, so from this version the project can see what people actually use.
 
 - **Telemetry is now on by default (opt-out).** Anonymous usage counts (the same five allowlisted
   events, no paths, prompts, secrets, or profiles) are sent unless you turn them off; the first CLI
