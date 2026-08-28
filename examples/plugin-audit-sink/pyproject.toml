@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "doberman-example-plugin-audit-sink"
+version = "0.1.0"
+description = "Tutorial: a minimal custom AuditSink registered via the doberman.audit_sinks entry-point group."
+requires-python = ">=3.11"
+dependencies = ["doberman-core"]
+
+# This is the whole extensibility contract: core discovers the group at runtime
+# via importlib.metadata and never imports this package by name.
+[project.entry-points."doberman.audit_sinks"]
+example_sink = "example_audit_sink.sinks:ExampleAuditSink"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/example_audit_sink"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+extend-select = ["I", "B", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
