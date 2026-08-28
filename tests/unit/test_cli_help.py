@@ -20,6 +20,7 @@ CLI_HELP_TARGETS = (
     ("mode",),
     ("enforcement",),
     ("prefs",),
+    ("egress-velocity",),
     ("message-tone",),
     ("role",),
     ("role", "enable-default"),
