@@ -60,6 +60,11 @@ def _secret_path() -> Path:
     return Path(override) if override else _default_secret_path()
 
 
+def resolve_path() -> Path:
+    """Resolve the active password enrollment file, including env overrides."""
+    return _secret_path()
+
+
 def _read_record() -> tuple[int, bytes, bytes] | None:
     """Return ``(iterations, salt, hash)`` or ``None`` if absent/malformed."""
     path = _secret_path()

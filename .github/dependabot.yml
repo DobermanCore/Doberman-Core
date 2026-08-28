@@ -1,0 +1,11 @@
+# Keeps the SHA-pinned actions current through reviewable PRs (the pins carry a
+# `# vX.Y.Z` comment, which Dependabot updates alongside the SHA). Python deps are
+# deliberately not here: maintainer dep bumps conflict with open contributor PRs
+# (ADR 0080), so they stay a deliberate, sweep-first change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

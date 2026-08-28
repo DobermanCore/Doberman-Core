@@ -18,10 +18,12 @@ Two safety rules, straight from the Prime Directives:
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import stat
 from dataclasses import dataclass
 from enum import Enum
+from importlib.util import find_spec
 from pathlib import Path
 
 
@@ -75,6 +77,43 @@ def _check_hooks(path: str) -> CheckResult:
         "Host hooks",
         CheckStatus.FAIL,
         "not installed in any scope — run `doberman install-hooks` (add `--host codex` for Codex)",
+        critical=True,
+    )
+
+
+def _check_hook_command(path: str) -> CheckResult:
+    """Every hook entry runs the bare ``doberman`` command, so the host can only
+    execute them if ``doberman`` is on PATH. A dangling entry (package removed, or
+    its bin dir not on PATH) makes the host fail the hook and carry on
+    **unmediated** - critical whenever hooks are installed (ADR 0086 follow-up).
+
+    Diagnosis only: the fix is putting the binary back on PATH or stripping the
+    entries with ``uninstall-hooks``; ``doctor`` never edits settings. Resolution
+    happens on *this* process's PATH, which can differ from the host's, so the
+    detail says so.
+    """
+    from doberman.hosthooks.install import hook_install_states
+    from doberman.hosthooks.install_codex import codex_hook_install_states
+
+    resolved = shutil.which("doberman")
+    if resolved:
+        return CheckResult("Hook command", CheckStatus.OK, f"`doberman` resolves to {resolved}")
+    installed = any(ok for _scope, _p, ok in hook_install_states(path)) or any(
+        ok for scope, _p, ok in codex_hook_install_states(path) if scope != "plugin"
+    )
+    if not installed:
+        return CheckResult(
+            "Hook command",
+            CheckStatus.WARN,
+            "`doberman` is not on PATH (checked from this shell) - hooks installed later would not run",
+        )
+    return CheckResult(
+        "Hook command",
+        CheckStatus.FAIL,
+        "hooks call `doberman`, which is not on PATH (checked from this shell): the host cannot run "
+        "them, so tool calls go unmediated. Put the install's bin dir on PATH (or `pipx install "
+        "doberman-core`), or strip the dangling entries with `doberman uninstall-hooks` "
+        "(`--global` for the user-wide ones)",
         critical=True,
     )
 
@@ -139,6 +178,25 @@ def _version_tuple(v: str) -> tuple[int, ...]:
         return tuple(int(p) for p in v.split("."))
     except ValueError:
         return (0,)
+
+
+def _check_optional_extra(name: str, module: str, install_extra: str) -> CheckResult:
+    """Report an optional UI dependency without importing it."""
+    if find_spec(module) is not None:
+        return CheckResult(name, CheckStatus.OK, "installed")
+    return CheckResult(
+        name,
+        CheckStatus.WARN,
+        f"not installed (optional) - pip install 'doberman[{install_extra}]'",
+    )
+
+
+def _check_dash_extra() -> CheckResult:
+    return _check_optional_extra("Dash extra", "starlette", "dash")
+
+
+def _check_tui_extra() -> CheckResult:
+    return _check_optional_extra("TUI extra", "textual", "tui")
 
 
 def _check_config(path: str) -> CheckResult:
@@ -220,6 +278,16 @@ def _check_2fa() -> CheckResult:
     )
 
 
+def _check_password() -> CheckResult:
+    from doberman.auth import password
+
+    if password.is_enrolled():
+        return CheckResult("Password", CheckStatus.OK, "set")
+    return CheckResult(
+        "Password", CheckStatus.WARN, "not set (optional) — run `doberman password set`"
+    )
+
+
 def _check_fingerprint_key() -> CheckResult:
     from doberman.storage.fingerprint import _key_path
 
@@ -253,12 +321,16 @@ def run_checks(path: str = ".") -> list[CheckResult]:
     """Run every health check against *path* and return the results in display order."""
     return [
         _safe_check("Host hooks", True, lambda: _check_hooks(path)),
+        _safe_check("Hook command", True, lambda: _check_hook_command(path)),
         _safe_check("Config", True, lambda: _check_config(path)),
         _safe_check("Decision DB", True, lambda: _check_db(path)),
         _safe_check("Enforcement", False, lambda: _check_enforcement(path)),
         _safe_check("2FA", False, _check_2fa),
+        _safe_check("Password", False, _check_password),
         _safe_check("Fingerprint key", False, _check_fingerprint_key),
         _safe_check("Codex CLI", False, _check_codex_version),
+        _safe_check("Dash extra", False, _check_dash_extra),
+        _safe_check("TUI extra", False, _check_tui_extra),
     ]
 
 

@@ -2,10 +2,10 @@
 calls without the agent opting in.
 
 Claude Code can run a command as a ``PreToolUse`` hook *before* every tool call.
-Wired in (see ``doberman install-hooks``, a later slice), the harness invokes
-``doberman hook pre`` and hands this adapter the tool call on stdin. We translate
-it into a :class:`~doberman.models.SecurityObject`, run the **deterministic
-objective floor**, and answer in Claude Code's hook protocol:
+Wired in by ``doberman install-hooks``, the harness invokes ``doberman hook pre``
+and hands this adapter the tool call on stdin. We translate it into a
+:class:`~doberman.models.SecurityObject`, run the **deterministic objective
+floor**, and answer in Claude Code's hook protocol:
 
 * ``PASS``  -> abstain (no output). Doberman is **raise-only**: it never removes
   the harness's own permission prompts, it only *adds* friction.
@@ -56,7 +56,7 @@ if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth st
 #: Claude Code built-in tools whose *action* we gate before execution. Pure reads
 #: (Read / Glob / Grep) are deliberately NOT gated here — a read cannot destroy or
 #: exfiltrate on its own; its *output* is the concern, scanned by the PostToolUse
-#: hook (a later slice). Internal tools (TodoWrite, Task, …) are not real-resource
+#: hook. Internal tools (TodoWrite, Task, …) are not real-resource
 #: actions and abstain too.
 GATED_BUILTINS: frozenset[str] = frozenset(
     {"Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"}
@@ -139,13 +139,17 @@ def _hook_output(permission: str, reason: str) -> dict[str, Any]:
     return hookio.hook_output(_HOOK_EVENT, permission, reason)
 
 
-def _resolve_auth(decision: Decision, action: SecurityObject, repo_root: str) -> dict[str, Any]:
-    return hookio.resolve_auth(
+def _resolve_auth(
+    decision: Decision, action: SecurityObject, repo_root: str, session_id: str | None = None
+) -> tuple[dict[str, Any], str]:
+    return hookio.resolve_auth_result(
         decision,
         action,
         event=_HOOK_EVENT,
         prompter=AUTH_PROMPTER,
         message_tone=load_message_tone(repo_root),
+        repo_root=repo_root,
+        session_id=session_id,
     )
 
 
@@ -171,6 +175,9 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
     NEVER raises — any failure becomes a deny.
     """
     try:
+        if spine.is_excluded(payload.get("cwd")):
+            return None  # device-wide excluded project — full abstain, no I/O
+
         tool_name = payload.get("tool_name")
         if not isinstance(tool_name, str) or not tool_name:
             return _deny()  # no identifiable action -> refuse
@@ -197,11 +204,19 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
         if result.acted is Verdict.AUTH:
             # Run Doberman's own action-bound challenge so the human can actually
             # approve in-session (issues #65/#67) — not just be told to.
-            hook_result = _resolve_auth(result.decision, result.action, result.repo_root)
+            hook_result, auth_method = _resolve_auth(
+                result.decision, result.action, result.repo_root, result.session_id
+            )
         else:
             hook_result = _decision_payload(result.decision)  # BLOCK -> deny
+            auth_method = "blocked"
         _record_pre_history(
-            result.decision, result.action, result.repo_root, result.session_id, hook_result
+            result.decision,
+            result.action,
+            result.repo_root,
+            result.session_id,
+            hook_result,
+            auth_result=auth_method,
         )
         return hook_result
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
@@ -221,6 +236,8 @@ def _record_pre_history(
     repo_root: str,
     session_id: str | None,
     hook_result: dict[str, Any],
+    *,
+    auth_result: str | None = None,
 ) -> None:
     """Best-effort: record a PreToolUse AUTH/BLOCK decision in ``doberman log``.
 
@@ -242,7 +259,7 @@ def _record_pre_history(
             action,
             repo_root,
             session_id,
-            auth_result=_pre_auth_result(hook_result),
+            auth_result=auth_result or _pre_auth_result(hook_result),
         )
     except Exception:  # noqa: BLE001,S110 — history must never alter the hook's return value
         pass
@@ -344,6 +361,9 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
         Wrapped in a broad except so it can never affect the return value.
     """
     try:
+        if spine.is_excluded(payload.get("cwd")):
+            return None  # device-wide excluded project — full abstain, no I/O
+
         tool_name = payload.get("tool_name")
         if not isinstance(tool_name, str) or not tool_name:
             # No identifiable tool — fail closed.

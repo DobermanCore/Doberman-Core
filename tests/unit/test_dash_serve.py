@@ -84,6 +84,30 @@ def test_index_serves_html_shell_without_auth(client: TestClient):
     assert _TOKEN not in resp.text
 
 
+def test_index_serves_the_brand_mark_inline(client: TestClient):
+    """The header carries the real Doberman mark as an inline data URI: no static-file
+    route to protect, no placeholder left behind, and the payload really is a PNG."""
+    import base64
+
+    resp = client.get("/")
+    assert "%%DASH_MARK_PNG_B64%%" not in resp.text
+    prefix = 'src="data:image/png;base64,'
+    start = resp.text.index(prefix) + len(prefix)
+    payload = resp.text[start : resp.text.index('"', start)]
+    png_signature = bytes.fromhex("89504e470d0a1a0a")
+    assert base64.b64decode(payload, validate=True).startswith(png_signature)
+
+
+def test_index_feed_handler_keeps_stats_in_step(client: TestClient):
+    """A new feed row schedules a (debounced) stats refresh, so the counters never sit
+    up to STATS_REFRESH_MS behind the list. The JS ships inline in the shell, so the
+    served page is the only place this wiring can be checked without a browser."""
+    shell = client.get("/").text
+    assert "function syncStatsSoon()" in shell
+    decision_handler = shell[shell.index('source.addEventListener("decision"') :]
+    assert "syncStatsSoon();" in decision_handler
+
+
 def test_cli_dash_missing_extra_exits_nonzero_with_install_hint(monkeypatch):
     from doberman.cli.main import app as cli_app
 
