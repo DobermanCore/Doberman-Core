@@ -46,6 +46,7 @@ from doberman.config import (
 from doberman.demo import format_outcome_line, format_summary_table, run_demo
 from doberman.discovery.mcp_scan import MCP_CONFIG_FILES, scan_mcp_configs
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
+from doberman.models import ActionType
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
     _run_weaken_gate,
@@ -1432,6 +1433,10 @@ def tune(
 # ``build_record`` — no raw target, argument, or secret reaches the table at all.
 _JSONL_EXTRA_COLUMNS = ("id", "agent_role", "risk")
 
+# Keep every action type in one column even when a new enum member outgrows the
+# historical 13-character values (network_request/package_install are 15).
+_ACTION_WIDTH = max(len(action.value) for action in ActionType)
+
 
 @app.command(rich_help_panel="Daily")
 def log(
@@ -1485,7 +1490,7 @@ def log(
         else:
             auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
         typer.echo(
-            f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<13} "
+            f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<{_ACTION_WIDTH}} "
             f"{target}  [{reasons}]{auth}"
         )
 
