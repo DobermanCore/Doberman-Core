@@ -23,6 +23,7 @@ import sqlite3
 import stat
 from dataclasses import dataclass
 from enum import Enum
+from importlib.util import find_spec
 from pathlib import Path
 
 
@@ -179,6 +180,25 @@ def _version_tuple(v: str) -> tuple[int, ...]:
         return (0,)
 
 
+def _check_optional_extra(name: str, module: str, install_extra: str) -> CheckResult:
+    """Report an optional UI dependency without importing it."""
+    if find_spec(module) is not None:
+        return CheckResult(name, CheckStatus.OK, "installed")
+    return CheckResult(
+        name,
+        CheckStatus.WARN,
+        f"not installed (optional) - pip install 'doberman[{install_extra}]'",
+    )
+
+
+def _check_dash_extra() -> CheckResult:
+    return _check_optional_extra("Dash extra", "starlette", "dash")
+
+
+def _check_tui_extra() -> CheckResult:
+    return _check_optional_extra("TUI extra", "textual", "tui")
+
+
 def _check_config(path: str) -> CheckResult:
     from doberman.config import CONFIG_DIR, POLICY_FILE, load_policy
 
@@ -309,6 +329,8 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("Password", False, _check_password),
         _safe_check("Fingerprint key", False, _check_fingerprint_key),
         _safe_check("Codex CLI", False, _check_codex_version),
+        _safe_check("Dash extra", False, _check_dash_extra),
+        _safe_check("TUI extra", False, _check_tui_extra),
     ]
 
 
