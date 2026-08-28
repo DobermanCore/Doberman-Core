@@ -72,6 +72,7 @@ _DOBERMAN_CONTROL_SUBCOMMANDS = {
     "password",
     "revoke",
     "memory",
+    "decision-log-prune",
     "tools",
     "approvals",
     # `tune --accept` grants a standing elevation (a weakening) through the

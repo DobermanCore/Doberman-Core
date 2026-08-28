@@ -211,6 +211,24 @@ async def test_prune_never_deletes_unresolved_auth(tmp_path):
     assert rows[0]["final_verdict"] == "AUTH"
 
 
+async def test_prune_deletes_resolved_auth(tmp_path):
+    root = str(tmp_path)
+    now = datetime.now(timezone.utc)
+    decision, action = _decision_and_action(Verdict.AUTH, "approved-auth")
+    await record_decision(
+        decision,
+        action,
+        repo_root=root,
+        auth_result="approved",
+        now=now - timedelta(days=365),
+    )
+
+    result = await prune_decisions(root, older_than_days=1, max_rows=0, now=now)
+
+    assert result == {"age_deleted": 1, "overflow_deleted": 0}
+    assert await read_decisions(root) == []
+
+
 async def test_prune_requires_at_least_one_policy(tmp_path):
     raised = False
     try:

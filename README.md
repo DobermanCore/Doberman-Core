@@ -166,6 +166,9 @@ stays empty. That last assertion is the chokepoint property the whole project ha
 Doberman's proxy speaks MCP as pinned in `pyproject.toml` (`mcp>=1.27,<2`). Its cross-call protections
 (taint ledger, read-vs-send fingerprints, decision log) key off repo-local identity, never the
 protocol session, and are regression-tested stateless.
+Operators can bound retained decision rows with `doberman decision-log-prune`; it deletes only
+resolved decisions and never pending AUTH rows or the append-only policy-change ledger. See the
+[CLI reference](docs/CLI.md) for the age and row-budget options.
 
 ---
 

@@ -82,8 +82,7 @@ _SELECT_SESSION_DECISIONS = (
 # AUTH is final; an AUTH row remains eligible only when its challenge already
 # produced an explicit outcome. A missing auth_result is deliberately kept.
 _RESOLVED_DECISIONS_PREDICATE = (
-    "(final_verdict <> 'AUTH' AND (auth_result IS NULL "
-    "OR auth_result IN ('approved', 'denied', 'executed')))"
+    "(final_verdict <> 'AUTH' OR auth_result IN ('approved', 'denied', 'executed'))"
 )
 _DELETE_RESOLVED_DECISIONS = "DELETE FROM decisions WHERE " + _RESOLVED_DECISIONS_PREDICATE  # noqa: S608 — fixed clause, params bound
 _DECISION_COLUMNS = [
