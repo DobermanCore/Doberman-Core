@@ -1,6 +1,6 @@
 [project]
 name = "doberman-core"
-version = "0.18.1"
+version = "0.18.4"
 description = "Adaptive authorization layer for coding agents (open core)"
 readme = "README.md"
 license = "Apache-2.0"
@@ -49,6 +49,9 @@ explain = ["anthropic"]
 tui = ["textual"]
 dash = ["starlette", "uvicorn"]
 sbom = ["pip-audit"]
+# Windows Hello biometric approval (2FA). Windows-only; the backend degrades to a
+# TOTP fallback when this is absent or off-Windows, so it is never a hard dependency.
+winhello = ["winsdk; sys_platform == 'win32'"]
 
 [project.scripts]
 doberman = "doberman.cli.main:app"

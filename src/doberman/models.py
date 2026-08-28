@@ -417,6 +417,9 @@ class SecurityObject(BaseModel):
     #: all-unknown / zero-confidence algebra when nothing has inferred it yet.
     algebra: Algebra = Field(default_factory=Algebra)
     payload_fingerprints: list[str] = Field(default_factory=list)
+    #: Keyed HMAC of the exact unredacted canonical action. The raw input is
+    #: never retained; ``None`` disables approval memory for this action.
+    action_fingerprint: str | None = None
     # Values must already be redacted before entering the object; redaction is
     # enforced by normalize() and its tests, not by this type.
     raw_args_redacted: dict[str, Any] = Field(default_factory=dict)

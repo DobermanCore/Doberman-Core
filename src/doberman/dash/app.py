@@ -75,6 +75,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from doberman.branding import DASH_MARK_PNG_B64
 from doberman.config import load_mode
 from doberman.dash.stats import build_stats, reason_codes
 from doberman.policy.drift import apply_mode_change
@@ -93,7 +94,7 @@ _FEED_BACKFILL_LIMIT = 50
 #: much shorter one so the feed test doesn't wait on the wall clock).
 _FEED_POLL_INTERVAL_S = 1.0
 
-# ponytail: one inline page, no build toolchain - real UI lands in a later slice.
+# ponytail: one inline page, no build toolchain.
 _HTML_SHELL = """<!doctype html>
 <html lang="en">
 <head>
@@ -163,7 +164,7 @@ _HTML_SHELL = """<!doctype html>
     padding-bottom: 1.1rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--rule-2);
   }
   .brand { display: inline-flex; align-items: center; gap: .6rem; }
-  .brand svg { width: 28px; height: 28px; flex: none; }
+  .brand img { height: 28px; width: auto; flex: none; display: block; }
   .brand .word {
     font-family: var(--mono); font-weight: 700; font-size: .95rem;
     letter-spacing: .06em; color: var(--tan);
@@ -308,10 +309,7 @@ _HTML_SHELL = """<!doctype html>
   <h1 class="sr-only">Doberman local dashboard</h1>
   <div class="topbar">
     <div class="brand">
-      <svg viewBox="0 0 32 32" aria-hidden="true">
-        <circle cx="16" cy="16" r="15" style="fill:var(--ink-2); stroke:var(--tan); stroke-width:1.5" />
-        <text x="16" y="21.5" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-weight="700" font-size="15" style="fill:var(--tan)">D</text>
-      </svg>
+      <img src="data:image/png;base64,%%DASH_MARK_PNG_B64%%" alt="" aria-hidden="true" />
       <span class="word">DOBERMAN</span>
       <span class="project">%%DASH_PROJECT_NAME%%</span>
     </div>
@@ -503,6 +501,14 @@ _HTML_SHELL = """<!doctype html>
       }
       refreshStats();
       setInterval(refreshStats, STATS_REFRESH_MS);
+      // The counters follow the feed: a new row re-fetches the stats right away
+      // (trailing-debounced, so a backfill burst on connect costs one request)
+      // instead of lagging up to STATS_REFRESH_MS behind the list.
+      var statsSyncTimer = null;
+      function syncStatsSoon() {
+        clearTimeout(statsSyncTimer);
+        statsSyncTimer = setTimeout(refreshStats, 150);
+      }
 
       // Mode control: fetch the valid mode names once to populate the
       // selector, then let the user pick a new one. Raising strictness is
@@ -785,6 +791,7 @@ _HTML_SHELL = """<!doctype html>
           if (nearBottom) {
             feedEl.scrollTop = feedEl.scrollHeight;
           }
+          syncStatsSoon();
         });
       } catch (e) {
         // EventSource unsupported/blocked - the feed just stays empty.
@@ -860,6 +867,7 @@ def _render_shell(repo_root: str) -> str:
     return (
         _HTML_SHELL.replace("%%DASH_PAGE_TITLE%%", html.escape(page_title))
         .replace("%%DASH_PROJECT_NAME%%", html.escape(project))
+        .replace("%%DASH_MARK_PNG_B64%%", DASH_MARK_PNG_B64)
         .replace("%%DASH_JS_TITLE_JSON%%", _js_string_literal(page_title))
     )
 

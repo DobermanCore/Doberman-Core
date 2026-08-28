@@ -10,7 +10,7 @@ The checklist for cutting a release, kept in sync with `.github/workflows/publis
    - Synthetic (deterministic, from a cold clone): `python -m tests.benchmarks.run --suite synthetic --profile before_after`.
    - AgentDojo (operator-supplied): `pip install agentdojo` at a pinned commit, then `python -m tests.benchmarks.run --suite agentdojo --profile before_after`. Record the pinned commit and the run date. Keep the raw run out of git (`test-logs/`); transcribe only the aggregate numbers.
    - Update the "Fixed bypasses" wall with anything disclosed and fixed since the last release.
-4. **Version and changelog.** Bump `version` in `pyproject.toml` (follow semver). Move shipped items into `CHANGELOG.md`. Confirm the README roadmap and versioning reflect reality.
+4. **Version and changelog.** Run `python scripts/compile_changelog.py --write` to collect all pending `changelog.d/<PR-number>.md` files into a fresh `Unreleased` section; review that output before promoting it to the new version heading. Bump `version` in `pyproject.toml` (follow semver). Confirm the README roadmap and versioning reflect reality.
 5. **Docs sweep.** Every protection claim in the README resolves to a parity cell or a benchmark number. No orphan adjectives.
 
 ## Cut a release
@@ -18,12 +18,13 @@ The checklist for cutting a release, kept in sync with `.github/workflows/publis
 Publishing uses **PyPI Trusted Publishing (OIDC)** via `.github/workflows/publish.yml`. No API tokens are stored in this repo.
 
 1. Commit the version bump from step 4 above and merge to `main`.
-2. Optional dry run: GitHub -> Actions -> Publish -> Run workflow, on `main`. This builds and uploads to **TestPyPI**. Verify:
+2. Optional dry run: GitHub -> Actions -> Publish -> Run workflow, on `main`, target `testpypi` (the default). This builds and uploads to **TestPyPI**. Verify:
    ```bash
    pip install -i https://test.pypi.org/simple/ \
        --extra-index-url https://pypi.org/simple/ doberman-core
    ```
-3. Create a **GitHub Release** with tag `vX.Y.Z` (matching the version). Publishing the release triggers the `pypi-publish` job, which uploads to PyPI and attaches a CycloneDX SBOM (`sbom.json`) to the release as a downloadable asset. The public core must build, test, and run with zero enterprise code installed (the standalone guarantee); CI's standalone step enforces this.
+3. Create a **GitHub Release** with tag `vX.Y.Z` (matching the version; the publish job refuses to upload when `pyproject.toml`'s version and the tag disagree). Publishing the release triggers the `pypi-publish` job, which uploads to PyPI and attaches a CycloneDX SBOM (`sbom.json`) to the release as a downloadable asset. The public core must build, test, and run with zero enterprise code installed (the standalone guarantee); CI's standalone step enforces this.
+   **If that run fails after the tag exists** (a trusted-publisher or workflow bug), fix `main`, then run the workflow manually with target `pypi` and `tag` set to the release tag (`gh workflow run publish.yml -f target=pypi -f tag=vX.Y.Z`). A rerun of the failed run reuses the old workflow snapshot and cannot pick up the fix; the manual run builds `main`, whose `pyproject.toml` already carries the version.
 4. Verify from a clean environment:
    ```bash
    python -m venv /tmp/dob && /tmp/dob/bin/pip install doberman-core

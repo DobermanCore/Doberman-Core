@@ -59,8 +59,9 @@ subjective detector). It is not marketed as airtight.
 
 from __future__ import annotations
 
+import math
 import unicodedata
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
@@ -507,6 +508,32 @@ def scan_text(text: str, glitch_store: GlitchFragmentStore | None = None) -> OOD
         )
 
     return report
+
+
+# --- Perplexity threshold calibration -----------------------------------------
+# The pure-stats half of the opt-in perplexity_fn seam (TokenChannelDetector):
+# calibrates a threshold against a benign corpus, no model, no dependency.
+
+
+def calibrate_perplexity_threshold(benign_scores: Sequence[float], target_fpr: float) -> float:
+    """Nearest-rank empirical ``(1 - target_fpr)`` quantile of ``benign_scores``,
+    for the ``perplexity_fn``/``perplexity_threshold`` seam on
+    :class:`~doberman.engine.detectors.token_channels.TokenChannelDetector`.
+    Fails closed: raises ``ValueError`` if ``target_fpr`` is not in ``(0, 1)``,
+    fewer than 20 benign scores are given, or any score is not finite.
+    """
+    if not 0 < target_fpr < 1:
+        raise ValueError(f"target_fpr must be in (0, 1), got {target_fpr!r}")
+    samples = sorted(benign_scores)
+    if not all(math.isfinite(s) for s in samples):
+        raise ValueError("benign_scores must all be finite, got a NaN or infinite value")
+    if len(samples) < 20:
+        raise ValueError(
+            "need at least 20 benign samples to calibrate a false-positive "
+            f"rate, got {len(samples)}"
+        )
+    rank = math.ceil((1 - target_fpr) * len(samples))
+    return samples[rank - 1]
 
 
 # --- Action surface collection -----------------------------------------------

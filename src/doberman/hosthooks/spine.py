@@ -63,6 +63,22 @@ def extract_session_id(raw: object) -> str | None:
     return raw if isinstance(raw, str) and raw else None
 
 
+def is_excluded(cwd: object) -> bool:
+    """True if *cwd* resolves into a device-wide excluded project.
+
+    Every host adapter must call this as the very first thing it does with a
+    hook payload — before any other check, including the "no identifiable
+    action -> fail-closed deny" logic. It is a pure read (see
+    :mod:`doberman.storage.exclusions`): no I/O side effect, so an excluded
+    project gets a true no-op, not softened enforcement. Any resolution
+    failure fails closed (returns ``False`` — protection stays on).
+    """
+    from doberman.storage.exclusions import is_excluded as _is_excluded
+
+    repo_root, _ = resolve_root_and_mode(cwd)
+    return _is_excluded(repo_root)
+
+
 def evaluate_action(
     canonical: str,
     args: dict[str, Any],
@@ -73,7 +89,7 @@ def evaluate_action(
     """Run one translated action through the full shared decision flow."""
     repo_root, mode = resolve_root_and_mode(cwd)
     session_id = extract_session_id(raw_session_id)
-    action = normalize(canonical, args)
+    action = normalize(canonical, args, {"repo_root": repo_root})
     # The objective rules inspect the UN-redacted call via metadata['raw_arguments']
     # (in-memory only, never logged). The active role rides along (parity with
     # the proxy's own ctx-build path); no .doberman/role.yaml -> role=None (opt-in).

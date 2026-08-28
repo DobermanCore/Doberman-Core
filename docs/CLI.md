@@ -22,10 +22,13 @@ Day-to-day posture, status, and review commands.
 | `doberman log` | Recent redacted decision log, newest first. | `--last`/`-n`, `--path`/`-p`, `--jsonl` |
 | `doberman tui` | Interactive decision log with a plain-language "why" panel. Needs the `tui` extra. | `--path`/`-p` |
 | `doberman dash` | Localhost-only dashboard: live decision feed, stats, and an AUTH approve/deny queue. Needs the `dash` extra. | `--port`, `--path`/`-p` |
-| `doberman demo` | Scripted attack reel through the real decision engine. Nothing runs against a real tool or downstream server. | `--path`/`-p`, `--mode`, `--fast` |
+| `doberman demo` | Scripted attack reel through the real decision engine. Nothing runs against a real tool or downstream server. | `--path`/`-p`, `--mode`, `--fast`, `--quiet`/`-q` |
 | `doberman revoke ELEVATION_ID` | Revoke an active role elevation by id (see `doberman status`). | `--path`/`-p` |
 | `doberman tune` | Friction report (interventions per session, top AUTH reasons) plus gated standing-elevation proposals. | `--path`/`-p`, `--json`, `--last`, `--min-occurrences`, `--accept` |
 | `doberman memory` | Learned-memory profile: decision counts, verdict mix, most-touched path classes. Never shows a fingerprint value or raw secret. | `--path`/`-p`, `--json` |
+| `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
+| `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
+| `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
 | `doberman setup` | First-run wizard: pick a security posture and wire Claude Code hooks. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--path`/`-p` |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
 | `doberman telemetry off` | Opt out after one final best-effort disabled event. | none |
@@ -43,6 +46,10 @@ Security-posture commands used by [the setup guide](SETUP.md). These groups also
 | `doberman 2fa setup` | Enroll TOTP two-factor and print the provisioning URI for your authenticator app. | `--force` (rotate an existing secret) |
 | `doberman 2fa remove` | Remove TOTP enrollment. Requires your current 2FA code; not delegable to the password. | none |
 | `doberman 2fa reset-lockout` | Clear an early TOTP lockout. Gated on your password, since a locked-out factor cannot verify itself. | none |
+| `doberman 2fa methods list` | List approval methods (biometric/push), whether each is available here, and which are enabled. | none |
+| `doberman 2fa methods enable <name>` | Enable an approval method (opt-in) so a tap replaces the 2FA code when available; TOTP stays as the fallback. | none |
+| `doberman 2fa methods disable <name>` | Disable an approval method; 2FA falls back to the next enabled method or to TOTP. | none |
+| `doberman 2fa methods status` | Show which proof the next 2FA challenge would use — an approval method, or the TOTP code. | none |
 | `doberman password set` | Set or rotate the local password possession factor. | `--force` (rotate after proving the current password) |
 
 Note that the `2fa` subcommands take no `--path`: TOTP enrollment is a device-wide factor, not a per-repo one.
@@ -57,7 +64,7 @@ Gated recovery actions for a stuck or compromised state. Each requires an enroll
 | `doberman tools approve TOOL_NAME` | Approve a changed MCP tool fingerprint after possession-factor verification. | `--path`/`-p` |
 | `doberman memory reset` | Wipe learned behavioral memory for this repo. Raise-safe by construction: a colder baseline scores everything as more novel, never less protected. | `--entity`, `--path`/`-p` |
 | `doberman memory prune` | Drop stale entities' learned memory past a retention window. A maintenance operation, so it is not gated. | `--older-than-days` (required), `--path`/`-p` |
-| `doberman uninstall` | Fully remove Doberman from this project: host hooks plus `.doberman/`. Does not touch `--global` hooks or your device-wide password, 2FA, or fingerprint key. | `--path`/`-p`, `--yes`/`-y`, `--dry-run` |
+| `doberman uninstall` | Remove Doberman from one project, or use `--global` for ordered machine-wide removal: all writable hooks, project and device state, enrolled factors, then the pip/pipx package. Codex plugin hooks remain under `codex plugin` control. | `--path`/`-p`, `--yes`/`-y`, `--dry-run`, `--global`/`-g`, `--keep-package` |
 
 ## Host hooks
 
@@ -80,7 +87,7 @@ Human-readable diagnostics use one severity vocabulary: `error:` means the comma
 
 ## Machine-readable output
 
-Four flags cover every scriptable surface: `--json` (`status`, `scan`, `doctor`, `policy-history`, `tune`, `memory`) for one JSON document, `--jsonl` (`log`) for one redacted object per line, `--quiet`/`-q` (`scan`) to suppress the human map while keeping the exit code, and `--path`/`-p` (most commands) for the repository root, default `.`. When both `--json` and `--quiet` are passed to `scan`, `--json` wins.
+Four flags cover every scriptable surface: `--json` (`status`, `scan`, `doctor`, `policy-history`, `tune`, `memory`) for one JSON document, `--jsonl` (`log`) for one redacted object per line, `--quiet`/`-q` (`scan`, `demo`) to suppress the human output while keeping the exit code (`demo` keeps its summary line/table, so a mismatch still fails loudly), and `--path`/`-p` (most commands) for the repository root, default `.`. When both `--json` and `--quiet` are passed to `scan`, `--json` wins.
 
 ### Flag naming
 
@@ -121,7 +128,7 @@ Capabilities are sorted by `(category, name)` for deterministic output. Each cap
 
 ### `doberman doctor --json`
 
-Emits `{version, path, ok, checks[], critical_failures[]}`. `ok` is `true` only when every critical check (host hooks, config, decision DB) passed. Exit code stays non-zero when a critical check fails, even though the payload still prints.
+Emits `{version, path, ok, checks[], critical_failures[]}`. `ok` is `true` only when every critical check (host hooks, hook command, config, decision DB) passed. Exit code stays non-zero when a critical check fails, even though the payload still prints.
 
 ### `doberman log --jsonl`
 
@@ -167,6 +174,8 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `2fa reset-lockout` | `1` | Not enrolled, no password enrolled, or an incorrect password. |
 | `taint clear` | `1` | No possession factor enrolled, gate denied, or the DB clear failed. |
 | `tools approve` | `1` | No possession factor enrolled, gate denied, storage failed, or no pin exists for that tool. |
+| `approvals ttl` | `1` | A TTL increase was denied by the possession-factor gate. |
+| `approvals ttl` | `2` | TTL is outside `0..900`. |
 | `revoke` | `1` | Elevation id not found, or revoke failed. |
 | `tui` | `1` | The optional `textual` extra is not installed. |
 | `dash` | `1` | The optional `dash` extra is not installed. |

@@ -135,6 +135,7 @@ async def _enforce(
     *,
     prompter: Prompter | None,
     repo_root: str,
+    session_id: str | None,
     entity_id: str,
     when: datetime,
 ) -> TurnGateOutcome:
@@ -153,6 +154,8 @@ async def _enforce(
             prompter=prompter,
             at=when,
             message_tone=load_message_tone(repo_root),
+            repo_root=repo_root,
+            session_id=session_id,
         )
         approved = result.approved and result.action_id == turn.id
         label = _auth_result_label(result, approved=approved)
@@ -175,6 +178,7 @@ async def _handle_repeat(
     *,
     prompter: Prompter | None,
     repo_root: str,
+    session_id: str | None,
     entity_id: str,
     when: datetime,
 ) -> TurnGateOutcome:
@@ -186,7 +190,13 @@ async def _handle_repeat(
         return TurnGateOutcome(False, Verdict.BLOCK, decision, "locked out (repeat)")
 
     result = repeat.challenge_repeat(
-        turn, record, prompter=prompter, at=when, message_tone=load_message_tone(repo_root)
+        turn,
+        record,
+        prompter=prompter,
+        at=when,
+        message_tone=load_message_tone(repo_root),
+        repo_root=repo_root,
+        session_id=session_id,
     )
     if result.approved and result.action_id == turn.id:
         repeat.clear_record(entity_id, turn.prompt_fingerprint)  # single-use
@@ -285,7 +295,13 @@ async def gate_turn(
         record = repeat.lookup(entity_id, turn.prompt_fingerprint, now=when)
         if record is not None:
             outcome = await _handle_repeat(
-                turn, record, prompter=prompter, repo_root=repo_root, entity_id=entity_id, when=when
+                turn,
+                record,
+                prompter=prompter,
+                repo_root=repo_root,
+                session_id=session_id,
+                entity_id=entity_id,
+                when=when,
             )
         else:
             decision = decide_turn(turn, tier0, tier1, ctx)
@@ -294,6 +310,7 @@ async def gate_turn(
                 decision,
                 prompter=prompter,
                 repo_root=repo_root,
+                session_id=session_id,
                 entity_id=entity_id,
                 when=when,
             )
@@ -327,6 +344,8 @@ async def gate_turn(
             prompter=prompter,
             at=when,
             message_tone=load_message_tone(repo_root),
+            repo_root=repo_root,
+            session_id=session_id,
         )
         approved = result.approved and result.action_id == fallback_turn.id
         return TurnGateOutcome(approved, Verdict.AUTH, decision, "fail-to-human")

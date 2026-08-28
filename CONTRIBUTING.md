@@ -33,7 +33,13 @@ ruff format --check .
 python scripts/check_markdown_links.py
 lint-imports
 pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=80
+python -m tools.parity.generate_parity --check
 ```
+
+CI runs exactly these (on Linux 3.11–3.13 and Windows 3.12) plus a wheel smoke test and a
+full-history secret scan. The optional extras `explain` (Anthropic SDK) and `winhello`
+(Windows Hello) are not installed in CI; their tests use fakes, so exercise the real thing
+locally when you touch them.
 
 `-n auto` runs the suite in parallel (pytest-xdist ships in the `dev` extra), the
 same way CI runs it.
@@ -136,6 +142,7 @@ metadata, classifications, and fingerprints are fine; raw secrets are not.
   or `docs(contributing): add onboarding guide`.
 - Tests travel with the code, and docs or README updates travel with behavior
   changes.
+- Add a `changelog.d/<PR-number>.md` fragment instead of editing `CHANGELOG.md`. Start it with one or more user-facing Markdown bullets; maintainers compile fragments during release.
 - Fill out the PR template, including the public-release safety and security
   checklists.
 - Note any AI assistance in the PR description.

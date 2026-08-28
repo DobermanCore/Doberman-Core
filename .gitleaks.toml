@@ -19,3 +19,8 @@ description = "Synthetic, secret-shaped test fixtures (not real credentials)"
 paths = [
   '''tests/.*''',
 ]
+# PostHog project keys (`phc_…`) are public ingestion keys, committed by design so the
+# CLI and landing page can report anonymous usage (ADR 0084 / 0087; docs/TELEMETRY.md).
+regexes = [
+  '''phc_[A-Za-z0-9]{40,}''',
+]
