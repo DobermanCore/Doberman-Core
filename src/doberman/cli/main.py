@@ -963,7 +963,7 @@ def hook_codex_pre() -> None:
     objective floor (no numpy/scipy/river) and fails closed on any malformed
     input or engine error.
 
-    Wire it in with ``doberman install-hooks --host codex`` (a later slice).
+    Wire it in with ``doberman install-hooks --host codex``.
     """
     _configure_stderr_logging()
     from doberman.hosthooks.codex import run_codex_pre

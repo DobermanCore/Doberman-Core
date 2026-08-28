@@ -94,7 +94,7 @@ _FEED_BACKFILL_LIMIT = 50
 #: much shorter one so the feed test doesn't wait on the wall clock).
 _FEED_POLL_INTERVAL_S = 1.0
 
-# ponytail: one inline page, no build toolchain - real UI lands in a later slice.
+# ponytail: one inline page, no build toolchain.
 _HTML_SHELL = """<!doctype html>
 <html lang="en">
 <head>
