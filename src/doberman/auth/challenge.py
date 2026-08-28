@@ -34,13 +34,13 @@ import logging
 import os
 import threading
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Protocol
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from doberman.models import Decision, ReasonCode, Risk, SecurityObject, Verdict
+from doberman.models import ActionType, Decision, ReasonCode, Risk, SecurityObject, Verdict
 
 logger = logging.getLogger("doberman.auth.challenge")
 
@@ -77,9 +77,90 @@ AUTODENY_ENV = "DOBERMAN_AUTODENY_AUTH"
 #: mistakes a dev-switch denial for a human decision or a channel failure.
 AUTODENY_METHOD = "autodeny"
 
+MEMORY_METHOD = "soft_confirm+memory"
+
+# A memory hit must never soften destructive, critical, exfiltration, opaque,
+# role-boundary, protected-path, history-rewriting, or correlated-destruction work.
+APPROVAL_MEMORY_EXCLUSIONS = {
+    # File deletion is intrinsically destructive and remains single-use.
+    "action_types": frozenset({ActionType.file_delete}),
+    # Critical risk is never eligible for a reduced proof.
+    "risks": frozenset({Risk.critical}),
+    "reason_codes": frozenset(
+        {
+            ReasonCode.role_out_of_scope,  # Requires its narrow elevation flow.
+            ReasonCode.encoded_exfiltration,  # Encoded egress may conceal secret transfer.
+            ReasonCode.opaque_command,  # Unparseable effects cannot be safely repeated.
+            ReasonCode.protected_path_blocked,  # Protected filesystem targets stay hard-gated.
+            ReasonCode.destructive_command,  # Destructive/history-rewriting commands stay full-tier.
+            ReasonCode.bulk_operation,  # High-blast filesystem operations stay full-tier.
+            ReasonCode.irreversible_high_blast,  # Irreversible broad impact stays full-tier.
+            ReasonCode.correlated_destructive_flow,  # Cross-call destructive patterns stay full-tier.
+        }
+    ),
+}
+
 
 def _autodeny_enabled() -> bool:
     return os.environ.get(AUTODENY_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _memory_excluded(decision: Decision, action: SecurityObject) -> bool:
+    return (
+        action.action_type in APPROVAL_MEMORY_EXCLUSIONS["action_types"]
+        or decision.final_risk in APPROVAL_MEMORY_EXCLUSIONS["risks"]
+        or bool(set(decision.reason_codes) & APPROVAL_MEMORY_EXCLUSIONS["reason_codes"])
+    )
+
+
+def _run_memory_io(call: Callable[[], Any]) -> Any:
+    """Run one async storage call from this synchronous seam, or fail to no-memory."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            return asyncio.run(call())
+        except Exception:  # noqa: BLE001 - storage failure means full-tier prompting
+            logger.warning("approval-memory storage unavailable; using full auth tier")
+            return None
+    logger.warning("approval-memory sync bridge called on an event loop; using full auth tier")
+    return None
+
+
+async def _live_memory_hit(
+    repo_root: str, fingerprint_value: str, session_id: str | None, now: datetime
+) -> Any:
+    from doberman.storage.approval_memory import lookup
+    from doberman.storage.taint import entity_scope, read_taint
+
+    scopes = [session_id] if session_id else []
+    scopes.append(entity_scope(repo_root))
+    for scope in scopes:
+        if scope and await read_taint(repo_root, scope):
+            return None
+    return await lookup(fingerprint_value, repo_root=repo_root, session_id=session_id, now=now)
+
+
+async def _remember_approval(
+    repo_root: str,
+    action: SecurityObject,
+    session_id: str | None,
+    required_tier: "AuthTier",
+    result: "AuthResult",
+    ttl_seconds: int,
+) -> None:
+    from doberman.storage.approval_memory import remember
+
+    await remember(
+        action.action_fingerprint,
+        repo_root=repo_root,
+        session_id=session_id,
+        required_tier=required_tier.value,
+        action_type=action.action_type.value,
+        method=result.method,
+        approved_at=result.at,
+        expires_at=result.at + timedelta(seconds=ttl_seconds),
+    )
 
 
 class AuthTier(StrEnum):
@@ -270,6 +351,8 @@ def run_auth_challenge(
     at: AwareDatetime | None = None,
     timeout_s: float = DEFAULT_CHALLENGE_TIMEOUT_S,
     message_tone: str = "human",
+    repo_root: str | None = None,
+    session_id: str | None = None,
 ) -> AuthResult:
     """Select the tier and run the challenge through the active provider.
 
@@ -290,23 +373,74 @@ def run_auth_challenge(
     """
     from doberman.auth.provider import active_provider
 
-    tier = select_tier(decision)
+    required_tier = select_tier(decision)
     if _autodeny_enabled():
         # ADR 0074: dev-only fail-closed shortcut — deny before any channel
         # opens. Cannot approve, so it is never an auth bypass.
         logger.info("auth challenge auto-denied by %s (action %s)", AUTODENY_ENV, action.id)
         return AuthResult(
             approved=False,
-            tier=tier,
+            tier=required_tier,
             method=AUTODENY_METHOD,
             at=at or datetime.now(timezone.utc),
             action_id=action.id,
         )
-    token = _current_challenge.set((decision, action, tier))
+    ttl_seconds = 0
+    if repo_root is not None:
+        from doberman.config import load_approval_memory_seconds
+
+        ttl_seconds = load_approval_memory_seconds(repo_root)
+
+    memory_hit = None
+    eligible = required_tier in (AuthTier.local_auth, AuthTier.two_factor)
+    if (
+        ttl_seconds > 0
+        and eligible
+        and action.action_fingerprint is not None
+        and not _memory_excluded(decision, action)
+    ):
+        when = at or datetime.now(timezone.utc)
+        memory_hit = _run_memory_io(
+            lambda: _live_memory_hit(repo_root, action.action_fingerprint, session_id, when)
+        )
+        # A later TTL reduction is an immediate strengthening: an entry created
+        # under a longer old policy cannot outlive the newly configured age.
+        if (
+            memory_hit is not None
+            and memory_hit.approved_at + timedelta(seconds=ttl_seconds) <= when
+        ):
+            memory_hit = None
+
+    tier = AuthTier.soft_confirm if memory_hit is not None else required_tier
+    challenge_action = action
+    if memory_hit is not None:
+        minutes = max(
+            0,
+            int(
+                ((at or datetime.now(timezone.utc)) - memory_hit.approved_at).total_seconds() // 60
+            ),
+        )
+        challenge_action = action.model_copy(
+            update={
+                "metadata": {
+                    **action.metadata,
+                    "approval_memory_notice": (
+                        f"You approved this exact action {minutes} min ago — confirm again."
+                    ),
+                }
+            }
+        )
+
+    token = _current_challenge.set((decision, challenge_action, tier))
     try:
-        return _run_with_deadline(
+        result = _run_with_deadline(
             lambda: active_provider().authenticate(
-                decision, action, tier, prompter=prompter, at=at, message_tone=message_tone
+                decision,
+                challenge_action,
+                tier,
+                prompter=prompter,
+                at=at,
+                message_tone=message_tone,
             ),
             timeout_s=timeout_s,
             on_timeout=lambda: AuthResult(
@@ -318,6 +452,25 @@ def run_auth_challenge(
             ),
             label=action.id,
         )
+        if memory_hit is not None and result.approved and result.action_id == action.id:
+            return result.model_copy(
+                update={"tier": AuthTier.soft_confirm, "method": MEMORY_METHOD}
+            )
+        if (
+            memory_hit is None
+            and ttl_seconds > 0
+            and eligible
+            and not _memory_excluded(decision, action)
+            and action.action_fingerprint is not None
+            and result.approved
+            and result.action_id == action.id
+        ):
+            _run_memory_io(
+                lambda: _remember_approval(
+                    repo_root, action, session_id, required_tier, result, ttl_seconds
+                )
+            )
+        return result
     except asyncio.CancelledError:
         raise  # cooperative cancellation must reach the event loop, never a denial
     except BaseException as exc:  # noqa: BLE001 — fail closed on ANY non-cooperative BaseException
@@ -339,7 +492,7 @@ def run_auth_challenge(
         )
         return AuthResult(
             approved=False,
-            tier=tier,
+            tier=required_tier,
             method="error",
             at=at or datetime.now(timezone.utc),
             action_id=action.id,

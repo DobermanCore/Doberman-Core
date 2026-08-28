@@ -178,6 +178,8 @@ def template_explanation(row: dict) -> str:
             "Completing the authentication challenge (or an approved role elevation) "
             "would let this action proceed."
         )
+        if row.get("auth_result") == "soft_confirm+memory":
+            sentences.append("This action was approved via 5-minute memory (soft_confirm).")
     elif verdict == "BLOCK":
         sentences.append(
             "This was a hard block — it will only be allowed after a policy or role "

@@ -156,12 +156,13 @@ def test_preexisting_limit_a_low_entropy_passphrase_is_missed_by_the_FLOOR():
 
 
 def test_the_exemption_defaults_to_on_but_the_rule_disables_it_for_egress():
-    """Guard the wiring, not just the helper: `SecretLeakageRule.evaluate` must
+    """Guard the wiring, not just the helper: `SecretLeakageRule._evaluate` must
     pass `exempt_identifiers=not going_external`. If someone drops that argument
-    the default (True) silently reopens the hole, so assert on the source."""
+    the default (True) silently reopens the hole, so assert on the source. (The
+    body lives in `_evaluate`; the public `evaluate` is a fail-closed wrapper.)"""
     import inspect
 
     from doberman.engine.rules import secrets as mod
 
-    src = inspect.getsource(mod.SecretLeakageRule.evaluate)
+    src = inspect.getsource(mod.SecretLeakageRule._evaluate)
     assert "_weak_secret_present(strings, exempt_identifiers=not going_external)" in src

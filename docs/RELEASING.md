@@ -1,40 +1,81 @@
 # Releasing Doberman-Core
 
-The checklist for cutting a release. The goal is that every published claim
-resolves to something in the repo — a test, a parity cell, or a reproducible
-number — at the moment of release.
+The checklist for cutting a release, kept in sync with `.github/workflows/publish.yml`, `.github/workflows/ci.yml`, and `pyproject.toml`. The goal: every published claim resolves to something in the repo, a test, a parity cell, or a reproducible number, at the moment of release.
 
 ## Before tagging
 
-1. **Green `main`.** CI green on `main`: `ruff check .`, `ruff format --check .`,
-   `lint-imports`, `pytest -n auto --cov-fail-under=…`, the parity `--check` step,
-   and the secret scan.
-2. **Parity matrix current.** `python -m tools.parity.generate_parity --check`
-   passes (CI enforces it). Every ✅ in [`PARITY.md`](PARITY.md) still resolves to
-   a collected test.
-3. **Refresh the benchmark numbers.** Re-run the suites per
-   [`BENCHMARKS.md`](BENCHMARKS.md) and update its Results tables **in the release
-   PR**:
-   - Synthetic (deterministic, from a cold clone):
-     `python -m tests.benchmarks.run --suite synthetic --profile before_after`.
-   - AgentDojo (operator-supplied): `pip install agentdojo` at a pinned commit,
-     then `python -m tests.benchmarks.run --suite agentdojo --profile before_after`.
-     Record the pinned commit and the run date. Keep the raw run out of git
-     (`test-logs/`); transcribe only the aggregate numbers.
-   - Update the "Fixed bypasses" wall with anything disclosed-and-fixed since the
-     last release.
-4. **Version + changelog.** Bump `version` in `pyproject.toml`; move shipped items
-   into `CHANGELOG.md`; confirm the README roadmap/versioning reflects reality.
-5. **Docs sweep.** Every protection claim in the README resolves to a parity cell
-   or a benchmark number (no orphan adjectives).
+1. **Green `main`.** CI passes on `main`: `ruff check .`, `ruff format --check .`, the offline Markdown link check, `lint-imports`, `pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=80`, the parity `--check` step, and the secret scan.
+2. **Parity matrix current.** `python -m tools.parity.generate_parity --check` passes (CI enforces it). Every checkmark in [`PARITY.md`](PARITY.md) still resolves to a collected test.
+3. **Refresh the benchmark numbers.** Re-run the suites per [`BENCHMARKS.md`](BENCHMARKS.md) and update its Results tables in the release PR:
+   - Synthetic (deterministic, from a cold clone): `python -m tests.benchmarks.run --suite synthetic --profile before_after`.
+   - AgentDojo (operator-supplied): `pip install agentdojo` at a pinned commit, then `python -m tests.benchmarks.run --suite agentdojo --profile before_after`. Record the pinned commit and the run date. Keep the raw run out of git (`test-logs/`); transcribe only the aggregate numbers.
+   - Update the "Fixed bypasses" wall with anything disclosed and fixed since the last release.
+4. **Version and changelog.** Run `python scripts/compile_changelog.py --write` to collect all pending `changelog.d/<PR-number>.md` files into a fresh `Unreleased` section; review that output before promoting it to the new version heading. Bump `version` in `pyproject.toml` (follow semver). Confirm the README roadmap and versioning reflect reality.
+5. **Docs sweep.** Every protection claim in the README resolves to a parity cell or a benchmark number. No orphan adjectives.
 
-## Tag & publish
+## Cut a release
 
-6. Tag the release and let CI build/publish the artifact. The public core must
-   build, test, and run with **zero enterprise code installed** (the standalone
-   guarantee) — CI's standalone step enforces this.
+Publishing uses **PyPI Trusted Publishing (OIDC)** via `.github/workflows/publish.yml`. No API tokens are stored in this repo.
 
-## After release
+1. Commit the version bump from step 4 above and merge to `main`.
+2. Optional dry run: GitHub -> Actions -> Publish -> Run workflow, on `main`, target `testpypi` (the default). This builds and uploads to **TestPyPI**. Verify:
+   ```bash
+   pip install -i https://test.pypi.org/simple/ \
+       --extra-index-url https://pypi.org/simple/ doberman-core
+   ```
+3. Create a **GitHub Release** with tag `vX.Y.Z` (matching the version; the publish job refuses to upload when `pyproject.toml`'s version and the tag disagree). Publishing the release triggers the `pypi-publish` job, which uploads to PyPI and attaches a CycloneDX SBOM (`sbom.json`) to the release as a downloadable asset. The public core must build, test, and run with zero enterprise code installed (the standalone guarantee); CI's standalone step enforces this.
+   **If that run fails after the tag exists** (a trusted-publisher or workflow bug), fix `main`, then run the workflow manually with target `pypi` and `tag` set to the release tag (`gh workflow run publish.yml -f target=pypi -f tag=vX.Y.Z`). A rerun of the failed run reuses the old workflow snapshot and cannot pick up the fix; the manual run builds `main`, whose `pyproject.toml` already carries the version.
+4. Verify from a clean environment:
+   ```bash
+   python -m venv /tmp/dob && /tmp/dob/bin/pip install doberman-core
+   /tmp/dob/bin/doberman --help
+   ```
 
-7. Confirm the published artifact installs clean (`pip install doberman-core==<v>`
-   in a fresh venv) and `doberman doctor` runs.
+> **Note**
+> The distribution name on PyPI is `doberman-core`; the import name and CLI
+> command stay `doberman` (`import doberman`, `doberman --help`). See
+> "Claiming the `doberman` name" below for why.
+
+## One-time PyPI setup (already done; reference only)
+
+Configuring PyPI/TestPyPI to trust this repo, in case it ever needs redoing:
+
+1. **PyPI (production).** Log in at <https://pypi.org>, go to Account settings -> Publishing -> Add a pending publisher, and fill in PyPI project name `doberman-core`, owner `fu351`, repository `Doberman-Core`, workflow `publish.yml`, environment `pypi`.
+2. **TestPyPI (optional).** Repeat at <https://test.pypi.org> with environment `testpypi`.
+3. **GitHub Environments.** In the repo: Settings -> Environments -> create `pypi` and `testpypi` (names must match the workflow). Add protection rules or required reviewers to `pypi` so a human approves every production publish.
+
+## Software Bill of Materials (SBOM)
+
+Every published release ships a **CycloneDX JSON SBOM** as a GitHub Release asset (`sbom.json`), generated by `pip-audit` from the resolved dependency set in `pyproject.toml`. `.github/workflows/publish.yml` builds and attaches it automatically; there's nothing to do by hand for a normal release.
+
+Generate one locally at any time:
+
+```bash
+pip install -e ".[sbom]"
+pip-audit -f cyclonedx-json -o sbom.json .
+```
+
+`pip-audit` also reports known vulnerabilities in the resolved dependencies while it runs. The release workflow doesn't fail the build on a finding, since a newly disclosed CVE in a transitive dependency shouldn't silently block a release, but it does surface as a warning in the Actions run. Check there before shipping if one shows up.
+
+## Local build and inspect (sanity check before tagging)
+
+```bash
+python -m pip install --upgrade build twine
+python -m build                 # -> dist/doberman_core-X.Y.Z-py3-none-any.whl + .tar.gz
+twine check dist/*
+# Public-release safety: confirm nothing local leaks into the artifacts.
+unzip -l dist/*.whl
+tar tzf dist/*.tar.gz
+```
+
+The sdist file list is pinned in `pyproject.toml` (`[tool.hatch.build.targets.sdist]`) to `src/doberman`, `tests`, `tools`, `README.md`, `LICENSE`, and `pyproject.toml`, so `graphify-out/`, `.doberman/`, DBs, keys, and dev plan files can never ship.
+
+## Claiming the `doberman` name (PEP 541)
+
+`doberman` is already taken on PyPI by an unrelated, abandoned 2020 project, so releases publish as `doberman-core` until the name is reclaimed. Transferring it is a manual, human-reviewed process and not guaranteed.
+
+1. **Contact the current owner first.** Email the maintainer listed on <https://pypi.org/project/doberman/> and ask if they'll transfer the name. Keep the message for your records.
+2. **If there's no response, or they agree,** file a name request under PEP 541 at <https://github.com/pypi/support/issues> (the project-name-related template). Note that the project is abandoned (last release 0.0.4, September 2020), link this repo as evidence of active intended use, and reference any prior contact attempt.
+3. If granted, add `doberman` as the distribution name (or publish a thin `doberman` package that depends on `doberman-core`) and update the install docs.
+
+Until then, `doberman-core` is the canonical install name.

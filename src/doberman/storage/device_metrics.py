@@ -38,6 +38,11 @@ def _db_path(home: Path | None = None) -> Path:
     return base / ".doberman" / _DB_NAME
 
 
+def resolve_path() -> Path:
+    """Resolve the device-wide state directory, including ``DOBERMAN_HOME``."""
+    return _db_path().parent
+
+
 def _restrict_permissions(path: Path) -> None:
     """Best-effort tighten the metrics dir/file to owner-only (no-op on Windows ACLs)."""
     try:

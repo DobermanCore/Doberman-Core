@@ -145,7 +145,7 @@ def test_interactive_balanced_project_scope(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="balanced\nn\nn\n",
+        input="balanced\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     assert "Agent profile" not in result.output
@@ -162,7 +162,7 @@ def test_interactive_numeric_mode_choice(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="3\nn\nn\n",
+        input="3\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     assert load_mode(str(tmp_path)) == "strict"
@@ -175,7 +175,7 @@ def test_interactive_tune_prefs(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input=f"balanced\ny\n{weight_inputs}\nn\n",
+        input=f"balanced\nn\ny\n{weight_inputs}\nn\n",
     )
     assert result.exit_code == 0, result.output
     prefs = load_preferences(str(tmp_path))
@@ -187,7 +187,7 @@ def test_setup_reprompts_on_bad_mode(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="blanced\nbalanced\nn\nn\n",
+        input="blanced\nbalanced\nn\nn\nn\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -216,7 +216,7 @@ def test_setup_explains_each_tuned_dimension(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input=f"balanced\ny\n{weight_inputs}\nn\n",
+        input=f"balanced\nn\ny\n{weight_inputs}\nn\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -251,6 +251,77 @@ def test_interactive_global_flag_overrides_prompt(
     s = _settings(tmp_path)
     assert PRE_COMMAND in _doberman_commands(s, "PreToolUse")
     assert POST_COMMAND in _doberman_commands(s, "PostToolUse")
+
+
+def test_interactive_telemetry_yes_persists_and_emits_setup_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from doberman import telemetry
+
+    events = []
+    monkeypatch.setattr(
+        telemetry,
+        "capture",
+        lambda event, properties=None, **_kwargs: events.append((event, properties)),
+    )
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="balanced\ny\nn\nn\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert telemetry.status().enabled is True
+    question = "Send anonymous usage stats to help improve Doberman? [Y/n]"
+    note = "Counts and command names only. Never paths, prompts, secrets, or reason payloads."
+    assert result.output.index(note) < result.output.index(question)
+    assert (
+        "setup_completed",
+        {
+            "mode": "balanced",
+            "host": "claude",
+            "hooks_installed": True,
+            "global_install": False,
+            "source": "wizard",
+        },
+    ) in events
+
+
+def test_interactive_telemetry_default_yes_records_the_choice(tmp_path: Path) -> None:
+    from doberman import telemetry
+
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="balanced\n\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    state = telemetry.status()
+    assert state.enabled is True
+    assert state.consent_at is not None  # an explicit yes, not the silent default
+
+
+def test_interactive_telemetry_no_persists_disabled(tmp_path: Path) -> None:
+    from doberman import telemetry
+
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="balanced\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert telemetry.status().enabled is False
+
+
+def test_yes_does_not_prompt_and_keeps_the_default(tmp_path: Path) -> None:
+    from doberman import telemetry
+
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)], input="")
+    assert result.exit_code == 0, result.output
+    assert "Send anonymous usage stats" not in result.output  # no question asked
+    state = telemetry.status()
+    assert state.enabled is True
+    assert state.consent_at is None  # default kept, nothing recorded as a choice
 
 
 # ---------------------------------------------------------------------------

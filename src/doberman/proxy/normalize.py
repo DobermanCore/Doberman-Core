@@ -15,12 +15,14 @@ original stopgap shapes, never instead of them: this call is raise-only, it
 only ever redacts *more*, never less.
 """
 
+import json
 import os
 import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from doberman.canonical import canonicalize
 from doberman.engine.rules.commands import walk_command
 from doberman.engine.rules.destinations import _parse_host
 from doberman.engine.rules.secrets import candidate_secret_fingerprints, contains_strong_secret
@@ -612,6 +614,35 @@ def _extract_target(action_type: ActionType, arguments: dict[str, Any]) -> tuple
     return None, metadata
 
 
+def _action_fingerprint(
+    action_type: ActionType,
+    tool_name: str,
+    raw_args: dict[str, Any],
+    repo_root: object,
+) -> str | None:
+    """HMAC the exact unredacted action; retain none of its canonical input."""
+    if not isinstance(repo_root, str) or not repo_root:
+        return None
+    try:
+        command = _command_text(raw_args)
+        raw_identity = command or json.dumps(raw_args, sort_keys=True, separators=(",", ":"))
+        paths: list[str] = []
+        if action_type in {ActionType.file_read, ActionType.file_write, ActionType.file_delete}:
+            for key in _TARGET_KEYS:
+                value = raw_args.get(key)
+                values = value if isinstance(value, (list, tuple)) else [value]
+                for item in values:
+                    if isinstance(item, str) and item:
+                        paths.append(canonicalize(item, root=repo_root).resolved)
+        root = canonicalize(".", root=repo_root).resolved
+        canonical = "\x1f".join(
+            (action_type.value, tool_name, raw_identity, json.dumps(paths), root)
+        )
+        return fingerprint(canonical)
+    except Exception:  # noqa: BLE001 - no key/odd payload means no memory
+        return None
+
+
 def normalize(
     tool_name: str,
     arguments: dict[str, Any] | None,
@@ -646,6 +677,9 @@ def normalize(
             source_context=SourceContext.unknown,
             raw_args_redacted=redacted_args,
             metadata=metadata,
+            action_fingerprint=_action_fingerprint(
+                action_type, safe_tool_name, args, context.get("repo_root")
+            ),
         )
         # SL9: every normalized object carries a populated algebra — generic
         # inference first (reads the RAW args, which never enter the object),

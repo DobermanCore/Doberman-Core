@@ -12,14 +12,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: codex-canary
+  cancel-in-progress: true
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Off until the owner opts in (needs a Codex-auth secret). No secret => no run.
     if: ${{ vars.CODEX_CANARY_ENABLED == 'true' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - run: pip install -e .
@@ -27,11 +32,17 @@ jobs:
         run: npm install -g @openai/codex # ALWAYS latest — that is the point
       - name: Live smoke (yellow-tolerant)
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # The repo secret was created as OPEN_API_KEY; accept either name so the canary
+          # stops reporting an empty key as a green "inconclusive" run every day.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.OPEN_API_KEY }}
         run: |
           set +e
           python tools/codex_canary/smoke.py
           code=$?
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::codex canary has no API key (set OPENAI_API_KEY or OPEN_API_KEY); this run proves nothing"
+            exit 1
+          fi
           if [ "$code" = "2" ]; then
             echo "::warning::codex canary inconclusive (model refused / tool unavailable — not churn evidence)"
             exit 0

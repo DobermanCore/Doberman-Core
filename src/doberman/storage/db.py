@@ -60,8 +60,9 @@ DB_FILE = "doberman.db"
 #: Version 11 adds issue #246's tool-schema TOFU pins (additive CREATE TABLE;
 #: keyed HMAC fingerprints only, never raw tool descriptions/input schemas).
 #: Version 12 fingerprints the baseline's destination feature keys and purges
-#: legacy raw-host rows (H4 — a hostname can embed secret material).
-SCHEMA_VERSION = 12
+#: legacy raw-host rows (H4 — a hostname can embed secret material). Version 13
+#: adds bounded exact-action approval memory (keyed HMAC identity only).
+SCHEMA_VERSION = 13
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -278,6 +279,19 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     target_path_class  TEXT,
     decision           TEXT,
     totp_code          TEXT
+);
+
+-- Slice B approval memory: a bounded record of a real local/2FA approval for
+-- one exact HMAC-identified action. Raw commands, arguments, and paths are
+-- structurally absent.
+CREATE TABLE IF NOT EXISTS approval_memory (
+    fingerprint  TEXT PRIMARY KEY,
+    session_id   TEXT,
+    required_tier TEXT,
+    action_type  TEXT,
+    method       TEXT,
+    approved_at  TEXT,
+    expires_at   TEXT
 );
 """
 

@@ -1,12 +1,12 @@
 # OpenTelemetry AuditSink
 
-Doberman can forward its redacted decision records to any **OTLP/HTTP-compatible collector** — Grafana Alloy, the OpenTelemetry Collector, Honeycomb, Datadog Agent, and so on.
+Doberman can forward its redacted decision records to any **OTLP/HTTP-compatible collector**: Grafana Alloy, the OpenTelemetry Collector, Honeycomb, Datadog Agent, and so on.
 
 ## How it works
 
-Each time Doberman reaches a PASS / AUTH / BLOCK verdict, it calls every registered `AuditSink`. The OTel sink enqueues the record (non-blocking, O(1)) and a background daemon thread serialises and POSTs it as an OTLP `LogRecord` to your collector.
+Each time Doberman reaches a `PASS` / `AUTH` / `BLOCK` verdict, it calls every registered `AuditSink`. The OTel sink enqueues the record (non-blocking, O(1)) and a background daemon thread serializes and POSTs it as an OTLP `LogRecord` to your collector.
 
-The sink is **best-effort**. Records lost on queue overflow or process exit are lost — this is a bridge to your own log pipeline, not a delivery guarantee.
+The sink is **best-effort**. Records still queued at process exit, or dropped on queue overflow, are lost. This is a bridge to your own log pipeline, not a delivery guarantee.
 
 ## Setup
 
@@ -35,9 +35,18 @@ timeout_s: 5
 queue_max: 1000
 ```
 
-> **Security note:** Never put the token value in the YAML. Store it in the environment variable named by `auth_env`.
+> **Never**
+> Put the token value in the YAML. Store it in the environment variable
+> named by `auth_env`.
 
-> **Loopback addresses are rejected.** Doberman refuses `localhost`, `127.x.x.x`, and `::1` as endpoints because audit records contain reason codes and decision metadata that are redaction-sensitive. An accidental loopback configuration would silently discard every export; a non-loopback host makes the misconfiguration visible. For local testing, use a collector reachable by hostname (e.g. `otel-collector.internal`) or run the collector in Docker and reference it by container name.
+> **Fail closed**
+> Doberman refuses `localhost`, `127.x.x.x`, and `::1` as endpoints, because
+> audit records contain reason codes and decision metadata that are
+> redaction-sensitive. An accidental loopback configuration would silently
+> discard every export; a non-loopback host makes the misconfiguration
+> visible. For local testing, use a collector reachable by hostname (e.g.
+> `otel-collector.internal`) or run the collector in Docker and reference it
+> by container name.
 
 ### 2. Set the auth token (if required)
 
@@ -47,11 +56,11 @@ export OTEL_AUTH_TOKEN="Bearer <your-token>"
 
 ### 3. Run Doberman normally
 
-No CLI flag needed. The sink activates automatically when `.doberman/audit_otel.yaml` is present. To disable it, remove or rename the file — no config means zero network I/O.
+No CLI flag needed. The sink activates automatically when `.doberman/audit_otel.yaml` is present. To disable it, remove or rename the file. No config means zero network I/O.
 
 ---
 
-## Collector example — OpenTelemetry Collector
+## Collector example (OpenTelemetry Collector)
 
 A minimal `otel-collector-config.yaml` that accepts Doberman's records and forwards them to stdout (replace the exporter for production):
 
@@ -85,13 +94,13 @@ docker run --rm -p 4318:4318 \
   otel/opentelemetry-collector:latest
 ```
 
-Doberman will start shipping records immediately.
+Doberman starts shipping records as soon as the collector is up.
 
 ---
 
 ## What gets exported
 
-Each record contains only the **allowlisted fields** — the same fields already redacted by Doberman upstream:
+Each record contains only the **allowlisted fields**, the same fields already redacted by Doberman upstream:
 
 | Field | Example value |
 |---|---|
@@ -104,13 +113,13 @@ Each record contains only the **allowlisted fields** — the same fields already
 | `auth_result` | `null` |
 | `session_id` | `sess-abc123` |
 
-The sink adds **no fields of its own** — no raw payloads, no prompt text, no secrets.
+The sink adds **no fields of its own**: no raw payloads, no prompt text, no secrets.
 
 ---
 
 ## Honest scope
 
-- **Best-effort delivery.** If the queue fills (worker lagging) the oldest record is silently dropped.
-- **No retry.** A failed POST is logged at `DEBUG` and discarded.
+- **Best-effort delivery.** If the queue fills (worker lagging), the oldest record is silently dropped.
+- **No retry.** A failed POST is logged at `WARNING` and discarded.
 - **Process exit.** In-queue records not yet POSTed are lost.
 - **Not a substitute** for a proper log pipeline with durability guarantees.
