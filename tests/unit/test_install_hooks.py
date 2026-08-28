@@ -331,6 +331,15 @@ class TestInstallHooksCLI:
         assert "doberman hook pre" in result.output
         assert "doberman hook post" in result.output
 
+    def test_dry_run_shows_the_command_the_installer_writes(self, tmp_path):
+        result = runner.invoke(
+            cli_module.app, ["install-hooks", "--path", str(tmp_path), "--dry-run"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert f"SessionStart -> {DASHBOARD_COMMAND}" in result.output
+        assert "doberman dashboard" not in result.output
+
     def test_install_is_idempotent(self, tmp_path):
         runner.invoke(cli_module.app, ["install-hooks", "--path", str(tmp_path)])
         runner.invoke(cli_module.app, ["install-hooks", "--path", str(tmp_path)])
@@ -424,6 +433,8 @@ class TestUninstallHooksCLI:
         )
         assert result.exit_code == 0
         assert "[dry-run]" in result.output
+        assert f"SessionStart -> {DASHBOARD_COMMAND}" in result.output
+        assert "doberman dashboard" not in result.output
         assert settings_path.read_text(encoding="utf-8") == content_before
 
     def test_creates_bak_on_uninstall(self, tmp_path):

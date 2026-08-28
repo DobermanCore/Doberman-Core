@@ -52,6 +52,8 @@ from doberman.egress.velocity import (
     _VOLUME_THRESHOLD_BYTES,
     VelocityThresholds,
 )
+from doberman.hosthooks.install import DASHBOARD_COMMAND
+from doberman.models import ActionType
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
     _run_weaken_gate,
@@ -1961,7 +1963,7 @@ def install_hooks(
         typer.echo("[dry-run] would add:")
         typer.echo("  PreToolUse   -> doberman hook pre")
         typer.echo("  PostToolUse  -> doberman hook post")
-        typer.echo("  SessionStart -> doberman dashboard")
+        typer.echo(f"  SessionStart -> {DASHBOARD_COMMAND}")
         return
 
     write_settings(settings_path, merged)
@@ -2124,7 +2126,7 @@ def uninstall_hooks(
         typer.echo("[dry-run] would remove:")
         typer.echo("  PreToolUse   -> doberman hook pre")
         typer.echo("  PostToolUse  -> doberman hook post")
-        typer.echo("  SessionStart -> doberman dashboard")
+        typer.echo(f"  SessionStart -> {DASHBOARD_COMMAND}")
         return
 
     write_settings(settings_path, cleaned)
