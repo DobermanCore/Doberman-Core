@@ -258,6 +258,16 @@ def _check_2fa() -> CheckResult:
     )
 
 
+def _check_password() -> CheckResult:
+    from doberman.auth import password
+
+    if password.is_enrolled():
+        return CheckResult("Password", CheckStatus.OK, "set")
+    return CheckResult(
+        "Password", CheckStatus.WARN, "not set (optional) — run `doberman password set`"
+    )
+
+
 def _check_fingerprint_key() -> CheckResult:
     from doberman.storage.fingerprint import _key_path
 
@@ -296,6 +306,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("Decision DB", True, lambda: _check_db(path)),
         _safe_check("Enforcement", False, lambda: _check_enforcement(path)),
         _safe_check("2FA", False, _check_2fa),
+        _safe_check("Password", False, _check_password),
         _safe_check("Fingerprint key", False, _check_fingerprint_key),
         _safe_check("Codex CLI", False, _check_codex_version),
     ]
