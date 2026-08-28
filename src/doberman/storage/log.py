@@ -21,7 +21,7 @@ Redaction is structural and load-bearing:
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 
 from doberman.models import ActionType, Decision, SecurityObject
@@ -78,6 +78,13 @@ _SELECT_SESSION_DECISIONS = (
     "final_verdict FROM decisions WHERE session_id = ? ORDER BY id DESC LIMIT ?"
 )
 
+# Maintenance deletes only fully-resolved decision rows. Every verdict except
+# AUTH is final; an AUTH row remains eligible only when its challenge already
+# produced an explicit outcome. A missing auth_result is deliberately kept.
+_RESOLVED_DECISIONS_PREDICATE = (
+    "(final_verdict <> 'AUTH' OR auth_result IN ('approved', 'denied', 'executed'))"
+)
+_DELETE_RESOLVED_DECISIONS = "DELETE FROM decisions WHERE " + _RESOLVED_DECISIONS_PREDICATE  # noqa: S608 — fixed clause, params bound
 _DECISION_COLUMNS = [
     "id",
     "ts",
@@ -276,6 +283,62 @@ async def record_shadow(
             await conn.commit()
     except Exception:  # noqa: BLE001 — the shadow log must never break execution
         logger.warning("shadow log write failed for action %s; continuing", decision.action_id)
+
+
+async def prune_decisions(
+    repo_root: str,
+    *,
+    older_than_days: int | None = None,
+    max_rows: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Prune resolved decision-log rows by age and/or a retained row budget.
+
+    This is an operator-initiated maintenance operation, not part of the hot
+    decision path. It only removes rows whose verdict is final (or whose AUTH
+    outcome is explicitly denied/approved/executed); unresolved AUTH rows are
+    never deleted. The append-only ``policy_changes`` ledger is not touched.
+
+    ``older_than_days`` uses the same ISO-8601 timestamp convention as the rest
+    of storage: exact cutoff stays, one second older goes. With ``max_rows``,
+    the newest matching rows are retained first, so an old-but-unresolved row
+    cannot displace a newer resolved row from the budget.
+
+    Returns counts only and raises on storage errors rather than reporting a
+    partial delete as successful.
+    """
+    if older_than_days is None and max_rows is None:
+        raise ValueError("specify --older-than-days and/or --max-rows")
+    if older_than_days is not None and older_than_days < 1:
+        raise ValueError("--older-than-days must be at least 1")
+    if max_rows is not None and max_rows < 0:
+        raise ValueError("--max-rows cannot be negative")
+
+    age_deleted = 0
+    overflow_deleted = 0
+    async with open_db(repo_root) as conn:
+        if older_than_days is not None:
+            when = now or datetime.now(timezone.utc)
+            cutoff = (when - timedelta(days=older_than_days)).isoformat()
+            cur = await conn.execute(_DELETE_RESOLVED_DECISIONS + " AND ts < ?", (cutoff,))
+            age_deleted = cur.rowcount
+
+        if max_rows is not None:
+            query = (
+                "DELETE FROM decisions WHERE "  # noqa: S608
+                + _RESOLVED_DECISIONS_PREDICATE
+                + " AND id NOT IN (SELECT id FROM decisions WHERE "
+                + _RESOLVED_DECISIONS_PREDICATE
+                + " ORDER BY id DESC LIMIT ?)"
+            )  # noqa: S608 — fixed clauses, params bound
+            cur = await conn.execute(
+                query,
+                (max_rows,),
+            )
+            overflow_deleted = cur.rowcount
+
+        await conn.commit()
+    return {"age_deleted": age_deleted, "overflow_deleted": overflow_deleted}
 
 
 async def read_decisions(repo_root: str, *, limit: int | None = None) -> list[dict]:

@@ -74,7 +74,7 @@ from doberman.storage.approval_memory import clear as clear_approval_memory
 from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
 from doberman.storage.exclusions import add_exclusion, is_excluded, remove_exclusion
-from doberman.storage.log import memory_summary, read_decisions
+from doberman.storage.log import memory_summary, prune_decisions, read_decisions
 from doberman.storage.memory import prune_stale_entities, reset_memory
 from doberman.storage.taint import clear_taint, entity_scope, read_taint
 from doberman.storage.tool_pins import approve_pin
@@ -1906,6 +1906,42 @@ def policy_history(
             f"{row['from_state']} -> {row['to_state']}  "
             f"[{status} via {row['approval_method']}]"
         )
+
+
+@app.command("decision-log-prune", rich_help_panel="Daily")
+def decision_log_prune(
+    older_than_days: int | None = typer.Option(
+        None,
+        "--older-than-days",
+        min=1,
+        help="Delete resolved decisions whose timestamp is this many days old or older.",
+    ),
+    max_rows: int | None = typer.Option(
+        None,
+        "--max-rows",
+        min=0,
+        help="Retain at most this many newest resolved decisions; delete the rest.",
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Prune resolved decision rows by age and/or retained-row budget.
+
+    A maintenance operation outside the decision path. It never touches pending
+    AUTH rows and never modifies the append-only policy-change ledger.
+    """
+    if older_than_days is None and max_rows is None:
+        typer.echo("error: specify --older-than-days and/or --max-rows", err=True)
+        raise typer.Exit(code=2)
+    try:
+        result = asyncio.run(
+            prune_decisions(path, older_than_days=older_than_days, max_rows=max_rows)
+        )
+    except Exception as exc:  # noqa: BLE001 — never report a failed prune as success
+        typer.echo(f"error: decision-log prune failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    deleted = result["age_deleted"] + result["overflow_deleted"]
+    typer.echo(f"Decision log pruned: {deleted} row(s).")
 
 
 @app.command("install-hooks", rich_help_panel="Getting started")

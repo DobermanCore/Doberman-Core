@@ -1,7 +1,7 @@
 """Slice 8.2 — append-only, redacted decision-log writer (wired into the proxy)."""
 
 import inspect
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.models import (
@@ -15,7 +15,12 @@ from doberman.models import (
 )
 from doberman.proxy import executor
 from doberman.storage.db import open_db
-from doberman.storage.log import read_decisions, recent_session_decisions, record_decision
+from doberman.storage.log import (
+    prune_decisions,
+    read_decisions,
+    recent_session_decisions,
+    record_decision,
+)
 
 from .test_proxy_passthrough import proxied_session
 
@@ -80,9 +85,10 @@ def test_writer_has_no_update_or_delete_path_for_decisions():
     # decision row (it only INSERTs, and upserts last_seen on fingerprints).
     import doberman.storage.log as log_module
 
-    src = inspect.getsource(log_module)
-    assert "UPDATE decisions" not in src
-    assert "DELETE FROM decisions" not in src
+    for name in ("build_record", "record_decision", "record_shadow"):
+        source = inspect.getsource(getattr(log_module, name))
+        assert "UPDATE decisions" not in source
+        assert "DELETE FROM decisions" not in source
 
 
 def _decision_and_action(verdict: Verdict, action_id: str) -> tuple[Decision, SecurityObject]:
@@ -137,3 +143,96 @@ async def test_recent_session_decisions_fails_closed():
     assert await recent_session_decisions(executor.REPO_ROOT, "no-such-session", 10) == []
     # No DB has been created at all in this repo root yet.
     assert await recent_session_decisions(str(executor.REPO_ROOT) + "-missing", "s1", 10) == []
+
+
+async def _seed_decision(root: str, action_id: str, ts: datetime) -> None:
+    decision, action = _decision_and_action(Verdict.PASS, action_id)
+    await record_decision(decision, action, repo_root=root, now=ts)
+
+
+async def _decision_verdicts_and_count(root: str) -> tuple[int, set[str]]:
+    rows = await read_decisions(root)
+    return len(rows), {row["final_verdict"] for row in rows}
+
+
+async def test_prune_by_age_keeps_new_resolved_and_never_touches_a_verdict(tmp_path):
+    root = str(tmp_path)
+    now = datetime.now(timezone.utc)
+    await _seed_decision(root, "old", now - timedelta(days=90, seconds=1))
+    await _seed_decision(root, "boundary", now - timedelta(days=90))
+    await _seed_decision(root, "fresh", now - timedelta(days=1))
+
+    before_count, before_verdicts = await _decision_verdicts_and_count(root)
+    assert before_count == 3
+    assert before_verdicts == {"PASS"}
+
+    result = await prune_decisions(root, older_than_days=90, now=now)
+
+    rows = await read_decisions(root)
+    count, verdicts = await _decision_verdicts_and_count(root)
+    assert result == {"age_deleted": 1, "overflow_deleted": 0}
+    assert count == 2
+    assert {row["action_id"] for row in rows} == {"boundary", "fresh"}
+    # A decision's persisted verdict is the same whether pruning is due or not.
+    assert verdicts == {"PASS"}
+    assert verdicts == before_verdicts
+
+
+async def test_prune_by_max_rows_keeps_newest_resolved_only(tmp_path):
+    root = str(tmp_path)
+    now = datetime.now(timezone.utc)
+    await _seed_decision(root, "old", now - timedelta(days=3))
+    await _seed_decision(root, "newer", now - timedelta(days=2))
+    await _seed_decision(root, "newest", now - timedelta(days=1))
+
+    result = await prune_decisions(root, max_rows=2, now=now)
+
+    actions = [row["action_id"] for row in await read_decisions(root)]
+    assert result == {"age_deleted": 0, "overflow_deleted": 1}
+    assert set(actions) == {"newer", "newest"}
+
+
+async def test_prune_never_deletes_unresolved_auth(tmp_path):
+    root = str(tmp_path)
+    now = datetime.now(timezone.utc)
+    decision, action = _decision_and_action(Verdict.AUTH, "pending-auth")
+    await record_decision(
+        decision,
+        action,
+        repo_root=root,
+        now=now - timedelta(days=365),
+    )
+
+    result = await prune_decisions(root, older_than_days=1, max_rows=0, now=now)
+
+    rows = await read_decisions(root)
+    assert result == {"age_deleted": 0, "overflow_deleted": 0}
+    assert len(rows) == 1
+    assert rows[0]["final_verdict"] == "AUTH"
+
+
+async def test_prune_deletes_resolved_auth(tmp_path):
+    root = str(tmp_path)
+    now = datetime.now(timezone.utc)
+    decision, action = _decision_and_action(Verdict.AUTH, "approved-auth")
+    await record_decision(
+        decision,
+        action,
+        repo_root=root,
+        auth_result="approved",
+        now=now - timedelta(days=365),
+    )
+
+    result = await prune_decisions(root, older_than_days=1, max_rows=0, now=now)
+
+    assert result == {"age_deleted": 1, "overflow_deleted": 0}
+    assert await read_decisions(root) == []
+
+
+async def test_prune_requires_at_least_one_policy(tmp_path):
+    raised = False
+    try:
+        await prune_decisions(str(tmp_path))
+    except ValueError:
+        raised = True
+    assert raised

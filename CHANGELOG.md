@@ -5,6 +5,13 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
 [git log](https://github.com/DobermanCore/Doberman-Core/commits/main) and
 [releases](https://github.com/DobermanCore/Doberman-Core/releases) (latest: **v0.18.4**, the third friction-reduction patch — a five-minute approval memory for exact repeats, `uninstall --global`, a `doctor` check for dangling hooks, and usage telemetry on by default — atop **v0.18.3**'s tap-to-approve 2FA (a Windows Hello / Touch ID biometric can stand in for the TOTP code) — atop **v0.18.2**'s friction-reduction patch — spurious secret-detector prompts on ordinary ids/paths/UUIDs fixed, and the detector now self-checks and fails closed — atop **v0.18.1**'s README-image docs patch and **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
 
+## Unreleased
+
+- **Decision-log retention is explicit and fail-safe.** `doberman decision-log-prune` lets an
+  operator delete resolved rows by age and/or retained-row budget. Pending AUTH challenges and the
+  append-only policy-change ledger are preserved, and mediated agents cannot invoke the mutating
+  command through the shell.
+
 ## v0.18.4 — 2026-08-26
 
 > **Friction reduction, part three, and the lights come on.** A repeat of an approved action now

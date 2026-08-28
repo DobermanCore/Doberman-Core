@@ -29,6 +29,7 @@ CLI_HELP_TARGETS = (
     ("doctor",),
     ("revoke",),
     ("log",),
+    ("decision-log-prune",),
     ("tui",),
     ("dash",),
     ("demo",),
