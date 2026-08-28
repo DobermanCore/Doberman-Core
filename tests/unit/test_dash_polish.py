@@ -104,6 +104,29 @@ def test_pending_card_mirrors_terminal_risk_badge_convention(tmp_path):
     assert '"RISK: " + (row.risk || "-").toUpperCase()' in html
 
 
+def test_pending_card_can_copy_only_redacted_details(tmp_path):
+    html = _index_html(tmp_path)
+    assert 'copyBtn.className = "btn btn-copy";' in html
+
+    start = html.index('copyBtn.addEventListener("click"')
+    end = html.index("li.appendChild(copyBtn);", start)
+    copy_block = html[start:end]
+
+    assert "await navigator.clipboard.writeText(JSON.stringify({" in copy_block
+    for field in (
+        "id",
+        "tier",
+        "risk",
+        "action_type",
+        "reason_codes",
+        "explanation",
+    ):
+        assert f"{field}: row.{field}" in copy_block
+    assert "target" not in copy_block
+    assert "path" not in copy_block
+    assert "catch (e)" in copy_block
+
+
 def test_feed_and_pending_rows_still_use_textcontent_only(tmp_path):
     html = _index_html(tmp_path)
     # The no-innerHTML-assignment discipline must survive the restyle: every
