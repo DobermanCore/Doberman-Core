@@ -115,3 +115,19 @@ def test_cli_dry_run_preserves_files(tmp_path: Path) -> None:
     assert "Ready to compile #456" in stdout
     assert fragment.exists()
     assert "_Nothing yet._" in (root / "CHANGELOG.md").read_text(encoding="utf-8")
+
+
+def test_cli_write_keeps_one_blank_line_around_the_compiled_block(tmp_path: Path) -> None:
+    root = tmp_path
+    (root / "CHANGELOG.md").write_text("# Changelog\n\n## v1.0.0\n\n- Shipped.\n", encoding="utf-8")
+    fragment_dir = root / "changelog.d"
+    fragment_dir.mkdir()
+    (fragment_dir / "456.md").write_text("- First.\n", encoding="utf-8")
+    (fragment_dir / "457.md").write_text("- Second.\n", encoding="utf-8")
+
+    returncode, _, stderr = run_compiler(root, write=True)
+
+    assert returncode == 0, stderr
+    assert (root / "CHANGELOG.md").read_text(encoding="utf-8") == (
+        "# Changelog\n\n## Unreleased\n\n- First.\n\n- Second.\n\n## v1.0.0\n\n- Shipped.\n"
+    )

@@ -76,7 +76,7 @@ def compile_changelog(changelog: str, fragments: list[Fragment]) -> str:
         sections.append(existing)
 
     compiled_body = "\n\n".join(sections)
-    return "".join(lines[:body_start]) + f"\n\n{compiled_body}\n" + "".join(lines[body_end:])
+    return "".join(lines[:body_start]) + f"\n{compiled_body}\n\n" + "".join(lines[body_end:])
 
 
 def main(argv: list[str] | None = None) -> int:
