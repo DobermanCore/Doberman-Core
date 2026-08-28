@@ -42,6 +42,9 @@ class _Boom:
 
 
 def _seed(root: str) -> None:
+    # Take the clock here, not at import: `approvals status` compares against the real
+    # clock, and a slow CI run can start this test >5 min after collection.
+    now = datetime.now(timezone.utc)
     asyncio.run(
         remember(
             "hmac:cli-test",
@@ -50,8 +53,8 @@ def _seed(root: str) -> None:
             required_tier="local_auth",
             action_type="shell_exec",
             method="local_auth",
-            approved_at=NOW,
-            expires_at=NOW + timedelta(minutes=5),
+            approved_at=now,
+            expires_at=now + timedelta(minutes=5),
         )
     )
 
