@@ -229,6 +229,33 @@ async def test_prune_deletes_resolved_auth(tmp_path):
     assert await read_decisions(root) == []
 
 
+async def test_prune_deletes_auth_rows_with_any_recorded_outcome(tmp_path):
+    # The real proxy/executor/hosthooks vocabulary is far wider than the three
+    # literal values ("approved", "denied", "executed") the predicate used to
+    # check for: successful auth persists the tier/method name (e.g.
+    # "soft_confirm"), and failure paths persist "blocked"/"error". Any of
+    # those is an explicit outcome and should be prunable; only a NULL
+    # auth_result (still pending) must be kept.
+    root = str(tmp_path)
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=365)
+
+    for action_id, auth_result in (
+        ("soft-confirm-auth", "soft_confirm"),
+        ("blocked-auth", "blocked"),
+        ("pending-auth", None),
+    ):
+        decision, action = _decision_and_action(Verdict.AUTH, action_id)
+        await record_decision(decision, action, repo_root=root, auth_result=auth_result, now=old)
+
+    result = await prune_decisions(root, older_than_days=1, now=now)
+
+    rows = await read_decisions(root)
+    assert result == {"age_deleted": 2, "overflow_deleted": 0}
+    assert {row["action_id"] for row in rows} == {"pending-auth"}
+    assert rows[0]["auth_result"] is None
+
+
 async def test_prune_requires_at_least_one_policy(tmp_path):
     raised = False
     try:

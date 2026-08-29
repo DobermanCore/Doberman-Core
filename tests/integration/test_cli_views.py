@@ -22,7 +22,7 @@ _NOW = datetime(2026, 6, 8, tzinfo=timezone.utc)
 _SECRET = "AKIA-FAKE-CLIVIEW-SECRET-321"  # noqa: S105 — synthetic test value
 
 
-def _seed_auth_secret_read(root: str) -> None:
+def _seed_auth_secret_read(root: str, *, ts: datetime = _NOW) -> None:
     objective = GuardrailResult(
         verdict=Verdict.AUTH,
         risk=Risk.high,
@@ -36,18 +36,21 @@ def _seed_auth_secret_read(root: str) -> None:
         objective=objective,
         reason_codes=[ReasonCode.sensitive_secret_access],
         explanation="local secret access",
-        decided_at=_NOW,
+        decided_at=ts,
     )
     action = SecurityObject(
         id="act-1",
-        ts=_NOW,
+        ts=ts,
         agent_role="backend",
         action_type=ActionType.file_read,
         tool_name="fs_read",
         target="backend/secrets/local.env",
         payload_fingerprints=["hmac:abc123"],
     )
-    asyncio.run(record_decision(decision, action, repo_root=root, auth_result="denied"))
+    # `now=ts` is what actually lands in the persisted `ts` column (record_decision
+    # falls back to the real wall clock otherwise) — pass it explicitly so callers
+    # that need a deterministic row timestamp (e.g. the prune test) get one.
+    asyncio.run(record_decision(decision, action, repo_root=root, auth_result="denied", now=ts))
 
 
 def test_log_empty_when_nothing_recorded(tmp_path):
@@ -75,7 +78,11 @@ def test_decision_log_prune_requires_a_policy(tmp_path):
 
 def test_decision_log_prune_reports_count_only(tmp_path):
     root = str(tmp_path)
-    _seed_auth_secret_read(root)
+    # Deliberately NOT `_NOW` (2026-06-08): the CLI prunes against the real
+    # clock (no `now=` override), so a fixed past seed date eventually falls
+    # outside `--older-than-days 90` and the "0 row(s)" assertion below would
+    # start failing. Seed "now" instead so the row is always fresh.
+    _seed_auth_secret_read(root, ts=datetime.now(timezone.utc))
 
     result = runner.invoke(
         app,

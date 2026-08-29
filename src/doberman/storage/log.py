@@ -79,11 +79,11 @@ _SELECT_SESSION_DECISIONS = (
 )
 
 # Maintenance deletes only fully-resolved decision rows. Every verdict except
-# AUTH is final; an AUTH row remains eligible only when its challenge already
-# produced an explicit outcome. A missing auth_result is deliberately kept.
-_RESOLVED_DECISIONS_PREDICATE = (
-    "(final_verdict <> 'AUTH' OR auth_result IN ('approved', 'denied', 'executed'))"
-)
+# AUTH is final; an AUTH row remains eligible only once it has an explicit
+# auth outcome (any non-NULL auth_result — the auth tier/method name,
+# "blocked", "error", "approved", "denied", "executed", ...). A NULL
+# auth_result (still pending) is deliberately kept.
+_RESOLVED_DECISIONS_PREDICATE = "(final_verdict <> 'AUTH' OR auth_result IS NOT NULL)"
 _DELETE_RESOLVED_DECISIONS = "DELETE FROM decisions WHERE " + _RESOLVED_DECISIONS_PREDICATE  # noqa: S608 — fixed clause, params bound
 _DECISION_COLUMNS = [
     "id",
@@ -296,8 +296,9 @@ async def prune_decisions(
 
     This is an operator-initiated maintenance operation, not part of the hot
     decision path. It only removes rows whose verdict is final (or whose AUTH
-    outcome is explicitly denied/approved/executed); unresolved AUTH rows are
-    never deleted. The append-only ``policy_changes`` ledger is not touched.
+    row has an explicit auth outcome — any non-NULL ``auth_result``); unresolved
+    AUTH rows are never deleted. The append-only ``policy_changes`` ledger is
+    not touched.
 
     ``older_than_days`` uses the same ISO-8601 timestamp convention as the rest
     of storage: exact cutoff stays, one second older goes. With ``max_rows``,
