@@ -1914,7 +1914,7 @@ def decision_log_prune(
         None,
         "--older-than-days",
         min=1,
-        help="Delete resolved decisions whose timestamp is this many days old or older.",
+        help="Delete resolved decisions older than this many days (a row exactly at the cutoff is kept).",
     ),
     max_rows: int | None = typer.Option(
         None,
