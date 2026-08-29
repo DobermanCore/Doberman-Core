@@ -81,15 +81,9 @@ def test_no_algebra_adapters_registered_by_default():
 def test_no_audit_sinks_registered_by_default():
     # Slice 8.4 standalone guarantee: with no enterprise package installed, the
     # audit-sink registry discovers nothing — only the local decision log runs.
-    # Tutorial example packages (example_audit_sink, etc.) are excluded: they are
-    # local development installs, not enterprise sinks, and their own tests cover
-    # discovery. This mirrors the rules check above.
     from doberman.engine.registry import discover_audit_sinks
 
-    non_example_sinks = [
-        s for s in discover_audit_sinks() if not type(s).__module__.startswith("example_")
-    ]
-    assert non_example_sinks == []
+    assert discover_audit_sinks() == []
 
 
 def test_objective_guardrail_runs_with_only_builtins():

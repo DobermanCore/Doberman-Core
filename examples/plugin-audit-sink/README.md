@@ -87,8 +87,10 @@ pip uninstall -y doberman-example-plugin-audit-sink
 > **Important:** while this package is installed, core's "no sinks installed"
 > standalone checks (`discover_audit_sinks() == []`) will fail — that is
 > expected.  Uninstall before re-running the full core suite.  Default CI does
-> **not** install this package; it only imports the sink class directly for
-> emit/never-raises checks.
+> **not** install this package; `tests/unit/test_examples_plugin_audit_sink.py`
+> covers it instead by importing the sink class straight from this checkout
+> (`sys.path`, no install) for layout/entry-point/protocol/emit/never-raises
+> checks, so the standalone guarantee stays intact.
 
 ## How registration works
 
