@@ -21,6 +21,7 @@ Day-to-day posture, status, and review commands.
 | `doberman doctor` | Read-only health self-check; exits non-zero if a critical check fails. | `--path`/`-p`, `--json` |
 | `doberman update` | Check PyPI for a newer Doberman and print the upgrade command (never installs). Off under `DO_NOT_TRACK`/`CI`/`DOBERMAN_UPDATE_CHECK=off`. | — |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
+| `doberman policy-versions` | Every policy version that has been in force (newest first); `--show` prints one snapshot, `--verify` checks the catalogue. | `--show`, `--verify`, `--path`/`-p`, `--json` |
 | `doberman log` | Recent redacted decision log, newest first. | `--last`/`-n`, `--path`/`-p`, `--jsonl` |
 | `doberman decision-log-prune` | Delete resolved decisions by age and/or retained-row budget. Never touches pending AUTH rows or the policy-change ledger. | `--older-than-days`, `--max-rows`, `--path`/`-p` |
 | `doberman tui` | Interactive decision log with a plain-language "why" panel. Needs the `tui` extra. | `--path`/`-p` |
@@ -141,6 +142,10 @@ One redacted JSON object per decision line, newest first. Fields are an allowlis
 
 A JSON array of policy-change rows in newest-first order: each element carries the change timestamp, the changed key, the previous and new values, and the actor. No raw policy content, secret, or file path appears.
 
+### `doberman policy-versions --json` schema
+
+A JSON array, newest first, of `{version, first_seen, engine, schema, in_force_since, origin}`. Snapshot content is never in the listing; `--show <id>` prints `{version, snapshot}` for one version. `--verify --json` prints `{status, versions, mismatched, current, recorded}`.
+
 ### `doberman tune --json`
 
 Emits `{version, decisions, sessions, unsessioned_decisions, interventions, interventions_per_session, top_auth_reason_codes, approval_rate_by_reason, approval_rate_by_target, trend, proposals}`, deterministic for identical inputs and scoped to the most recent `--last` decisions (default 2000). A proposal looks like `{id, kind, action_type, target_path_class, occurrences, approval_rate, reason_codes, ttl_days, what_would_loosen, why}`; Doberman emits one only when a group has at least `--min-occurrences` (default 5) AUTH rows, all approved, a narrow non-whole-tree path class, and reason codes that are a non-empty subset of `{role_out_of_scope}`, the only code a standing elevation may cover. `doberman tune` never applies a proposal by itself. `--accept <id>` recomputes proposals from the same `--last`/`--min-occurrences`, rejects an unknown or stale id, then routes the accepted one through the same possession-factor-gated weaken chokepoint every other policy loosening uses before granting a revocable, time-limited elevation (`doberman revoke <elevation-id>` reverses it early).
@@ -182,6 +187,8 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `approvals ttl` | `1` | A TTL increase was denied by the possession-factor gate. |
 | `approvals ttl` | `2` | TTL is outside `0..900`. |
 | `revoke` | `1` | Elevation id not found, or revoke failed. |
+| `policy-versions` | `2` | `--show` given something that is not a `pv1:` id or at least 8 hex characters. |
+| `policy-versions` | `1` | `--show` matched nothing or was ambiguous; `--verify` found `mismatch` or `drift`. |
 | `tui` | `1` | The optional `textual` extra is not installed. |
 | `dash` | `1` | The optional `dash` extra is not installed. |
 | `demo` | `1` | Invalid mode name, or a scenario did not match its expected outcome. |

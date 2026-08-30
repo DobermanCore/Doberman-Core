@@ -108,3 +108,16 @@ def test_objective_guardrail_runs_with_only_builtins():
 
     assert g.evaluate(_act(".env"), EvalContext()).verdict is Verdict.BLOCK
     assert g.evaluate(_act("frontend/Button.tsx"), EvalContext()).verdict is Verdict.PASS
+
+
+def test_hook_and_proxy_paths_never_import_the_policy_catalogue():
+    """The catalogue is observational; the decision path must not pay for it."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, doberman.hosthooks.spine, doberman.proxy.executor; "
+        "assert 'doberman.storage.policy_catalogue' not in sys.modules, "
+        "sorted(m for m in sys.modules if 'policy_catalogue' in m)"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603

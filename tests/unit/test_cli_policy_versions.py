@@ -56,6 +56,10 @@ def test_show_resolves_a_prefix_and_prints_the_snapshot(tmp_path):
     assert data["snapshot"]["schema"] == 1
     assert "mode" in data["snapshot"]["doc"]
 
+    full = runner.invoke(app, ["policy-versions", "--path", str(tmp_path), "--show", v])
+    assert full.exit_code == 0
+    assert json.loads(full.stdout)["version"] == v
+
 
 def test_show_exit_codes(tmp_path):
     _two_versions(tmp_path)

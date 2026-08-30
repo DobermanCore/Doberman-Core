@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "RoleSnapshot": {
+      "description": "The verdict-relevant part of the active role (globs only, no description).",
+      "properties": {
+        "allowed": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed",
+          "type": "array"
+        },
+        "blocked": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocked",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "suspicious": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Suspicious",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "RoleSnapshot",
+      "type": "object"
+    }
+  },
+  "description": "The exact content a policy version identifies (immutable).\n\n``schema_version`` serialises as the JSON key ``schema`` (the field name\navoids shadowing ``BaseModel.schema``).",
+  "properties": {
+    "doc": {
+      "additionalProperties": true,
+      "title": "Doc",
+      "type": "object"
+    },
+    "enforcement_effective": {
+      "title": "Enforcement Effective",
+      "type": "string"
+    },
+    "engine": {
+      "title": "Engine",
+      "type": "string"
+    },
+    "role": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RoleSnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema": {
+      "default": 1,
+      "title": "Schema",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "engine",
+    "enforcement_effective",
+    "doc"
+  ],
+  "title": "PolicySnapshotV1",
+  "type": "object"
+}

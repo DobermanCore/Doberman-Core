@@ -958,9 +958,12 @@ def doctor(
 
     Answers "is Doberman actually wired up and healthy?" in one shot: host hooks,
     config, the decision DB, 2FA, the enforcement dial + strictness mode, and the
-    fingerprint key. It only *diagnoses* - it never changes state. Exits non-zero
-    if any critical check (hooks / config / DB) is not healthy, so it is
-    script-friendly (`doberman doctor && ...`).
+    fingerprint key. It only *diagnoses* - it never changes state, except that the
+    Policy version check records the observed policy version into
+    `.doberman/policies.db` (itself a diagnostic record; it never touches policy,
+    decisions, or enforcement). Exits non-zero if any critical check
+    (hooks / config / DB) is not healthy, so it is script-friendly
+    (`doberman doctor && ...`).
     """
     from doberman.cli.doctor import CheckStatus, critical_failures, run_checks
 

@@ -3,7 +3,9 @@
 A **read-only** self-check: every check *diagnoses*, it never mutates state. The
 logic lives here (a pure function over a repo root) so it is trivially testable
 without Typer and so the CLI command in :mod:`doberman.cli.main` is a thin
-renderer.
+renderer. The one deliberate exception is the "Policy version" check, which
+records the observed policy version into ``.doberman/policies.db`` — itself a
+diagnostic record, never a change to policy, a decision, or enforcement.
 
 Two safety rules, straight from the Prime Directives:
 
