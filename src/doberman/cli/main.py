@@ -485,7 +485,8 @@ def enforcement(
     if not outcome.approved:
         typer.echo("error: enforcement change denied; unchanged", err=True)
         raise typer.Exit(code=1)
-    save_policy((load_policy(path) or recommend_policy()).with_enforcement(new), path)
+    doc = load_policy(path) or recommend_policy()
+    save_policy(doc.with_enforcement(new), path, ledger_ts=outcome.ts)
     typer.echo(f"enforcement set to {new}")
 
 
@@ -544,7 +545,7 @@ def role_disable_default(
     if not outcome.approved:
         typer.echo("error: disabling the default role was denied; unchanged", err=True)
         raise typer.Exit(code=1)
-    save_default_role_enabled(False, path)
+    save_default_role_enabled(False, path, ledger_ts=outcome.ts)
     typer.echo("the built-in default role is now disabled")
 
 
@@ -595,7 +596,7 @@ def prefs(
     if not outcome.approved:
         typer.echo("error: preference change denied; unchanged", err=True)
         raise typer.Exit(code=1)
-    save_preferences(updated, path)
+    save_preferences(updated, path, ledger_ts=outcome.ts)
     typer.echo(f"{dimension} set to {value:.2f}")
 
 
@@ -686,7 +687,7 @@ def egress_velocity(
         fanout=after["fanout"],
     )
     updated_doc = doc.with_egress_velocity_thresholds(updated_thresholds)
-    save_policy(updated_doc, path)
+    save_policy(updated_doc, path, ledger_ts=outcome.ts)
     typer.echo(f"{knob} set to {value}")
 
 

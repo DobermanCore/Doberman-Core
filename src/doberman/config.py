@@ -29,6 +29,7 @@ This module is policy core: it must never import ``doberman.proxy``.
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -142,11 +143,14 @@ def load_policy(repo_root: str = ".") -> PolicyDoc | None:
         return None
 
 
-def save_policy(doc: PolicyDoc, repo_root: str = ".") -> None:
+def save_policy(doc: PolicyDoc, repo_root: str = ".", *, ledger_ts: str | None = None) -> None:
     """Persist ``doc`` to ``.doberman/policies.yaml`` (creating the dir).
 
     Writes via a temp file + replace so a failed write never corrupts a prior
-    valid policy file.
+    valid policy file. Afterwards the saved policy is recorded in the policy
+    catalogue (``.doberman/policies.db``) as the version now in force, linked to
+    ``ledger_ts`` — the ``policy_changes`` row that authorised it — when the
+    caller has one.
     """
     path = _policy_file_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,6 +158,37 @@ def save_policy(doc: PolicyDoc, repo_root: str = ".") -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
+    _record_policy_version(doc, repo_root, ledger_ts)
+
+
+def _record_policy_version(doc: PolicyDoc, repo_root: str, ledger_ts: str | None) -> None:
+    """Best-effort catalogue append for a policy that was just saved (never raises).
+
+    The gate has just run, so the on-disk enforcement is ledger-legitimate by
+    construction; only the soften timer is applied (pure), which is why this does
+    not call :func:`resolve_enforcement_sync` — that fails closed to ``enforce``
+    inside a running event loop (the dashboard reaches here inside one) and would
+    record a false version. Imported lazily to avoid a config<->storage cycle.
+    """
+    try:
+        from doberman import __version__
+        from doberman.storage.policy_catalogue import (
+            ORIGIN_CHANGE,
+            build_snapshot,
+            effective_enforcement_at_save,
+            record_version,
+        )
+
+        now = datetime.now(timezone.utc)
+        snapshot = build_snapshot(
+            doc,
+            load_active_role(repo_root),
+            effective_enforcement_at_save(doc, now),
+            __version__,
+        )
+        record_version(repo_root, snapshot, origin=ORIGIN_CHANGE, ledger_ts=ledger_ts, now=now)
+    except Exception:  # noqa: BLE001 — the catalogue is observational; a save must never fail for it
+        logger.warning("policy catalogue update failed after saving the policy; continuing")
 
 
 def load_mode(repo_root: str = ".") -> str:
@@ -229,10 +264,12 @@ def load_preferences(repo_root: str = ".") -> PreferenceVector:
     return vector_for(load_mode(repo_root))
 
 
-def save_preferences(vector: PreferenceVector, repo_root: str = ".") -> None:
+def save_preferences(
+    vector: PreferenceVector, repo_root: str = ".", *, ledger_ts: str | None = None
+) -> None:
     """Persist the declared preference vector into the policy document."""
     doc = load_policy(repo_root) or recommend_policy()
-    save_policy(doc.with_preferences(vector), repo_root)
+    save_policy(doc.with_preferences(vector), repo_root, ledger_ts=ledger_ts)
 
 
 def default_role_enabled(repo_root: str = ".") -> bool:
@@ -248,25 +285,27 @@ def default_role_enabled(repo_root: str = ".") -> bool:
     return doc.default_role_enabled if doc is not None else False
 
 
-def save_default_role_enabled(enabled: bool, repo_root: str = ".") -> bool:
+def save_default_role_enabled(
+    enabled: bool, repo_root: str = ".", *, ledger_ts: str | None = None
+) -> bool:
     """Persist the D1 opt-in flag; returns the value written.
 
     Mirrors :func:`save_mode` — reuses the saved policy if one exists, else
     starts from the recommended defaults.
     """
     doc = load_policy(repo_root) or recommend_policy()
-    save_policy(doc.with_default_role_enabled(enabled), repo_root)
+    save_policy(doc.with_default_role_enabled(enabled), repo_root, ledger_ts=ledger_ts)
     return bool(enabled)
 
 
-def save_mode(name: str, repo_root: str = ".") -> str:
+def save_mode(name: str, repo_root: str = ".", *, ledger_ts: str | None = None) -> str:
     """Validate and persist the security mode; returns the canonical name.
 
     Raises ``ValueError`` on an unknown mode (the caller surfaces the error).
     """
     mode = resolve_mode(name)
     doc = load_policy(repo_root) or recommend_policy()
-    save_policy(doc.with_mode(mode.value), repo_root)
+    save_policy(doc.with_mode(mode.value), repo_root, ledger_ts=ledger_ts)
     return mode.value
 
 

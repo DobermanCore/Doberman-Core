@@ -281,3 +281,30 @@ def test_module_has_no_update_or_delete_statements():
     body = source.split("_SCHEMA = ", 1)[1]  # skip the docstring/header
     assert "UPDATE " not in body
     assert "DELETE " not in body
+
+
+def test_save_policy_records_a_change_observation_with_the_ledger_ts(tmp_path):
+    root = str(tmp_path)
+    save_policy(recommend_policy().with_mode("strict"), root, ledger_ts="2026-08-30T10:00:00+00:00")
+    (obs,) = read_observations(root)
+    assert obs["origin"] == ORIGIN_CHANGE
+    assert obs["ledger_ts"] == "2026-08-30T10:00:00+00:00"
+    assert read_snapshot(root, obs["version"])["doc"]["mode"] == "strict"
+    save_policy(recommend_policy().with_mode("strict"), root)  # same content: no new row
+    assert len(read_observations(root)) == 1
+
+
+def test_save_policy_records_the_timer_resolved_enforcement(tmp_path):
+    root = str(tmp_path)
+    expired = recommend_policy().with_enforcement("monitor", expires_at=1.0, revert="enforce")
+    save_policy(expired, root)
+    (obs,) = read_observations(root)
+    assert read_snapshot(root, obs["version"])["enforcement_effective"] == "enforce"
+
+
+def test_save_policy_survives_a_broken_catalogue(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    catalogue_path(root).parent.mkdir(parents=True)
+    catalogue_path(root).write_text("not a database")
+    save_policy(recommend_policy(), root)  # must not raise
+    assert (tmp_path / ".doberman" / "policies.yaml").exists()
