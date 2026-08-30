@@ -3,14 +3,86 @@
 Shipped history for Doberman. Planned work lives on the [roadmap](README.md#roadmap) and the
 [project board](https://github.com/users/fu351/projects/5); exact per-commit detail is in the
 [git log](https://github.com/DobermanCore/Doberman-Core/commits/main) and
-[releases](https://github.com/DobermanCore/Doberman-Core/releases) (latest: **v0.18.4**, the third friction-reduction patch — a five-minute approval memory for exact repeats, `uninstall --global`, a `doctor` check for dangling hooks, and usage telemetry on by default — atop **v0.18.3**'s tap-to-approve 2FA (a Windows Hello / Touch ID biometric can stand in for the TOTP code) — atop **v0.18.2**'s friction-reduction patch — spurious secret-detector prompts on ordinary ids/paths/UUIDs fixed, and the detector now self-checks and fails closed — atop **v0.18.1**'s README-image docs patch and **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
+[releases](https://github.com/DobermanCore/Doberman-Core/releases) (latest: **v0.18.5**, decision-log retention pruning, PyPI update nudges, and dashboard/doctor polish — atop **v0.18.4**'s the third friction-reduction patch — a five-minute approval memory for exact repeats, `uninstall --global`, a `doctor` check for dangling hooks, and usage telemetry on by default — atop **v0.18.3**'s tap-to-approve 2FA (a Windows Hello / Touch ID biometric can stand in for the TOTP code) — atop **v0.18.2**'s friction-reduction patch — spurious secret-detector prompts on ordinary ids/paths/UUIDs fixed, and the detector now self-checks and fails closed — atop **v0.18.1**'s README-image docs patch and **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
 
-## Unreleased
+## v0.18.5 — 2026-08-30
+
+> **Retention, self-awareness, and a tighter bar for tutorials.** The decision log can now be
+> pruned by age or row budget without touching pending approvals, and it prunes every resolved
+> AUTH row, not just three literal outcomes. `doberman update` and a passive nudge in `status`
+> tell you when you're behind PyPI. The dashboard lets you copy a pending approval's redacted
+> details, shows the real mark, and keeps its counters in step with the feed. The doctor reports
+> the password factor and the optional dash/tui extras; changelog fragments end the CHANGELOG
+> conflict tax; and the plugin tutorials are covered by CI without ever being installed.
 
 - **Decision-log retention is explicit and fail-safe.** `doberman decision-log-prune` lets an
-  operator delete resolved rows by age and/or retained-row budget. Pending AUTH challenges and the
-  append-only policy-change ledger are preserved, and mediated agents cannot invoke the mutating
-  command through the shell.
+  operator delete resolved rows by age and/or retained-row budget; pending AUTH challenges and the
+  append-only policy-change ledger are never touched, and mediated agents cannot invoke the
+  mutating command through the shell. Any AUTH row with a recorded outcome (approval method,
+  denied, blocked, error, executed) counts as resolved and is eligible for pruning, not only the
+  three literal values it originally accepted (#461, #502)
+
+- **`doberman update` — and a passive "new version available" nudge.** Doberman now tells you when the
+  installed version is behind PyPI, so a friction fix reaches you without watching the releases page.
+  `doberman update` does one timeout-bounded PyPI check and prints the `pip install -U` command (it never
+  installs anything); `doberman status` shows a one-line nudge when a newer version is cached. The check is
+  best-effort and fail-open (an unreachable PyPI is silent, never an error), caches for 24h, never runs on
+  the hook/proxy hot paths, and is off under `DO_NOT_TRACK`, `CI`, or `DOBERMAN_UPDATE_CHECK=off` (#508).
+
+- **Copy a pending approval's details from the dashboard.** A **Copy details** action on each pending card copies only the existing redacted fields as formatted JSON (thanks @slegarraga, #498, closes #443)
+
+- **`doberman doctor` reports the password factor:** a `Password` row next to `2FA`, OK when
+  enrolled, a non-critical WARN with the `doberman password set` hint when not; presence only, never
+  the secret (thanks @slegarraga, #474, closes #439)
+
+- **`doberman doctor` reports the optional UI extras:** `Dash extra` and `TUI extra` rows say
+  whether `starlette`/`textual` are installed (via `find_spec`, nothing imported) and print the
+  `pip install 'doberman[dash]'`/`[tui]` hint when not (thanks @slegarraga, #475, closes #440)
+
+- **`doberman egress-velocity [KNOB] [VALUE]`:** show or set the `burst`, `volume-bytes`, and
+  `fanout` detection thresholds from the CLI. Lowering a threshold applies at once; raising one
+  crosses the same possession-factor gate as every other loosening (TOTP if enrolled, else the
+  password), is recorded in the policy-change ledger, and is saved only when approved, so
+  hand-editing the policy file is no longer the only way to set them (thanks @Maqbool61, #459,
+  closes #457)
+
+- **`install-hooks --dry-run` previews the command the installer really writes.** The SessionStart
+  line now comes from the same `DASHBOARD_COMMAND` constant as the write path (`doberman
+  session-summary`), so the preview cannot drift again (thanks @slegarraga, #463, closes #429)
+
+- **`tune --json` is compact** like every other JSON command (`separators=(",", ":")`), keeping
+  the machine-readable output contract in docs/CLI.md (thanks @slegarraga, #470, closes #431)
+
+- **`doberman log` columns no longer shift** for the 15-character action types (`network_request`,
+  `package_install`): the action column width now comes from the `ActionType` enum, the way verdict
+  labels already do (thanks @slegarraga, #472, closes #428)
+
+- **The dashboard stats strip stays in step with the live feed.** A decision landing in the feed
+  now triggers an immediate (trailing-debounced 150 ms) stats refresh instead of lagging up to 5 s
+  behind the list; the 5 s interval remains as a fallback. (#491)
+
+- **Tests:** the data-class rule's two documented non-detections are now proven: a six-digit
+  one-time code bound for an external host stays PASS, and the valid SSN's digits without dashes
+  stay PASS, so the rule is pinned to the dashed shape rather than the value (thanks @slegarraga,
+  #468, closes #405)
+
+- **Docs:** five stale "(a later slice)" comments that promised features which have since shipped
+  now describe what the code does today (thanks @slegarraga, #473, closes #426)
+
+- **Changelog entries no longer collide on every parallel pull request.** Each PR now adds its
+  own `changelog.d/<PR-number>.md`, and release tooling compiles those fragments together
+  (thanks @slegarraga, #476, closes #456)
+
+- **The dashboard header now shows the real Doberman mark.** The placeholder "D" is replaced by
+  an embedded PNG data URI, so `doberman dash` stays one self-contained page with no static-file
+  route. (#490)
+
+- **`docs/README.md` indexes every doc page.** An "open this when…" guide to each document makes
+  the right one a single scan away (thanks @navaneethsankar07, #492, #500, closes #409)
+
+- **Tests:** the core standalone-guarantee test asserts no `doberman.audit_sinks` plugin is
+  registered by default again; the plugin-audit-sink tutorial is now covered by a CI-visible test
+  that never installs it (#501)
 
 ## v0.18.4 — 2026-08-26
 
