@@ -908,6 +908,40 @@ def status(
         typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
         return
     _render_status_text(payload)
+    # Passive, best-effort upgrade nudge (never on --json). Refreshes in the
+    # background and shows the cached result on the next run — never blocks status.
+    from doberman import update_check
+
+    update_check.refresh_async()
+    notice = update_check.pending_notice()
+    if notice:
+        typer.echo("")
+        typer.echo(notice)
+
+
+@app.command(rich_help_panel="Getting started")
+def update() -> None:
+    """Check PyPI for a newer Doberman and show the upgrade command.
+
+    Read-only: it never installs anything, only tells you the ``pip`` command to
+    run. Honours ``DO_NOT_TRACK`` / ``CI`` / ``DOBERMAN_UPDATE_CHECK=off``.
+    """
+    from doberman import update_check
+
+    reason = update_check.disabled_reason()
+    if reason:
+        typer.echo(f"Update check is off ({reason}).")
+        typer.echo(f"You have {__version__}. Check manually with: {update_check.UPGRADE_HINT}")
+        return
+    latest = update_check.refresh(force=True)
+    if latest is None:
+        typer.echo(f"You have {__version__}. Could not reach PyPI to check for updates.")
+        return
+    if update_check.is_newer(latest, __version__):
+        typer.echo(f"A new version is available: {latest} (you have {__version__}).")
+        typer.echo(f"Upgrade with: {update_check.UPGRADE_HINT}")
+    else:
+        typer.echo(f"You're on the latest version ({__version__}).")
 
 
 @app.command(rich_help_panel="Getting started")

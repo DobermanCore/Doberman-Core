@@ -27,6 +27,7 @@ CLI_HELP_TARGETS = (
     ("role", "disable-default"),
     ("status",),
     ("doctor",),
+    ("update",),
     ("revoke",),
     ("log",),
     ("decision-log-prune",),
