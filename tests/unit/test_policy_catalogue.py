@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from doberman.egress.velocity import VelocityThresholds
 from doberman.policy.checklist import recommend_policy
@@ -115,7 +116,7 @@ def test_snapshot_is_frozen_and_defaults_are_stable():
     a = build_snapshot(_doc(), None, "enforce", "9.9.9")
     b = build_snapshot(recommend_policy(), None, "enforce", "9.9.9")
     assert policy_version(a) == policy_version(b)
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         a.engine = "x"  # type: ignore[misc]
     assert isinstance(a, PolicySnapshotV1)
 
