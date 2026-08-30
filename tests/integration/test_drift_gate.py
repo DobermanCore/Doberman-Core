@@ -130,3 +130,17 @@ async def test_apply_mode_change_links_the_observation_to_its_ledger_row(tmp_pat
     (obs,) = read_observations(root)
     assert obs["origin"] == ORIGIN_CHANGE
     assert obs["ledger_ts"] == rows[0]["ts"]
+
+
+async def test_establish_ok_first_run_links_the_observation_too(tmp_path):
+    from doberman.policy.drift import apply_mode_change, read_policy_changes
+    from doberman.storage.policy_catalogue import ORIGIN_CHANGE, read_observations
+
+    root = str(tmp_path)
+    result = await apply_mode_change("strict", root, "setup wizard", establish_ok=True)
+    assert result == "strict"
+    rows = await read_policy_changes(root)
+    assert rows and rows[0]["approval_method"] == "logged"
+    (obs,) = read_observations(root)
+    assert obs["origin"] == ORIGIN_CHANGE
+    assert obs["ledger_ts"] == rows[0]["ts"]

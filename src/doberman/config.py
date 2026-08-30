@@ -187,8 +187,10 @@ def _record_policy_version(doc: PolicyDoc, repo_root: str, ledger_ts: str | None
             __version__,
         )
         record_version(repo_root, snapshot, origin=ORIGIN_CHANGE, ledger_ts=ledger_ts, now=now)
-    except Exception:  # noqa: BLE001 — the catalogue is observational; a save must never fail for it
-        logger.warning("policy catalogue update failed after saving the policy; continuing")
+    except Exception as exc:  # noqa: BLE001 — the catalogue is observational; a save must never fail for it
+        logger.warning(
+            "policy catalogue update failed after saving the policy; continuing: %s", exc
+        )
 
 
 def load_mode(repo_root: str = ".") -> str:

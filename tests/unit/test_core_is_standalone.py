@@ -120,4 +120,4 @@ def test_hook_and_proxy_paths_never_import_the_policy_catalogue():
         "assert 'doberman.storage.policy_catalogue' not in sys.modules, "
         "sorted(m for m in sys.modules if 'policy_catalogue' in m)"
     )
-    subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=60)  # noqa: S603

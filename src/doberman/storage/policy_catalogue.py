@@ -247,8 +247,8 @@ def record_version(
             conn.execute("COMMIT")
         finally:
             conn.close()
-    except Exception:  # noqa: BLE001 — observational; the caller's work is already done
-        logger.warning("policy catalogue write failed; continuing")
+    except Exception as exc:  # noqa: BLE001 — observational; the caller's work is already done
+        logger.warning("policy catalogue write failed; continuing: %s", exc)
     return version
 
 
@@ -275,8 +275,8 @@ def current_snapshot(
             else resolve_enforcement_sync(repo_root)
         )
         return build_snapshot(doc, role, state, __version__)
-    except Exception:  # noqa: BLE001 — never raise into a caller for a snapshot
-        logger.warning("policy catalogue: could not build the current policy snapshot")
+    except Exception as exc:  # noqa: BLE001 — never raise into a caller for a snapshot
+        logger.warning("policy catalogue: could not build the current policy snapshot: %s", exc)
         return None
 
 
@@ -306,8 +306,8 @@ def _read(repo_root: str, sql: str, params: tuple = ()) -> list[tuple]:
             return conn.execute(sql, params).fetchall()
         finally:
             conn.close()
-    except Exception:  # noqa: BLE001 — a broken catalogue reads as empty, never as a guess
-        logger.warning("policy catalogue read failed")
+    except Exception as exc:  # noqa: BLE001 — a broken catalogue reads as empty, never as a guess
+        logger.warning("policy catalogue read failed: %s", exc)
         return []
 
 
