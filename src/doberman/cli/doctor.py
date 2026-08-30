@@ -268,6 +268,36 @@ def _check_enforcement(path: str) -> CheckResult:
     return CheckResult("Enforcement", CheckStatus.WARN, f"{detail} — NOT blocking (advisory only)")
 
 
+def _check_policy_versions(path: str) -> CheckResult:
+    from doberman.storage.policy_catalogue import (
+        ORIGIN_OBSERVED,
+        observe_current,
+        read_observations,
+        read_versions,
+    )
+
+    version = observe_current(path, origin=ORIGIN_OBSERVED)
+    if version is None:
+        return CheckResult(
+            "Policy version", CheckStatus.WARN, "could not build the current policy snapshot"
+        )
+    short = version[:16] + "..."
+    versions = read_versions(path)
+    if not any(v["version"] == version for v in versions):
+        return CheckResult(
+            "Policy version",
+            CheckStatus.WARN,
+            f"{short} computed, but .doberman/policies.db could not be written",
+        )
+    latest = read_observations(path, limit=1)
+    since = latest[0]["ts"] if latest else "unknown"
+    return CheckResult(
+        "Policy version",
+        CheckStatus.OK,
+        f"{short} ({len(versions)} version(s); in force since {since})",
+    )
+
+
 def _check_2fa() -> CheckResult:
     from doberman.auth import totp
 
@@ -325,6 +355,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("Config", True, lambda: _check_config(path)),
         _safe_check("Decision DB", True, lambda: _check_db(path)),
         _safe_check("Enforcement", False, lambda: _check_enforcement(path)),
+        _safe_check("Policy version", False, lambda: _check_policy_versions(path)),
         _safe_check("2FA", False, _check_2fa),
         _safe_check("Password", False, _check_password),
         _safe_check("Fingerprint key", False, _check_fingerprint_key),

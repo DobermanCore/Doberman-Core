@@ -39,6 +39,7 @@ from doberman.models import (
 )
 from doberman.policy.checklist import recommend_policy
 from doberman.storage.log import record_decision
+from doberman.storage.policy_catalogue import read_observations
 
 runner = CliRunner()
 _NOW = datetime(2026, 7, 11, tzinfo=timezone.utc)
@@ -470,3 +471,11 @@ def test_dangling_hooks_surface_in_json(tmp_path, monkeypatch):
     assert result.exit_code == 1
     assert payload["ok"] is False
     assert "Hook command" in payload["critical_failures"]
+
+
+def test_doctor_reports_the_policy_version(tmp_path):
+    result = runner.invoke(app, ["doctor", "--path", str(tmp_path)])
+    assert "Policy version" in result.stdout
+    assert "pv1:" in result.stdout
+    (obs,) = read_observations(str(tmp_path))
+    assert obs["origin"] == "observed"
