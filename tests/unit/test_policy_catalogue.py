@@ -308,3 +308,19 @@ def test_save_policy_survives_a_broken_catalogue(tmp_path, monkeypatch):
     catalogue_path(root).write_text("not a database")
     save_policy(recommend_policy(), root)  # must not raise
     assert (tmp_path / ".doberman" / "policies.yaml").exists()
+
+
+def test_role_enable_default_links_its_observation_to_the_ledger(tmp_path):
+    import asyncio
+
+    from typer.testing import CliRunner
+
+    from doberman.cli.main import app
+    from doberman.policy.drift import read_policy_changes
+
+    result = CliRunner().invoke(app, ["role", "enable-default", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    rows = asyncio.run(read_policy_changes(str(tmp_path)))
+    obs = read_observations(str(tmp_path))
+    assert obs and obs[0]["origin"] == ORIGIN_CHANGE
+    assert obs[0]["ledger_ts"] == rows[0]["ts"]

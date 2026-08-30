@@ -507,7 +507,7 @@ def role_enable_default(
         return
     # A strengthen: apply_change auto-approves (no gate) and still records the
     # attempt to the append-only ledger.
-    asyncio.run(
+    outcome = asyncio.run(
         apply_change(
             {"default_role_enabled": was},
             {"default_role_enabled": True},
@@ -515,7 +515,7 @@ def role_enable_default(
             repo_root=path,
         )
     )
-    save_default_role_enabled(True, path)
+    save_default_role_enabled(True, path, ledger_ts=outcome.ts)
     typer.echo("the built-in default role is now enabled (used when no role.yaml is set)")
 
 
