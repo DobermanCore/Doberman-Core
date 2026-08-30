@@ -450,7 +450,22 @@ def _add_button_row(
         target.bind("<Right>", _move_highlight)
     root.bind("<Return>", _invoke_highlighted)
 
-    return y + _BUTTON_H + 18
+    button_bottom = y + _BUTTON_H
+    hint_y = button_bottom + 12
+    inner_w = _DIALOG_W - 2 * _PADX
+
+    hint_id = canvas.create_text(
+        _PADX,
+        hint_y,
+        text="Tab/Arrows: switch - Enter: confirm - Esc: deny",
+        fill=_MUTED,
+        font=_DEADLINE_FONT,
+        anchor="nw",
+        width=inner_w,
+    )
+
+    bbox = canvas.bbox(hint_id)
+    return bbox[3] + 18
 
 
 def _confirm_specs(decide: Any) -> list[tuple[str, Any, bool]]:

@@ -462,6 +462,7 @@ class _FakeCanvas:
     def __init__(self):
         self.items: list[int] = []  # display list: creation order = stacking order
         self.tags: dict[int, tuple] = {}
+        self.texts: dict[int, str] = {}
 
     def _create(self, tags):
         item = len(self.tags) + 1
@@ -473,7 +474,9 @@ class _FakeCanvas:
         return self._create(kw.get("tags", ()))
 
     def create_text(self, _x, _y, **kw):
-        return self._create(kw.get("tags", ()))
+        item = self._create(kw.get("tags", ()))
+        self.texts[item] = kw.get("text", "")
+        return item
 
     def tag_lower(self, item, below):
         # Tk: move `item` to just before the LOWEST item carrying tag `below`.
@@ -495,8 +498,14 @@ class _FakeCanvas:
         pass
 
     def ring_is_beneath_every_button(self) -> bool:
-        [ring] = [i for i in self.items if not self.tags[i]]  # the ring is the only untagged item
+        [ring] = [
+            i for i in self.items if not self.tags[i] and i not in self.texts
+        ]  # the ring is the only untagged non-text item
         return all(self.items.index(ring) < self.items.index(i) for i in self.items if self.tags[i])
+
+    def bbox(self, item):
+        # Geometry is irrelevant for these fake canvas tests.
+        return (0, 0, 0, 0)
 
 
 def test_focus_ring_is_stacked_beneath_the_buttons(monkeypatch):
@@ -516,6 +525,19 @@ def test_focus_ring_is_stacked_beneath_the_buttons(monkeypatch):
 
     root.bindings["<Tab>"]()  # highlight → Approve; ring deleted and redrawn
     assert canvas.ring_is_beneath_every_button()
+
+
+def test_button_row_displays_keyboard_hint(monkeypatch):
+    tkfont = pytest.importorskip("tkinter.font")
+    monkeypatch.setattr(tkfont, "Font", lambda **_kw: types.SimpleNamespace(measure=len))
+    canvas, root = _FakeCanvas(), _FakeRoot()
+    specs = [("Deny", lambda: None, False), ("Approve", lambda: None, True)]
+
+    gui_prompter._add_button_row(root, canvas, y=100, specs=specs)
+    hints = [text for text in canvas.texts.values() if "Enter" in text]
+    assert hints, "keyboard hint was not drawn"
+    # The dialog text is ASCII-only (a middle dot breaks cp1252 consoles); pin the hint to it.
+    assert all(text.isascii() for text in hints)
 
 
 def test_real_canvas_click_target_is_the_highlighted_button_not_the_ring():
