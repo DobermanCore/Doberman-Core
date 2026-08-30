@@ -2,10 +2,10 @@
 calls without the agent opting in.
 
 Claude Code can run a command as a ``PreToolUse`` hook *before* every tool call.
-Wired in (see ``doberman install-hooks``, a later slice), the harness invokes
-``doberman hook pre`` and hands this adapter the tool call on stdin. We translate
-it into a :class:`~doberman.models.SecurityObject`, run the **deterministic
-objective floor**, and answer in Claude Code's hook protocol:
+Wired in by ``doberman install-hooks``, the harness invokes ``doberman hook pre``
+and hands this adapter the tool call on stdin. We translate it into a
+:class:`~doberman.models.SecurityObject`, run the **deterministic objective
+floor**, and answer in Claude Code's hook protocol:
 
 * ``PASS``  -> abstain (no output). Doberman is **raise-only**: it never removes
   the harness's own permission prompts, it only *adds* friction.
@@ -56,7 +56,7 @@ if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth st
 #: Claude Code built-in tools whose *action* we gate before execution. Pure reads
 #: (Read / Glob / Grep) are deliberately NOT gated here — a read cannot destroy or
 #: exfiltrate on its own; its *output* is the concern, scanned by the PostToolUse
-#: hook (a later slice). Internal tools (TodoWrite, Task, …) are not real-resource
+#: hook. Internal tools (TodoWrite, Task, …) are not real-resource
 #: actions and abstain too.
 GATED_BUILTINS: frozenset[str] = frozenset(
     {"Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"}

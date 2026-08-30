@@ -94,7 +94,7 @@ _FEED_BACKFILL_LIMIT = 50
 #: much shorter one so the feed test doesn't wait on the wall clock).
 _FEED_POLL_INTERVAL_S = 1.0
 
-# ponytail: one inline page, no build toolchain - real UI lands in a later slice.
+# ponytail: one inline page, no build toolchain.
 _HTML_SHELL = """<!doctype html>
 <html lang="en">
 <head>
@@ -257,6 +257,8 @@ _HTML_SHELL = """<!doctype html>
   #pending-list button.deny:hover { border-color: var(--block); background: var(--block-bg); }
   #pending-list button.approve { background: var(--auth); border: 1px solid var(--auth); color: var(--ink-0); }
   #pending-list button.approve:hover { background: var(--tan-hi); border-color: var(--tan-hi); }
+  #pending-list button.btn-copy { background: transparent; border: 1px solid var(--rule); color: var(--fg-2); }
+  #pending-list button.btn-copy:hover { border-color: var(--auth); color: var(--fg); }
   .section-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: 1.4rem; }
   #refresh-btn {
     font-family: var(--font); font-size: .86rem; font-weight: 600; padding: .35rem 1rem;
@@ -501,6 +503,14 @@ _HTML_SHELL = """<!doctype html>
       }
       refreshStats();
       setInterval(refreshStats, STATS_REFRESH_MS);
+      // The counters follow the feed: a new row re-fetches the stats right away
+      // (trailing-debounced, so a backfill burst on connect costs one request)
+      // instead of lagging up to STATS_REFRESH_MS behind the list.
+      var statsSyncTimer = null;
+      function syncStatsSoon() {
+        clearTimeout(statsSyncTimer);
+        statsSyncTimer = setTimeout(refreshStats, 150);
+      }
 
       // Mode control: fetch the valid mode names once to populate the
       // selector, then let the user pick a new one. Raising strictness is
@@ -701,6 +711,24 @@ _HTML_SHELL = """<!doctype html>
           });
           li.appendChild(denyBtn);
 
+          var copyBtn = document.createElement("button");
+          copyBtn.type = "button";
+          copyBtn.className = "btn btn-copy";
+          copyBtn.textContent = "Copy details";
+          copyBtn.addEventListener("click", async function () {
+            try {
+              await navigator.clipboard.writeText(JSON.stringify({
+                id: row.id,
+                tier: row.tier,
+                risk: row.risk,
+                action_type: row.action_type,
+                reason_codes: row.reason_codes,
+                explanation: row.explanation
+              }, null, 2));
+            } catch (e) { /* clipboard unavailable: keep the approval card usable */ }
+          });
+          li.appendChild(copyBtn);
+
           pendingList.appendChild(li);
         });
         document.title = (rows.length ? "(" + rows.length + ") " : "") + DASH_BASE_TITLE;
@@ -783,6 +811,7 @@ _HTML_SHELL = """<!doctype html>
           if (nearBottom) {
             feedEl.scrollTop = feedEl.scrollHeight;
           }
+          syncStatsSoon();
         });
       } catch (e) {
         // EventSource unsupported/blocked - the feed just stays empty.

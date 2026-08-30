@@ -189,6 +189,7 @@ def test_doberman_setup_is_blocked():
         "doberman tune --accept abc123",
         "doberman memory reset",
         "doberman memory prune --older-than-days 30",
+        "doberman decision-log-prune --max-rows 0",
         "doberman tools approve fs_read",
         "doberman approvals status",
         "doberman approvals clear",

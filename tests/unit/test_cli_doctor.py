@@ -244,6 +244,36 @@ def test_doctor_reports_2fa_state(tmp_path):
     assert "not enrolled" in twofa.detail
 
 
+def test_doctor_reports_password_set(tmp_path, monkeypatch):
+    monkeypatch.setattr("doberman.auth.password.is_enrolled", lambda: True)
+
+    results = run_checks(str(tmp_path))
+
+    password_check = next(result for result in results if result.name == "Password")
+    assert password_check.status is CheckStatus.OK
+    assert password_check.detail == "set"
+    assert password_check.critical is False
+
+
+def test_doctor_reports_missing_optional_password(tmp_path, monkeypatch):
+    monkeypatch.setattr("doberman.auth.password.is_enrolled", lambda: False)
+
+    results = run_checks(str(tmp_path))
+
+    password_check = next(result for result in results if result.name == "Password")
+    assert password_check.status is CheckStatus.WARN
+    assert "not set (optional)" in password_check.detail
+    assert "`doberman password set`" in password_check.detail
+    assert password_check.critical is False
+
+
+def test_doctor_lists_password_next_to_2fa(tmp_path):
+    results = run_checks(str(tmp_path))
+    names = [result.name for result in results]
+
+    assert names.index("Password") == names.index("2FA") + 1
+
+
 @pytest.mark.skipif(
     os.name == "nt", reason="POSIX file-permission bits are not enforced on Windows (NTFS)"
 )
@@ -310,6 +340,52 @@ def test_codex_cli_not_found_when_which_resolves_nothing(tmp_path, monkeypatch):
     codex_check = next(r for r in results if r.name == "Codex CLI")
     assert codex_check.status is CheckStatus.WARN
     assert "not found" in codex_check.detail
+
+
+@pytest.mark.parametrize(
+    ("row_name", "module", "install_hint"),
+    [
+        ("Dash extra", "starlette", "doberman[dash]"),
+        ("TUI extra", "textual", "doberman[tui]"),
+    ],
+)
+def test_doctor_reports_optional_extra_missing(
+    tmp_path, monkeypatch, row_name, module, install_hint
+):
+    monkeypatch.setattr("doberman.cli.doctor.find_spec", lambda name: None)
+
+    results = run_checks(str(tmp_path))
+
+    check = next(result for result in results if result.name == row_name)
+    assert check.status is CheckStatus.WARN
+    assert check.detail == f"not installed (optional) - pip install '{install_hint}'"
+    assert check.critical is False
+
+
+@pytest.mark.parametrize(
+    ("row_name", "module"),
+    [
+        ("Dash extra", "starlette"),
+        ("TUI extra", "textual"),
+    ],
+)
+def test_doctor_reports_optional_extra_installed(tmp_path, monkeypatch, row_name, module):
+    monkeypatch.setattr("doberman.cli.doctor.find_spec", lambda name: object())
+
+    results = run_checks(str(tmp_path))
+
+    check = next(result for result in results if result.name == row_name)
+    assert check.status is CheckStatus.OK
+    assert check.detail == "installed"
+    assert check.critical is False
+
+
+def test_doctor_lists_optional_extras_after_codex_cli(tmp_path):
+    results = run_checks(str(tmp_path))
+    names = [result.name for result in results]
+
+    assert names.index("Dash extra") == names.index("Codex CLI") + 1
+    assert names.index("TUI extra") == names.index("Dash extra") + 1
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ Day-to-day posture, status, and review commands.
 | `doberman mode [NAME]` | Show or set the security strength mode (light/balanced/strict/paranoid). | `--path`/`-p` |
 | `doberman enforcement [STATE]` | Show or set the enforcement dial (enforce/monitor/off). | `--path`/`-p` |
 | `doberman prefs [DIMENSION] [VALUE]` | Show or set the subjective preference vector. | `--path`/`-p` |
+| `doberman egress-velocity [KNOB] [VALUE]` | Show or set the egress-velocity thresholds (`burst`, `volume-bytes`, `fanout`). Lowering a threshold is frictionless; raising one is gated. | `--path`/`-p` |
 | `doberman message-tone [TONE]` | Show or set the AUTH challenge tone (human/technical). Cosmetic display only; it changes nothing about what is evaluated or logged. | `--path`/`-p` |
 | `doberman role enable-default` | Turn on the built-in, opt-in least-privilege default role. | `--path`/`-p` |
 | `doberman role disable-default` | Turn the default role off. A weaken, so it is gated. | `--path`/`-p` |
@@ -20,6 +21,7 @@ Day-to-day posture, status, and review commands.
 | `doberman doctor` | Read-only health self-check; exits non-zero if a critical check fails. | `--path`/`-p`, `--json` |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
 | `doberman log` | Recent redacted decision log, newest first. | `--last`/`-n`, `--path`/`-p`, `--jsonl` |
+| `doberman decision-log-prune` | Delete resolved decisions by age and/or retained-row budget. Never touches pending AUTH rows or the policy-change ledger. | `--older-than-days`, `--max-rows`, `--path`/`-p` |
 | `doberman tui` | Interactive decision log with a plain-language "why" panel. Needs the `tui` extra. | `--path`/`-p` |
 | `doberman dash` | Localhost-only dashboard: live decision feed, stats, and an AUTH approve/deny queue. Needs the `dash` extra. | `--port`, `--path`/`-p` |
 | `doberman demo` | Scripted attack reel through the real decision engine. Nothing runs against a real tool or downstream server. | `--path`/`-p`, `--mode`, `--fast`, `--quiet`/`-q` |
@@ -167,6 +169,8 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `role disable-default` | `1` | Disable denied by the gate. |
 | `prefs` | `2` | No value given, or an invalid dimension/value. |
 | `prefs` | `1` | Preference change denied by the gate. |
+| `egress-velocity` | `2` | Unknown knob, missing value, or a non-positive value. |
+| `egress-velocity` | `1` | Threshold change denied by the gate. |
 | `doctor` | `1` | One or more critical checks failed. |
 | `password set` | `1` | Passwords did not match, or enrollment failed. |
 | `2fa setup` | `1` | TOTP enrollment failed. |
@@ -182,6 +186,8 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `demo` | `1` | Invalid mode name, or a scenario did not match its expected outcome. |
 | `memory reset` | `1` | No possession factor enrolled, gate denied, or the DB reset failed. |
 | `memory prune` | `1` | The DB prune operation failed. |
+| `decision-log-prune` | `2` | Neither `--older-than-days` nor `--max-rows` was provided. |
+| `decision-log-prune` | `1` | The DB prune operation failed. |
 | `uninstall` | `1` | No possession factor enrolled, confirmation declined, name mismatch, gate denied, or some items were not removed. |
 
 Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `setup`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.

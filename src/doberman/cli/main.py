@@ -46,11 +46,20 @@ from doberman.config import (
 from doberman.demo import format_outcome_line, format_summary_table, run_demo
 from doberman.discovery.mcp_scan import MCP_CONFIG_FILES, scan_mcp_configs
 from doberman.discovery.scan import enumerate_capabilities, rate_capabilities, render_risk_map
+from doberman.egress.velocity import (
+    _BURST_THRESHOLD,
+    _FANOUT_THRESHOLD,
+    _VOLUME_THRESHOLD_BYTES,
+    VelocityThresholds,
+)
+from doberman.hosthooks.install import DASHBOARD_COMMAND
+from doberman.models import ActionType
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
     _run_weaken_gate,
     _verify_possession_factor,
     apply_change,
+    apply_egress_velocity_change,
     apply_enforcement_change,
     apply_mode_change,
     apply_preferences_change,
@@ -65,7 +74,7 @@ from doberman.storage.approval_memory import clear as clear_approval_memory
 from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
 from doberman.storage.exclusions import add_exclusion, is_excluded, remove_exclusion
-from doberman.storage.log import memory_summary, read_decisions
+from doberman.storage.log import memory_summary, prune_decisions, read_decisions
 from doberman.storage.memory import prune_stale_entities, reset_memory
 from doberman.storage.taint import clear_taint, entity_scope, read_taint
 from doberman.storage.tool_pins import approve_pin
@@ -590,6 +599,97 @@ def prefs(
     typer.echo(f"{dimension} set to {value:.2f}")
 
 
+@app.command("egress-velocity", rich_help_panel="Policy")
+def egress_velocity(
+    knob: str = typer.Argument(
+        None,
+        help="Threshold to set: burst, volume-bytes, or fanout.",
+    ),
+    value: int = typer.Argument(None, help="New integer value (positive)."),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show or set the egress-velocity detection thresholds (RB.6).
+
+    With no arguments, prints the three active thresholds and the built-in
+    defaults they override (if any).
+
+    The three knobs and their security direction:
+
+    \b
+      burst        max connection events before a burst signal trips (lower = tighter)
+      volume-bytes max bytes sent before a volume signal trips      (lower = tighter)
+      fanout       max unique destination hosts before fan-out trips (lower = tighter)
+
+    Tightening (lowering a threshold relative to the current stored value)
+    is frictionless. Loosening (raising it) requires a possession factor —
+    a TOTP code if enrolled, otherwise your Doberman password — because a
+    looser threshold means fewer egress anomalies are caught.
+    """
+    doc = load_policy(path) or recommend_policy()
+    current_thresholds = doc.egress_velocity_thresholds or VelocityThresholds()
+
+    if knob is None:
+        typer.echo("Egress-velocity thresholds")
+        typer.echo("=" * 32)
+        typer.echo(f"{'burst':<23} {current_thresholds.burst}  (built-in: {_BURST_THRESHOLD})")
+        typer.echo(
+            f"{'volume-bytes':<23} {current_thresholds.volume_bytes}"
+            f"  (built-in: {_VOLUME_THRESHOLD_BYTES})"
+        )
+        typer.echo(f"{'fanout':<23} {current_thresholds.fanout}  (built-in: {_FANOUT_THRESHOLD})")
+        return
+
+    knob = knob.lower().replace("_", "-")
+    _VALID_KNOBS = {"burst", "volume-bytes", "fanout"}
+    if knob not in _VALID_KNOBS:
+        typer.echo(
+            f"error: unknown knob {knob!r}; choose from: {', '.join(sorted(_VALID_KNOBS))}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if value is None:
+        typer.echo(
+            f"error: provide a value (e.g. `doberman egress-velocity {knob} 10`)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if value <= 0:
+        typer.echo("error: value must be a positive integer", err=True)
+        raise typer.Exit(code=2)
+
+    # Build the updated VelocityThresholds from the current effective values.
+    before = {
+        "burst": current_thresholds.burst,
+        "volume_bytes": current_thresholds.volume_bytes,
+        "fanout": current_thresholds.fanout,
+    }
+    # Normalise the CLI knob name to the internal dict key.
+    key = knob.replace("-", "_")
+    after = {**before, key: value}
+
+    outcome = asyncio.run(
+        apply_egress_velocity_change(
+            before,
+            after,
+            f"doberman egress-velocity CLI: {knob}={value}",
+            repo_root=path,
+        )
+    )
+    if not outcome.approved:
+        typer.echo("error: egress-velocity change denied; unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    updated_thresholds = VelocityThresholds(
+        burst=after["burst"],
+        volume_bytes=after["volume_bytes"],
+        fanout=after["fanout"],
+    )
+    updated_doc = doc.with_egress_velocity_thresholds(updated_thresholds)
+    save_policy(updated_doc, path)
+    typer.echo(f"{knob} set to {value}")
+
+
 @app.command("message-tone", rich_help_panel="Policy")
 def message_tone(
     tone: str = typer.Argument(None, help=f"New tone ({', '.join(MESSAGE_TONES)})."),
@@ -963,7 +1063,7 @@ def hook_codex_pre() -> None:
     objective floor (no numpy/scipy/river) and fails closed on any malformed
     input or engine error.
 
-    Wire it in with ``doberman install-hooks --host codex`` (a later slice).
+    Wire it in with ``doberman install-hooks --host codex``.
     """
     _configure_stderr_logging()
     from doberman.hosthooks.codex import run_codex_pre
@@ -1367,7 +1467,14 @@ def tune(
 
     report = build_friction_report(rows)
     if json_out:
-        typer.echo(json.dumps({**report, "proposals": proposals}, sort_keys=True, default=str))
+        typer.echo(
+            json.dumps(
+                {**report, "proposals": proposals},
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        )
         return
 
     if not rows:
@@ -1425,6 +1532,10 @@ def tune(
 # ``build_record`` — no raw target, argument, or secret reaches the table at all.
 _JSONL_EXTRA_COLUMNS = ("id", "agent_role", "risk")
 
+# Keep every action type in one column even when a new enum member outgrows the
+# historical 13-character values (network_request/package_install are 15).
+_ACTION_WIDTH = max(len(action.value) for action in ActionType)
+
 
 @app.command(rich_help_panel="Daily")
 def log(
@@ -1478,7 +1589,7 @@ def log(
         else:
             auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
         typer.echo(
-            f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<13} "
+            f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<{_ACTION_WIDTH}} "
             f"{target}  [{reasons}]{auth}"
         )
 
@@ -1797,6 +1908,42 @@ def policy_history(
         )
 
 
+@app.command("decision-log-prune", rich_help_panel="Daily")
+def decision_log_prune(
+    older_than_days: int | None = typer.Option(
+        None,
+        "--older-than-days",
+        min=1,
+        help="Delete resolved decisions older than this many days (a row exactly at the cutoff is kept).",
+    ),
+    max_rows: int | None = typer.Option(
+        None,
+        "--max-rows",
+        min=0,
+        help="Retain at most this many newest resolved decisions; delete the rest.",
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Prune resolved decision rows by age and/or retained-row budget.
+
+    A maintenance operation outside the decision path. It never touches pending
+    AUTH rows and never modifies the append-only policy-change ledger.
+    """
+    if older_than_days is None and max_rows is None:
+        typer.echo("error: specify --older-than-days and/or --max-rows", err=True)
+        raise typer.Exit(code=2)
+    try:
+        result = asyncio.run(
+            prune_decisions(path, older_than_days=older_than_days, max_rows=max_rows)
+        )
+    except Exception as exc:  # noqa: BLE001 — never report a failed prune as success
+        typer.echo(f"error: decision-log prune failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    deleted = result["age_deleted"] + result["overflow_deleted"]
+    typer.echo(f"Decision log pruned: {deleted} row(s).")
+
+
 @app.command("install-hooks", rich_help_panel="Getting started")
 def install_hooks(
     global_: bool = typer.Option(
@@ -1852,7 +1999,7 @@ def install_hooks(
         typer.echo("[dry-run] would add:")
         typer.echo("  PreToolUse   -> doberman hook pre")
         typer.echo("  PostToolUse  -> doberman hook post")
-        typer.echo("  SessionStart -> doberman dashboard")
+        typer.echo(f"  SessionStart -> {DASHBOARD_COMMAND}")
         return
 
     write_settings(settings_path, merged)
@@ -2015,7 +2162,7 @@ def uninstall_hooks(
         typer.echo("[dry-run] would remove:")
         typer.echo("  PreToolUse   -> doberman hook pre")
         typer.echo("  PostToolUse  -> doberman hook post")
-        typer.echo("  SessionStart -> doberman dashboard")
+        typer.echo(f"  SessionStart -> {DASHBOARD_COMMAND}")
         return
 
     write_settings(settings_path, cleaned)
