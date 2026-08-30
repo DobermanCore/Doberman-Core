@@ -498,12 +498,14 @@ class _FakeCanvas:
         pass
 
     def ring_is_beneath_every_button(self) -> bool:
-        [ring] = [i for i in self.items if not self.tags[i] and i not in self.texts]  # the ring is the only untagged non-text item
+        [ring] = [
+            i for i in self.items if not self.tags[i] and i not in self.texts
+        ]  # the ring is the only untagged non-text item
         return all(self.items.index(ring) < self.items.index(i) for i in self.items if self.tags[i])
 
     def bbox(self, item):
         # Geometry is irrelevant for these fake canvas tests.
-        return (0, 0, 0, 0) 
+        return (0, 0, 0, 0)
 
 
 def test_focus_ring_is_stacked_beneath_the_buttons(monkeypatch):
