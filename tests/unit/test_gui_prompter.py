@@ -534,7 +534,10 @@ def test_button_row_displays_keyboard_hint(monkeypatch):
     specs = [("Deny", lambda: None, False), ("Approve", lambda: None, True)]
 
     gui_prompter._add_button_row(root, canvas, y=100, specs=specs)
-    assert any("Enter" in text for text in canvas.texts.values())
+    hints = [text for text in canvas.texts.values() if "Enter" in text]
+    assert hints, "keyboard hint was not drawn"
+    # The dialog text is ASCII-only (a middle dot breaks cp1252 consoles); pin the hint to it.
+    assert all(text.isascii() for text in hints)
 
 
 def test_real_canvas_click_target_is_the_highlighted_button_not_the_ring():
