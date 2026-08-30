@@ -127,7 +127,8 @@ them off. See [Telemetry](docs/TELEMETRY.md).
 Doberman now reviews every tool call your agent makes. Confirm it with `doberman doctor`, or watch
 real verdicts with `doberman demo`. MCP-proxy wiring, the dashboard, the TUI, scan, and 2FA are in the
 [Setup guide](docs/SETUP.md). Pending-approval cards in the dashboard can copy their already-redacted
-decision details as JSON for review handoffs without exposing raw targets or paths.
+decision details as JSON for review handoffs without exposing raw targets or paths. The copy button
+briefly confirms success with `Copied!` so the reviewer knows the JSON reached the clipboard.
 
 ---
 

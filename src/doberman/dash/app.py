@@ -715,6 +715,7 @@ _HTML_SHELL = """<!doctype html>
           copyBtn.type = "button";
           copyBtn.className = "btn btn-copy";
           copyBtn.textContent = "Copy details";
+          var copyTimer = null;
           copyBtn.addEventListener("click", async function () {
             try {
               await navigator.clipboard.writeText(JSON.stringify({
@@ -725,6 +726,11 @@ _HTML_SHELL = """<!doctype html>
                 reason_codes: row.reason_codes,
                 explanation: row.explanation
               }, null, 2));
+              clearTimeout(copyTimer);
+              copyBtn.textContent = "Copied!";
+              copyTimer = setTimeout(function () {
+                copyBtn.textContent = "Copy details";
+              }, 1500);
             } catch (e) { /* clipboard unavailable: keep the approval card usable */ }
           });
           li.appendChild(copyBtn);

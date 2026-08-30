@@ -124,6 +124,9 @@ def test_pending_card_can_copy_only_redacted_details(tmp_path):
         assert f"{field}: row.{field}" in copy_block
     assert "target" not in copy_block
     assert "path" not in copy_block
+    assert 'copyBtn.textContent = "Copied!";' in copy_block
+    assert 'copyBtn.textContent = "Copy details";' in copy_block
+    assert "}, 1500);" in copy_block
     assert "catch (e)" in copy_block
 
 
