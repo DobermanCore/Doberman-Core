@@ -29,7 +29,7 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   best-effort and fail-open (an unreachable PyPI is silent, never an error), caches for 24h, never runs on
   the hook/proxy hot paths, and is off under `DO_NOT_TRACK`, `CI`, or `DOBERMAN_UPDATE_CHECK=off` (#508).
 
-- Add a dashboard **Copy details** action for pending approvals that copies only the existing redacted fields as formatted JSON.
+- **Copy a pending approval's details from the dashboard.** A **Copy details** action on each pending card copies only the existing redacted fields as formatted JSON (thanks @slegarraga, #498, closes #443)
 
 - **`doberman doctor` reports the password factor:** a `Password` row next to `2FA`, OK when
   enrolled, a non-critical WARN with the `doberman password set` hint when not; presence only, never
@@ -78,7 +78,7 @@ Shipped history for Doberman. Planned work lives on the [roadmap](README.md#road
   route. (#490)
 
 - **`docs/README.md` indexes every doc page.** An "open this when…" guide to each document makes
-  the right one a single scan away. (#492, #500)
+  the right one a single scan away (thanks @navaneethsankar07, #492, #500, closes #409)
 
 - **Tests:** the core standalone-guarantee test asserts no `doberman.audit_sinks` plugin is
   registered by default again; the plugin-audit-sink tutorial is now covered by a CI-visible test
