@@ -245,7 +245,7 @@ async def maybe_nudge(
     updated = current
     for dimension, weight in proposals.items():
         updated = updated.with_weight(dimension, weight)
-    save_preferences(updated, repo_root)
+    save_preferences(updated, repo_root, ledger_ts=outcome.ts)
     return updated
 
 

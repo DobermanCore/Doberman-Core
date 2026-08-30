@@ -485,7 +485,8 @@ def enforcement(
     if not outcome.approved:
         typer.echo("error: enforcement change denied; unchanged", err=True)
         raise typer.Exit(code=1)
-    save_policy((load_policy(path) or recommend_policy()).with_enforcement(new), path)
+    doc = load_policy(path) or recommend_policy()
+    save_policy(doc.with_enforcement(new), path, ledger_ts=outcome.ts)
     typer.echo(f"enforcement set to {new}")
 
 
@@ -506,7 +507,7 @@ def role_enable_default(
         return
     # A strengthen: apply_change auto-approves (no gate) and still records the
     # attempt to the append-only ledger.
-    asyncio.run(
+    outcome = asyncio.run(
         apply_change(
             {"default_role_enabled": was},
             {"default_role_enabled": True},
@@ -514,7 +515,7 @@ def role_enable_default(
             repo_root=path,
         )
     )
-    save_default_role_enabled(True, path)
+    save_default_role_enabled(True, path, ledger_ts=outcome.ts)
     typer.echo("the built-in default role is now enabled (used when no role.yaml is set)")
 
 
@@ -544,7 +545,7 @@ def role_disable_default(
     if not outcome.approved:
         typer.echo("error: disabling the default role was denied; unchanged", err=True)
         raise typer.Exit(code=1)
-    save_default_role_enabled(False, path)
+    save_default_role_enabled(False, path, ledger_ts=outcome.ts)
     typer.echo("the built-in default role is now disabled")
 
 
@@ -595,7 +596,7 @@ def prefs(
     if not outcome.approved:
         typer.echo("error: preference change denied; unchanged", err=True)
         raise typer.Exit(code=1)
-    save_preferences(updated, path)
+    save_preferences(updated, path, ledger_ts=outcome.ts)
     typer.echo(f"{dimension} set to {value:.2f}")
 
 
@@ -686,7 +687,7 @@ def egress_velocity(
         fanout=after["fanout"],
     )
     updated_doc = doc.with_egress_velocity_thresholds(updated_thresholds)
-    save_policy(updated_doc, path)
+    save_policy(updated_doc, path, ledger_ts=outcome.ts)
     typer.echo(f"{knob} set to {value}")
 
 
@@ -957,9 +958,12 @@ def doctor(
 
     Answers "is Doberman actually wired up and healthy?" in one shot: host hooks,
     config, the decision DB, 2FA, the enforcement dial + strictness mode, and the
-    fingerprint key. It only *diagnoses* - it never changes state. Exits non-zero
-    if any critical check (hooks / config / DB) is not healthy, so it is
-    script-friendly (`doberman doctor && ...`).
+    fingerprint key. It only *diagnoses* - it never changes state, except that the
+    Policy version check records the observed policy version into
+    `.doberman/policies.db` (itself a diagnostic record; it never touches policy,
+    decisions, or enforcement). Exits non-zero if any critical check
+    (hooks / config / DB) is not healthy, so it is script-friendly
+    (`doberman doctor && ...`).
     """
     from doberman.cli.doctor import CheckStatus, critical_failures, run_checks
 
@@ -1940,6 +1944,105 @@ def policy_history(
             f"{row['from_state']} -> {row['to_state']}  "
             f"[{status} via {row['approval_method']}]"
         )
+
+
+@app.command("policy-versions", rich_help_panel="Policy")
+def policy_versions(
+    show: str | None = typer.Option(
+        None,
+        "--show",
+        help="Print one version's snapshot: a full pv1: id or at least 8 hex characters of one.",
+    ),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="Recompute every stored digest and check the on-disk policy is the recorded one.",
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+) -> None:
+    """Every policy version that has been in force here (newest first).
+
+    A version is `pv1:` plus the SHA-256 of the canonical policy snapshot (see
+    docs/POLICY_VERSIONS.md). Listing records the policy in force right now;
+    `--verify` only reads.
+    """
+    from doberman.storage.policy_catalogue import (
+        ORIGIN_OBSERVED,
+        observe_current,
+        read_observations,
+        read_versions,
+        verify_catalogue,
+    )
+
+    if show is not None:
+        _policy_versions_show(show, path)
+        return
+    if verify:
+        report = verify_catalogue(path)
+        if as_json:
+            typer.echo(json.dumps(report, sort_keys=True, separators=(",", ":")))
+        elif report["status"] == "ok":
+            typer.echo(f"ok ({report['versions']} version(s); current {report['current']})")
+        elif report["status"] == "mismatch":
+            typer.echo(
+                "mismatch: stored content no longer hashes to " + ", ".join(report["mismatched"])
+            )
+        else:
+            typer.echo(
+                f"drift: the policy on disk is {report['current']} but the last recorded "
+                f"version is {report['recorded']} (run `doberman doctor` to record it)"
+            )
+        if report["status"] != "ok":
+            raise typer.Exit(code=1)
+        return
+
+    observe_current(path, origin=ORIGIN_OBSERVED)
+    in_force: dict[str, tuple[str, str]] = {}
+    for obs in read_observations(path):  # newest first: the first hit is the latest
+        in_force.setdefault(obs["version"], (obs["ts"], obs["origin"]))
+    rows = [
+        {
+            **row,
+            "in_force_since": in_force.get(row["version"], (None, None))[0],
+            "origin": in_force.get(row["version"], (None, None))[1],
+        }
+        for row in read_versions(path)
+    ]
+    if as_json:
+        typer.echo(json.dumps(rows, sort_keys=True, separators=(",", ":")))
+        return
+    if not rows:
+        typer.echo("(no policy versions recorded yet)")
+        return
+    typer.echo("Doberman policy versions")
+    typer.echo("=" * 24)
+    for row in rows:
+        typer.echo(
+            f"{row['version'][:16]}...  first seen {row['first_seen']}  engine {row['engine']}  "
+            f"in force since {row['in_force_since']}  via {row['origin']}"
+        )
+
+
+def _policy_versions_show(show: str, path: str) -> None:
+    from doberman.storage.policy_catalogue import VERSION_PREFIX, find_versions, read_snapshot
+
+    needle = show[len(VERSION_PREFIX) :] if show.startswith(VERSION_PREFIX) else show
+    if len(needle) < 8 or any(ch not in "0123456789abcdef" for ch in needle.lower()):
+        typer.echo("error: --show takes a pv1: id or at least 8 hex characters of one", err=True)
+        raise typer.Exit(code=2)
+    matches = find_versions(path, needle)
+    if not matches:
+        typer.echo(f"error: no policy version matches {show}", err=True)
+        raise typer.Exit(code=1)
+    if len(matches) > 1:
+        typer.echo("error: ambiguous prefix; matches " + ", ".join(matches), err=True)
+        raise typer.Exit(code=1)
+    snapshot = read_snapshot(path, matches[0])
+    if snapshot is None:
+        typer.echo(f"error: could not read the snapshot for {matches[0]}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(json.dumps({"version": matches[0], "snapshot": snapshot}, indent=2, sort_keys=True))
 
 
 @app.command("decision-log-prune", rich_help_panel="Daily")

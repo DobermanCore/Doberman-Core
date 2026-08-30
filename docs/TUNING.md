@@ -145,3 +145,7 @@ decision log.
 
 Taint clearing, tool-pin approval, learned-memory reset and pruning, and fully removing a project all
 live in the [recovery guide](RECOVERY.md).
+
+Every gated change above is also recorded as a **policy version** (`pv1:` + a content hash) in
+`.doberman/policies.db`; `doberman policy-versions` lists them and `--verify` confirms the policy on
+disk is the last recorded one. See [POLICY_VERSIONS.md](POLICY_VERSIONS.md).

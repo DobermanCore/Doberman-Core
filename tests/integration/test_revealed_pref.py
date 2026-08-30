@@ -121,6 +121,11 @@ async def test_approve_history_lowers_nuisance_asks_only_via_the_gate(tmp_path):
     assert prompter.diffs and "WEAKENING" in prompter.diffs[0]
     rows = await read_policy_changes(root)
     assert any(r["rule_id"] == "pref.confidentiality" and r["approved"] for r in rows)
+    from doberman.storage.policy_catalogue import read_observations
+
+    newest_obs = read_observations(root)[0]
+    assert newest_obs["origin"] == "change"
+    assert newest_obs["ledger_ts"] == rows[0]["ts"]
 
 
 async def test_denied_weakening_changes_nothing_but_is_ledgered(tmp_path):

@@ -116,3 +116,31 @@ def test_policy_ledger_is_only_written_by_apply_change():
     assert "INSERT INTO policy_changes" in src
     assert "UPDATE policy_changes" not in src
     assert "DELETE FROM policy_changes" not in src
+
+
+async def test_apply_mode_change_links_the_observation_to_its_ledger_row(tmp_path):
+    from doberman.policy.drift import apply_mode_change, read_policy_changes
+    from doberman.storage.policy_catalogue import ORIGIN_CHANGE, read_observations
+
+    root = str(tmp_path)
+    assert (
+        await apply_mode_change("strict", root, "test tighten") == "strict"
+    )  # strengthen: no gate
+    rows = await read_policy_changes(root)
+    (obs,) = read_observations(root)
+    assert obs["origin"] == ORIGIN_CHANGE
+    assert obs["ledger_ts"] == rows[0]["ts"]
+
+
+async def test_establish_ok_first_run_links_the_observation_too(tmp_path):
+    from doberman.policy.drift import apply_mode_change, read_policy_changes
+    from doberman.storage.policy_catalogue import ORIGIN_CHANGE, read_observations
+
+    root = str(tmp_path)
+    result = await apply_mode_change("strict", root, "setup wizard", establish_ok=True)
+    assert result == "strict"
+    rows = await read_policy_changes(root)
+    assert rows and rows[0]["approval_method"] == "logged"
+    (obs,) = read_observations(root)
+    assert obs["origin"] == ORIGIN_CHANGE
+    assert obs["ledger_ts"] == rows[0]["ts"]

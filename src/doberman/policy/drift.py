@@ -194,6 +194,9 @@ class ChangeOutcome:
     classification: Classification
     approved: bool
     method: str
+    #: ISO-8601 UTC timestamp of the ledger row(s) this attempt wrote; the policy
+    #: catalogue links the resulting version to it (``save_policy(ledger_ts=...)``).
+    ts: str | None = None
 
 
 def _changed_keys(before: dict, after: dict) -> list[str]:
@@ -331,7 +334,9 @@ async def apply_change(
             "method": method,
         }
     )
-    return ChangeOutcome(classification=classification, approved=approved, method=method)
+    return ChangeOutcome(
+        classification=classification, approved=approved, method=method, ts=when.isoformat()
+    )
 
 
 async def log_change(
@@ -386,7 +391,9 @@ async def log_change(
             "method": "logged",
         }
     )
-    return ChangeOutcome(classification=classification, approved=True, method="logged")
+    return ChangeOutcome(
+        classification=classification, approved=True, method="logged", ts=when.isoformat()
+    )
 
 
 async def apply_mode_change(
@@ -419,14 +426,14 @@ async def apply_mode_change(
     if old == new:
         return save_mode(name, repo_root)
     if establish_ok and load_policy(repo_root) is None:
-        await log_change({"mode": old}, {"mode": new}, reason, repo_root=repo_root)
-        return save_mode(name, repo_root)
+        logged = await log_change({"mode": old}, {"mode": new}, reason, repo_root=repo_root)
+        return save_mode(name, repo_root, ledger_ts=logged.ts)
     outcome = await apply_change(
         {"mode": old}, {"mode": new}, reason, repo_root=repo_root, prompter=prompter
     )
     if not outcome.approved:
         return None
-    return save_mode(name, repo_root)
+    return save_mode(name, repo_root, ledger_ts=outcome.ts)
 
 
 def _run_enforcement_gate(
@@ -515,7 +522,9 @@ async def apply_enforcement_change(
             "method": method,
         }
     )
-    return ChangeOutcome(classification=classification, approved=approved, method=method)
+    return ChangeOutcome(
+        classification=classification, approved=approved, method=method, ts=when.isoformat()
+    )
 
 
 def _prefs_classify(before: dict, after: dict) -> Classification:
@@ -606,7 +615,9 @@ async def apply_preferences_change(
             "method": method,
         }
     )
-    return ChangeOutcome(classification=classification, approved=approved, method=method)
+    return ChangeOutcome(
+        classification=classification, approved=approved, method=method, ts=when.isoformat()
+    )
 
 
 async def apply_standing_elevation(
@@ -665,7 +676,9 @@ async def apply_standing_elevation(
             "method": method,
         }
     )
-    return ChangeOutcome(classification=classification, approved=approved, method=method)
+    return ChangeOutcome(
+        classification=classification, approved=approved, method=method, ts=when.isoformat()
+    )
 
 
 def _velocity_classify(before: dict[str, int], after: dict[str, int]) -> Classification:
@@ -772,7 +785,9 @@ async def apply_egress_velocity_change(
             "method": method,
         }
     )
-    return ChangeOutcome(classification=classification, approved=approved, method=method)
+    return ChangeOutcome(
+        classification=classification, approved=approved, method=method, ts=when.isoformat()
+    )
 
 
 async def read_policy_changes(repo_root: str, *, limit: int | None = None) -> list[dict]:
