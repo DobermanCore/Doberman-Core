@@ -457,7 +457,7 @@ def _add_button_row(
     hint_id = canvas.create_text(
         _PADX,
         hint_y,
-        text="Tab / arrows switch - Enter confirms - Esc denies",
+        text="Tab/Arrows: switch - Enter: confirm - Esc: deny",
         fill=_MUTED,
         font=_DEADLINE_FONT,
         anchor="nw",
