@@ -4,24 +4,40 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sqlite3
+import stat
 from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
 
+from doberman.config import save_policy
 from doberman.egress.velocity import VelocityThresholds
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.preferences import PreferenceVector
 from doberman.roles.roles import RoleDefinition
 from doberman.storage.policy_catalogue import (
+    CATALOGUE_SCHEMA_VERSION,
+    ORIGIN_CHANGE,
+    ORIGIN_OBSERVED,
     SNAPSHOT_SCHEMA,
     VERSION_PREFIX,
     PolicySnapshotV1,
     build_snapshot,
     canonical_json,
+    catalogue_path,
     effective_enforcement_at_save,
+    find_versions,
+    observe_current,
     policy_version,
+    read_observations,
+    read_snapshot,
+    read_versions,
+    record_version,
     snapshot_doc,
+    verify_catalogue,
+    version_at,
 )
 
 _NOW = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
@@ -136,3 +152,132 @@ def test_effective_enforcement_at_save_applies_the_timer():
     bad_revert = doc.with_enforcement("off", expires_at=_NOW.timestamp() - 1, revert="off")
     assert effective_enforcement_at_save(bad_revert, _NOW) == "enforce"
     assert effective_enforcement_at_save(doc.with_enforcement("nonsense"), _NOW) == "enforce"
+
+
+_T1 = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+_T2 = datetime(2026, 8, 30, 11, 0, tzinfo=timezone.utc)
+_T3 = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+
+
+def _snap(mode="balanced"):
+    return build_snapshot(_doc().with_mode(mode), None, "enforce", "9.9.9")
+
+
+def test_record_version_stores_content_once_and_observes_changes_only(tmp_path):
+    root = str(tmp_path)
+    v1 = record_version(root, _snap(), origin=ORIGIN_OBSERVED, now=_T1)
+    assert v1 == record_version(root, _snap(), origin=ORIGIN_OBSERVED, now=_T2)
+    assert [v["version"] for v in read_versions(root)] == [v1]
+    assert len(read_observations(root)) == 1  # same version twice -> one observation
+    v2 = record_version(root, _snap("strict"), origin=ORIGIN_CHANGE, ledger_ts="L1", now=_T2)
+    record_version(root, _snap(), origin=ORIGIN_OBSERVED, now=_T3)  # recurrence is recorded
+    assert {v["version"] for v in read_versions(root)} == {v1, v2}
+    obs = read_observations(root)
+    assert [(o["version"], o["origin"], o["ledger_ts"]) for o in obs] == [
+        (v1, ORIGIN_OBSERVED, None),
+        (v2, ORIGIN_CHANGE, "L1"),
+        (v1, ORIGIN_OBSERVED, None),
+    ]
+    assert obs[0]["ts"] == _T3.isoformat()
+
+
+def test_read_versions_exposes_engine_and_schema_but_never_canonical(tmp_path):
+    root = str(tmp_path)
+    v = record_version(root, _snap(), origin=ORIGIN_OBSERVED, now=_T1)
+    (row,) = read_versions(root)
+    assert row == {"version": v, "first_seen": _T1.isoformat(), "engine": "9.9.9", "schema": 1}
+    snap = read_snapshot(root, v)
+    assert snap is not None and snap["doc"]["mode"] == "balanced"
+    assert read_snapshot(root, "pv1:" + "0" * 64) is None
+
+
+def test_version_at_uses_the_latest_observation_at_or_before_ts(tmp_path):
+    root = str(tmp_path)
+    v1 = record_version(root, _snap(), origin=ORIGIN_OBSERVED, now=_T1)
+    v2 = record_version(root, _snap("strict"), origin=ORIGIN_OBSERVED, now=_T3)
+    assert version_at(root, "2026-08-30T09:59:59+00:00") is None
+    assert version_at(root, _T1.isoformat()) == v1
+    assert version_at(root, _T2.isoformat()) == v1
+    assert version_at(root, _T3.isoformat()) == v2
+    assert version_at(root, "2027-01-01T00:00:00+00:00") == v2
+
+
+def test_reads_on_a_missing_catalogue_fail_closed_to_nothing(tmp_path):
+    root = str(tmp_path)
+    assert read_versions(root) == []
+    assert read_observations(root) == []
+    assert version_at(root, _T1.isoformat()) is None
+    assert read_snapshot(root, "pv1:" + "0" * 64) is None
+    assert not catalogue_path(root).exists()
+
+
+def test_observe_current_uses_defaults_when_no_policy_is_saved(tmp_path):
+    root = str(tmp_path)
+    v = observe_current(root, origin=ORIGIN_OBSERVED, now=_T1)
+    assert v is not None and v.startswith("pv1:")
+    assert v == observe_current(root, origin=ORIGIN_OBSERVED, now=_T2)
+    snap = read_snapshot(root, v)
+    assert snap["doc"] == snapshot_doc(recommend_policy())
+    assert snap["enforcement_effective"] == "enforce"
+
+
+def test_find_versions_matches_hex_prefixes(tmp_path):
+    root = str(tmp_path)
+    v = record_version(root, _snap(), origin=ORIGIN_OBSERVED, now=_T1)
+    hex_part = v[len(VERSION_PREFIX) :]
+    assert find_versions(root, hex_part[:8]) == [v]
+    assert find_versions(root, v) == [v]
+    assert find_versions(root, "zz") == []
+
+
+def test_verify_reports_ok_drift_and_mismatch(tmp_path):
+    root = str(tmp_path)
+    assert verify_catalogue(root)["status"] == "drift"  # nothing recorded yet
+    observe_current(root, origin=ORIGIN_OBSERVED, now=_T1)
+    report = verify_catalogue(root)
+    assert report["status"] == "ok" and report["current"] == report["recorded"]
+    assert report["versions"] == 1 and report["mismatched"] == []
+    # A hand edit of policies.yaml (bypassing every gate) shows as drift ...
+    save_policy(recommend_policy().with_mode("paranoid"), root)  # records a change
+    (tmp_path / ".doberman" / "policies.yaml").write_text(
+        (tmp_path / ".doberman" / "policies.yaml").read_text().replace("paranoid", "light")
+    )
+    report = verify_catalogue(root)
+    assert report["status"] == "drift" and report["current"] != report["recorded"]
+    # ... and re-observing clears it.
+    observe_current(root, origin=ORIGIN_OBSERVED, now=_T2)
+    assert verify_catalogue(root)["status"] == "ok"
+    # Tampering with stored content is a mismatch naming the id.
+    conn = sqlite3.connect(str(catalogue_path(root)))
+    victim = conn.execute("SELECT version FROM policy_versions LIMIT 1").fetchone()[0]
+    conn.execute("UPDATE policy_versions SET canonical = '{}' WHERE version = ?", (victim,))
+    conn.commit()
+    conn.close()
+    report = verify_catalogue(root)
+    assert report["status"] == "mismatch" and report["mismatched"] == [victim]
+
+
+def test_catalogue_schema_and_permissions(tmp_path):
+    root = str(tmp_path)
+    record_version(root, _snap(), origin=ORIGIN_OBSERVED, now=_T1)
+    conn = sqlite3.connect(str(catalogue_path(root)))
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"schema_version", "policy_versions", "policy_observations"} <= tables
+    assert (
+        conn.execute("SELECT version FROM schema_version").fetchone()[0] == CATALOGUE_SCHEMA_VERSION
+    )
+    conn.close()
+    if os.name != "nt":
+        mode = stat.S_IMODE(catalogue_path(root).stat().st_mode)
+        assert mode == 0o600
+
+
+def test_module_has_no_update_or_delete_statements():
+    import inspect
+
+    import doberman.storage.policy_catalogue as module
+
+    source = inspect.getsource(module).upper()
+    body = source.split("_SCHEMA = ", 1)[1]  # skip the docstring/header
+    assert "UPDATE " not in body
+    assert "DELETE " not in body
