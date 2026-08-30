@@ -18,10 +18,13 @@ on by default; ``DOBERMAN_UPDATE_CHECK=off`` turns it off.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
+import tempfile
 import threading
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -71,11 +74,27 @@ def _read_cache(home: Path | None = None) -> dict:
 
 
 def _write_cache(latest: str, home: Path | None = None) -> None:
+    """Atomically replace the cache file (mkstemp + os.replace) so a crash or
+    concurrent read never observes a half-written cache; mirrors
+    ``auth/totp.py``'s ``_save_lockout``. Best-effort — never raises."""
     try:
         path = _cache_path(home)
         path.parent.mkdir(parents=True, exist_ok=True)
         stamp = _now().isoformat().replace("+00:00", "Z")
-        path.write_text(json.dumps({"checked_at": stamp, "latest": latest}), encoding="utf-8")
+        payload = json.dumps({"checked_at": stamp, "latest": latest})
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".update-check-", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            os.replace(tmp_name, path)
+        except OSError:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
     except Exception:  # noqa: BLE001 — caching is best-effort; never break the CLI
         logger.debug("could not write update-check cache", exc_info=True)
 
@@ -101,8 +120,24 @@ def _parse(version: object) -> tuple[int, ...]:
     return tuple(out)
 
 
+def _is_unknown_version(version: object) -> bool:
+    """True for a version we can't meaningfully compare: an all-zero parse (the
+    ``0.0.0`` fallback) or one carrying an "unknown" marker (the local dev
+    fallback ``0.0.0+unknown`` when package metadata is absent)."""
+    if "unknown" in str(version).lower():
+        return True
+    parts = _parse(version)
+    return not any(parts)
+
+
 def is_newer(latest: object, current: object) -> bool:
-    """True only if ``latest`` parses to a strictly higher release than ``current``."""
+    """True only if ``latest`` parses to a strictly higher release than ``current``.
+
+    Never nags when ``current`` is unknown (see :func:`_is_unknown_version`) —
+    there's nothing to compare against.
+    """
+    if _is_unknown_version(current):
+        return False
     latest_parts = _parse(latest)
     return bool(latest_parts) and latest_parts > _parse(current)
 
@@ -113,7 +148,7 @@ def fetch_latest() -> str | None:
         with urllib.request.urlopen(  # noqa: S310 — constant https URL, not user input
             PYPI_JSON_URL, timeout=_TIMEOUT_S
         ) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read(65536).decode("utf-8"))
         latest = data.get("info", {}).get("version")
         return latest if isinstance(latest, str) and latest else None
     except Exception:  # noqa: BLE001 — fail open: an unreachable PyPI is not an error
@@ -151,6 +186,31 @@ def refresh(home: Path | None = None, *, force: bool = False) -> str | None:
     return cache.get("latest")
 
 
+_REFRESH_THREADS: list[threading.Thread] = []
+
+
+def _join_refresh_threads(timeout: float = 1.0) -> None:
+    """Join outstanding refresh threads within one shared wall-clock budget.
+
+    Without this, a bare ``daemon=True`` thread can be killed by the
+    interpreter mid DNS+TLS round trip and never write its cache. Mirrors
+    ``telemetry._join_sender_threads``. Never raises — shutdown must never
+    delay or break CLI exit.
+    """
+    try:
+        deadline = time.monotonic() + timeout
+        for thread in list(_REFRESH_THREADS):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(remaining)
+    except Exception:  # noqa: BLE001 — shutdown must never delay or break CLI exit
+        return
+
+
+atexit.register(_join_refresh_threads)
+
+
 def refresh_async(home: Path | None = None) -> None:
     """Kick a background refresh in a daemon thread. Never blocks or raises.
 
@@ -160,7 +220,9 @@ def refresh_async(home: Path | None = None) -> None:
         return
     if _cache_fresh(_read_cache(home), _now()):
         return
-    threading.Thread(target=lambda: refresh(home), daemon=True).start()
+    thread = threading.Thread(target=lambda: refresh(home), daemon=True)
+    _REFRESH_THREADS.append(thread)
+    thread.start()
 
 
 def pending_notice(home: Path | None = None) -> str | None:

@@ -216,6 +216,13 @@ def _telemetry_forced_off(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _update_check_forced_off(monkeypatch):
+    """The update check is on by default, so every test runs with the kill switch set; the
+    update-check tests that exercise it explicitly clear it."""
+    monkeypatch.setenv("DOBERMAN_UPDATE_CHECK", "off")
+
+
+@pytest.fixture(autouse=True)
 def _isolated_doberman_logger_state(monkeypatch):
     """Restore the shared ``doberman``/root loggers after every test.
 
