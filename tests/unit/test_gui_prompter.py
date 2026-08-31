@@ -473,6 +473,21 @@ def test_configure_window_sets_icon(monkeypatch):
     assert default is True
 
 
+def test_configure_window_continues_when_icon_load_fails(monkeypatch):
+    tkinter = pytest.importorskip("tkinter")
+
+    def _boom(*_a):
+        raise RuntimeError("Icon load failed")
+
+    monkeypatch.setattr(tkinter, "PhotoImage", _boom)
+
+    root = _FakeRoot()
+    gui_prompter._configure_window(root)
+
+    assert root.titles == [gui_prompter._TITLE]
+    assert root.iconphoto_calls == []
+
+
 class _FakeCanvas:
     """Records the Canvas display list (bottom → top) and mirrors Tk's ``tag_lower``."""
 

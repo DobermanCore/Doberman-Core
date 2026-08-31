@@ -158,7 +158,7 @@ def _configure_window(root: Any) -> None:
             icon = tk.PhotoImage(file=str(p))
             root.iconphoto(True, icon)
             root._icon_ref = icon
-    except Exception:   # noqa: S110 — cosmetic only; icon failure must not block the dialog
+    except Exception:  # noqa: S110 — cosmetic only; icon failure must not block the dialog
         pass
 
 
