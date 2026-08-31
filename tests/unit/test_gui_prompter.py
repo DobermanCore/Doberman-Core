@@ -566,6 +566,7 @@ class _FakeRoot:
         self.attrs: dict = {}
         self.config: dict = {}
         self.titles: list[str] = []
+        self.iconphoto_calls: list = []
         self.resizable_args: tuple | None = None
         self.protocols: dict = {}
         self.bindings: dict = {}
@@ -586,6 +587,9 @@ class _FakeRoot:
 
     def title(self, text):
         self.titles.append(text)
+
+    def iconphoto(self, default, image):
+        self.iconphoto_calls.append((default, image))
 
     def resizable(self, w, h):
         self.resizable_args = (w, h)
@@ -902,6 +906,19 @@ def real_root():
         pytest.skip("no display available")
     yield root
     root.destroy()
+
+
+def test_configure_window_sets_icon(monkeypatch):
+    tkimage = pytest.importorskip("tkinter")
+    monkeypatch.setattr(tkimage, "PhotoImage", lambda **_kw: _kw.get("file"))
+
+    root = _FakeRoot()
+    gui_prompter._configure_window(root)
+
+    assert len(root.iconphoto_calls) == 1
+
+    default, _ = root.iconphoto_calls[0]
+    assert default is True
 
 
 def _fake_focus_tracking(root, *widgets):
