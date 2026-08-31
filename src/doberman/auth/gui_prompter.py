@@ -152,13 +152,13 @@ def _configure_window(root: Any) -> None:
     _apply_dark_title_bar(root)
 
     try:
-        import tkinter as tk 
+        import tkinter as tk
 
         with _ir.as_file(_ir.files("doberman.auth").joinpath("_assets/doberman-mark.png")) as p:
             icon = tk.PhotoImage(file=str(p))
             root.iconphoto(True, icon)
             root._icon_ref = icon
-    except Exception:
+    except Exception:   # noqa: S110 — cosmetic only; icon failure must not block the dialog
         pass
 
 

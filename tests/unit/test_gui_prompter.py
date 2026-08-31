@@ -279,6 +279,7 @@ class _FakeRoot:
         self.geometries: list[str] = []
         self.close_on_mainloop = False
         self.scheduled: list[int] = []
+        self.iconphoto_calls: list = []
 
     def after(self, delay_ms, callback):  # noqa: ARG002 — the timeout never fires here
         # The dialog now schedules its own deny-on-silence bound; these tests
@@ -305,6 +306,9 @@ class _FakeRoot:
 
     def geometry(self, spec):
         self.geometries.append(spec)
+
+    def iconphoto(self, default, image):
+        self.iconphoto_calls.append((default, image))
 
     def update_idletasks(self):
         pass
@@ -454,6 +458,19 @@ def test_real_dialog_widgets_dark_theme_and_masked_entry(monkeypatch):
         assert root.cget("bg") == gui_prompter._BG
     finally:
         root.destroy()
+
+
+def test_configure_window_sets_icon(monkeypatch):
+    tkimage = pytest.importorskip("tkinter")
+    monkeypatch.setattr(tkimage, "PhotoImage", lambda **_kw: _kw.get("file"))
+
+    root = _FakeRoot()
+    gui_prompter._configure_window(root)
+
+    assert len(root.iconphoto_calls) == 1
+
+    default, _ = root.iconphoto_calls[0]
+    assert default is True
 
 
 class _FakeCanvas:
