@@ -439,6 +439,15 @@ def _configure_window(root: Any) -> None:
     root.attributes("-topmost", True)  # the dialog must pop OVER the agent's terminal
     _apply_dark_title_bar(root)
     try:
+        import tkinter as tk
+
+        with _ir.as_file(_ir.files("doberman.auth").joinpath("_assets/doberman-mark.png")) as p:
+            icon = tk.PhotoImage(file=str(p))
+            root.iconphoto(True, icon)
+            root._icon_ref = icon
+    except Exception:  # noqa: S110 — cosmetic only; icon failure must not block the dialog
+        pass
+    try:
         root.tk.call("tk", "scaling", _dpi_for_dialog_placement() / 72.0)
     except Exception:  # noqa: S110 — cosmetic only (and unavailable on a fake root in tests)
         pass
