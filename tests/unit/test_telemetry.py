@@ -351,7 +351,7 @@ def test_importing_cli_does_not_load_telemetry_hot_path_module():
         ],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=60,  # a cold interpreter + CLI import on a loaded Windows runner can exceed 10 s
         check=False,
     )
     assert result.returncode == 0, result.stderr

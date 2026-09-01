@@ -29,6 +29,17 @@ import pytest
 
 import tests.benchmarks.poisoning_runner as pr
 
+# These gates measure the model's shape, so they keep production-size trees; the
+# module-scoped eval fixture then lands on the first collected item, which needs
+# more than CI's default per-test timeout.
+pytestmark = [
+    pytest.mark.real_hst,
+    pytest.mark.timeout(1200),
+    # One xdist worker builds the module fixture once (--dist loadgroup); without
+    # the group every worker that draws an item from this module rebuilds it.
+    pytest.mark.xdist_group("real_hst"),
+]
+
 
 @pytest.fixture(scope="module")
 def report():

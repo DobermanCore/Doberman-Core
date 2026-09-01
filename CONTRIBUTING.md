@@ -32,12 +32,16 @@ ruff check .
 ruff format --check .
 python scripts/check_markdown_links.py
 lint-imports
-pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=80
+pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=90
 python -m tools.parity.generate_parity --check
 ```
 
-CI runs exactly these (on Linux 3.11–3.13 and Windows 3.12) plus a wheel smoke test and a
-full-history secret scan. The optional extras `explain` (Anthropic SDK) and `winhello`
+CI runs exactly these: the lint, boundary, link, and parity checks once on Linux; the
+test suite on Linux 3.11–3.13 and Windows 3.12 (coverage is measured on the Linux 3.12 leg;
+every test has a 5-minute timeout); a wheel smoke test on Linux and Windows; and a
+full-history secret scan. A nightly deep run adds Windows 3.11/3.13, macOS, Python 3.14,
+random test order, warnings-as-errors, production-size half-space trees, and a dependency
+vulnerability audit — a red nightly is a bug in the suite or a dependency, not a rerun. The optional extras `explain` (Anthropic SDK) and `winhello`
 (Windows Hello) are not installed in CI; their tests use fakes, so exercise the real thing
 locally when you touch them.
 
@@ -95,7 +99,7 @@ verification process. Before marking a pull request ready for review, run:
 ruff check .
 ruff format --check .
 lint-imports
-pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=80
+pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=90
 ```
 
 The Markdown check is intentionally offline: it validates repository-local Markdown files and

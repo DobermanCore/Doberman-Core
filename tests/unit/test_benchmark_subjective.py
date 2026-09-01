@@ -14,6 +14,17 @@ from tests.benchmarks.adapter import BenchmarkCase, CandidateAction
 from tests.benchmarks.mapping import to_security_object
 from tests.benchmarks.subjective_runner import HOLDOUT_EVERY, _prepared, run_subjective_eval
 
+# These gates measure the model's shape, so they keep production-size trees; the
+# module-scoped eval fixture then lands on the first collected item, which needs
+# more than CI's default per-test timeout.
+pytestmark = [
+    pytest.mark.real_hst,
+    pytest.mark.timeout(1200),
+    # One xdist worker builds the module fixture once (--dist loadgroup); without
+    # the group every worker that draws an item from this module rebuilds it.
+    pytest.mark.xdist_group("real_hst"),
+]
+
 # --- fixture ------------------------------------------------------------
 # A repetitive benign workflow (file_read of notes.txt, sometimes followed by
 # a second read for Markov transition coverage) plus a handful of

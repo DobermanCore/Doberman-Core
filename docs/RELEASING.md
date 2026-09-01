@@ -4,7 +4,7 @@ The checklist for cutting a release, kept in sync with `.github/workflows/publis
 
 ## Before tagging
 
-1. **Green `main`.** CI passes on `main`: `ruff check .`, `ruff format --check .`, the offline Markdown link check, `lint-imports`, `pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=80`, the parity `--check` step, and the secret scan.
+1. **Green `main`.** CI passes on `main`: `ruff check .`, `ruff format --check .`, the offline Markdown link check, `lint-imports`, `pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=90`, the parity `--check` step, and the secret scan.
 2. **Parity matrix current.** `python -m tools.parity.generate_parity --check` passes (CI enforces it). Every checkmark in [`PARITY.md`](PARITY.md) still resolves to a collected test.
 3. **Refresh the benchmark numbers.** Re-run the suites per [`BENCHMARKS.md`](BENCHMARKS.md) and update its Results tables in the release PR:
    - Synthetic (deterministic, from a cold clone): `python -m tests.benchmarks.run --suite synthetic --profile before_after`.

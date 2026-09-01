@@ -10,6 +10,7 @@ need to exercise key generation/rotation override this with their own
 
 import json as _json
 import logging
+import os
 from typing import Any
 
 import pytest
@@ -241,3 +242,48 @@ def _isolated_doberman_logger_state(monkeypatch):
     monkeypatch.setattr(root, "handlers", root.handlers[:])
     monkeypatch.setattr(doberman_logger, "handlers", doberman_logger.handlers[:])
     monkeypatch.setattr(doberman_logger, "propagate", doberman_logger.propagate)
+
+
+# --- half-space trees: fast by default, production-size on request -------------
+#
+# Production builds HST_TREES x 2**(HST_HEIGHT+1) nodes (25 x 65k = 1.6M) on the
+# first observation per entity, per process - the single largest cost in the
+# suite (seconds per test on every leg, ~15 s on a loaded Windows box), paid by
+# every test that reaches ``baseline.observe``. Tests use river's defaults instead
+# (10 x height 8: ~30 ms). Where the model's shape is the thing under test - the
+# benchmark and gate modules - ``pytestmark = pytest.mark.real_hst`` keeps the
+# production size; the nightly deep workflow sets ``DOBERMAN_TEST_REAL_HST=1`` to
+# run the whole suite at production size and guard this shortcut.
+#
+# Done as a setup HOOK, not a fixture: module-scoped fixtures (the poisoning
+# eval, the subjective benchmark) are built before any function-scoped fixture
+# runs, so a fixture could not reach them. ``tryfirst`` puts this before the
+# runner's own setup, i.e. before ANY fixture of the item.
+#
+# The per-entity model cache is process-global; clearing it around each test
+# keeps learned state from leaking between tests that reuse an entity id (an
+# xdist-ordering flake source otherwise).
+
+_HST_PRODUCTION = (25, 15)
+_HST_FAST = (10, 8)
+
+
+def _apply_hst_size(trees: int, height: int) -> None:
+    from doberman.subjective import baseline
+
+    baseline.reset_hst()
+    baseline.HST_TREES = trees
+    baseline.HST_HEIGHT = height
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    real = item.get_closest_marker("real_hst") is not None or bool(
+        os.environ.get("DOBERMAN_TEST_REAL_HST")
+    )
+    _apply_hst_size(*(_HST_PRODUCTION if real else _HST_FAST))
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_runtest_teardown(item: pytest.Item) -> None:
+    _apply_hst_size(*_HST_PRODUCTION)
