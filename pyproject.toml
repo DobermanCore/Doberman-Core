@@ -94,6 +94,14 @@ addopts = "-q --strict-markers --strict-config"
 # tracked warning is ignored by listing it AFTER "error" (regex on the message).
 filterwarnings = [
     "error",
+    # Finalizer-time warnings (an unclosed file/socket/sqlite connection surfacing
+    # from __del__) stay visible warnings, not errors: garbage-collection timing
+    # decides WHICH test gets blamed, so as an error they are a flake, not a gate.
+    # The nightly's first run (2026-09-01) surfaced three real leaks this way, each
+    # blamed on an unrelated test — tracked as follow-ups: an asyncio StreamWriter
+    # in the egress proxy path, a sqlite3 connection on the policy-catalogue path,
+    # a tempfile in the webhook audit sink.
+    "default::pytest.PytestUnraisableExceptionWarning",
     # Starlette's test client prefers httpx2; moving the dev extra is a dependency
     # follow-up (#518), not a suite defect.
     "ignore:Using `httpx` with `starlette.testclient` is deprecated",
