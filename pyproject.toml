@@ -88,6 +88,16 @@ include = [
 asyncio_mode = "auto"
 testpaths = ["tests", "tools"]   # tools/ holds rule-lab tooling + its co-located tests
 addopts = "-q --strict-markers --strict-config"
+# Every warning raised during collection or a test is an error — on every leg,
+# locally too. A deprecation lands as a red run with a traceback, not as a broken
+# install after the next dependency release. Later entries win, so a known,
+# tracked warning is ignored by listing it AFTER "error" (regex on the message).
+filterwarnings = [
+    "error",
+    # Starlette's test client prefers httpx2; moving the dev extra is a dependency
+    # follow-up (#518), not a suite defect.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 markers = [
     "guarantee(name, host): claims a parity-matrix cell; collected by tools/parity (docs/PARITY.md)",
     "real_hst: build the production-size half-space trees (25 × height 15) instead of the fast test default",
