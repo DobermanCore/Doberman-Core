@@ -45,12 +45,13 @@ def test_default_plugin_registry_has_no_enterprise_plugins():
 
 
 def test_default_auth_provider_is_local_with_no_enterprise():
-    # Slice 7.6 standalone guarantee: with no enterprise package installed, the
-    # auth-provider registry discovers nothing and the local provider is active.
+    # Slice 7.6 standalone guarantee: with no enterprise package installed AND
+    # no DOBERMAN_AUTH_PROVIDER opt-in, the auth-provider registry discovers
+    # nothing (an empty allowlist) and the local provider is active.
     from doberman.auth.provider import LocalAuthProvider, active_provider
     from doberman.engine.registry import discover_auth_providers
 
-    assert discover_auth_providers() == []
+    assert discover_auth_providers([]) == []
     assert isinstance(active_provider(), LocalAuthProvider)
 
 

@@ -66,3 +66,12 @@ Additional sinks register the same way, through the **`doberman.audit_sinks`** e
 sink and the built-in OpenTelemetry sink (config-gated via `.doberman/audit_otel.yaml`, see
 [the OTel guide](audit_otel.md)); a sink that isn't shaped like an `AuditSink` (no callable `emit`),
 or whose `emit` raises, is logged and skipped, and never affects the decision itself.
+
+## Auth providers
+
+Alternative backends (SSO/RBAC, hosted/push approvals) register through the **`doberman.auth_providers`**
+entry-point group. Unlike rules and sinks, a registered provider is **opt-in by name**: installing the
+package isn't enough — set `DOBERMAN_AUTH_PROVIDER=<entry-point name>` (comma-separated for more than
+one, in preference order) to activate it. Unset/empty, or no opted-in provider found, and the built-in
+local (CLI + TOTP) provider runs unchanged. Whichever plugin is active, `AuthTier.role_elevation` always
+*also* asks the local provider — a plugin can never grant elevated privileges on its own.

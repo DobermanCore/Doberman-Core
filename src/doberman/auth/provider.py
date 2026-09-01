@@ -6,18 +6,30 @@ live in separately-installed packages that register an :class:`AuthProvider`
 through the ``doberman.auth_providers`` entry-point group — so core never
 imports them by name (the repo-boundary rule).
 
+A registered provider is **opt-in by name**: it is only used when its
+entry-point name is listed in ``DOBERMAN_AUTH_PROVIDER`` (comma-separated).
+Installing a package is never enough on its own — otherwise any installed
+package could silently become the sole authenticator. A chosen provider is
+wrapped in :class:`CoGatedProvider`, which additionally requires the built-in
+local provider's consent for :attr:`~doberman.auth.challenge.AuthTier.role_elevation`,
+so a compromised or malicious plugin can never grant itself elevated privileges
+alone.
+
 SECURITY: a provider can only **grant or deny**. It cannot change the decision's
 verdict or the required :class:`~doberman.auth.challenge.AuthTier`, and it
 receives only the already-final :class:`~doberman.models.Decision` plus the
 redacted action. If a provider raises, times out, or returns a non-approval, the
-action is **denied** (fail closed). With nothing registered, the local provider
-runs and behavior is identical to core-only.
+action is **denied** (fail closed). With the env var unset/empty, or no
+opted-in provider found, the local provider runs and behavior is identical to
+core-only.
 
 This module imports the F3 entry-point registry for discovery but never imports
 ``doberman.proxy``.
 """
 
 import logging
+import os
+import re
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
@@ -28,6 +40,14 @@ from doberman.explain import _describe_reason
 from doberman.models import ActionType, Decision, SecurityObject
 
 logger = logging.getLogger("doberman.auth.provider")
+
+#: Comma-separated ``doberman.auth_providers`` entry-point names to trust, in
+#: preference order. Unset/empty means no plugin is opted in — see
+#: :func:`active_provider`.
+AUTH_PROVIDER_ENV = "DOBERMAN_AUTH_PROVIDER"
+
+#: A safe entry-point-name shape (mirrors typical Python entry-point names).
+_PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
 @runtime_checkable
@@ -215,19 +235,109 @@ def _looks_like_auth_provider(obj: object) -> bool:
     return callable(getattr(obj, "authenticate", None))
 
 
-def active_provider() -> AuthProvider:
-    """Return the active provider: the first registered one, else local.
+def _allowed_provider_names() -> list[str]:
+    """Parse ``DOBERMAN_AUTH_PROVIDER`` into an ordered, deduplicated allowlist.
 
-    Discovery uses the F3 entry-point registry (group
-    ``doberman.auth_providers``); a registered provider that is not
-    auth-provider-shaped is skipped. With nothing installed, returns the local
-    provider — standalone behavior is unchanged.
+    Unset/empty -> ``[]``. Each comma-separated token is stripped; empty
+    tokens are dropped; a token that doesn't match a safe entry-point-name
+    shape is rejected with a warning (never raised) rather than handed to
+    discovery.
     """
+    raw = os.environ.get(AUTH_PROVIDER_ENV, "")
+    names: list[str] = []
+    seen: set[str] = set()
+    for token in raw.split(","):
+        name = token.strip()
+        if not name:
+            continue
+        if not _PROVIDER_NAME_RE.match(name):
+            logger.warning("ignoring malformed %s entry: %r", AUTH_PROVIDER_ENV, name)
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+class CoGatedProvider:
+    """Wraps an opted-in plugin provider; adds a local co-gate for role elevation.
+
+    A registered plugin can grant/deny any tier on its own EXCEPT
+    ``AuthTier.role_elevation``: for that tier it must additionally win consent
+    from the built-in :data:`LOCAL_PROVIDER`, so a compromised or malicious
+    plugin can never grant itself elevated privileges alone. Never raises: a
+    wrapped provider's exception, a non-approval, or a mismatched action id is
+    turned into a denial (fail closed).
+    """
+
+    def __init__(self, inner: AuthProvider) -> None:
+        self.inner = inner
+
+    def authenticate(
+        self,
+        decision: Decision,
+        action: SecurityObject,
+        tier: AuthTier,
+        *,
+        prompter: Prompter | None = None,
+        at: datetime | None = None,
+        message_tone: str = "human",
+    ) -> AuthResult:
+        when = at or datetime.now(timezone.utc)
+        try:
+            result = self.inner.authenticate(
+                decision, action, tier, prompter=prompter, at=at, message_tone=message_tone
+            )
+        except Exception:  # noqa: BLE001 — a plugin error must not crash the auth path
+            logger.warning("auth provider %r raised; denying", type(self.inner).__name__)
+            return AuthResult(
+                approved=False, tier=tier, method="error", at=when, action_id=action.id
+            )
+
+        if not result.approved or result.action_id != action.id:
+            return AuthResult(
+                approved=False, tier=tier, method=result.method, at=when, action_id=action.id
+            )
+
+        if tier is AuthTier.role_elevation:
+            local_result = LOCAL_PROVIDER.authenticate(
+                decision, action, tier, prompter=prompter, at=at, message_tone=message_tone
+            )
+            return AuthResult(
+                approved=local_result.approved,
+                tier=tier,
+                method=f"{result.method}+local",
+                at=when,
+                action_id=action.id,
+            )
+
+        return result
+
+
+def active_provider() -> AuthProvider:
+    """Return the active provider: an opted-in plugin (co-gated), else local.
+
+    A registered ``doberman.auth_providers`` plugin is used only if its name is
+    listed in ``DOBERMAN_AUTH_PROVIDER`` — installing the package is never
+    enough on its own. The chosen plugin is wrapped in :class:`CoGatedProvider`,
+    which requires the local provider's additional consent for
+    ``AuthTier.role_elevation``. Unset/empty env var, or no opted-in provider
+    found, returns the local provider unchanged (fail closed).
+    """
+    names = _allowed_provider_names()
+    if not names:
+        return LOCAL_PROVIDER
+
     # Lazy import: the registry lives in the engine layer.
     from doberman.engine.registry import discover_auth_providers
 
-    for candidate in discover_auth_providers():
+    for candidate in discover_auth_providers(names):
         if _looks_like_auth_provider(candidate):
-            return candidate  # type: ignore[return-value]
+            return CoGatedProvider(candidate)  # type: ignore[arg-type]
         logger.warning("skipping auth provider %r: not auth-provider-shaped", candidate)
+
+    logger.warning(
+        "no opted-in auth provider found for %s=%r; using local", AUTH_PROVIDER_ENV, names
+    )
     return LOCAL_PROVIDER
