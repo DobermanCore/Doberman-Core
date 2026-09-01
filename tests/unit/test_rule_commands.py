@@ -16,9 +16,11 @@ from doberman.models import (
     ActionType,
     EvalContext,
     ReasonCode,
+    Risk,
     SecurityObject,
     Verdict,
 )
+from doberman.proxy.normalize import normalize
 
 RULE = DestructiveCommandRule()
 
@@ -336,3 +338,57 @@ def test_env_with_only_assignment_and_no_command_is_still_a_dump():
 def test_environment_dump_explanation_never_echoes_command_text():
     result = _cmd("env")
     assert "env" not in result.explanation.lower().split()
+
+
+def test_package_install_action_with_command_payload_blocks():
+    # package_install is a command-bearing action type per the proxy's own
+    # normalize.py (_COMMAND_EGRESS_ACTIONS) — its raw command must be
+    # classified the same as shell_exec, not silently abstained on.
+    result = _cmd("rm -rf /", action_type=ActionType.package_install)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+def test_other_action_type_with_command_shaped_payload_blocks():
+    # ANY action type carrying a command-shaped raw_arguments payload must be
+    # scanned — classification is by payload shape, not by the tool label.
+    action = SecurityObject(
+        id="x",
+        ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
+        agent_role="unknown",
+        action_type=ActionType.other,
+        tool_name="helper",
+    )
+    ctx = EvalContext(metadata={"raw_arguments": {"command": "rm -rf ~"}})
+    result = RULE.evaluate(action, ctx)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+def test_file_write_target_without_raw_command_still_abstains():
+    # The action.target fallback stays limited to command action types: a
+    # file_write target is a file path, not a command line, even one that
+    # happens to look destructive.
+    action = SecurityObject(
+        id="x",
+        ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
+        agent_role="unknown",
+        action_type=ActionType.file_write,
+        tool_name="fs_write",
+        target="rm -rf /",
+    )
+    result = RULE.evaluate(action, EvalContext())
+    assert result.verdict is Verdict.PASS
+    assert result.risk is Risk.low
+
+
+def test_normalized_package_install_command_blocks_end_to_end(tmp_path):
+    obj = normalize("install_helper", {"command": "rm -rf /"}, {"repo_root": str(tmp_path)})
+    assert obj.action_type is ActionType.package_install
+
+    ctx = EvalContext(
+        metadata={"raw_arguments": {"command": "rm -rf /"}, "repo_root": str(tmp_path)}
+    )
+    result = RULE.evaluate(obj, ctx)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
