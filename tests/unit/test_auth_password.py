@@ -1,5 +1,6 @@
 """C1 slice 2 — local password possession-factor enrollment and verification."""
 
+import hashlib
 import os
 import stat
 
@@ -44,6 +45,104 @@ def test_rate_limited_after_five_consecutive_failures():
     assert password.verify(_PASSWORD) is False
     password.reset_attempts()
     assert password.verify(_PASSWORD) is True
+
+
+def test_lockout_persists_to_disk(isolated_password_hash):
+    """No in-memory counter left: the lockout survives on the lockout file
+    alone, and the module carries no ``_failures`` dict any more."""
+    assert not hasattr(password, "_failures")
+
+    password.enroll(_PASSWORD)
+    for _ in range(5):
+        assert password.verify("this is the wrong password") is False
+
+    lockout_path = isolated_password_hash.with_name(isolated_password_hash.name + ".lockout")
+    assert lockout_path.exists()
+    assert password.verify(_PASSWORD) is False
+
+
+def test_cooldown_elapsed_allows_retry_and_clears_the_file(monkeypatch, isolated_password_hash):
+    t0 = 1_700_000_000
+    monkeypatch.setattr(password, "_now", lambda: t0)
+    password.enroll(_PASSWORD)
+    for _ in range(5):
+        assert password.verify("this is the wrong password") is False
+
+    lockout_path = isolated_password_hash.with_name(isolated_password_hash.name + ".lockout")
+    assert lockout_path.exists()
+
+    monkeypatch.setattr(password, "_now", lambda: t0 + 15 * 60 + 1)
+    assert password.verify(_PASSWORD) is True
+    assert not lockout_path.exists()
+
+
+def test_denied_attempt_during_lockout_does_not_extend_it_or_run_the_kdf(
+    monkeypatch, isolated_password_hash
+):
+    t0 = 1_700_000_000
+    monkeypatch.setattr(password, "_now", lambda: t0)
+    password.enroll(_PASSWORD)
+    for _ in range(5):
+        assert password.verify("this is the wrong password") is False
+
+    lockout_path = isolated_password_hash.with_name(isolated_password_hash.name + ".lockout")
+    before = lockout_path.read_text(encoding="utf-8")
+
+    calls: list[int] = []
+    real_pbkdf2_hmac = hashlib.pbkdf2_hmac
+
+    def _counting(*args, **kwargs):
+        calls.append(1)
+        return real_pbkdf2_hmac(*args, **kwargs)
+
+    monkeypatch.setattr(hashlib, "pbkdf2_hmac", _counting)
+    monkeypatch.setattr(password, "_now", lambda: t0 + 60)  # still within the cooldown
+
+    assert password.verify(_PASSWORD) is False  # correct password, still denied
+    assert calls == []  # the KDF never ran while locked out
+    after = lockout_path.read_text(encoding="utf-8")
+    assert before == after  # no rewrite: the window did not move
+
+
+def test_reset_attempts_clears_the_lockout_file(isolated_password_hash):
+    lockout_path = isolated_password_hash.with_name(isolated_password_hash.name + ".lockout")
+
+    password.enroll(_PASSWORD)
+    for _ in range(5):
+        assert password.verify("this is the wrong password") is False
+    assert lockout_path.exists()
+
+    password.reset_attempts()
+    assert not lockout_path.exists()
+    assert password.verify(_PASSWORD) is True
+
+
+def test_forced_enroll_clears_the_lockout_file(monkeypatch, isolated_password_hash):
+    lockout_path = isolated_password_hash.with_name(isolated_password_hash.name + ".lockout")
+    t0 = 1_700_000_000
+    monkeypatch.setattr(password, "_now", lambda: t0)
+    password.enroll(_PASSWORD)
+    for _ in range(4):  # stay under the lockout threshold so the rotation proof below verifies
+        assert password.verify("this is the wrong password") is False
+    assert lockout_path.exists()
+
+    password.enroll(_ROTATED_PASSWORD, force=True, current_password=_PASSWORD)
+    assert not lockout_path.exists()
+    assert password.verify(_ROTATED_PASSWORD) is True
+
+
+def test_corrupt_lockout_file_fails_closed_then_recovers(monkeypatch, isolated_password_hash):
+    t0 = 1_700_000_000
+    password.enroll(_PASSWORD)
+    lockout_path = isolated_password_hash.with_name(isolated_password_hash.name + ".lockout")
+    lockout_path.parent.mkdir(parents=True, exist_ok=True)
+    lockout_path.write_text("not json{{{", encoding="utf-8")
+
+    monkeypatch.setattr(password, "_now", lambda: t0)
+    assert password.verify(_PASSWORD) is False  # corrupt -> treated as locked now
+
+    monkeypatch.setattr(password, "_now", lambda: t0 + 15 * 60 + 1)
+    assert password.verify(_PASSWORD) is True  # bounded: recovers after the cooldown
 
 
 def test_enroll_refuses_overwrite_without_force(isolated_password_hash):
