@@ -5,6 +5,7 @@ returns an error (or, from Feature 2 on, a BLOCK), the fake server must have
 recorded nothing — the call never reached a tool.
 """
 
+import asyncio
 from typing import Any
 
 from mcp.server.lowlevel import Server
@@ -93,6 +94,9 @@ class FakeToolServer:
         # When True the server errors on every call BEFORE recording —
         # simulates the downstream dying/failing mid-session.
         self.fail_mode = False
+        # Concurrency tests: yield the event loop once before recording, so two
+        # racing calls can both be in flight downstream at the same time.
+        self.yield_before_call = False
 
     def build(self) -> Server:
         server: Server = Server(FAKE_SERVER_NAME)
@@ -103,6 +107,8 @@ class FakeToolServer:
 
         @server.call_tool()
         async def _call_tool(tool_name: str, arguments: dict[str, Any]) -> list[TextContent]:
+            if self.yield_before_call:
+                await asyncio.sleep(0)
             if self.fail_mode:
                 raise RuntimeError("downstream failure (simulated)")
             if tool_name not in KNOWN_TOOL_NAMES:

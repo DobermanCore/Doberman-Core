@@ -9,9 +9,9 @@ from doberman.auth.elevation import (
 )
 from doberman.storage.db import (
     active_elevations,
+    claim_single_use,
     db_path,
     grant_elevation,
-    mark_used,
     revoke_elevation,
 )
 
@@ -129,12 +129,27 @@ async def test_revoke_makes_inactive(tmp_path):
     assert await revoke_elevation(root, "nope") is False
 
 
-async def test_single_use_consumed_by_mark_used(tmp_path):
+async def test_single_use_claimed_once_then_denied(tmp_path):
     root = str(tmp_path)
     grant = await grant_elevation(root, "backend/api.ts", "t", now=_NOW, single_use=True)
     assert len(await active_elevations(root, _NOW)) == 1
-    await mark_used(root, grant.id)
+    assert await claim_single_use(root, grant.id) is True
     assert await active_elevations(root, _NOW) == []
+    # A second claim of the same (now-spent) grant must not re-claim it.
+    assert await claim_single_use(root, grant.id) is False
+
+
+async def test_claim_single_use_denies_a_revoked_grant(tmp_path):
+    root = str(tmp_path)
+    grant = await grant_elevation(root, "backend/api.ts", "t", now=_NOW, single_use=True)
+    assert await revoke_elevation(root, grant.id) is True
+    assert await claim_single_use(root, grant.id) is False
+
+
+async def test_claim_single_use_denies_an_unknown_id(tmp_path):
+    root = str(tmp_path)
+    await grant_elevation(root, "backend/api.ts", "t", now=_NOW, single_use=True)
+    assert await claim_single_use(root, "no-such-id") is False
 
 
 async def test_active_short_circuits_without_a_db(tmp_path):

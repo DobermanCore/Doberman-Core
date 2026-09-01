@@ -337,6 +337,12 @@ class ReasonCode(StrEnum):
     # post-result.
     artifact_digest_mismatch = "artifact_digest_mismatch"
 
+    # F7.4 hardening — a covering single-use elevation was already spent by a
+    # concurrent call, or the atomic claim itself failed (storage error): the
+    # forward is denied rather than risk two concurrent calls both releasing
+    # on the one grant.
+    single_use_elevation_unclaimable = "single_use_elevation_unclaimable"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).

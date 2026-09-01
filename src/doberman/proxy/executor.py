@@ -63,7 +63,7 @@ from doberman.policy.drift import acted_verdict, effective_enforcement
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
 from doberman.storage import tool_pins
-from doberman.storage.db import active_elevations, grant_elevation, mark_used
+from doberman.storage.db import active_elevations, claim_single_use, grant_elevation
 from doberman.storage.log import recent_session_decisions, record_decision
 from doberman.subjective.baseline import (
     budget_allows_step_up,
@@ -625,24 +625,43 @@ async def _verify_artifact_digest(
     )
 
 
-async def _consume_single_use(action: SecurityObject, grants: tuple, now: datetime) -> None:
-    """Mark a single-use elevation spent after it released a forward (best-effort).
+async def _claim_single_use(action: SecurityObject, grants: tuple) -> bool:
+    """Atomically claim any single-use elevation covering this action, BEFORE it forwards.
 
-    Wrapped so a failure here can never turn an already-successful forward into
-    an error result. On failure the grant may remain active until its TTL
-    expires; that residual is surfaced via a warning rather than crashing the
-    response for an action that has already, legitimately, been forwarded.
+    True when there's nothing to claim (no cover, or the cover isn't single-use)
+    or the claim succeeded — the caller may forward. False when a covering
+    single-use grant was already spent/revoked, or the claim itself raised: the
+    caller must deny instead, so two concurrent calls covered by the same grant
+    can never both release.
     """
     try:
         grant = find_cover(action.target, grants, root=REPO_ROOT)
-        if grant is not None and grant.single_use:
-            await mark_used(REPO_ROOT, grant.id)
-    except Exception:  # noqa: BLE001 — must never break an already-successful forward
-        _engine_logger.warning(
-            "single-use elevation consumption failed (action %s); grant may remain active "
-            "until its TTL expires",
-            action.id,
-        )
+        if grant is None or not grant.single_use:
+            return True
+        return await claim_single_use(REPO_ROOT, grant.id)
+    except Exception:  # noqa: BLE001 — a broken claim must fail closed, not release
+        _engine_logger.warning("single-use elevation claim raised (action %s); denying", action.id)
+        return False
+
+
+def _single_use_unclaimable_decision(action: SecurityObject) -> Decision:
+    """A synthetic BLOCK for a PASS whose covering single-use elevation couldn't be claimed."""
+    blocked = GuardrailResult(
+        verdict=Verdict.BLOCK,
+        risk=Risk.high,
+        reason_codes=[ReasonCode.single_use_elevation_unclaimable],
+        explanation="Covering single-use elevation was already spent or could not be claimed.",
+    )
+    return Decision(
+        action_id=action.id,
+        final_verdict=Verdict.BLOCK,
+        final_risk=Risk.high,
+        objective=blocked,
+        subjective=None,
+        reason_codes=list(blocked.reason_codes),
+        explanation=blocked.explanation,
+        decided_at=datetime.now(timezone.utc),
+    )
 
 
 async def _persist(
@@ -747,16 +766,20 @@ async def _handle_auth(
         await _persist(redecision, action, auth_result=auth_result.method, eid=eid)
         return _verdict_result(redecision)
 
+    if not await _claim_single_use(action, grants):
+        _engine_logger.warning(
+            "single-use elevation already spent or unclaimable (action %s); denying", action.id
+        )
+        await _persist(decision, action, auth_result="denied", elevation_id=elevation_id, eid=eid)
+        return _verdict_result(decision)
     result = await _forward(downstream, tool_name, arguments, action)
     # The output-secret gate runs on EVERY result — success OR error (CRIT-2): a
     # secret rides an error payload to the model just as easily as a clean one.
-    # Record output taint and spend a single-use grant BEFORE the gate, on error
-    # results too: (a) a gated secret still taints the session for the next call's
-    # cross-call exfil check, and (b) spending tracks EXECUTION, not a clean
-    # result — a secret-bearing OR errored output can't leave the grant unspent
-    # to release a second execution.
+    # The single-use grant is claimed atomically ABOVE, before the forward, so
+    # it is spent whether this result errors or not (matching EXECUTION, not a
+    # clean result) and two concurrent calls covered by one grant can't both
+    # release.
     await _record_result_taint(result)
-    await _consume_single_use(action, grants, now)
     gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
     if gate is not None:
         # Output-scan parity (parity-1): a secret in the RESULT must not reach
@@ -864,19 +887,24 @@ async def decide_and_execute(
             downstream, tool_name, arguments, action, decision, now, score, eid
         )
 
-    # PASS — real, or a discretionary verdict softened by monitor/off — forward,
-    # then consume any single-use elevation that released it.
+    # PASS — real, or a discretionary verdict softened by monitor/off — claim
+    # any single-use elevation that covers it BEFORE forwarding, then forward.
     softened = decision.final_verdict is not Verdict.PASS
+    if not await _claim_single_use(action, grants):
+        _engine_logger.warning(
+            "single-use elevation already spent or unclaimable (action %s); denying", action.id
+        )
+        denial = _single_use_unclaimable_decision(action)
+        await _persist(denial, action, auth_result="blocked", eid=eid)
+        return _verdict_result(denial)
     result = await _forward(downstream, tool_name, arguments, action)
     # The output-secret gate runs on EVERY result — success OR error (CRIT-2): a
     # secret rides an error payload to the model just as easily as a clean one.
-    # Record output taint and spend a single-use grant BEFORE the gate, on error
-    # results too: (a) a gated secret still taints the session for the next call's
-    # cross-call exfil check, and (b) spending tracks EXECUTION, not a clean
-    # result — a secret-bearing OR errored output can't leave the grant unspent
-    # to release a second execution.
+    # The single-use grant is claimed atomically ABOVE, before the forward, so
+    # it is spent whether this result errors or not (matching EXECUTION, not a
+    # clean result) and two concurrent calls covered by one grant can't both
+    # release.
     await _record_result_taint(result)
-    await _consume_single_use(action, grants, now)
     gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
     if gate is not None:
         # Output-scan parity (parity-1): a secret in the RESULT must not reach
