@@ -66,7 +66,7 @@ jobs:
         env:
           DOBERMAN_TEST_REAL_HST: "1"
         run: >
-          pytest -n auto -p randomly --timeout=900 --durations=40 --durations-min=5.0
+          pytest -n auto --dist loadgroup -p randomly --timeout=900 --durations=40 --durations-min=5.0
           -W error
           -W "ignore:Using .httpx. with .starlette.testclient.*"
 

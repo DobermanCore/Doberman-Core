@@ -24,7 +24,13 @@ from tests.benchmarks.suites.agentdojo import AgentDojoAdapter  # noqa: E402
 # These gates measure the model's shape, so they keep production-size trees; the
 # module-scoped eval fixture then lands on the first collected item, which needs
 # more than CI's default per-test timeout.
-pytestmark = [pytest.mark.real_hst, pytest.mark.timeout(1200)]
+pytestmark = [
+    pytest.mark.real_hst,
+    pytest.mark.timeout(1200),
+    # One xdist worker builds the module fixture once (--dist loadgroup); without
+    # the group every worker that draws an item from this module rebuilds it.
+    pytest.mark.xdist_group("real_hst"),
+]
 
 
 def test_subjective_eval_reports_all_suites_and_both_arms():

@@ -90,7 +90,7 @@ jobs:
       # visible in the log before it becomes a timeout.
       - name: Test suite
         run: >
-          pytest -n auto --timeout=300 --durations=25 --durations-min=2.0
+          pytest -n auto --dist loadgroup --timeout=300 --durations=25 --durations-min=2.0
           ${{ matrix.coverage && '--cov=doberman --cov-report=term-missing --cov-fail-under=90' || '' }}
   package-smoke-test:
     name: package-smoke-test (${{ matrix.os }})

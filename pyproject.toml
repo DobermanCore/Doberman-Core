@@ -92,6 +92,7 @@ markers = [
     "guarantee(name, host): claims a parity-matrix cell; collected by tools/parity (docs/PARITY.md)",
     "real_hst: build the production-size half-space trees (25 × height 15) instead of the fast test default",
     "timeout(seconds): per-item ceiling honoured by pytest-timeout (CI passes --timeout); registered here so --strict-markers accepts it without the plugin",
+    "xdist_group(name): pytest-xdist scheduling group (CI passes --dist loadgroup); registered here so --strict-markers accepts it without the plugin",
 ]
 
 [tool.coverage.run]
