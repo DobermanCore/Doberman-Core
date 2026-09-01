@@ -14,7 +14,10 @@ from tests.benchmarks.adapter import BenchmarkCase, CandidateAction
 from tests.benchmarks.mapping import to_security_object
 from tests.benchmarks.subjective_runner import HOLDOUT_EVERY, _prepared, run_subjective_eval
 
-pytestmark = pytest.mark.real_hst  # these gates measure the model's shape: production-size trees
+# These gates measure the model's shape, so they keep production-size trees; the
+# module-scoped eval fixture then lands on the first collected item, which needs
+# more than CI's default per-test timeout.
+pytestmark = [pytest.mark.real_hst, pytest.mark.timeout(1200)]
 
 # --- fixture ------------------------------------------------------------
 # A repetitive benign workflow (file_read of notes.txt, sometimes followed by

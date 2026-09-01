@@ -51,11 +51,13 @@ jobs:
       matrix:
         os: ["ubuntu-latest"]
         python-version: ["3.11", "3.12", "3.13"]
-        coverage: [false]
         include:
           # Coverage is measured on ONE leg. Branch-coverage tracing costs ~25% of
           # the suite's wall-clock (measured 2026-08-03, ADR 0055) and the number
           # is identical on every leg, so paying it four times bought nothing.
+          # `coverage` is deliberately NOT a base matrix key: an include entry that
+          # only ADDS a key merges into the existing ubuntu/3.12 combination, while
+          # one that overrides a base key would create a fifth, duplicate leg.
           - os: "ubuntu-latest"
             python-version: "3.12"
             coverage: true
@@ -66,7 +68,6 @@ jobs:
           # (The nightly deep workflow adds Windows 3.11/3.13 and macOS.)
           - os: "windows-latest"
             python-version: "3.12"
-            coverage: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -82,7 +83,9 @@ jobs:
           fi
           echo "ok: core has no enterprise dependency"
       # --timeout: a single stuck test dies in 5 min with a traceback naming it,
-      # instead of taking the whole leg to the job timeout with no diagnosis.
+      # instead of taking the whole leg to the job timeout with no diagnosis. The
+      # production-size gate modules carry their own `timeout` marker (see their
+      # `pytestmark`) because their module-scoped eval fixture lands on one item.
       # --durations: every run reports its slowest tests, so a creeping suite is
       # visible in the log before it becomes a timeout.
       - name: Test suite
