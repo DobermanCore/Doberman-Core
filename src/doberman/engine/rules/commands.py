@@ -85,6 +85,12 @@ _DOBERMAN_CONTROL_SUBCOMMANDS = {
 #: command steps up to AUTH. Overridable (F6 wires this from policy/mode).
 DEFAULT_BULK_THRESHOLD = 25
 
+#: Action types the proxy itself labels as command-bearing (normalize.py's
+#: ``_COMMAND_EGRESS_ACTIONS``) — these get the ``action.target`` fallback too.
+_COMMAND_ACTION_TYPES = frozenset(
+    {ActionType.shell_exec, ActionType.git_op, ActionType.package_install}
+)
+
 #: Branch names whose history is protected — a force-push here is catastrophic.
 DEFAULT_PROTECTED_BRANCHES: tuple[str, ...] = ("main", "master", "release", "develop")
 
@@ -823,8 +829,8 @@ def _auth(reason: ReasonCode, explanation: str) -> GuardrailResult:
     )
 
 
-def _command_text(action: SecurityObject, ctx: EvalContext) -> str | None:
-    """Extract the raw command string (from un-redacted context, else target)."""
+def _raw_command_payload(ctx: EvalContext) -> str | None:
+    """Extract a command-shaped string from the un-redacted raw arguments, if any."""
     raw_arguments = ctx.metadata.get("raw_arguments") if isinstance(ctx.metadata, dict) else None
     if isinstance(raw_arguments, dict):
         for key in ("command", "cmd", "script", "args"):
@@ -833,6 +839,14 @@ def _command_text(action: SecurityObject, ctx: EvalContext) -> str | None:
                 return value
             if isinstance(value, (list, tuple)) and value:
                 return " ".join(str(v) for v in value)
+    return None
+
+
+def _command_text(action: SecurityObject, ctx: EvalContext) -> str | None:
+    """Extract the raw command string (from un-redacted context, else target)."""
+    payload = _raw_command_payload(ctx)
+    if payload is not None:
+        return payload
     if action.target:
         return action.target
     return None
@@ -852,11 +866,15 @@ class DestructiveCommandRule:
         self._bulk_threshold_override = bulk_threshold
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
-        # Only relevant to shell/git actions. A non-command action abstains.
-        if action.action_type not in (ActionType.shell_exec, ActionType.git_op):
-            return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
-
-        command = _command_text(action, ctx)
+        # Classify by payload shape, not by the tool's declared action type: a
+        # command-bearing action type (shell_exec/git_op/package_install) also
+        # gets the action.target fallback, but ANY action type carrying a
+        # command-shaped raw_arguments payload (command/cmd/script/args) must
+        # still be scanned — a tool label is not a safety boundary.
+        if action.action_type in _COMMAND_ACTION_TYPES:
+            command = _command_text(action, ctx)
+        else:
+            command = _raw_command_payload(ctx)
         if not command or not command.strip():
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
