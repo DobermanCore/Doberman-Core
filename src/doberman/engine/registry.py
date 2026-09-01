@@ -23,7 +23,7 @@ SECURITY:
 """
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from functools import lru_cache
 from importlib.metadata import EntryPoint, entry_points
 
@@ -211,22 +211,33 @@ def discover_policy_sources() -> list[object]:
     return sources
 
 
-def discover_auth_providers() -> list[object]:
-    """Discover registered auth providers (Feature 7.6, group ``doberman.auth_providers``).
+def discover_auth_providers(allowed: Collection[str]) -> list[object]:
+    """Discover OPTED-IN auth providers (Feature 7.6, group ``doberman.auth_providers``).
 
-    Loaded defensively like rules/sources: an import/constructor failure, or an
-    object that is not auth-provider-shaped (no callable ``authenticate``), is
-    logged and skipped. Returns ``[]`` when nothing is installed — the auth
-    layer then falls back to the built-in local provider. Core never imports a
-    provider by name.
+    Opt-in only: an entry point is loaded (imported and constructed) only if its
+    ``.name`` is in ``allowed`` — a package merely being installed is never
+    enough to make it an authenticator. Non-allowed entry points are skipped
+    before any import/construction happens, so an unlisted package's code never
+    runs. Allowed candidates are still loaded defensively like rules/sources: an
+    import/constructor failure, or an object that is not auth-provider-shaped
+    (no callable ``authenticate``), is logged and skipped. ``allowed`` empty
+    returns ``[]`` without iterating entry points at all — the auth layer then
+    falls back to the built-in local provider. Core never imports a provider by
+    name.
     """
+    if not allowed:
+        return []
+
     # Local import avoids an engine<->auth import cycle at module load.
     from doberman.auth.provider import _looks_like_auth_provider
 
     providers: list[object] = []
     seen: set[str] = set()
     for entry_point in _iter_entry_points(AUTH_PROVIDER_GROUP):
-        key = f"{AUTH_PROVIDER_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
+        name = getattr(entry_point, "name", None)
+        if name not in allowed:
+            continue
+        key = f"{AUTH_PROVIDER_GROUP}:{name if name is not None else id(entry_point)}"
         if key in seen:
             continue
         seen.add(key)
