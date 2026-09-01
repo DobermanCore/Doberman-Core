@@ -1,5 +1,6 @@
 """Slice 7.5 — actions are released only after a successful, bound auth."""
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -7,6 +8,7 @@ from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.engine.decision_engine import StaticGuardrail
 from doberman.models import GuardrailResult, ReasonCode, Risk, Verdict
 from doberman.proxy import executor
+from doberman.storage.db import grant_elevation
 
 from .test_proxy_passthrough import proxied_session
 
@@ -245,10 +247,10 @@ async def test_auth_challenge_raising_fails_closed_and_sanitized(monkeypatch):
         assert fake.calls == []
 
 
-async def test_mark_used_failure_does_not_corrupt_successful_forward(
+async def test_unclaimable_single_use_denies_before_forward(
     monkeypatch, isolated_executor_repo_root, caplog
 ):
-    """A `mark_used` crash after a successful forward must not turn it into an error."""
+    """A `claim_single_use` crash must deny BEFORE forwarding, never after."""
     _write_role(isolated_executor_repo_root)
 
     def approve_elev(
@@ -269,17 +271,43 @@ async def test_mark_used_failure_does_not_corrupt_successful_forward(
             action_id=action.id,
         )
 
-    def boom_mark_used(repo_root, elevation_id):
+    def boom_claim_single_use(repo_root, elevation_id):
         raise RuntimeError("db exploded")
 
     monkeypatch.setattr(executor, "run_auth_challenge", approve_elev)
-    monkeypatch.setattr(executor, "mark_used", boom_mark_used)
+    monkeypatch.setattr(executor, "claim_single_use", boom_claim_single_use)
     with caplog.at_level(logging.WARNING, logger="doberman.proxy.engine"):
         async with proxied_session() as (fake, agent):
             result = await agent.call_tool("fs_delete", {"path": "backend/api.ts"})
-    # The downstream delete already succeeded — a broken mark_used must not
-    # turn that real success into an isError result.
-    assert not result.isError
+    # The claim raises BEFORE the forward — the downstream must never see it.
+    assert result.isError
+    assert fake.calls == []
+    assert any("single-use elevation claim raised" in r.message for r in caplog.records)
+    assert any(
+        "single-use elevation already spent or unclaimable" in r.message for r in caplog.records
+    )
+
+
+async def test_concurrent_calls_share_one_single_use_elevation_only_once(
+    isolated_executor_repo_root,
+):
+    """Two concurrent calls covered by ONE single-use grant must release only once.
+
+    Regression for the pre-atomic-claim race: the grant used to be spent AFTER
+    the forward with an unconditional update, so two racing calls could both
+    forward before either marked it used.
+    """
+    _write_role(isolated_executor_repo_root)
+    root = str(isolated_executor_repo_root)
+    await grant_elevation(
+        root, "backend/api.ts", "t", now=datetime.now(timezone.utc), single_use=True
+    )
+
+    async with proxied_session() as (fake, agent):
+        fake.yield_before_call = True  # both calls are in flight downstream together
+        results = await asyncio.gather(
+            agent.call_tool("fs_delete", {"path": "backend/api.ts"}),
+            agent.call_tool("fs_delete", {"path": "backend/api.ts"}),
+        )
     assert fake.calls == [("fs_delete", {"path": "backend/api.ts"})]
-    # The residual (grant may still be marked unused) is surfaced, not silent.
-    assert any("single-use elevation consumption failed" in r.message for r in caplog.records)
+    assert sorted(r.isError for r in results) == [False, True]

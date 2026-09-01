@@ -496,11 +496,19 @@ async def revoke_elevation(repo_root: str, elevation_id: str) -> bool:
         return cur.rowcount > 0
 
 
-async def mark_used(repo_root: str, elevation_id: str) -> None:
-    """Mark a single-use elevation spent (best-effort; never raises into forward)."""
+async def claim_single_use(repo_root: str, elevation_id: str) -> bool:
+    """Atomically spend a single-use elevation. True only if THIS call claimed it.
+
+    The conditional update is the claim: a grant already spent or revoked, or any
+    storage error, returns False so the caller denies (fail closed).
+    """
     try:
         async with open_db(repo_root) as conn:
-            await conn.execute("UPDATE elevations SET used = 1 WHERE id = ?", (elevation_id,))
+            cur = await conn.execute(
+                "UPDATE elevations SET used = 1 WHERE id = ? AND used = 0 AND revoked = 0",
+                (elevation_id,),
+            )
             await conn.commit()
+            return cur.rowcount == 1
     except (aiosqlite.Error, OSError):
-        return
+        return False
