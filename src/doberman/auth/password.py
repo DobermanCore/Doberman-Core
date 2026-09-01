@@ -14,7 +14,10 @@ Secret handling (SECURITY):
 * Verification uses a salted 600,000-iteration PBKDF2-SHA256 hash and
   :func:`hmac.compare_digest` for constant-time comparison.
 * Verification is rate-limited: too many consecutive failures lock further
-  attempts until a reset, blunting online guessing.
+  attempts until a reset, blunting online guessing. The lockout state is
+  **persisted to disk** beside the hash file (surviving process restarts,
+  exactly like TOTP's — see :mod:`doberman.auth.lockout`), with a 15-minute
+  cooldown so the lockout is bounded rather than permanent.
 * If a password is **not enrolled**, :func:`verify` returns ``False`` — there
   is no confirm-only or no-auth fallback. Any malformed state fails closed.
 
@@ -26,6 +29,16 @@ import hmac
 import os
 from pathlib import Path
 
+from doberman.auth.lockout import (
+    _LOCKOUT_COOLDOWN_SECONDS,
+    _MAX_CONSECUTIVE_FAILURES,
+    _clear_lockout,
+    _load_lockout,
+    _lockout_path,
+    _now,
+    _save_lockout,
+)
+
 #: Env var overriding the password-hash file location (tests inject a temp path).
 PASSWORD_FILE_ENV = "DOBERMAN_PASSWORD_FILE"  # noqa: S105 — env-var name, not a secret
 
@@ -34,14 +47,6 @@ _PBKDF2_ITERATIONS = 600_000
 _SALT_BYTES = 16
 _HASH_BYTES = 32
 _MIN_PASSWORD_LENGTH = 8
-
-#: Consecutive failed verifications before further attempts are locked out
-#: (until :func:`reset_attempts` or a successful verify).
-_MAX_CONSECUTIVE_FAILURES = 5
-
-#: Per-password-file consecutive-failure counters (isolated by path so
-#: distinct enrollments — and distinct tests — never share rate-limit state).
-_failures: dict[str, int] = {}
 
 
 def _default_secret_path() -> Path:
@@ -134,20 +139,29 @@ def enroll(
     except OSError:
         pass
 
-    _failures.pop(str(path), None)
+    _clear_lockout(path)
 
 
 def reset_attempts() -> None:
-    """Clear the consecutive-failure counter for the active password file."""
-    _failures.pop(str(_secret_path()), None)
+    """Clear the persisted consecutive-failure/lockout state for the active
+    password file."""
+    _clear_lockout(_secret_path())
 
 
 def verify(secret: str) -> bool:
     """Verify ``secret`` against the stored hash without ever raising.
 
     Fails closed: not enrolled, malformed input/storage, KDF errors, or a
-    rate-limit lockout all return ``False``. A successful verification resets
-    the counter; each failed comparison or verification error increments it.
+    rate-limit lockout all return ``False``. A successful verification clears
+    the persisted lockout state; each failed comparison or verification error
+    saves an incremented failure count (see :mod:`doberman.auth.lockout`).
+
+    Lockout semantics mirror :func:`doberman.auth.totp.verify`: once
+    ``_MAX_CONSECUTIVE_FAILURES`` consecutive failures accrue, further
+    attempts are denied until ``_LOCKOUT_COOLDOWN_SECONDS`` have elapsed since
+    the *last* failure. A denied attempt made while already locked out is a
+    no-op — it neither runs the KDF nor rewrites the failure timestamp, so it
+    can never extend the cooldown window.
     """
     try:
         record = _read_record()
@@ -156,9 +170,15 @@ def verify(secret: str) -> bool:
     if record is None:
         return False
 
-    key = str(_secret_path())
-    if _failures.get(key, 0) >= _MAX_CONSECUTIVE_FAILURES:
-        return False
+    secret_path = _secret_path()
+    lockout_path = _lockout_path(secret_path)
+    now = _now()
+    failures, last_failure_time = _load_lockout(lockout_path, now=now)
+
+    if failures >= _MAX_CONSECUTIVE_FAILURES:
+        if now - last_failure_time < _LOCKOUT_COOLDOWN_SECONDS:
+            return False  # still locked: deny without touching state or the KDF
+        failures = 0  # cooldown elapsed: this attempt starts a fresh window
 
     try:
         if not isinstance(secret, str):
@@ -175,7 +195,7 @@ def verify(secret: str) -> bool:
         ok = False
 
     if ok:
-        _failures.pop(key, None)
+        _clear_lockout(secret_path)
     else:
-        _failures[key] = _failures.get(key, 0) + 1
+        _save_lockout(lockout_path, failures + 1, now)
     return ok
