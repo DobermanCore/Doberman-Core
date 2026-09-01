@@ -11,6 +11,7 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)](#roadmap)
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20pack-5865F2?logo=discord&logoColor=white)](https://discord.gg/Sfy5XGNqty)
+[![Product Hunt](https://img.shields.io/badge/Product%20Hunt-we're%20live-DA552F?logo=producthunt&logoColor=white)](https://www.producthunt.com/products/doberman?utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-doberman)
 
 Your AI coding agent can `rm -rf` your repo, leak your API keys, or get prompt-injected into exfiltrating data, autonomously, with no undo. Doberman is the guard dog on the execution path, and it stops the dangerous call before it runs.
 
