@@ -14,6 +14,8 @@ from tests.benchmarks.adapter import BenchmarkCase, CandidateAction
 from tests.benchmarks.mapping import to_security_object
 from tests.benchmarks.subjective_runner import HOLDOUT_EVERY, _prepared, run_subjective_eval
 
+pytestmark = pytest.mark.real_hst  # these gates measure the model's shape: production-size trees
+
 # --- fixture ------------------------------------------------------------
 # A repetitive benign workflow (file_read of notes.txt, sometimes followed by
 # a second read for Markov transition coverage) plus a handful of

@@ -29,6 +29,8 @@ import pytest
 
 import tests.benchmarks.poisoning_runner as pr
 
+pytestmark = pytest.mark.real_hst  # these gates measure the model's shape: production-size trees
+
 
 @pytest.fixture(scope="module")
 def report():

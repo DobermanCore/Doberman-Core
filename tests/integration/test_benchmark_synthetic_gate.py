@@ -23,6 +23,8 @@ from tests.benchmarks.profiles import build_pipeline
 from tests.benchmarks.runner import run_before_after, run_profiles
 from tests.benchmarks.suites.synthetic import PAYLOAD_MARKER, SyntheticAdapter
 
+pytestmark = pytest.mark.real_hst  # these gates measure the model's shape: production-size trees
+
 
 @pytest.fixture(scope="module")
 def report() -> dict:

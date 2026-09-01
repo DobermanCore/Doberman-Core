@@ -21,6 +21,8 @@ from tests.benchmarks.subjective_runner import (  # noqa: E402 — after the imp
 )
 from tests.benchmarks.suites.agentdojo import AgentDojoAdapter  # noqa: E402
 
+pytestmark = pytest.mark.real_hst  # these gates measure the model's shape: production-size trees
+
 
 def test_subjective_eval_reports_all_suites_and_both_arms():
     report = run_subjective_eval(AgentDojoAdapter())

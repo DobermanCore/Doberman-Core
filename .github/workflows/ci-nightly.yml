@@ -1,0 +1,87 @@
+name: CI nightly (deep)
+
+# The slow, wide, adversarial run that PR CI deliberately is not. PR CI answers
+# "did this change break anything?" in ~10 minutes; this answers "is the suite
+# itself still trustworthy?" once a day:
+#   - every OS/Python combination PR CI skips (Windows 3.11/3.13, macOS, 3.14)
+#   - random test order (pytest-randomly): an order-dependent test fails HERE,
+#     not as an xdist "flake" on somebody's PR
+#   - warnings promoted to errors: a deprecation lands as a red nightly, not as
+#     a broken install after the next dependency release
+#   - production-size half-space trees for the whole suite (PR CI shrinks them
+#     for speed — see tests/conftest.py::_fast_hst); this guards that shortcut
+#   - a dependency vulnerability audit (pip-audit), blocking here and only here
+# A red nightly means "look before the next release", never "rerun until green".
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-nightly
+  cancel-in-progress: true
+
+jobs:
+  deep:
+    name: deep (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    # 3.14 is advisory until the ML dependency chain (river/scipy) ships wheels
+    # for it everywhere; promote it by deleting `experimental` once it is green.
+    continue-on-error: ${{ matrix.experimental == true }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: "ubuntu-latest", python-version: "3.11" }
+          - { os: "ubuntu-latest", python-version: "3.13" }
+          - { os: "windows-latest", python-version: "3.11" }
+          - { os: "windows-latest", python-version: "3.13" }
+          - { os: "macos-latest", python-version: "3.12" }
+          - { os: "ubuntu-latest", python-version: "3.14", experimental: true }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip && pip install -e ".[dev]" pytest-randomly
+      - name: Standalone guarantee (no enterprise installed)
+        run: |
+          if pip list | grep -qi doberman-enterprise; then
+            echo "FAIL: enterprise package found in core environment"
+            exit 1
+          fi
+      # -p randomly prints its seed at the top of the log; reproduce an order
+      # failure locally with `pytest -p randomly -p "randomly_seed=<seed>"`.
+      # The one ignored warning is Starlette's httpx -> httpx2 test-client
+      # deprecation, tracked as a dependency follow-up, not a suite defect.
+      - name: Full suite — random order, warnings as errors, production-size trees
+        env:
+          DOBERMAN_TEST_REAL_HST: "1"
+        run: >
+          pytest -n auto -p randomly --timeout=900 --durations=40 --durations-min=5.0
+          -W error
+          -W "ignore:Using .httpx. with .starlette.testclient.*"
+
+  dependency-audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip pip-audit && pip install -e .
+      # Blocking on the schedule only: the publish workflow keeps its SBOM step
+      # advisory so a fresh CVE cannot silently stop a reviewed release, but a
+      # daily red here is the prompt to go and look.
+      - run: pip-audit --strict --desc on .
