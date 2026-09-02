@@ -3332,13 +3332,26 @@ def setup(
         factor = "2FA" if totp.is_enrolled() else "password"
         typer.echo(f"Possession factor: set ({factor}).")
     typer.echo("Check health:  doberman doctor")
-    typer.echo("Docs: docs/SETUP.md")
+    typer.echo("Docs: https://github.com/DobermanCore/Doberman-Core/blob/main/docs/SETUP.md")
     if hooks_kind_wired:
         typer.echo("Change your mind:  doberman uninstall-hooks")
 
     # Peak-end (P1): the run closes on how to verify it's live, then the demo
     # invite - never on the uninstall off-ramp (moved above) and never with no
-    # peak at all under --yes.
+    # peak at all under --yes. An INCOMPLETE run must not end on either: the
+    # hooks cannot run yet, so "verify it's live" would be a lie and the demo
+    # (in-process, not via the hooks) would prove nothing about this install.
+    if not setup_ok:
+        typer.echo(
+            style_text(
+                "Not protecting this repo yet: fix the critical above, then run "
+                "`doberman doctor` to confirm.",
+                "bright_red",
+                bold=True,
+            )
+        )
+        raise typer.Exit(code=1)
+
     if verify_hosts:
         typer.echo("Verify it's live: ask your agent to read .env and confirm it is blocked.")
 
@@ -3359,9 +3372,6 @@ def setup(
             )
             typer.echo("")
             typer.echo(format_summary_table(demo_outcomes))
-
-    if not setup_ok:
-        raise typer.Exit(code=1)
 
 
 @app.command("session-summary")

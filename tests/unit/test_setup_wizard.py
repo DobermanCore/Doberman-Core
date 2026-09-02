@@ -836,7 +836,7 @@ def test_telemetry_summary_line_shows_even_after_help_already_marked_the_notice_
 def test_summary_ends_with_a_docs_pointer(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert "Docs: docs/SETUP.md" in result.output
+    assert "Docs: https://github.com/DobermanCore/Doberman-Core/blob/main/docs/SETUP.md" in result.output
 
 
 def test_strict_mode_glosses_trifecta_actions(tmp_path: Path) -> None:
