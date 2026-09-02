@@ -434,6 +434,10 @@ def test_output_contains_doctor_pass(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "Doctor:" in result.output
+    # A fresh install has only first-run warnings (no decision DB / fingerprint
+    # key yet): the wizard counts them and never lists them as failures.
+    assert "need attention" not in result.output
+    assert "checks passed" in result.output
 
 
 def test_output_contains_restart_activation_hint(tmp_path: Path) -> None:

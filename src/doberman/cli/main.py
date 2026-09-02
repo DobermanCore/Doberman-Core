@@ -2983,17 +2983,23 @@ def setup(
     typer.echo("")
     typer.echo("-- Doctor -------------------------------------------------")
     try:
-        from doberman.cli.doctor import CheckStatus, run_checks
+        from doberman.cli.doctor import CheckStatus, critical_failures, run_checks
 
         results = run_checks(path)
-        failing = [r for r in results if r.status is not CheckStatus.OK]
-        if not failing:
-            typer.echo(f"Doctor: {len(results)} checks passed")
+        critical = critical_failures(results)
+        # Non-critical warnings (no decision DB or fingerprint key yet, no TUI
+        # extra) are normal right after a fresh setup — count them, don't list
+        # them as failures; `doberman doctor` has the detail.
+        warnings = [r for r in results if r.status is not CheckStatus.OK and r not in critical]
+        passed = len(results) - len(critical) - len(warnings)
+        if not critical:
+            line = f"Doctor: {passed} checks passed"
+            if warnings:
+                line += f", {len(warnings)} warning(s) (`doberman doctor` shows them)"
+            typer.echo(line)
         else:
-            typer.echo(
-                f"Doctor: {len(results) - len(failing)} passed, {len(failing)} need attention:"
-            )
-            for r in failing:
+            typer.echo(f"Doctor: {len(critical)} critical check(s) need attention:")
+            for r in critical:
                 typer.echo(f"  - {r.name}")
     except Exception as exc:  # noqa: BLE001 — a diagnostic pass must never crash setup
         typer.echo(f"Doctor: could not run ({type(exc).__name__})")
