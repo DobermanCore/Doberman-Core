@@ -831,7 +831,14 @@ def _render_status_text(payload: dict) -> None:
     modes = ", ".join(m.value for m in SecurityMode)
     typer.echo("Doberman status")
     typer.echo("=" * 32)
-    typer.echo(f"Version: {payload['doberman_version']}")
+    doberman_version = payload["doberman_version"]
+    if doberman_version == "0.0.0+unknown":
+        # Matches the sentinel doberman.__version__ falls back to when the
+        # package metadata can't be found (running straight from a source
+        # checkout, no install) - "0.0.0+unknown" reads as a broken install.
+        typer.echo("Version:    unknown (source checkout)")
+    else:
+        typer.echo(f"Version: {doberman_version}")
     typer.echo("")
 
     role = payload["role"]
@@ -1728,7 +1735,7 @@ def dash(
     uvicorn.run(create_app(token, path), host=_DASH_HOST, port=port, access_log=False)
 
 
-@app.command(rich_help_panel="Daily")
+@app.command(rich_help_panel="Getting started")
 def demo(
     path: str = typer.Option(".", "--path", "-p", help="Repository root to log decisions against."),
     mode: str = typer.Option(
@@ -2122,6 +2129,8 @@ def install_hooks(
     ``--local`` project-local, else project ``.claude/settings.json``). Codex CLI
     (``--host codex``): a PreToolUse hook into a ``hooks.json`` (``--global`` ->
     ``~/.codex/hooks.json``, else ``<repo>/.codex/hooks.json``).
+
+    New here? `doberman setup` runs this for you and asks which hosts to guard.
     """
     if host == "codex":
         _install_codex(global_=global_, local=local, path=path, dry_run=dry_run)
@@ -2263,7 +2272,7 @@ def _uninstall_codex(*, global_: bool, local: bool, path: str, dry_run: bool) ->
     )
 
 
-@app.command("uninstall-hooks", rich_help_panel="Getting started")
+@app.command("uninstall-hooks", rich_help_panel="Leaving")
 def uninstall_hooks(
     global_: bool = typer.Option(
         False,
@@ -2581,7 +2590,7 @@ def _uninstall_global(path: str, yes: bool, dry_run: bool, keep_package: bool) -
     typer.echo("\nDoberman removed from this device.")
 
 
-@app.command(rich_help_panel="Getting started")
+@app.command(rich_help_panel="Leaving")
 def uninstall(
     path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
     yes: bool = typer.Option(
@@ -2745,7 +2754,10 @@ def setup(
         None, "--mode", "-m", help="Security mode (light/balanced/strict/paranoid)."
     ),
     global_: bool = typer.Option(
-        False, "--global", "-g", help="Install hooks into ~/.claude/settings.json."
+        False,
+        "--global",
+        "-g",
+        help="Install hooks user-wide (Claude: ~/.claude/settings.json; Codex: ~/.codex/hooks.json).",
     ),
     hosts: list[str] = typer.Option(  # noqa: B008 — Typer's Option() factory, not a mutable default
         None,
@@ -3204,6 +3216,23 @@ def dashboard() -> None:
 def version() -> None:
     """Print the installed Doberman version."""
     typer.echo(__version__)
+
+
+# Typer/Rich list commands within a help panel in `app.registered_commands`
+# order. `setup` (the guided path) should lead "Getting started", followed by
+# `demo` (the best onboarding asset), then the rest - reorder that list once
+# here (a stable sort, so every other command keeps its registration order)
+# instead of moving command definitions around this file.
+_GETTING_STARTED_LEAD = {"setup": 0, "demo": 1, "doctor": 2, "install-hooks": 3, "update": 4}
+
+
+def _command_name(command: typer.models.CommandInfo) -> str:
+    return command.name or command.callback.__name__.replace("_", "-")
+
+
+app.registered_commands.sort(
+    key=lambda c: _GETTING_STARTED_LEAD.get(_command_name(c), len(_GETTING_STARTED_LEAD))
+)
 
 
 if __name__ == "__main__":  # pragma: no cover

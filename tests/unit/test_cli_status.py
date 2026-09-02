@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from doberman import __version__
 from doberman.auth import totp
+from doberman.cli import main as cli_main
 from doberman.cli.main import app
 from doberman.hosthooks.install import (
     merge_doberman_hooks,
@@ -71,7 +72,23 @@ def _seed_block(root: str) -> None:
 def test_status_shows_installed_version(tmp_path):
     result = runner.invoke(app, ["status", "--path", str(tmp_path)])
     assert result.exit_code == 0
-    assert f"Version: {__version__}" in result.stdout
+    if __version__ == "0.0.0+unknown":
+        # Running from a source checkout with no `doberman-core` install -
+        # see test_status_shows_unknown_version_as_source_checkout below.
+        assert "Version:    unknown (source checkout)" in result.stdout
+    else:
+        assert f"Version: {__version__}" in result.stdout
+
+
+def test_status_shows_unknown_version_as_source_checkout(tmp_path, monkeypatch):
+    # `doberman.__version__` falls back to this sentinel when the package
+    # metadata can't be found; `status` must not print it raw (it reads like
+    # a broken install) and instead explains why.
+    monkeypatch.setattr(cli_main, "__version__", "0.0.0+unknown")
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Version:    unknown (source checkout)" in result.stdout
+    assert "0.0.0+unknown" not in result.stdout
 
 
 def test_status_reports_hook_install_state_per_scope(tmp_path):
