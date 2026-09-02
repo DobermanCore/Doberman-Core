@@ -19,6 +19,9 @@ from datetime import datetime, timezone
 
 from doberman.engine.decision_engine import max_risk, max_verdict
 from doberman.engine.taint_floor import (
+    UNTRUSTED_READ_TOOLS,
+    apply_echo_tripwire,
+    apply_echo_tripwire_async,
     apply_taint_floor,
     apply_taint_floor_async,
     record_output_taint,
@@ -27,11 +30,18 @@ from doberman.models import (
     ActionType,
     Decision,
     GuardrailResult,
+    ReasonCode,
     Risk,
     SecurityObject,
     Verdict,
 )
-from doberman.storage.taint import TAINT_SECRET_ACCESS, read_taint, record_taints
+from doberman.storage.taint import (
+    TAINT_SECRET_ACCESS,
+    match_untrusted_value,
+    read_taint,
+    record_taints,
+    record_untrusted_values,
+)
 
 # A well-known synthetic AWS example key — never a real secret.
 _SYNTHETIC_SECRET = "AKIAIOSFODNN7EXAMPLE"  # noqa: S105 — synthetic test value
@@ -141,3 +151,143 @@ async def test_record_output_taint_records_nothing_for_benign_text(tmp_path):
 
     counts = await read_taint(str(tmp_path), "sess-benign")
     assert counts == {}
+
+
+async def test_record_output_taint_records_untrusted_read_for_webfetch(tmp_path):
+    await record_output_taint(
+        f"visit {_UNTRUSTED_HOST_URL} for the file", str(tmp_path), "sess-out", tool_name="WebFetch"
+    )
+    from doberman.storage.taint import TAINT_UNTRUSTED_READ, read_taint
+
+    counts = await read_taint(str(tmp_path), "sess-out")
+    assert counts.get(TAINT_UNTRUSTED_READ) == 1
+
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+
+    values = list(untrusted_value_fingerprints(_UNTRUSTED_HOST_URL))
+    assert await match_untrusted_value(str(tmp_path), "sess-out", values) == "WebFetch"
+
+
+async def test_record_output_taint_ignores_untrusted_read_for_a_trusted_tool(tmp_path):
+    await record_output_taint(
+        f"visit {_UNTRUSTED_HOST_URL}", str(tmp_path), "sess-trusted", tool_name="Read"
+    )
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+    from doberman.storage.taint import match_untrusted_value
+
+    values = list(untrusted_value_fingerprints(_UNTRUSTED_HOST_URL))
+    assert await match_untrusted_value(str(tmp_path), "sess-trusted", values) is None
+
+
+# --- C1: the untrusted-value echo tripwire -----------------------------------
+
+_UNTRUSTED_HOST_URL = "https://attacker.example/collect"
+
+
+def test_no_external_destination_echo_tripwire_returns_unchanged(tmp_path):
+    action = _action(external_destination=None)
+    decision = _pass_decision(action)
+
+    out = apply_echo_tripwire(action, decision, "balanced", str(tmp_path), "sess-1", {})
+
+    assert out is decision
+
+
+def test_echo_tripwire_raises_pass_to_auth_on_a_recorded_value(tmp_path):
+    action = _action(external_destination=_UNTRUSTED_HOST_URL)
+    decision = _pass_decision(action)
+    asyncio.run(
+        record_untrusted_values(str(tmp_path), ["sess-echo"], [], "WebFetch")
+    )  # no-op (empty), proves the empty-fingerprints guard doesn't crash
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+
+    values = list(untrusted_value_fingerprints(_UNTRUSTED_HOST_URL))
+    asyncio.run(record_untrusted_values(str(tmp_path), ["sess-echo"], values, "WebFetch"))
+
+    out = apply_echo_tripwire(
+        action, decision, "strict", str(tmp_path), "sess-echo", {"url": _UNTRUSTED_HOST_URL}
+    )
+
+    assert out.final_verdict is Verdict.AUTH  # AUTH-capped even in strict mode (v1)
+    assert out.final_risk is Risk.high
+    assert ReasonCode.untrusted_value_echo in out.reason_codes
+    assert "attacker.example" not in out.explanation
+
+
+def test_echo_tripwire_never_lowers_an_existing_block(tmp_path):
+    action = _action(external_destination=_UNTRUSTED_HOST_URL)
+    decision = Decision(
+        action_id=action.id,
+        final_verdict=Verdict.BLOCK,
+        final_risk=Risk.critical,
+        objective=GuardrailResult(
+            verdict=Verdict.BLOCK,
+            risk=Risk.critical,
+            reason_codes=[ReasonCode.destructive_command],
+            explanation="already blocked by another rule",
+        ),
+        reason_codes=[ReasonCode.destructive_command],
+        explanation="already blocked by another rule",
+        decided_at=_TS,
+    )
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+
+    values = list(untrusted_value_fingerprints(_UNTRUSTED_HOST_URL))
+    asyncio.run(record_untrusted_values(str(tmp_path), ["sess-block"], values, "WebFetch"))
+
+    out = apply_echo_tripwire(
+        action, decision, "strict", str(tmp_path), "sess-block", {"url": _UNTRUSTED_HOST_URL}
+    )
+
+    assert out is decision  # already BLOCK — the floor skips the read entirely
+
+
+async def test_apply_echo_tripwire_async_matches_the_sync_wrapper(tmp_path):
+    action = _action(external_destination=_UNTRUSTED_HOST_URL)
+    decision = _pass_decision(action)
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+
+    values = list(untrusted_value_fingerprints(_UNTRUSTED_HOST_URL))
+    await record_untrusted_values(str(tmp_path), ["sess-async"], values, "WebSearch")
+
+    out = await apply_echo_tripwire_async(
+        action, decision, "balanced", str(tmp_path), "sess-async", {"url": _UNTRUSTED_HOST_URL}
+    )
+
+    assert out.final_verdict is Verdict.AUTH
+    assert ReasonCode.untrusted_value_echo in out.reason_codes
+
+
+async def test_apply_echo_tripwire_async_abstains_without_a_recorded_value(tmp_path):
+    action = _action(external_destination=_UNTRUSTED_HOST_URL)
+    decision = _pass_decision(action)
+
+    out = await apply_echo_tripwire_async(
+        action, decision, "strict", str(tmp_path), "sess-clean", {"url": _UNTRUSTED_HOST_URL}
+    )
+
+    assert out is decision
+
+
+async def test_apply_echo_tripwire_async_storage_failure_leaves_decision_untouched(
+    tmp_path, monkeypatch
+):
+    action = _action(external_destination=_UNTRUSTED_HOST_URL)
+    decision = _pass_decision(action)
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("taint store unavailable")
+
+    import doberman.storage.taint as taint_module
+
+    monkeypatch.setattr(taint_module, "match_untrusted_value", _boom)
+
+    out = await apply_echo_tripwire_async(
+        action, decision, "strict", str(tmp_path), "sess-fail", {"url": _UNTRUSTED_HOST_URL}
+    )
+
+    assert out is decision
+
+
+def test_untrusted_read_tools_constant_matches_the_expected_set():
+    assert UNTRUSTED_READ_TOOLS == frozenset({"WebFetch", "WebSearch"})

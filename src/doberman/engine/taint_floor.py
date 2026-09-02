@@ -12,6 +12,7 @@ running event loop``, so the two are deliberately not interchangeable.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from doberman.engine.decision_engine import max_risk, max_verdict
@@ -28,6 +29,19 @@ _FLOOR_EXPLANATION = (
 _CONFIRMED_EXFIL_EXPLANATION = (
     "An outbound value matches a secret that entered this session's context earlier "
     "— a confirmed read-then-send exfiltration."
+)
+
+#: Tools that pull untrusted external content into the agent's context — the
+#: "untrusted provenance" leg of the multi-step trifecta AND the C1 echo
+#: tripwire's source classification. Lives here (not in hosthooks/) so both the
+#: proxy's record_output_taint and every host-hook adapter share one constant;
+#: hosthooks/claude_code.py imports it FROM here (engine must never import
+#: hosthooks — the reverse direction is fine and already used throughout).
+UNTRUSTED_READ_TOOLS: frozenset[str] = frozenset({"WebFetch", "WebSearch"})
+
+_ECHO_EXPLANATION_TEMPLATE = (
+    "A destination in this call first appeared in untrusted {source_class} content "
+    "read earlier in this session ({when})."
 )
 
 
@@ -211,34 +225,153 @@ async def _outbound_matches_recorded_secret(
         return False
 
 
-async def record_output_taint(
-    output_text: str, repo_root: str, session_id: str | None = None
-) -> None:
-    """Best-effort: record ``secret_access`` taint + keyed-HMAC fingerprints from a
-    forwarded tool result's output text, for the pure-MCP proxy.
+def _outbound_untrusted_value_fingerprints(args: dict[str, Any], dest: str | None) -> set[str]:
+    """Keyed-HMAC fingerprints of untrusted-value-candidate tokens anywhere in
+    the outbound payload (the call's arguments + its external destination).
+    Mirrors ``_outbound_secret_fingerprints``'s walk exactly, swapping in the
+    C1 host/URL/email extractor."""
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
 
-    Mirrors the host-hook's PostToolUse recording (``_record_taint`` /
-    ``_record_secret_fingerprints`` in ``hosthooks/claude_code.py``) so a secret read
-    through the proxy taints the session exactly like one read through the host-hook
-    — later feeding :func:`apply_taint_floor_async`'s cross-call check. The host-hook
-    gates recording on fired reason codes from its own evaluation; the proxy has no
-    such signal for a downstream RESULT, so presence is judged directly from the text
-    via ``candidate_secret_fingerprints``. Never raises — a recording failure must
-    never break the forward/return path — and never fabricates taint beyond what was
-    actually found in the text.
+    fps: set[str] = set()
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, str):
+            fps.update(untrusted_value_fingerprints(value))
+        elif isinstance(value, dict):
+            for item in value.values():
+                _walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                _walk(item)
+
+    _walk(args)
+    if dest:
+        fps.update(untrusted_value_fingerprints(dest))
+    return fps
+
+
+async def apply_echo_tripwire_async(
+    action: SecurityObject,
+    decision: Decision,
+    mode: str,  # noqa: ARG001 — accepted for call-site symmetry with apply_taint_floor_async;
+    # v1 is AUTH-capped in EVERY mode (no mode-gated BLOCK tier — out of scope,
+    # see the slice plan's "Out of scope").
+    repo_root: str,
+    session_id: str | None,
+    args: dict[str, Any],
+) -> Decision:
+    """C1 — the untrusted-value echo tripwire (raise-only, AUTH-capped in v1).
+
+    A host/URL/email that entered this session's context from an untrusted read
+    (WebFetch/WebSearch result, issue/PR body — see UNTRUSTED_READ_TOOLS above
+    and hosthooks/claude_code.py's PostToolUse recording) and then reappears as
+    THIS call's egress destination is a tripwire on EXACT value reuse, not flow
+    analysis — no n-gram shingling, no partial match. Whole-value keyed-HMAC
+    only. Raise-only: never lowers a verdict/risk, and a storage failure leaves
+    the decision untouched (fails closed to no-match, never fabricates one).
+    """
+    if action.external_destination is None:
+        return decision  # not an egress — nothing can leave through this action
+    if decision.final_verdict is Verdict.BLOCK:
+        return decision  # already maximally raised; skip the read
+
+    fps = _outbound_untrusted_value_fingerprints(args, action.external_destination)
+    if not fps:
+        return decision  # nothing host/URL/email-shaped outbound — skip the DB read
+
+    from doberman.storage.taint import entity_scope, match_untrusted_value
+
+    scopes: list[str] = [session_id] if session_id else []
+    try:
+        scopes.append(entity_scope(repo_root))
+    except Exception:  # noqa: BLE001,S110 — keep the session scope even if entity scope fails
+        pass
+    if not scopes:
+        return decision
+
+    fp_list = list(fps)
+    source_class: str | None = None
+    try:
+        for scope in scopes:
+            source_class = await match_untrusted_value(repo_root, scope, fp_list)
+            if source_class:
+                break
+    except Exception:  # noqa: BLE001 — a failed match read never fabricates a verdict
+        return decision
+    if not source_class:
+        return decision
+
+    reasons = list(dict.fromkeys([*decision.reason_codes, ReasonCode.untrusted_value_echo]))
+    when = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    explanation_line = _ECHO_EXPLANATION_TEMPLATE.format(source_class=source_class, when=when)
+    explanation = " ".join(
+        part for part in (decision.explanation.strip(), explanation_line) if part
+    )
+    return decision.model_copy(
+        update={
+            "final_verdict": max_verdict(decision.final_verdict, Verdict.AUTH),
+            "final_risk": max_risk(decision.final_risk, Risk.high),
+            "reason_codes": reasons,
+            "explanation": explanation,
+        }
+    )
+
+
+def apply_echo_tripwire(
+    action: SecurityObject,
+    decision: Decision,
+    mode: str,
+    repo_root: str,
+    session_id: str | None,
+    args: dict[str, Any],
+) -> Decision:
+    """Sync wrapper around :func:`apply_echo_tripwire_async` for the host-hook
+    spine (``hosthooks/spine.py``) — exactly mirrors :func:`apply_taint_floor`'s
+    sync/async split and its same "don't call this from a running event loop"
+    hazard. See that function's docstring for why the two are not
+    interchangeable.
+    """
+    return asyncio.run(
+        apply_echo_tripwire_async(action, decision, mode, repo_root, session_id, args)
+    )
+
+
+async def record_output_taint(
+    output_text: str,
+    repo_root: str,
+    session_id: str | None = None,
+    *,
+    tool_name: str | None = None,
+) -> None:
+    """Best-effort: record taint from a forwarded tool result's output text, for
+    the pure-MCP proxy. Mirrors the host-hook's PostToolUse recording
+    (``_record_taint`` / ``_record_secret_fingerprints`` /
+    ``_record_untrusted_value_fingerprints`` in ``hosthooks/claude_code.py``) so
+    a secret OR an untrusted value read through the proxy taints the session
+    exactly like one read through the host-hook.
+
+    C1 widening: ``tool_name`` now lets this classify the untrusted-provenance
+    leg (``TAINT_UNTRUSTED_READ`` + the host/URL/email VALUE fingerprints) —
+    previously this function dropped ``tool_name`` entirely, so the proxy path
+    recorded ZERO untrusted-read taint no matter what it fetched. Both legs are
+    independent (a clean-of-secrets WebFetch result still records the untrusted
+    leg; a secret found via a trusted tool still records the secret leg) and
+    each is judged from the text directly (the proxy has no PostToolUse reason-
+    code signal the host-hook gates on). Never raises — a recording failure
+    must never break the forward/return path — and never fabricates taint
+    beyond what was actually found in the text.
     """
     try:
+        from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
         from doberman.engine.rules.secrets import candidate_secret_fingerprints
         from doberman.storage.taint import (
             TAINT_SECRET_ACCESS,
+            TAINT_UNTRUSTED_READ,
             entity_scope,
             record_secret_fingerprints,
             record_taints,
+            record_untrusted_values,
         )
-
-        fps = candidate_secret_fingerprints(output_text)
-        if not fps:
-            return  # nothing secret-shaped in the output — record nothing
 
         scopes: list[str] = [session_id] if session_id else []
         try:
@@ -248,7 +381,15 @@ async def record_output_taint(
         if not scopes:
             return
 
-        await record_taints(repo_root, scopes, [TAINT_SECRET_ACCESS])
-        await record_secret_fingerprints(repo_root, scopes, list(fps))
+        fps = candidate_secret_fingerprints(output_text)
+        if fps:
+            await record_taints(repo_root, scopes, [TAINT_SECRET_ACCESS])
+            await record_secret_fingerprints(repo_root, scopes, list(fps))
+
+        if tool_name in UNTRUSTED_READ_TOOLS:
+            await record_taints(repo_root, scopes, [TAINT_UNTRUSTED_READ])
+            values = untrusted_value_fingerprints(output_text)
+            if values:
+                await record_untrusted_values(repo_root, scopes, list(values), tool_name)
     except Exception:  # noqa: BLE001 — recording must never break the execution path
         return
