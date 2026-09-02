@@ -98,7 +98,7 @@ def test_status_reports_hook_install_state_per_scope(tmp_path):
 
     result = runner.invoke(app, ["status", "--path", root])
     assert result.exit_code == 0
-    assert "Hooks:" in result.stdout
+    assert "-- Hooks --" in result.stdout  # round 4 item 2: section grammar
     assert "project" in result.stdout
     assert "global" in result.stdout
     assert "local" in result.stdout
@@ -194,6 +194,7 @@ _EXPECTED_STATUS_KEYS = {
     "prefs",
     "prefs_preset",
     "policy",
+    "policy_version",
     "twofa",
     "password",
     "elevations",
@@ -241,19 +242,55 @@ def test_status_reports_excluded_from_global(tmp_path):
 
 
 def test_status_text_has_blank_line_section_breaks(tmp_path):
+    """Round 4 item 2: `status` adopts the wizard's `_section` grammar - one
+    blank line before each of the four sections, in order, and "Recent
+    decisions:" trails them (activity history, not a section itself)."""
     result = runner.invoke(app, ["status", "--path", str(tmp_path)])
     assert result.exit_code == 0
-    # Each major block is separated by a blank line so the dump scans as sections.
-    assert "\n\nRole:" in result.stdout
-    assert "\n\nMode:" in result.stdout
-    assert "\n\nPrefs:" in result.stdout
-    assert "\n\nPolicy:" in result.stdout
-    assert "\n\n2FA:" in result.stdout
-    assert "\n\nPassword:" in result.stdout
-    assert "\n\nElevations:" in result.stdout
-    assert "\n\nTaint:" in result.stdout
-    assert "\n\nHooks:" in result.stdout
+    assert "\n\n-- Hooks --" in result.stdout
+    assert "\n\n-- Policy --" in result.stdout
+    assert "\n\n-- Auth --" in result.stdout
+    assert "\n\n-- Health --" in result.stdout
     assert "\n\nRecent decisions:" in result.stdout
+
+    hooks_idx = result.stdout.index("-- Hooks --")
+    policy_idx = result.stdout.index("-- Policy --")
+    auth_idx = result.stdout.index("-- Auth --")
+    health_idx = result.stdout.index("-- Health --")
+    recent_idx = result.stdout.index("Recent decisions:")
+    assert hooks_idx < policy_idx < auth_idx < health_idx < recent_idx
+
+    assert "Mode:" in result.stdout[policy_idx:auth_idx]
+    assert "Prefs:" in result.stdout[policy_idx:auth_idx]
+    assert "Policy:" in result.stdout[policy_idx:auth_idx]
+    assert "Policy version:" in result.stdout[policy_idx:auth_idx]
+    assert "2FA:" in result.stdout[auth_idx:health_idx]
+    assert "Password:" in result.stdout[auth_idx:health_idx]
+    assert "Elevations:" in result.stdout[auth_idx:health_idx]
+    assert "Taint:" in result.stdout[auth_idx:health_idx]
+    assert "doberman doctor" in result.stdout[health_idx:recent_idx]
+
+
+def test_status_policy_version_shortened_in_text_full_in_json(tmp_path):
+    """Round 4 item 2: the text view shortens the policy version to
+    `pv1:` + 8 hex chars; `--json` carries the full `pv1:<sha256>` id."""
+    root = str(tmp_path)
+    text_result = runner.invoke(app, ["status", "--path", root])
+    assert text_result.exit_code == 0, text_result.output
+    assert "Policy version: pv1:" in text_result.stdout
+
+    json_result = runner.invoke(app, ["status", "--path", root, "--json"])
+    payload = json.loads(json_result.stdout)
+    full = payload["policy_version"]
+    assert full is not None
+    assert full.startswith("pv1:")
+    assert len(full) > 20  # a real sha256-derived id, not the shortened form
+
+    short_line = next(
+        line for line in text_result.stdout.splitlines() if line.startswith("Policy version:")
+    )
+    assert full not in short_line
+    assert short_line.split("Policy version: ")[1].startswith(full[:12])
 
 
 # ---------------------------------------------------------------------------

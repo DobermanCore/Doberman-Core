@@ -67,14 +67,18 @@ with no prompts, useful for CI or scripting. Pass `--host` (repeatable) to pick 
 e.g. `doberman setup --yes --host claude --host codex`. Pass `--dry-run` to preview the mode, the
 preference weights, and every file it would write, with nothing persisted (mirrors `install-hooks
 --dry-run`); `--global` writes your real home directory, so without `--yes` it asks to confirm
-first, and with `--yes` it prints the exact path before writing. Either way, basic protection works
-immediately. The closing doctor pass is not cosmetic: if it finds a critical (most commonly the
-`doberman` command not being on PATH yet), the wizard prints `-- Setup incomplete --` and exits `1`
-instead of claiming success — re-run `doberman doctor` for the fix, then `doberman setup` again. A
-run that only wired `mcp` and/or `openclaw` (no hooks-based host) prints `-- Setup pending --`
-instead of `complete` and exits `3` (not `0` — nothing runs yet, but nothing is broken either, so a
-script can tell it apart from both a fully-live run and a broken one) — nothing runs yet until you
-paste the printed block into your client and restart it, so the closing "verify it's live" line
+first, and with `--yes` it prints the exact path before writing. Pass `--no-telemetry` to opt out
+for good without answering the telemetry question (same as `doberman telemetry off`, just
+one-step). Every menu prompt (which hosts, which mode, each tuning weight) accepts `q` or `quit` to
+abort cleanly instead of writing anything, printed right in the prompt as `(q to quit)`. Either way,
+basic protection works immediately. The closing doctor pass is not cosmetic: if it finds a critical
+(most commonly the `doberman` command not being on PATH yet — the remedy now names the exact
+directory to add), the wizard prints `-- Setup incomplete --` and exits `1` instead of claiming
+success — re-run `doberman doctor` for the fix, then `doberman setup` again. A run that only wired
+`mcp` and/or `openclaw` (no hooks-based host) prints `-- Setup pending --` instead of `complete` and
+exits `3` (not `0` — nothing runs yet, but nothing is broken either, so a script can tell it apart
+from both a fully-live run and a broken one) — nothing runs yet until you paste the printed block
+(or, for OpenClaw, follow its plugin README) and restart, so the closing "verify it's live" line
 points at that manual step rather than claiming the hooks are already active. When the wizard
 finishes, [set a possession factor](#4-set-a-password-and-2fa) — it's one of the pointers in
 `doberman setup`'s own closing `Also:` line.
@@ -195,8 +199,9 @@ Both handlers fail closed and stay import-light, so they add minimal latency to 
 decision lands in the same local, redacted history: `doberman log` shows PreToolUse AUTH/BLOCK
 outcomes alongside PostToolUse ones, and `doberman status` leads with a one-line `Protected: yes`
 / `Protected: no - <reason>` verdict (hooks installed for at least one host and `doberman`
-resolvable on PATH), then reports the installed version, which settings file(s) carry the hooks,
-and the last five decisions.
+resolvable on PATH), then the installed version and four sections — Hooks (which settings file(s)
+carry the hooks), Policy (mode, preferences, policy version), Auth (2FA, password, elevations,
+taint), and Health (a one-line pointer to `doberman doctor`) — followed by the last five decisions.
 
 **Doberman protects its own hooks.** Once installed, the agent can't quietly remove them. A write
 or edit to `.claude/settings.json` is blocked, and other `.claude/` changes require

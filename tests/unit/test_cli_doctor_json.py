@@ -50,4 +50,5 @@ def test_doctor_json_reports_missing_password(tmp_path, monkeypatch):
     payload = json.loads(result.stdout)
     check = _check_by_name(payload, "Password")
     assert check["status"] == "warn"
-    assert check["detail"] == "not set (optional) — run `doberman password set`"
+    # ASCII, not an em dash (round 4 item 16: doctor's detail strings are cp1252-safe).
+    assert check["detail"] == "not set (optional) - run `doberman password set`"

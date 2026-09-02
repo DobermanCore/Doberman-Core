@@ -17,8 +17,8 @@ Day-to-day posture, status, and review commands.
 | `doberman message-tone [TONE]` | Show or set the AUTH challenge tone (human/technical). Cosmetic display only; it changes nothing about what is evaluated or logged. | `--path`/`-p` |
 | `doberman role enable-default` | Turn on the built-in, opt-in least-privilege default role. | `--path`/`-p` |
 | `doberman role disable-default` | Turn the default role off. A weaken, so it is gated. | `--path`/`-p` |
-| `doberman status` | Leads with a `Protected: yes` / `Protected: no - <reason>` headline, then active role, mode, policy summary, hook install state, taint state, and recent decisions. | `--path`/`-p`, `--json` |
-| `doberman doctor` | Read-only health self-check; exits non-zero if a critical check fails. | `--path`/`-p`, `--json` |
+| `doberman status` | Leads with a `Protected: yes` / `Protected: no - <reason>` headline, then version/role, and four sections — Hooks, Policy (mode, prefs, policy version), Auth (2FA, password, elevations, taint), Health (a one-line pointer to `doberman doctor`) — followed by recent decisions. | `--path`/`-p`, `--json` |
+| `doberman doctor` | Read-only health self-check, grouped into the same Hooks/Policy/Auth/Health sections `status` uses; exits non-zero if a critical check fails, naming every failing check on the closing line. | `--path`/`-p`, `--json` |
 | `doberman update` | Check PyPI for a newer Doberman and print the upgrade command (never installs). Off under `DO_NOT_TRACK`/`CI`/`DOBERMAN_UPDATE_CHECK=off`. | — |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
 | `doberman policy-versions` | Every policy version that has been in force (newest first); `--show` prints one snapshot, `--verify` checks the catalogue. | `--show`, `--verify`, `--path`/`-p`, `--json` |
@@ -33,7 +33,7 @@ Day-to-day posture, status, and review commands.
 | `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
 | `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
-| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host and ask for telemetry consent. Exits non-zero (`-- Setup incomplete --`) if the closing doctor pass finds a critical; a host-kind-free run (mcp/openclaw only) prints `-- Setup pending --` and still exits `0`. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable), `--path`/`-p`, `--dry-run` |
+| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host and ask for telemetry consent. Every menu prompt (hosts, mode, weight tuning) accepts `q`/`quit` to abort cleanly. Exits non-zero (`-- Setup incomplete --`) if the closing doctor pass finds a critical; a host-kind-free run (mcp/openclaw only) prints `-- Setup pending --` and exits `3`. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable), `--path`/`-p`, `--dry-run`, `--no-telemetry` |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
 | `doberman telemetry off` | Opt out after one final best-effort disabled event. | none |
 | `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches. | none |

@@ -15,22 +15,31 @@ _NESTED_GROUPS = ("2fa", "password", "taint", "tools", "memory", "role")
 _EXCLUDED = {"hook", "serve", "telemetry"}
 
 
-def _record_command(command: str | None) -> None:
+def _record_command(command: str | None, *, suppress_notice: bool = False) -> None:
     if not command or command in _EXCLUDED:
         return
     from doberman import telemetry
 
-    notice = telemetry.first_run_notice()
-    if notice:
-        typer.echo(notice, err=True)
+    if not suppress_notice:
+        notice = telemetry.first_run_notice()
+        if notice:
+            typer.echo(notice, err=True)
     telemetry.capture("cli_command", {"command": command})
     telemetry.maybe_send_usage_summary()
 
 
 def record_root_command(command: str | None) -> None:
-    """Record a top-level command unless a nested callback owns its full name."""
+    """Record a top-level command unless a nested callback owns its full name.
+
+    ``setup`` suppresses the generic first-run notice here (item 3) - its own
+    wizard shows a dedicated ``-- Telemetry --`` section a few lines later, so
+    printing the generic notice too would mention telemetry a 3rd time in one
+    run. The command is still recorded and the notice's "seen" flag is still
+    consumed inside the wizard's own telemetry step, so no *later* command in
+    the session shows it again.
+    """
     if command not in _NESTED_GROUPS:
-        _record_command(command)
+        _record_command(command, suppress_notice=command == "setup")
 
 
 def _subcommand_callback(group: str):
@@ -60,22 +69,38 @@ TELEMETRY_EXPLANATION = (
 )
 
 
+def telemetry_summary_line() -> str:
+    """One-line consent summary ("Telemetry: on/off"), reused by the setup
+    wizard's ``--yes`` path (item 3) so it never needs the full explanation."""
+    from doberman import telemetry
+
+    if telemetry.is_enabled():
+        return "Telemetry: on - anonymous usage counts; `doberman telemetry off` to opt out"
+    return "Telemetry: off"
+
+
 def configure_setup_consent(non_interactive: bool) -> None:
-    """Ask the setup-only consent question; ``--yes`` keeps the default (on) and prints the notice.
+    """Ask the setup-only consent question; ``--yes`` prints a compact on/off
+    summary instead.
 
     The caller is expected to have already printed a section header (e.g.
-    ``_section("Telemetry")``) — this only prints the one-line explanation and,
-    when interactive, asks the question.
+    ``_section("Telemetry")``). Interactive: print the full explanation, then
+    ask. ``--yes``: skip the explanation (the wizard mentions telemetry at
+    most twice per run - item 3 - and the ``Also:`` epilogue line already
+    covers the opt-out pointer) and print the one-line on/off summary instead;
+    ``telemetry.first_run_notice()`` is still called for its side effect only
+    (marks the notice "seen" so no later command in the session prints it),
+    discarding the text it returns since the summary line already says it.
     """
     from doberman import telemetry
 
+    if non_interactive:
+        telemetry.first_run_notice()
+        for line in wrap_detail(telemetry_summary_line(), indent=0, hang=2):  # item 4
+            typer.echo(line)
+        return
     for line in wrap_detail(TELEMETRY_EXPLANATION, indent=0):
         typer.echo(line)
-    if non_interactive:
-        notice = telemetry.first_run_notice()
-        if notice:
-            typer.echo(notice, err=True)
-        return
     if typer.confirm("Send anonymous usage stats to help improve Doberman?", default=True):
         telemetry.enable()
     else:

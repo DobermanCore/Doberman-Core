@@ -139,7 +139,8 @@ def test_doctor_hooks_missing_fails(tmp_path):
     result = runner.invoke(app, ["doctor", "--path", root])
     assert result.exit_code == 1
     assert "[FAIL] Host hooks: not installed" in result.stdout
-    assert "error: 1 critical check(s) not healthy" in result.stdout
+    # Round 4 item 2: the closing line names the failing check(s), not just a count.
+    assert "error: 1 critical: Host hooks - Doberman may not be protecting you." in result.stdout
 
 
 def test_doctor_config_missing_fails(tmp_path):
@@ -449,7 +450,7 @@ def test_dangling_hooks_fail_critical_and_name_the_fix(tmp_path, monkeypatch):
     assert result.exit_code == 1
     assert "[FAIL] Hook command: hooks call `doberman`" in result.stdout
     assert "uninstall-hooks" in result.stdout
-    assert "error: 1 critical check(s) not healthy" in result.stdout
+    assert "error: 1 critical: Hook command - Doberman may not be protecting you." in result.stdout
 
 
 def test_missing_binary_without_hooks_only_warns(tmp_path, monkeypatch):
@@ -484,3 +485,68 @@ def test_doctor_reports_the_policy_version(tmp_path):
     assert "pv1:" in result.stdout
     (obs,) = read_observations(str(tmp_path))
     assert obs["origin"] == "observed"
+
+
+# ---------------------------------------------------------------------------
+# Round 4 item 2: one output grammar, shared with `status` (Hooks/Policy/Auth/Health)
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_groups_checks_into_the_shared_sections(tmp_path):
+    root = str(tmp_path)
+    _make_healthy(root)
+
+    result = runner.invoke(app, ["doctor", "--path", root])
+    assert result.exit_code == 0, result.output
+    for section in ("-- Hooks --", "-- Policy --", "-- Auth --", "-- Health --"):
+        assert section in result.stdout
+
+    hooks_idx = result.stdout.index("-- Hooks --")
+    policy_idx = result.stdout.index("-- Policy --")
+    auth_idx = result.stdout.index("-- Auth --")
+    health_idx = result.stdout.index("-- Health --")
+    assert hooks_idx < policy_idx < auth_idx < health_idx
+
+    assert "Host hooks" in result.stdout[hooks_idx:policy_idx]
+    assert "Hook command" in result.stdout[hooks_idx:policy_idx]
+    assert "Config" in result.stdout[policy_idx:auth_idx]
+    assert "Enforcement" in result.stdout[policy_idx:auth_idx]
+    assert "Policy version" in result.stdout[policy_idx:auth_idx]
+    assert "2FA" in result.stdout[auth_idx:health_idx]
+    assert "Password" in result.stdout[auth_idx:health_idx]
+    assert "Fingerprint key" in result.stdout[auth_idx:health_idx]
+    assert "Decision DB" in result.stdout[health_idx:]
+    assert "Codex CLI" in result.stdout[health_idx:]
+
+
+# ---------------------------------------------------------------------------
+# Round 4 item 8: the PATH remedy names a concrete directory
+# ---------------------------------------------------------------------------
+
+
+def test_hook_command_path_remedy_names_a_concrete_directory(tmp_path, monkeypatch):
+    import shutil
+
+    from doberman.cli.doctor import _bin_dir_hint
+
+    root = str(tmp_path)
+    _make_healthy(root)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    results = run_checks(root)
+    check = next(r for r in results if r.name == "Hook command")
+    assert check.status.value == "fail"
+    # The remedy is the FIRST of the three ("Add <dir> to PATH", then pipx,
+    # then uninstall-hooks), naming the same directory `_bin_dir_hint` computes.
+    assert f"Add {_bin_dir_hint()} to PATH" in check.detail
+    assert check.detail.index("Add ") < check.detail.index("pipx install")
+    assert "pipx install" in check.detail
+    assert "uninstall-hooks" in check.detail
+
+
+def test_bin_dir_hint_never_raises_and_returns_a_string() -> None:
+    from doberman.cli.doctor import _bin_dir_hint
+
+    hint = _bin_dir_hint()
+    assert isinstance(hint, str)
+    assert hint

@@ -156,7 +156,10 @@ memory_app = typer.Typer(
 app.add_typer(memory_app, name="memory")
 
 hook_app = typer.Typer(
-    help="Host-harness integration hooks (e.g. Claude Code PreToolUse/PostToolUse).",
+    help=(
+        "Host-harness integration hooks (e.g. Claude Code PreToolUse/PostToolUse, "
+        "Codex CLI PreToolUse)."
+    ),
     no_args_is_help=True,
 )
 app.add_typer(hook_app, name="hook", rich_help_panel="Advanced")
@@ -191,9 +194,13 @@ def _main_callback(
 ) -> None:
     # `--dry-run` (setup / install-hooks / uninstall-hooks / uninstall) means
     # "write nothing" — telemetry state (distinct id, notice-shown flag) is a
-    # write like any other, so it's skipped too. This callback runs before the
-    # subcommand parses its own options, so sys.argv is the only signal available.
-    if "--dry-run" not in sys.argv[1:]:
+    # write like any other, so it's skipped too. `--help` never executes the
+    # subcommand at all (Click prints help and exits) - recording it here would
+    # print the first-run notice ABOVE the usage text (item 3/10). This
+    # callback runs before the subcommand parses its own options, so sys.argv
+    # is the only signal available for either check.
+    argv_tail = sys.argv[1:]
+    if "--dry-run" not in argv_tail and "--help" not in argv_tail:
         telemetry_cmd.record_root_command(ctx.invoked_subcommand)
 
 
@@ -436,38 +443,59 @@ def _section(title: str, width: int | None = None) -> str:
 _MAX_MENU_ATTEMPTS = 5
 
 
-def _abort_setup(*, mid_line: bool = False) -> None:
+def _abort_setup(*, mid_line: bool = False, mode_saved: str | None = None) -> None:
     """Abort the setup wizard cleanly: 'q'/'quit', an exhausted stdin, or too
     many invalid answers in a row all end the same way - never a bare Click
-    ``Aborted!`` and never a partially-written state (item 6). *mid_line*
-    covers a prompt that already printed its text with no trailing newline
-    (e.g. Click's ``... [Y/n]: ``) before stdin ran out - a blank line first
-    keeps this message from gluing onto it (item 11/13).
+    ``Aborted!`` and never a claim that contradicts what actually happened
+    (item 1/6). *mid_line* covers a prompt that already printed its text with
+    no trailing newline (e.g. Click's ``... [Y/n]: ``) before stdin ran out -
+    a blank line first keeps this message from gluing onto it (item 11/13).
+
+    *mode_saved* names the security mode already persisted THIS run before the
+    abort (only true once weight tuning is reached - hosts/mode menus abort
+    before anything is written) - the message must say so instead of the
+    generically false "nothing written" (item 1): the mode (and its preset
+    preferences) are on disk even though no hooks were.
     """
     if mid_line:
         typer.echo(err=True)
-    typer.echo("Aborted - nothing written.", err=True)
+    if mode_saved:
+        typer.echo(
+            f"Aborted - security mode {mode_saved} was already saved (no hooks written); "
+            "run 'doberman mode <other>' to change it, which needs your possession factor "
+            "to lower.",
+            err=True,
+        )
+    else:
+        typer.echo("Aborted - nothing written.", err=True)
     raise typer.Exit(code=1)
 
 
-def _prompt_menu(prompt_text: str, default: str, parse):
+def _prompt_menu(prompt_text: str, default: str, parse, *, mode_saved: str | None = None):
     """Reprompt loop shared by every `setup` wizard menu (hosts, mode, weight
-    tuning): 'q'/'quit' aborts cleanly, a closed/exhausted stdin aborts the
+    tuning): every prompt ends with "(q to quit)" so quitting is discoverable
+    (item 5); 'q'/'quit' aborts cleanly, a closed/exhausted stdin aborts the
     same way instead of a bare Click ``Aborted!``, and five invalid answers in
-    a row aborts too rather than looping forever (item 6).
+    a row aborts too rather than looping forever (item 6). A re-prompt after a
+    bad answer starts on a fresh stdout line rather than gluing onto the
+    previous prompt's text (item 15). *mode_saved* is forwarded to
+    :func:`_abort_setup` verbatim (see there).
     """
-    for _ in range(_MAX_MENU_ATTEMPTS):
+    prompt_text = f"{prompt_text} (q to quit)"
+    for attempt in range(_MAX_MENU_ATTEMPTS):
+        if attempt:
+            typer.echo()  # item 15: own line for the re-prompt, stdout side
         try:
             raw = typer.prompt(prompt_text, default=default)
         except (EOFError, typer.Abort):
-            _abort_setup(mid_line=True)
+            _abort_setup(mid_line=True, mode_saved=mode_saved)
         if raw.strip().lower() in ("q", "quit"):
-            _abort_setup()
+            _abort_setup(mode_saved=mode_saved)
         try:
             return parse(raw)
         except ValueError as exc:
             typer.echo(f"error: {exc} - try again", err=True)
-    _abort_setup()
+    _abort_setup(mode_saved=mode_saved)
 
 
 def _parse_weight(raw: str) -> float:
@@ -836,11 +864,17 @@ def _status_payload(path: str) -> dict:
     Nothing secret-shaped is included: enrollment is a boolean, elevations carry
     ids/scopes/expiry only, decisions carry ts/verdict/reason codes only.
     """
+    from doberman.storage.policy_catalogue import current_snapshot, policy_version
+
     role = load_active_role(path)
     doc = load_policy(path)
     vector = load_preferences(path)
     mode = load_mode(path)
     tone = load_message_tone(path)
+    # Read-only: unlike `doctor`'s "Policy version" check, `status` never
+    # records an observation - it only computes the id (pure hashing, no I/O).
+    snapshot = current_snapshot(path)
+    policy_version_full = policy_version(snapshot) if snapshot is not None else None
     twofa = totp.is_enrolled()
     password_enrolled = password.is_enrolled()
     grants = asyncio.run(active_elevations(path, datetime.now(timezone.utc)))
@@ -890,6 +924,7 @@ def _status_payload(path: str) -> dict:
         "prefs": {name: getattr(vector, name) for name in DIMENSIONS},
         "prefs_preset": preset_name(vector) or "custom",
         "policy": policy,
+        "policy_version": policy_version_full,
         "twofa": twofa,
         "password": password_enrolled,
         "elevations": [
@@ -929,7 +964,15 @@ def _protected_line(payload: dict) -> str:
 
 
 def _render_status_text(payload: dict) -> None:
-    """Human view: one blank line between each status block."""
+    """Human view: `_section`-grouped, same grammar `setup`/`doctor` use (item 2).
+
+    Layout: the "Protected: ..." headline, then the version/role identity
+    lines, then four sections - Hooks, Policy (mode/prefs/policy version,
+    shortened; the full hash is JSON-only), Auth (2FA/password/elevations/
+    taint), and Health (one line pointing at `doberman doctor` for detail) -
+    followed by Recent decisions, which stays its own trailing block since it
+    is activity history, not a health/auth/policy fact.
+    """
     modes = ", ".join(m.value for m in SecurityMode)
     typer.echo(_protected_line(payload))
     typer.echo("")
@@ -943,41 +986,52 @@ def _render_status_text(payload: dict) -> None:
         typer.echo("Version: unknown (source checkout)")
     else:
         typer.echo(f"Version: {doberman_version}")
-    typer.echo("")
 
     role = payload["role"]
     typer.echo(f"Role:   {role if role else '(none - role enforcement off)'}")
-    typer.echo("")
 
+    # -- Hooks --
+    typer.echo("")
+    typer.echo(_section("Hooks"))
+    # Same cheap check `doctor`'s "Hook command" uses: an installed hook that
+    # calls a `doberman` not on THIS shell's PATH would go unmediated.
+    doberman_on_path = shutil.which("doberman") is not None
+    for hook in payload["hooks"]:
+        state = "installed" if hook["installed"] else "not installed"
+        path_hint = "" if doberman_on_path or not hook["installed"] else "  (not on PATH)"
+        typer.echo(f"  {hook['scope']:<8} {hook['path']}  [{state}]{path_hint}")
+    if payload.get("excluded_from_global"):
+        typer.echo("  excluded from global/Codex-user hooks (run `doberman install-hooks` to undo)")
+
+    # -- Policy --
+    typer.echo("")
+    typer.echo(_section("Policy"))
     typer.echo(f"Mode:   {payload['mode']}  (of: {modes})")
-    typer.echo("")
-
     typer.echo(f"Messages: {payload['message_tone']}  (set via `doberman message-tone`)")
-    typer.echo("")
-
     prefs = payload["prefs"]
     typer.echo(
         "Prefs:  "
         + "  ".join(f"{name}={prefs[name]:.2f}" for name in DIMENSIONS)
         + f"  (preset: {payload['prefs_preset']})"
     )
-    typer.echo("")
-
     policy = payload["policy"]
     if policy is None:
         typer.echo("Policy: (none saved - run `doberman review --yes`)")
     else:
         typer.echo(f"Policy: {policy['enabled']}/{policy['total']} items enabled")
-    typer.echo("")
+    version_full = payload.get("policy_version")
+    # Shortened to 8 hex chars here; `--json`'s `policy_version` carries the
+    # full pv1:<sha256> id (item 2).
+    version_short = f"{version_full[:12]}..." if version_full else "(unavailable)"
+    typer.echo(f"Policy version: {version_short}")
 
+    # -- Auth --
+    typer.echo("")
+    typer.echo(_section("Auth"))
     twofa_status = "yes" if payload["twofa"] else "no"
     typer.echo(f"2FA:    {twofa_status} (optional; run `doberman 2fa setup`)")
-    typer.echo("")
-
     enrolled = "yes" if payload["password"] else "no (run `doberman password set`)"
     typer.echo(f"Password: {enrolled}")
-    typer.echo("")
-
     elevations = payload["elevations"]
     if not elevations:
         typer.echo("Elevations: (none active)")
@@ -988,27 +1042,18 @@ def _render_status_text(payload: dict) -> None:
             typer.echo(
                 f"  {grant['id']}  {grant['scope_glob']}  (expires {grant['expires_at']}; {kind})"
             )
-    typer.echo("")
-
     taint = payload["taint"]
     if not taint:
         typer.echo("Taint: (none)")
     else:
         typer.echo(f"Taint: {', '.join(f'{kind}={count}' for kind, count in taint.items())}")
-    typer.echo("")
 
-    typer.echo("Hooks:")
-    # Same cheap check `doctor`'s "Hook command" uses: an installed hook that
-    # calls a `doberman` not on THIS shell's PATH would go unmediated.
-    doberman_on_path = shutil.which("doberman") is not None
-    for hook in payload["hooks"]:
-        state = "installed" if hook["installed"] else "not installed"
-        path_hint = "" if doberman_on_path or not hook["installed"] else "  (not on PATH)"
-        typer.echo(f"  {hook['scope']:<8} {hook['path']}  [{state}]{path_hint}")
-    if payload.get("excluded_from_global"):
-        typer.echo("  excluded from global/Codex-user hooks (run `doberman install-hooks` to undo)")
+    # -- Health --
     typer.echo("")
+    typer.echo(_section("Health"))
+    typer.echo("Health: run `doberman doctor` for the full checklist.")
 
+    typer.echo("")
     typer.echo("Recent decisions:")
     recent = payload["recent_decisions"]
     if not recent:
@@ -1126,16 +1171,41 @@ def doctor(
 
     typer.echo("Doberman doctor")
     typer.echo("=" * 32)
+    # Same four-section grammar `status` uses (item 2): Hooks, Policy, Auth,
+    # Health - a check not named below falls into Health, the catch-all for
+    # optional extras/adapters. Ordered within each section to match
+    # `run_checks`'s existing order, so no test pinning check ORDER breaks.
+    section_for = {
+        "Host hooks": "Hooks",
+        "Hook command": "Hooks",
+        "Config": "Policy",
+        "Enforcement": "Policy",
+        "Policy version": "Policy",
+        "2FA": "Auth",
+        "Password": "Auth",
+        "Fingerprint key": "Auth",
+    }
+    by_section: dict[str, list] = {}
     for result in results:
-        header = f"{marks[result.status]} {result.name}: "
-        for line in wrap_detail(f"{header}{result.detail}", indent=0):
-            typer.echo(line)
+        by_section.setdefault(section_for.get(result.name, "Health"), []).append(result)
+    for section_name in ("Hooks", "Policy", "Auth", "Health"):
+        section_results = by_section.get(section_name, [])
+        if not section_results:
+            continue
+        typer.echo("")
+        typer.echo(_section(section_name))
+        for result in section_results:
+            header = f"{marks[result.status]} {result.name}: "
+            for line in wrap_detail(f"{header}{result.detail}", indent=0):
+                typer.echo(line)
 
     typer.echo("")
     if failures:
+        # item 2: name the failing checks instead of a bare count, so the
+        # closing line is useful even piped through `2>/dev/null`.
+        names = ", ".join(f.name for f in failures)
         typer.echo(
-            f"error: {len(failures)} critical check(s) not healthy - "
-            "Doberman may not be protecting you."
+            f"error: {len(failures)} critical: {names} - Doberman may not be protecting you."
         )
         raise typer.Exit(code=1)
     typer.echo("All critical checks passed.")
@@ -2340,7 +2410,7 @@ def install_hooks(
         typer.echo("This project is no longer excluded from global hooks.")
 
 
-def _write_codex_hook(scope: str, path: str) -> tuple[Path, bool]:
+def _write_codex_hook(scope: str, path: str, *, show_verify: bool = True) -> tuple[Path, bool]:
     """Write Doberman's Codex hook for *scope* and print the TRUST notice.
 
     Shared by ``install-hooks --host codex`` (:func:`_install_codex`) and the
@@ -2349,6 +2419,11 @@ def _write_codex_hook(scope: str, path: str) -> tuple[Path, bool]:
     of ``wrote`` (bold, item 2), same as the Claude Code write path. Returns
     ``(hooks_path, already_wired)`` so a caller (the setup wizard's summary)
     can say which one happened without re-deriving it.
+
+    *show_verify* prints the trailing "Verify it's live" pointer; ``setup``
+    passes ``False`` (item 14) because its own epilogue already gives every
+    wired host - Codex included - the same pointer once, and this ritual's
+    "cat .env" text otherwise duplicated it.
     """
     from doberman.hosthooks.install import load_settings, write_settings
     from doberman.hosthooks.install_codex import merge_codex_hooks, resolve_codex_hooks_path
@@ -2375,7 +2450,8 @@ def _write_codex_hook(scope: str, path: str) -> tuple[Path, bool]:
     typer.echo("Codex requires you to TRUST this hook before it runs:")
     typer.echo("  run a Codex command and approve the hook when prompted, or launch with")
     typer.echo("  --dangerously-bypass-hook-trust only if you already vet the hook source.")
-    typer.echo("Verify it's live: ask Codex to `cat .env` and confirm it is blocked.")
+    if show_verify:
+        typer.echo("Verify it's live: ask Codex to `cat .env` and confirm it is blocked.")
     return hooks_path, already_wired
 
 
@@ -2946,21 +3022,30 @@ def setup(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print what would be set/written; persist nothing."
     ),
+    no_telemetry: bool = typer.Option(
+        False,
+        "--no-telemetry",
+        help="Disable telemetry for this run and persist it (same as `doberman telemetry off`).",
+    ),
 ) -> None:
     """Friendly first-run wizard: pick your hosts and security posture, then wire them.
 
     Detects which agents you have installed (Claude Code, Codex CLI, an MCP client,
     OpenClaw), asks which ones to guard, then walks through security mode,
     preference tuning, and per-host wiring, finishing with a doctor pass. Exits
-    non-zero if that doctor pass finds a critical (e.g. hooks call `doberman`,
-    which is not on PATH), so a broken install is never reported as complete.
+    0 once fully wired and healthy, 1 if that doctor pass finds a critical (e.g.
+    hooks call `doberman`, which is not on PATH) - so a broken install is never
+    reported as complete - and 3 if setup itself succeeded but nothing is wired
+    yet (mcp/openclaw only: a manual paste-and-restart step still stands
+    between here and protection).
     Later lowerings require a possession factor - a 2FA code if enrolled,
     otherwise your Doberman password (set via `doberman password set`).
     Pass `--yes` for a fully non-interactive run (useful for CI or scripting);
     pass `--dry-run` to preview the mode/prefs/files without writing anything
-    (mirrors `install-hooks --dry-run`). `--host` accepts claude, codex, mcp, and
-    openclaw (`install-hooks --host` only wires claude/codex - mcp/openclaw have
-    no hook file to write, only the pointer this wizard prints).
+    (mirrors `install-hooks --dry-run`); pass `--no-telemetry` to opt out for
+    good without answering the telemetry question. `--host` accepts claude,
+    codex, mcp, and openclaw (`install-hooks --host` only wires claude/codex -
+    mcp/openclaw have no hook file to write, only the pointer this wizard prints).
     """
     from doberman.hosthooks import setup as hosthooks_setup
     from doberman.hosthooks.install import (
@@ -2984,8 +3069,8 @@ def setup(
 
     # ------------------------------------------------------------------
     # 0. Usage validation that must happen before any banner prints (item 9):
-    # a bad --host is a hard usage error, not something worth a welcome
-    # message first.
+    # a bad --host OR a bad --mode is a hard usage error, not something worth
+    # a welcome message first (item 2).
     # ------------------------------------------------------------------
     valid_host_keys = [h.key for h in HOSTS]
     if hosts:
@@ -2997,6 +3082,14 @@ def setup(
                 err=True,
             )
             raise typer.Exit(2)
+
+    chosen_mode_from_flag: SecurityMode | None = None
+    if mode_name is not None:
+        try:
+            chosen_mode_from_flag = parse_mode_choice(mode_name)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
 
     # A non-interactive preview: `--dry-run` with no `--yes` and no TTY on
     # stdin has nothing to read from (item 12) - rather than let the first
@@ -3026,15 +3119,33 @@ def setup(
     if non_tty_preview:
         _note("note: stdin is not a terminal - using defaults for the preview")
 
+    # item 11: exactly one blank line ever separates two sections, even when
+    # every optional prompt between them was skipped (flags / --yes) and
+    # nothing else printed in the gap. `blank_pending` tracks whether the last
+    # thing this command echoed to stdout was already a blank line; every
+    # section header (and the two other section-adjacent blanks below) routes
+    # through `_print_step_section`/the guard instead of an unconditional
+    # `typer.echo("")`, and `_mark_content()` flags the few spots that print
+    # real content WITHOUT a guarded header of their own (the global-scope
+    # confirmation, and each per-host wiring block for claude/codex, whose
+    # write line has no header at all under --yes/flags).
+    blank_pending = True  # the welcome banner just printed the opening blank
+
+    def _mark_content() -> None:
+        nonlocal blank_pending
+        blank_pending = False
+
     # ------------------------------------------------------------------
     # Step counter plan (item 3): only an interactive run has anything to
     # count - `--yes` prompts for nothing, so it never shows one. A stage
     # applies only if this run's flags mean it will actually show a prompt;
     # "Wiring" covers every per-host section (Hook installation/MCP/OpenClaw)
-    # as one stage, and "Preference tuning"/"Telemetry"/"Doctor" are counted
-    # whenever reached even on the rare path where a refused mode lowering
-    # skips the tuning body - ponytail: an exactly precise dynamic
-    # denominator isn't worth the complexity for that edge case.
+    # as one stage, and "Preference tuning"/"Telemetry"/"Doctor"/"Demo" are
+    # counted whenever reached even on the rare path where a refused mode
+    # lowering skips the tuning body - ponytail: an exactly precise dynamic
+    # denominator isn't worth the complexity for that edge case. "Demo" (item
+    # 7) covers the closing "see it work?" offer, which every interactive run
+    # that gets this far reaches (hooks wired, or pending on mcp/openclaw).
     # ------------------------------------------------------------------
     step_names: list[str] = []
     if not hosts and not yes:
@@ -3042,13 +3153,28 @@ def setup(
     if mode_name is None and not yes:
         step_names.append("Security mode")
     if not yes:
-        step_names.extend(["Preference tuning", "Wiring", "Telemetry", "Doctor"])
+        step_names.extend(["Preference tuning", "Wiring", "Telemetry", "Doctor", "Demo"])
     step_total = len(step_names)
     step_index = {name: i + 1 for i, name in enumerate(step_names)}
 
     def _step_section(title: str, stage: str | None = None) -> str:
         n = step_index.get(stage or title)
         return _section(f"{title} [{n} of {step_total}]" if n else title)
+
+    def _step_counter(stage: str) -> str:
+        """The bracketed ``[N of M]`` suffix for a stage shown inline (the
+        demo offer isn't a `_section` header - item 7), or "" under --yes."""
+        n = step_index.get(stage)
+        return f" [{n} of {step_total}]" if n else ""
+
+    def _print_step_section(title: str, stage: str | None = None) -> None:
+        """Print one section header, preceded by exactly one blank line -
+        never two in a row (item 11)."""
+        nonlocal blank_pending
+        if not blank_pending:
+            typer.echo("")
+        typer.echo(_step_section(title, stage))
+        blank_pending = False
 
     # ------------------------------------------------------------------
     # b. Hosts
@@ -3060,7 +3186,7 @@ def setup(
     elif yes:
         chosen_hosts = default_hosts(detected)
     else:
-        typer.echo(_step_section("Hosts"))
+        _print_step_section("Hosts")
         for line in host_menu_lines(detected):
             typer.echo(line)
         typer.echo("")
@@ -3077,17 +3203,12 @@ def setup(
     # c. Security mode
     # ------------------------------------------------------------------
     if mode_name is not None:
-        # Caller pre-selected a mode; validate it immediately.
-        try:
-            chosen_mode = parse_mode_choice(mode_name)
-        except ValueError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(2) from exc
+        # Already validated in step 0, before the welcome banner (item 2).
+        chosen_mode = chosen_mode_from_flag
     elif yes:
         chosen_mode = SecurityMode.balanced
     else:
-        typer.echo("")
-        typer.echo(_step_section("Security mode"))
+        _print_step_section("Security mode")
         for line in mode_menu_lines():
             typer.echo(line)
         typer.echo("Not sure? `doberman demo --mode strict` shows what each mode blocks.")
@@ -3099,13 +3220,14 @@ def setup(
     # ------------------------------------------------------------------
     if dry_run:
         preview_vector = vector_for(chosen_mode)
-        typer.echo("")
-        typer.echo(_section("Dry run"))
-        typer.echo(
+        _print_step_section("Dry run")
+        dry_run_mode_line = (
             f"[dry-run] would set mode: {chosen_mode.value} (preset: "
             + "  ".join(_dim_label(n, getattr(preview_vector, n)) for n in DIMENSIONS)
             + ")"
         )
+        for line in wrap_detail(dry_run_mode_line, indent=0, hang=2):  # item 4
+            typer.echo(line)
         if "claude" in chosen_hosts:
             claude_scope_preview = "global" if global_ else "project"
             preview_path = resolve_settings_path(claude_scope_preview, path)
@@ -3141,6 +3263,7 @@ def setup(
             _note("note: falling back to project scope (not writing to your home directory)")
             global_ = False
             global_declined = True
+        _mark_content()  # item 11: real content just printed, unguarded by a section header
 
     # A genuinely fresh repo (no persisted policy yet) mirrors apply_mode_change's
     # own establish_ok first-run bypass: choosing an initial mode/preference
@@ -3199,8 +3322,7 @@ def setup(
         tune_prefs = False
 
         if not yes:
-            typer.echo("")
-            typer.echo(_step_section("Preference tuning"))
+            _print_step_section("Preference tuning")
             for line in wrap_detail(
                 f"The {persisted_mode.value!r} preset applies these weights: "
                 + "  ".join(_dim_label(n, getattr(preset_vector, n)) for n in DIMENSIONS),
@@ -3216,7 +3338,17 @@ def setup(
             for dim in DIMENSIONS:
                 current = getattr(vector, dim)
                 typer.echo(f"  {DIMENSION_DESCRIPTIONS[dim]}")
-                value = _prompt_menu(f"  {dim}", f"{current:.2f}", _parse_weight)
+                # item 9: the identifier is spoken as words in the prompt itself
+                # (e.g. "interruption tolerance"); the "tuned: ..." summary below
+                # keeps the underscored form since it doubles as the exact
+                # `doberman prefs <dimension> <value>` argument. item 1: once
+                # here, the mode is already persisted, so an abort must say so.
+                value = _prompt_menu(
+                    f"  {dim.replace('_', ' ')}",
+                    f"{current:.2f}",
+                    _parse_weight,
+                    mode_saved=persisted_mode.value,
+                )
                 if value != current:
                     changed_dims.append(dim)
                 vector = vector.with_weight(dim, value)
@@ -3285,8 +3417,7 @@ def setup(
         elif yes or global_declined:
             claude_scope = "project"
         else:
-            typer.echo("")
-            typer.echo(_step_section("Hook installation (Claude Code)", stage="Wiring"))
+            _print_step_section("Hook installation (Claude Code)", stage="Wiring")
             use_global = typer.confirm(
                 "Install hooks globally (~/.claude/settings.json)?",
                 default=False,
@@ -3312,6 +3443,7 @@ def setup(
             typer.echo(style_text(f"wrote {settings_path}", bold=True))
             wired_state["claude"] = "wrote"
         wired.append(("claude", str(settings_path)))
+        _mark_content()  # item 11: no header under --yes/flags, but real content just printed
 
     if "codex" in chosen_hosts:
         if global_:
@@ -3319,21 +3451,22 @@ def setup(
         elif yes or global_declined:
             codex_scope = "repo"
         else:
-            typer.echo("")
-            typer.echo(_step_section("Hook installation (Codex CLI)", stage="Wiring"))
+            _print_step_section("Hook installation (Codex CLI)", stage="Wiring")
             use_user = typer.confirm(
                 "Install the Codex hook user-wide (~/.codex/hooks.json)?",
                 default=False,
             )
             codex_scope = "user" if use_user else "repo"
-        codex_hooks_path, codex_already = _write_codex_hook(codex_scope, path)
+        # item 14: the epilogue gives Codex the same "Verify it's live" pointer
+        # every wired host gets, so this ritual doesn't print its own copy.
+        codex_hooks_path, codex_already = _write_codex_hook(codex_scope, path, show_verify=False)
         wired_state["codex"] = "already" if codex_already else "wrote"
         wired.append(("codex", str(codex_hooks_path)))
+        _mark_content()  # item 11: same as claude above
 
     if "mcp" in chosen_hosts:
-        typer.echo("")
-        typer.echo(
-            _step_section("MCP proxy (Cursor / Claude Desktop / other MCP client)", stage="Wiring")
+        _print_step_section(
+            "MCP proxy (Cursor / Claude Desktop / other MCP client)", stage="Wiring"
         )
         for line in wrap_detail(
             "Doberman can't edit this host's MCP config for you; paste this into it, "
@@ -3356,8 +3489,7 @@ def setup(
         wired.append(("mcp", None))
 
     if "openclaw" in chosen_hosts:
-        typer.echo("")
-        typer.echo(_step_section("OpenClaw", stage="Wiring"))
+        _print_step_section("OpenClaw", stage="Wiring")
         typer.echo(
             "OpenClaw agents route through Doberman via a small local plugin, not a hook-pack."
         )
@@ -3373,15 +3505,20 @@ def setup(
     # host to report), before the doctor pass (so a critical below still
     # reports whatever consent was just given).
     # ------------------------------------------------------------------
-    typer.echo("")
-    typer.echo(_step_section("Telemetry"))
-    telemetry_cmd.configure_setup_consent(yes)
+    _print_step_section("Telemetry")
+    if no_telemetry:
+        from doberman import telemetry
+
+        telemetry.disable()
+        typer.echo("Telemetry: off (--no-telemetry)")
+    else:
+        telemetry_cmd.configure_setup_consent(yes)
+    _mark_content()  # item 11: the consent branch's own confirm prompt isn't tracked
 
     # ------------------------------------------------------------------
     # f. Doctor pass
     # ------------------------------------------------------------------
-    typer.echo("")
-    typer.echo(_step_section("Doctor"))
+    _print_step_section("Doctor")
     # Starts empty so a doctor *crash* (caught below) reads as "could not be
     # determined" rather than as a known critical — the honest-end gate below
     # only fires on an *actual* critical the doctor pass found, not on doctor
@@ -3444,18 +3581,27 @@ def setup(
         header = "Setup complete"
     docs_url = "https://github.com/DobermanCore/Doberman-Core/blob/main/docs/SETUP.md"
 
-    typer.echo("")
-    typer.echo(_section(header))
-    fg, bold = _MODE_STYLE[persisted_mode.value]
-    mode_line = f"Mode:       {style_text(persisted_mode.value, fg, bold=bold)}"
+    _print_step_section(header)
+    # item 4: wrap through wrap_detail with a hanging indent, so a long "not
+    # lowered" reason wraps under the mode value's column instead of running
+    # off past 78 columns. Wrap the PLAIN text first (styling wraps the mode
+    # value in ANSI codes that would otherwise inflate the counted width),
+    # then color just that one word on the first wrapped line.
+    plain_mode_line = f"Mode:       {persisted_mode.value}"
     if persisted_mode is not chosen_mode:
         # item 5: the reason travels with the summary line itself, so
         # redirected stdout alone (`2>/dev/null`) still explains the refusal.
-        mode_line += (
+        plain_mode_line += (
             f" (requested {chosen_mode.value}; not lowered - a possession factor is "
             f"required, run 'doberman mode {chosen_mode.value}')"
         )
-    typer.echo(mode_line)
+    mode_lines = wrap_detail(plain_mode_line, indent=0, hang=12)
+    fg, bold = _MODE_STYLE[persisted_mode.value]
+    mode_lines[0] = mode_lines[0].replace(
+        persisted_mode.value, style_text(persisted_mode.value, fg, bold=bold), 1
+    )
+    for line in mode_lines:
+        typer.echo(line)
     typer.echo(f"Prefs:      {prefs_source}")
     typer.echo("Hosts:")
     verify_hosts: list[str] = []
@@ -3478,6 +3624,7 @@ def setup(
         elif host_key == "openclaw":
             typer.echo("  openclaw follow adapters/openclaw/README.md, then run its canary check")
     typer.echo("")
+    blank_pending = True  # item 11: the "Hosts:" block just ended on this blank
 
     # An incomplete run gets the remedy and nothing else: no Telemetry/Also/
     # demo epilogue, and never the demo/verify peak-end below.
@@ -3497,41 +3644,56 @@ def setup(
         raise typer.Exit(code=1)
 
     if hooks_kind_wired:
-        for line in wrap_detail(
-            "Hooks written. Doberman activates when you restart your session.", indent=0
-        ):
+        # item 6: never claim "Hooks written." on a re-run that wrote nothing -
+        # true only if at least one hooks-kind host was freshly written this
+        # run; a run where every one was already wired says so instead.
+        any_freshly_written = any(wired_state.get(h) == "wrote" for h, _ in hooks_kind_wired)
+        hooks_message = (
+            "Hooks written. Doberman activates when you restart your session."
+            if any_freshly_written
+            else "Hooks already in place. Doberman activates when you restart your session."
+        )
+        for line in wrap_detail(hooks_message, indent=0):
             typer.echo(line)
+        blank_pending = False
 
     telemetry_cmd.capture_setup_completed(
         chosen_mode.value, [h for h, _ in wired], claude_scope, yes
     )
-    from doberman import telemetry
-
-    telemetry_line = (
-        "Telemetry: on - anonymous usage counts; `doberman telemetry off` to opt out"
-        if telemetry.is_enabled()
-        else "Telemetry: off"
-    )
-    typer.echo("")
-    typer.echo(telemetry_line)
     if password.is_enrolled() or totp.is_enrolled():
         factor = "2FA" if totp.is_enrolled() else "password"
+        if not blank_pending:
+            typer.echo("")
         typer.echo(f"Possession factor: set ({factor}).")
+        blank_pending = False
 
     # ------------------------------------------------------------------
     # Peak-end epilogue (item 1): one primary next step, not seven
     # equal-weight lines. Order: Verify it's live -> Next (bold) -> Also
     # (muted, everything else, compact). A pending run (mcp/openclaw only)
     # has nothing live to verify yet - it gets its own pointer to the still-
-    # manual paste-and-restart step instead.
+    # manual paste-and-restart step instead. `pending` and `verify_hosts`/
+    # `hooks_kind_wired` are complementary given `setup_ok` is True here (we
+    # already returned above otherwise), so exactly one of the two blocks
+    # below prints - the leading blank (item 11) is never followed by nothing.
     # ------------------------------------------------------------------
-    typer.echo("")
+    if not blank_pending:
+        typer.echo("")
     if pending:
-        for line in wrap_detail(
-            "After you paste the block and restart your client: ask your agent to "
-            "read .env and confirm it is blocked.",
-            indent=0,
-        ):
+        # item 13: openclaw has no paste step, unlike mcp - name the actual
+        # remaining manual step instead of a generic "paste the block".
+        pending_hosts = {host_key for host_key, _ in wired}
+        if "mcp" in pending_hosts:
+            pending_message = (
+                "After you paste the block and restart your client: ask your agent to "
+                "read .env and confirm it is blocked."
+            )
+        else:
+            pending_message = (
+                "After you follow adapters/openclaw/README.md and restart: ask your agent "
+                "to read .env and confirm it is blocked."
+            )
+        for line in wrap_detail(pending_message, indent=0):
             typer.echo(line)
     elif verify_hosts:
         for line in wrap_detail(
@@ -3541,18 +3703,18 @@ def setup(
             typer.echo(line)
 
     if hooks_kind_wired or pending:
+        # item 7: the demo offer counts as a step too; item 12: the prompt
+        # text itself carries no "Next:" label - only the final printed line
+        # (the fallback below, or --yes's own line) does.
+        demo_question = (
+            "See it work? Run a scripted attack through the real engine now "
+            "(`doberman demo --fast`)" + _step_counter("Demo")
+        )
         if yes:
             typer.echo(style_text("Next: `doberman demo --fast`", bold=True))
         else:
             try:
-                want_demo = typer.confirm(
-                    style_text(
-                        "Next: See it work? Run a scripted attack through the real "
-                        "engine now (`doberman demo --fast`)",
-                        bold=True,
-                    ),
-                    default=True,
-                )
+                want_demo = typer.confirm(style_text(demo_question, bold=True), default=True)
             except (EOFError, typer.Abort):
                 # A closed/exhausted stdin (or Ctrl-C) here must never fail an
                 # already-succeeded setup: fall back to the same static
@@ -3560,7 +3722,7 @@ def setup(
                 # pointer instead of going silent mid-question. The confirm
                 # prompt already wrote its text with no trailing newline
                 # (item 11/13) - a blank line first keeps this from gluing
-                # onto it.
+                # onto it, and this fallback starts on that fresh line.
                 typer.echo()
                 typer.echo(style_text("Next: `doberman demo --fast`", bold=True))
                 want_demo = False

@@ -101,6 +101,35 @@ def test_2fa_remove_warning_output_is_ascii(monkeypatch):
     assert result.output.isascii(), f"non-ASCII in 2fa remove output: {result.output!r}"
 
 
+def test_doctor_output_is_ascii_and_cp1252_safe(tmp_path, monkeypatch):
+    # doctor's own detail strings carried an em dash in several checks (2FA /
+    # Password "not set" warnings, among others) - assert the whole checklist
+    # stays ASCII/cp1252 safe, on both a bare (unhealthy) repo and one
+    # `setup --yes` already wired (round 4 item 16).
+    import shutil
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: (
+            "/venv/bin/doberman" if name == "doberman" else real_which(name, *a, **k)
+        ),
+    )
+    bare = runner.invoke(app, ["doctor", "--path", str(tmp_path)])
+    assert bare.output.isascii(), f"non-ASCII in doctor output: {bare.output!r}"
+    bare.output.encode("cp1252")
+
+    wired = tmp_path / "wired"
+    wired.mkdir()
+    setup_result = runner.invoke(app, ["setup", "--yes", "--path", str(wired)])
+    assert setup_result.exit_code == 0, setup_result.output
+    result = runner.invoke(app, ["doctor", "--path", str(wired)])
+    assert result.exit_code == 0, result.output
+    assert result.output.isascii(), f"non-ASCII in doctor output: {result.output!r}"
+    result.output.encode("cp1252")
+
+
 def test_bad_mode_choice_error_is_ascii():
     """The setup mode prompt error must remain pure ASCII."""
     with pytest.raises(ValueError) as excinfo:

@@ -28,13 +28,29 @@ MODE_DESCRIPTIONS: dict[SecurityMode, str] = {
 }
 
 #: Plain-English meaning of each preference dimension shown during tuning.
+#: Each carries a one-line 0/1 anchor (item 9) so a bare number has a concrete
+#: meaning instead of just "strongly" - accurate to the dimension docstrings in
+#: ``doberman.policy.preferences`` (each weight modulates step-up propensity;
+#: ``interruption_tolerance`` alone scales the ask-threshold rather than the
+#: care term, hence its distinct "never ask" / "ask on every risky action"
+#: framing versus the other three's "never/always escalate").
 DIMENSION_DESCRIPTIONS: dict[str, str] = {
-    "confidentiality": "How strongly to step up for sensitive data or external destinations.",
-    "reversibility": "How strongly to step up for actions that are difficult to undo.",
-    "interruption_tolerance": (
-        "How willing you are to be asked before risky actions; higher means more prompts."
+    "confidentiality": (
+        "How strongly to step up for sensitive data or external destinations "
+        "(0 = never escalate, 1 = always escalate)."
     ),
-    "blast_radius": "How strongly to step up for actions that affect many targets.",
+    "reversibility": (
+        "How strongly to step up for actions that are difficult to undo "
+        "(0 = never escalate, 1 = always escalate)."
+    ),
+    "interruption_tolerance": (
+        "How willing you are to be asked before risky actions "
+        "(0 = never ask, 1 = ask on every risky action)."
+    ),
+    "blast_radius": (
+        "How strongly to step up for actions that affect many targets "
+        "(0 = never escalate, 1 = always escalate)."
+    ),
 }
 
 
