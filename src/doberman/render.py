@@ -35,6 +35,14 @@ _VERDICT_STYLES: dict[Verdict, dict[str, object]] = {
     Verdict.PASS: {"fg": "green"},
 }
 
+#: The same palette as a Rich style string (e.g. for `rich.text.Text(style=...)`),
+#: derived from `_VERDICT_STYLES` so a Rich-based renderer (the `tui` decision
+#: browser) can never drift from `doberman log`'s colors — one source of truth.
+_RICH_VERDICT_STYLES: dict[Verdict, str] = {
+    verdict: " ".join((["bold"] if style.get("bold") else []) + [str(style["fg"])])
+    for verdict, style in _VERDICT_STYLES.items()
+}
+
 _MIN_WRAP_WIDTH = 60
 _MAX_WRAP_WIDTH = 120
 
@@ -93,6 +101,18 @@ def verdict_label_str(value: str) -> str:
         return verdict_label(Verdict(value))
     except ValueError:
         return f"{value:<{_LABEL_WIDTH}}"
+
+
+def verdict_rich_style(verdict: Verdict) -> str:
+    """Rich style string for `verdict` (e.g. `rich.text.Text(..., style=...)`).
+
+    Same palette `verdict_label` uses, just expressed for Rich instead of
+    Typer/Click — the one thing any Rich-based renderer (the `tui` decision
+    browser) should call rather than keeping a second copy of the colors.
+    An unrecognized value returns "" (no style) rather than raising, matching
+    :func:`verdict_label_str`'s fail-safe behavior on a corrupt/future value.
+    """
+    return _RICH_VERDICT_STYLES.get(verdict, "")
 
 
 def wrap_detail(text: str, indent: int = 4, width: int | None = None) -> list[str]:

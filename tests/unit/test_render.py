@@ -87,6 +87,28 @@ def test_wrap_detail_clamps_the_real_terminal_size_too(monkeypatch):
     assert all(len(line) <= 120 for line in lines)
 
 
+def test_verdict_rich_style_is_bold_bright_red_for_block():
+    # BLOCK must be the most legible element (design critique P1): bold +
+    # bright_red, not the dim `bold red` a second copy of this palette once had.
+    assert render.verdict_rich_style(Verdict.BLOCK) == "bold bright_red"
+
+
+def test_verdict_rich_style_matches_the_cli_palette_for_every_verdict():
+    # One source of truth: the Rich style string and the Typer/Click kwargs in
+    # `_VERDICT_STYLES` must describe the same color for every verdict, so a
+    # Rich-based renderer (the `tui` decision browser) can never drift from
+    # `doberman log`.
+    for verdict in Verdict:
+        style = render.verdict_rich_style(verdict)
+        kwargs = render._VERDICT_STYLES[verdict]
+        assert str(kwargs["fg"]) in style
+        assert kwargs.get("bold", False) is ("bold" in style)
+
+
+def test_verdict_rich_style_on_an_unrecognized_value_is_empty_not_a_raise():
+    assert render.verdict_rich_style("not-a-verdict") == ""  # type: ignore[arg-type]
+
+
 def test_a_242_char_line_wraps_into_multiple_lines():
     phrase = "Shell, package, or git egress requires authentication because "
     text = (phrase * 4)[:242]
