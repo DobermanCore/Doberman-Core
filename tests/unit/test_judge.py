@@ -10,6 +10,7 @@ import importlib.machinery
 import itertools
 import json
 import sys
+import threading
 import time
 import types
 from datetime import datetime, timezone
@@ -238,6 +239,48 @@ def test_hard_timeout_returns_none_within_bound(monkeypatch):
     elapsed = time.monotonic() - start
     assert result is None
     assert elapsed < 0.2  # well under the fake client's 0.3s block
+
+
+def test_timed_out_worker_is_a_daemon_thread(monkeypatch):
+    """Review finding: a non-daemon worker left running past the timeout would
+    be joined by CPython's `_python_exit` atexit hook, blocking interpreter
+    exit on a hung connection and leaking one non-daemon thread per timed-out
+    call. The worker must be a daemon thread named "doberman-judge" so it
+    never blocks exit - and `adjudicate` itself must still return within
+    `_JUDGE_TIMEOUT_S` regardless of how long the underlying call keeps
+    running.
+    """
+    import doberman.judge as judge_module
+
+    monkeypatch.setattr(judge_module, "_JUDGE_TIMEOUT_S", 0.05)
+
+    release = threading.Event()
+
+    def _slow(_kwargs):
+        release.wait(timeout=2)  # held open past the timeout on purpose
+        return _FakeMessage(json.dumps({"unambiguous": True, "high_impact": False}))
+
+    _install_fake_anthropic(monkeypatch, _slow)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
+
+    judge = HaikuJudgeAdjudicator()
+    start = time.monotonic()
+    result = judge.adjudicate({"action_type": "file_read"}, _PASS)
+    elapsed = time.monotonic() - start
+
+    try:
+        assert result is None
+        assert elapsed < 0.5  # bounded by _JUDGE_TIMEOUT_S, not the 2s release wait
+
+        judge_threads = [t for t in threading.enumerate() if t.name == "doberman-judge"]
+        assert judge_threads, "expected the timed-out judge worker to still be alive"
+        assert all(t.daemon for t in judge_threads), "judge worker must be a daemon thread"
+    finally:
+        release.set()  # let the worker finish so it doesn't leak into other tests
+        for t in threading.enumerate():
+            if t.name == "doberman-judge":
+                t.join(timeout=2)
 
 
 def test_judge_request_never_leaks_beyond_redacted_features(monkeypatch):

@@ -35,11 +35,11 @@ it must never raise into a caller and never emit a partial/guessed
 
 from __future__ import annotations
 
-import concurrent.futures
 import importlib.util
 import json
 import logging
 import os
+import threading
 from collections.abc import Mapping
 from typing import Any
 
@@ -178,10 +178,10 @@ class HaikuJudgeAdjudicator:
 
     SHADOW-ONLY, OFFLINE-ONLY (see module docstring): nothing in core
     registers or calls this in the live decision path today. ``adjudicate``
-    never raises and never blocks longer than :data:`_JUDGE_TIMEOUT_S` (wall
-    clock), even against a test double that ignores the SDK's own ``timeout=``
-    kwarg - the bound is enforced here via a single-worker
-    ``ThreadPoolExecutor``, not left to the SDK alone.
+    never raises, and the CALLER never waits longer than
+    :data:`_JUDGE_TIMEOUT_S` (wall clock), even against a test double that
+    ignores the SDK's own ``timeout=`` kwarg - the bound is enforced here via
+    a daemon worker thread joined with a timeout, not left to the SDK alone.
     """
 
     def adjudicate(
@@ -189,13 +189,30 @@ class HaikuJudgeAdjudicator:
     ) -> GuardrailResult | None:
         if not _judge_enabled():
             return None
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        try:
-            future = executor.submit(_call_judge, features)
-            parsed = future.result(timeout=_JUDGE_TIMEOUT_S)
-        except Exception:  # noqa: BLE001 - any failure/timeout is an abstain
-            logger.debug("judge: adjudicate failed or timed out; abstaining", exc_info=True)
+        slot: dict[str, Any] = {}
+
+        def _run() -> None:
+            try:
+                slot["result"] = _call_judge(features)
+            except Exception:  # noqa: BLE001 - any failure is an abstain
+                slot["error"] = True
+                logger.debug("judge: adjudicate failed; abstaining", exc_info=True)
+
+        # ponytail: a daemon thread + join(timeout=) bounds the CALLER's wait,
+        # not the SDK call itself - a timed-out call keeps running inside
+        # client.messages.create() until the SDK returns or raises. daemon=True
+        # just means CPython's _python_exit atexit hook never joins it, so a
+        # hung connection can't block interpreter exit and no thread leaks past
+        # process exit. A hard kill of the in-flight call would need a
+        # process-based executor (ProcessPoolExecutor) - not worth it for a
+        # shadow/offline path with no production caller.
+        worker = threading.Thread(target=_run, name="doberman-judge", daemon=True)
+        worker.start()
+        worker.join(timeout=_JUDGE_TIMEOUT_S)
+        if worker.is_alive():
+            logger.debug("judge: adjudicate timed out; abstaining (worker still running)")
             return None
-        finally:
-            executor.shutdown(wait=False)
+        if "error" in slot:
+            return None
+        parsed = slot["result"]
         return _recommend(parsed["unambiguous"], parsed["high_impact"], current)
