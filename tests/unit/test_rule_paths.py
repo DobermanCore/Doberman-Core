@@ -16,6 +16,7 @@ from doberman.engine.rules.paths import (
     CICD_CONFIG_GLOBS,
     DEFAULT_BLOCKED_GLOBS,
     DEFAULT_SENSITIVE_GLOBS,
+    VERIFICATION_CONFIG_GLOBS,
     ProtectedPathRule,
     _sanitize_globs,
 )
@@ -164,9 +165,53 @@ def test_cicd_config_requires_auth(tmp_path, cicd_path):
     ],
 )
 def test_verification_config_requires_auth(tmp_path, config_path):
-    result = RULE.evaluate(_action(config_path), _ctx(tmp_path))
+    # Editing (writing) governance/lint config can silently disable a check —
+    # that is what the AUTH step-up guards. Explicit action_type=file_write:
+    # this rule scopes VERIFICATION_CONFIG_GLOBS to mutations only (see the
+    # read/other-action-type PASS tests below).
+    result = RULE.evaluate(_action(config_path, action_type=ActionType.file_write), _ctx(tmp_path))
     assert result.verdict is Verdict.AUTH
     assert ReasonCode.sensitive_path_access in result.reason_codes
+
+
+@pytest.mark.parametrize("config_path", ["CODEOWNERS", "ruff.toml"])
+def test_verification_config_read_passes(tmp_path, config_path):
+    # Agents read CODEOWNERS / lint-tool config constantly (routine lookups)
+    # with no security value in gating that — only a SILENT EDIT can hide a
+    # bad change from review/CI, so a plain read must PASS, not AUTH. Raising
+    # on every read of these extremely common files would be pure approval
+    # fatigue with no corresponding security benefit.
+    result = RULE.evaluate(_action(config_path, action_type=ActionType.file_read), _ctx(tmp_path))
+    assert result.verdict is Verdict.PASS
+
+
+def test_verification_config_delete_requires_auth(tmp_path):
+    # Deletion silences a check just as effectively as a bad edit — the other
+    # mutation action type this glob set steps up on.
+    result = RULE.evaluate(
+        _action("CODEOWNERS", action_type=ActionType.file_delete), _ctx(tmp_path)
+    )
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_path_access in result.reason_codes
+
+
+def test_verification_config_other_action_type_passes(tmp_path):
+    # Only file_write/file_delete are mutations for this scoped glob set — any
+    # other action type (e.g. a shell command that happens to name the path)
+    # abstains rather than AUTHing.
+    result = RULE.evaluate(_action("CODEOWNERS", action_type=ActionType.shell_exec), _ctx(tmp_path))
+    assert result.verdict is Verdict.PASS
+
+
+def test_verification_config_globs_are_not_unconditionally_sensitive():
+    # VERIFICATION_CONFIG_GLOBS must NOT be part of DEFAULT_SENSITIVE_GLOBS
+    # (that would make every action type AUTH, defeating the read/write
+    # scoping above) — it is matched separately, gated on action_type, inside
+    # ProtectedPathRule. Unlike CICD_CONFIG_GLOBS (still action-type-agnostic
+    # and still folded into DEFAULT_SENSITIVE_GLOBS, see the assertion below).
+    assert set(_sanitize_globs(VERIFICATION_CONFIG_GLOBS)).isdisjoint(
+        set(_sanitize_globs(DEFAULT_SENSITIVE_GLOBS))
+    )
 
 
 def test_pyproject_toml_is_not_flagged(tmp_path):
@@ -188,6 +233,20 @@ def test_cicd_config_step_up_is_raise_only_over_benign_lookalikes(tmp_path):
     ):
         result = RULE.evaluate(_action(benign), _ctx(tmp_path))
         assert result.verdict is Verdict.PASS, benign
+
+
+def test_cicd_config_delete_still_requires_auth(tmp_path):
+    # Regression guard: CICD_CONFIG_GLOBS is NOT scoped by action_type (unlike
+    # VERIFICATION_CONFIG_GLOBS above) — a delete of a CI/CD pipeline file
+    # AUTHs exactly like a write, proving the new mutation-only scoping was
+    # applied to VERIFICATION_CONFIG_GLOBS only and did not change CICD's
+    # existing action-type-agnostic behaviour.
+    result = RULE.evaluate(
+        _action(".github/workflows/ci.yml", action_type=ActionType.file_delete),
+        _ctx(tmp_path),
+    )
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_path_access in result.reason_codes
 
 
 def test_cicd_globs_are_part_of_the_sensitive_set():

@@ -28,6 +28,7 @@ from collections.abc import Iterable, Sequence
 
 from doberman.canonical import canonicalize
 from doberman.models import (
+    ActionType,
     EvalContext,
     GuardrailResult,
     ReasonCode,
@@ -153,11 +154,18 @@ CICD_CONFIG_GLOBS: tuple[str, ...] = (
 #: Repo governance + lint/type-check configuration whose silent edit can hide a
 #: bad change from review (CODEOWNERS routing) or from CI (a loosened/disabled
 #: lint or type rule). Path-class detection cannot tell a legitimate config
-#: tune from a silencing one, so — exactly like CICD_CONFIG_GLOBS above — every
-#: edit steps up to AUTH (raise-only). Deliberately excludes pyproject.toml
-#: itself: it is edited constantly for routine dependency bumps, and flagging
-#: the whole file for a [tool.ruff]-section-only concern would need to read
-#: file content, which this rule never does — see README's known-limitations.
+#: tune from a silencing one, so every MUTATION (write or delete) steps up to
+#: AUTH (raise-only). Unlike CICD_CONFIG_GLOBS above, this set is deliberately
+#: NOT folded into DEFAULT_SENSITIVE_GLOBS — agents read CODEOWNERS and lint
+#: config constantly for routine lookups, and gating reads too would be an
+#: approval-fatigue source with no security value (only a silent EDIT can hide
+#: a bad change; a read reveals nothing an attacker couldn't already see).
+#: ProtectedPathRule matches this set separately and only for
+#: ProtectedPathRule.MUTATION_ACTION_TYPES — see its evaluate(). Deliberately
+#: excludes pyproject.toml itself: it is edited constantly for routine
+#: dependency bumps, and flagging the whole file for a [tool.ruff]-section-only
+#: concern would need to read file content, which this rule never does — see
+#: README's known-limitations.
 VERIFICATION_CONFIG_GLOBS: tuple[str, ...] = (
     "codeowners",
     "**/codeowners",
@@ -175,13 +183,18 @@ VERIFICATION_CONFIG_GLOBS: tuple[str, ...] = (
 )
 
 #: Paths that are sensitive: allowed, but only after authentication.
+#: VERIFICATION_CONFIG_GLOBS is deliberately NOT included here — it is
+#: matched separately by ProtectedPathRule, scoped to mutation action types
+#: only (see VERIFICATION_CONFIG_GLOBS' docstring above and
+#: ProtectedPathRule.MUTATION_ACTION_TYPES). Every glob set in THIS tuple
+#: stays action-type-agnostic: a read is just as informative as a write for
+#: e.g. backend/auth/** or a CI/CD pipeline definition.
 DEFAULT_SENSITIVE_GLOBS: tuple[str, ...] = (
     "backend/auth/**",
     "**/backend/auth/**",
     "infra/**",
     "**/infra/**",
     *CICD_CONFIG_GLOBS,
-    *VERIFICATION_CONFIG_GLOBS,
     "migrations/**",
     "**/migrations/**",
     "**/*.tfstate",
@@ -319,13 +332,26 @@ def raw_path_candidates(raw_arguments: dict, keys: tuple[str, ...] = _RAW_PATH_K
 class ProtectedPathRule:
     """Enforce blocked/sensitive path policy on canonicalized targets."""
 
+    #: Action types treated as a mutation for glob sets that are scoped to
+    #: mutations only (currently just ``mutation_sensitive_globs`` /
+    #: VERIFICATION_CONFIG_GLOBS — see its docstring). Reads a governance/lint
+    #: config file constantly for routine lookups carry no risk on their own;
+    #: only a write or delete can silently hide a bad change. Every OTHER
+    #: glob set on this rule (``blocked_globs``, ``sensitive_globs``) stays
+    #: action-type-agnostic and is not gated by this set.
+    MUTATION_ACTION_TYPES: frozenset[ActionType] = frozenset(
+        {ActionType.file_write, ActionType.file_delete}
+    )
+
     def __init__(
         self,
         blocked_globs: Iterable[str] = DEFAULT_BLOCKED_GLOBS,
         sensitive_globs: Iterable[str] = DEFAULT_SENSITIVE_GLOBS,
+        mutation_sensitive_globs: Iterable[str] = VERIFICATION_CONFIG_GLOBS,
     ) -> None:
         self._blocked = _sanitize_globs(blocked_globs)
         self._sensitive = _sanitize_globs(sensitive_globs)
+        self._mutation_sensitive = _sanitize_globs(mutation_sensitive_globs)
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         root = _DEFAULT_ROOT
@@ -343,16 +369,17 @@ class ProtectedPathRule:
         if not paths:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
+        is_mutation = action.action_type in self.MUTATION_ACTION_TYPES
         worst = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
         for raw_path in paths:
-            result = self._evaluate_one(raw_path, root)
+            result = self._evaluate_one(raw_path, root, is_mutation)
             if _is_more_severe(result, worst):
                 worst = result
             if worst.verdict is Verdict.BLOCK:
                 break  # cannot get worse than a hard block
         return worst
 
-    def _evaluate_one(self, raw_path: str, root: str) -> GuardrailResult:
+    def _evaluate_one(self, raw_path: str, root: str, is_mutation: bool) -> GuardrailResult:
         canonical = canonicalize(raw_path, root=root)
 
         # A path that resolves outside the repo root is out of scope and unsafe
@@ -377,6 +404,16 @@ class ProtectedPathRule:
             )
 
         if _matches_any(canonical.relposix, self._sensitive):
+            return GuardrailResult(
+                verdict=Verdict.AUTH,
+                risk=Risk.medium,
+                reason_codes=[ReasonCode.sensitive_path_access],
+                explanation=(
+                    "Target is a sensitive path; authentication required before proceeding."
+                ),
+            )
+
+        if is_mutation and _matches_any(canonical.relposix, self._mutation_sensitive):
             return GuardrailResult(
                 verdict=Verdict.AUTH,
                 risk=Risk.medium,
