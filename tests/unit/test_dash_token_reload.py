@@ -39,8 +39,17 @@ def test_token_is_still_stripped_from_the_url(shell: str):
 
 def test_token_never_outlives_the_tab(shell: str):
     """sessionStorage (per-tab, cleared on close), never localStorage - a
-    dashboard token must not persist after the tab is gone."""
-    assert "localStorage" not in shell
+    dashboard token must not persist after the tab is gone.
+
+    localStorage does appear elsewhere in the shell now (the manual theme
+    toggle persists a display preference under its own key - see
+    THEME_KEY/doberman-dash-theme), which is fine: that isn't a secret and
+    has no reason to die with the tab. The token itself must still never
+    touch it.
+    """
+    assert "sessionStorage.setItem(TOKEN_KEY" in shell
+    assert "localStorage.setItem(TOKEN_KEY" not in shell
+    assert "localStorage.getItem(TOKEN_KEY" not in shell
 
 
 def test_shell_never_embeds_the_token_value(shell: str):

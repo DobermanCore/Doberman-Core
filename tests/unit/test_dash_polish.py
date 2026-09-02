@@ -174,11 +174,15 @@ def test_the_totp_field_is_masked(tmp_path):
 
 def test_feed_row_renders_a_risk_badge(tmp_path):
     """A PASS row with no path class and no reason codes (e.g. shell_exec)
-    used to render as bare noise ("PASS shell_exec — — @ ..."); the risk
-    badge is the signal that always shows, even at "low"."""
+    used to render as bare noise ("PASS shell_exec — — @ ..."); now that the
+    detail line always names something concrete ("no target"/"no auth"
+    instead of a bare "-"), a low-risk badge is redundant on the common case
+    and is only rendered for medium+ risk - but the badge-building lines
+    themselves are unchanged, just conditional."""
     html = _index_html(tmp_path)
     assert "riskBadge.className = RISK_BADGE_CLASS[row.risk]" in html
     assert 'riskBadge.textContent = (row.risk || "-").toUpperCase();' in html
+    assert 'row.risk && row.risk !== "low"' in html
 
 
 def test_feed_row_renders_source_context(tmp_path):
