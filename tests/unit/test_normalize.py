@@ -19,6 +19,13 @@ from doberman.proxy.normalize import MAX_VALUE_LENGTH, REDACTED, normalize
         ("pip_install", ActionType.package_install),
         ("npm_install_package", ActionType.package_install),
         ("totally_unknown_tool", ActionType.other),
+        # Host-namespaced MCP tools classify by the tool part, not the server.
+        ("mcp__filesystem__write_file", ActionType.file_write),
+        ("mcp__my-shell__shell_exec", ActionType.shell_exec),
+        ("mcp__Fetch__http_get", ActionType.network_request),
+        ("mcp__pkg__npm_install", ActionType.package_install),
+        ("mcp__x__totally_unknown", ActionType.other),
+        ("mcp__noseparator", ActionType.other),
     ],
 )
 def test_tool_name_maps_to_action_type(tool_name, expected):
