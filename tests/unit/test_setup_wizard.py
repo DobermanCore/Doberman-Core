@@ -26,7 +26,15 @@ runner = CliRunner()
 def _doberman_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin `doberman` as resolvable so a healthy wired-hooks run reads as
     complete regardless of the test runner's PATH (the honest-end tests below
-    override this explicitly to exercise the incomplete path)."""
+    override this explicitly to exercise the incomplete path).
+
+    Also pins `codex` as NOT resolvable (round 6 item 5: `detect_hosts` now
+    also probes ``shutil.which("codex")``) so this dev machine's real Codex
+    CLI install never leaks into a test's default host choice - same reason
+    ``_isolated_host_detection_home`` below points the ``~/.codex`` directory
+    check at a throwaway home instead of the real one. A handful of Codex
+    tests further down explicitly override this to exercise the real path.
+    """
     import shutil
 
     real_which = shutil.which
@@ -34,7 +42,11 @@ def _doberman_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
         shutil,
         "which",
         lambda name, *a, **k: (
-            "/venv/bin/doberman" if name == "doberman" else real_which(name, *a, **k)
+            "/venv/bin/doberman"
+            if name == "doberman"
+            else None
+            if name == "codex"
+            else real_which(name, *a, **k)
         ),
     )
 
@@ -129,6 +141,33 @@ def test_yes_mode_paranoid(tmp_path: Path) -> None:
     assert load_mode(str(tmp_path)) == "paranoid"
 
 
+def test_abort_at_tuning_prompt_after_raising_mode_leaves_no_ledger_row(tmp_path: Path) -> None:
+    """Round 6 item P0: choosing a mode raise (light -> paranoid) then
+    aborting at the very next prompt (tuning) must leave NO `policy-history`
+    row for it, and the mode file at its PREVIOUS value. The old code called
+    `log_change`/`apply_change` immediately after mode selection - before the
+    wizard could abort - so an aborted run left a "[approved] strengthen
+    mode: ... -> paranoid" ledger entry even though `mode` on disk still read
+    the old value (a fictional audit row)."""
+    setup_result = runner.invoke(
+        app, ["setup", "--yes", "--mode", "light", "--path", str(tmp_path)]
+    )
+    assert setup_result.exit_code == 0, setup_result.output
+    assert load_mode(str(tmp_path)) == "light"
+
+    result = runner.invoke(app, ["setup", "--path", str(tmp_path)], input="\nparanoid\n")
+    assert result.exit_code == 1, result.output
+    assert "Aborted - nothing written." in result.stderr
+
+    # The mode file still reads the PREVIOUS value - never bumped to paranoid.
+    assert load_mode(str(tmp_path)) == "light"
+
+    history = runner.invoke(app, ["policy-history", "--path", str(tmp_path)])
+    assert history.exit_code == 0, history.output
+    assert "paranoid" not in history.output
+    assert history.output.count(" -> ") == 1  # only the earlier light establishment
+
+
 def test_yes_mode_invalid_exits_nonzero(tmp_path: Path) -> None:
     """``setup --yes --mode bogus`` keeps the flag path's hard usage error."""
     result = runner.invoke(app, ["setup", "--yes", "--mode", "bogus", "--path", str(tmp_path)])
@@ -178,8 +217,9 @@ def test_yes_refuses_to_lower_mode_without_prompting(tmp_path: Path) -> None:
     # would also collapse the "Mode:       balanced" column padding).
     joined = re.sub(r"\s*\n\s*", " ", result.output)
     assert (
-        "Mode:       balanced (requested light; not lowered - a possession factor is "
-        "required, run 'doberman mode light')" in joined
+        "Mode:       balanced (requested light; not lowered - a possession factor (a "
+        "2FA code if enrolled, otherwise your Doberman password) is required, "
+        "run 'doberman mode light')" in joined
     )
     assert load_mode(str(tmp_path)) == "balanced"
     prefs = load_preferences(str(tmp_path))
@@ -197,8 +237,9 @@ def test_yes_lowering_refusal_survives_2_dev_null(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     joined = re.sub(r"\s*\n\s*", " ", result.stdout)
     assert (
-        "Mode:       balanced (requested light; not lowered - a possession factor is "
-        "required, run 'doberman mode light')" in joined
+        "Mode:       balanced (requested light; not lowered - a possession factor (a "
+        "2FA code if enrolled, otherwise your Doberman password) is required, "
+        "run 'doberman mode light')" in joined
     )
 
 
@@ -334,6 +375,9 @@ def test_interactive_demo_offer_declined_by_default(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "See it work?" in result.output
     assert "BLOCK" not in result.output
+    # Round 6 item 8: an explicit interactive "n" (not just EOF/--yes) still
+    # ends the run on the same "Next:" pointer every other success path gets.
+    assert "Next: `doberman demo --fast`" in result.output
 
 
 def test_interactive_demo_offer_accepted_runs_real_engine(tmp_path: Path) -> None:
@@ -385,11 +429,15 @@ def test_setup_explains_each_tuned_dimension(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0, result.output
+    # Round 6 item 7: each description runs 100+ chars unwrapped (with its
+    # 2-space indent), so it's now wrapped across two lines like every other
+    # detail line - normalize whitespace before matching the single-line text.
+    normalized = " ".join(result.output.split())
     for dimension, description in expected.items():
-        assert description in result.output
+        assert description in normalized
         # item 9: the identifier is spoken as words in the prompt itself.
         words = dimension.replace("_", " ")
-        assert result.output.index(description) < result.output.index(f"  {words} (q to quit)")
+        assert normalized.index(description) < normalized.index(f"{words} (q to quit)")
 
 
 def test_interactive_global_flag_overrides_prompt(
@@ -487,6 +535,34 @@ def test_interactive_telemetry_no_persists_disabled(tmp_path: Path) -> None:
     assert telemetry.status().enabled is False
 
 
+def test_abort_at_telemetry_prompt_leaves_telemetry_disabled_no_id(tmp_path: Path) -> None:
+    """Round 6 item P1: aborting (EOF) at the telemetry consent question is
+    NOT consent - it must leave telemetry DISABLED (never the implicit
+    "default on" posture) and mint no distinct id, before `_abort_setup` ends
+    the run."""
+    from doberman import telemetry
+
+    # Input order: hosts, mode, tune=n, claude scope=n, then EOF right at the
+    # telemetry question (the same order the tests above use, minus the
+    # telemetry answer itself).
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\n",
+    )
+    assert result.exit_code == 1, result.output
+    assert "Aborted" in result.stderr
+
+    state = telemetry.status()
+    assert state.enabled is False
+    assert state.distinct_id == ""
+
+    status_result = runner.invoke(app, ["telemetry", "status"])
+    assert status_result.exit_code == 0, status_result.output
+    assert "Telemetry: disabled" in status_result.output
+    assert "Distinct id: (not created)" in status_result.output
+
+
 def test_yes_does_not_prompt_and_keeps_the_default(tmp_path: Path) -> None:
     from doberman import telemetry
 
@@ -507,6 +583,21 @@ def _codex_hooks(tmp: Path) -> dict:
     p = tmp / ".codex" / "hooks.json"
     assert p.exists(), f"hooks.json not found at {p}"
     return json.loads(p.read_text(encoding="utf-8"))
+
+
+def test_yes_host_all_wires_every_host(tmp_path: Path) -> None:
+    """Round 6 item 4: ``--host all`` matches the interactive prompt's own
+    "or 'all'" shorthand (`parse_host_choice`) - it expands to every host
+    instead of failing the unknown-host usage check."""
+    result = runner.invoke(app, ["setup", "--yes", "--host", "all", "--path", str(tmp_path)])
+    assert result.exit_code == 3, result.output  # mcp/openclaw unwired -> partly pending
+    s = _settings(tmp_path)
+    assert PRE_COMMAND in _doberman_commands(s, "PreToolUse")
+    hooks = _codex_hooks(tmp_path)
+    commands = [h["command"] for g in hooks["hooks"]["PreToolUse"] for h in g["hooks"]]
+    assert "doberman hook codex-pre" in commands
+    assert "doberman serve --" in result.output
+    assert "adapters/openclaw/README.md" in result.output
 
 
 def test_yes_host_codex_writes_hooks_and_no_claude_dir(tmp_path: Path) -> None:
@@ -589,7 +680,7 @@ def test_yes_host_mcp_doctor_scoped_and_shows_canary(tmp_path: Path) -> None:
     assert "hooks n/a" in result.output
     normalized = " ".join(result.output.split())
     assert (
-        "After you paste the block and restart your client: ask your agent to read "
+        "After you paste the block and restart your client, ask your agent to read "
         ".env and confirm it is blocked." in normalized
     )
     assert "activates when you restart" not in result.output
@@ -613,7 +704,7 @@ def test_yes_host_openclaw_doctor_scoped(tmp_path: Path) -> None:
 def test_mcp_only_header_is_pending_not_complete(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
     assert result.exit_code == 3, result.output  # item 7: pending exits 3, not 0
-    assert "-- Setup pending --" in result.output
+    assert "!! Setup pending !!" in result.output
     assert "-- Setup complete --" not in result.output
     assert "Hooks written." not in result.output
 
@@ -621,7 +712,7 @@ def test_mcp_only_header_is_pending_not_complete(tmp_path: Path) -> None:
 def test_openclaw_only_header_is_pending_not_complete(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--host", "openclaw", "--path", str(tmp_path)])
     assert result.exit_code == 3, result.output  # item 7: pending exits 3, not 0
-    assert "-- Setup pending --" in result.output
+    assert "!! Setup pending !!" in result.output
     assert "-- Setup complete --" not in result.output
     assert "Hooks written." not in result.output
 
@@ -643,7 +734,28 @@ def test_claude_host_still_gets_setup_complete(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--host", "claude", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "-- Setup complete --" in result.output
-    assert "-- Setup pending --" not in result.output
+    assert "!! Setup pending !!" not in result.output
+
+
+def test_mixed_hosts_claude_and_mcp_is_partly_pending_not_complete(tmp_path: Path) -> None:
+    """Round 6 item P1: a MIXED run (one hooks-kind host wired, one manual-only
+    host still unwired) must never read as "Setup complete" + exit 0 - claude
+    is live, but mcp still needs a manual paste-and-restart step. It gets its
+    own honest header, distinct from both the fully-wired "complete" case and
+    the fully-manual "pending" case, and the same non-zero "pending" exit code."""
+    result = runner.invoke(
+        app,
+        ["setup", "--yes", "--host", "claude", "--host", "mcp", "--path", str(tmp_path)],
+    )
+    assert result.exit_code == 3, result.output
+    assert "!! Setup partly pending !!" in result.output
+    assert "-- Setup complete --" not in result.output
+    assert "!! Setup pending !!" not in result.output
+    assert "!! Setup incomplete !!" not in result.output
+    # The Hosts block still marks claude as wired and mcp as the outstanding
+    # manual step - the two rows read differently on purpose.
+    assert "claude   hooks written to" in result.output
+    assert "mcp      paste the block above into your client, then restart it" in result.output
 
 
 def test_invalid_host_exits_2_naming_valid_hosts(tmp_path: Path) -> None:
@@ -705,7 +817,7 @@ def test_doctor_remediation_detail_shown(tmp_path: Path, monkeypatch: pytest.Mon
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 1, result.output
     assert "  - Config: no policy saved - run `doberman setup`" in result.output
-    assert "-- Setup incomplete --" in result.output
+    assert "!! Setup incomplete !!" in result.output
     assert "-- Setup complete --" not in result.output
     assert "Hooks written. Doberman activates when you restart your session." not in result.output
 
@@ -773,7 +885,7 @@ def test_yes_honest_incomplete_when_hook_command_critical(
     _no_doberman_on_path(monkeypatch)
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 1, result.output
-    assert "-- Setup incomplete --" in result.output
+    assert "!! Setup incomplete !!" in result.output
     assert "-- Setup complete --" not in result.output
     assert "Hooks written. Doberman activates when you restart your session." not in result.output
     # Remediation and next steps still print - but nothing else (item 5): the
@@ -811,7 +923,7 @@ def test_interactive_honest_incomplete_when_hook_command_critical(
         input="\nbalanced\nn\nn\nn\nn\n",
     )
     assert result.exit_code == 1, result.output
-    assert "-- Setup incomplete --" in result.output
+    assert "!! Setup incomplete !!" in result.output
 
 
 def test_status_flags_hook_command_not_on_path(
@@ -1556,6 +1668,29 @@ def test_wrapped_lines_stay_within_78_columns_at_columns_60(tmp_path: Path) -> N
         assert len(line) <= 78, line
 
 
+def test_interactive_wizard_wrapped_lines_stay_within_78_at_columns_60(
+    tmp_path: Path,
+) -> None:
+    """Round 6 item 7: the sibling of `test_wrapped_lines_stay_within_78_
+    columns_at_columns_60` above, but for the fully INTERACTIVE flow that
+    test's ``--yes`` run never exercises - the host menu, the hosts prompt
+    itself, every dimension description (tuning), the OpenClaw description,
+    and the demo offer. All five used to print unwrapped and could exceed 78
+    columns on their own text alone (independent of the terminal width)."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="all\nbalanced\ny\n\n\n\n\nn\nn\nn\nn\n",
+        env={"COLUMNS": "60"},
+    )
+    assert result.exit_code == 3, result.output  # mcp/openclaw unwired -> partly pending
+    tmp_str = str(tmp_path)
+    for line in result.output.splitlines():
+        if "://" in line or tmp_str in line:
+            continue
+        assert len(line) <= 78, line
+
+
 def test_dry_run_mode_line_wraps_with_hanging_indent(tmp_path: Path) -> None:
     """item 4: the `[dry-run] would set mode: ...` line goes through
     `wrap_detail` too, at the narrowest supported width (the `[dry-run] would
@@ -1583,7 +1718,10 @@ def test_hosts_and_mode_prompts_end_in_q_to_quit(tmp_path: Path) -> None:
         input="\nbalanced\nn\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
-    assert "(numbers or names, comma-separated, or 'all') (q to quit)" in result.output
+    # Round 6 item 7: the hosts prompt alone runs to 92 chars with this
+    # suffix and now wraps across two lines - normalize before matching.
+    normalized = " ".join(result.output.split())
+    assert "(numbers or names, comma-separated, or 'all') (q to quit)" in normalized
     assert "Choose a mode (name or number) (q to quit)" in result.output
 
 
@@ -1610,10 +1748,22 @@ def test_openclaw_only_pending_message_has_no_paste_step(tmp_path: Path) -> None
     normalized = " ".join(result.output.split())
     assert (
         "After you follow https://github.com/DobermanCore/Doberman-Core/blob/main/"
-        "adapters/openclaw/README.md and restart: ask your agent to read .env and "
+        "adapters/openclaw/README.md and restart, ask your agent to read .env and "
         "confirm it is blocked." in normalized
     )
     assert "paste the block" not in normalized
+
+
+def test_pending_next_line_has_exactly_one_colon(tmp_path: Path) -> None:
+    """Round 6 item 12: the pending "Next:" line used to carry a second colon
+    (after "restart your client"/"restart") - only the label's own colon
+    remains now, everything else reads as one flowing sentence."""
+    result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
+    assert result.exit_code == 3, result.output
+    normalized = " ".join(result.output.split())
+    match = re.search(r"Next: .*?blocked\.", normalized)
+    assert match, normalized
+    assert match.group(0).count(":") == 1, match.group(0)
 
 
 def test_mcp_and_openclaw_pending_message_prefers_mcp_wording(tmp_path: Path) -> None:
@@ -1769,6 +1919,7 @@ def test_weight_tuning_reprompt_separates_dimensions_with_a_blank_line(tmp_path:
     reprompt in this wizard."""
     from doberman.hosthooks.setup import DIMENSION_DESCRIPTIONS
     from doberman.policy.preferences import DIMENSIONS
+    from doberman.render import wrap_detail
 
     weight_inputs = "\n".join(["", "", "", ""])
     result = runner.invoke(
@@ -1780,7 +1931,11 @@ def test_weight_tuning_reprompt_separates_dimensions_with_a_blank_line(tmp_path:
     for dim in DIMENSIONS[1:]:
         description = DIMENSION_DESCRIPTIONS[dim]
         assert f"[0.50]: {description}" not in result.output
-        assert f"\n\n  {description}" in result.output
+        # Round 6 item 7: the description is now wrapped (100+ chars unwrapped
+        # with its 2-space indent) - the blank line must still precede its
+        # first wrapped line exactly.
+        first_wrapped_line = wrap_detail(description, indent=2, hang=0)[0]
+        assert f"\n\n{first_wrapped_line}" in result.output
 
 
 def test_multihost_interactive_wiring_gets_distinct_step_numbers(tmp_path: Path) -> None:
@@ -1804,7 +1959,9 @@ def test_multihost_interactive_wiring_gets_distinct_step_numbers(tmp_path: Path)
         ],
         input="balanced\nn\nn\nn\nn\nn\n",
     )
-    assert result.exit_code == 0, result.output
+    # Round 6 item P1: mcp/openclaw both remain unwired alongside the two
+    # hooks-kind hosts - a MIXED run, "Setup partly pending", exit 3.
+    assert result.exit_code == 3, result.output
     assert "Hook installation (Claude Code) [3 of 9]" in result.output
     assert "Hook installation (Codex CLI) [4 of 9]" in result.output
     assert "MCP proxy (Cursor / Claude Desktop / other MCP client) [5 of 9]" in result.output

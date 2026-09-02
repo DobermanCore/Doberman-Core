@@ -6,6 +6,7 @@ Pure functions only — no CliRunner, no real ``~/.claude``/``~/.codex``. Every
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -19,6 +20,23 @@ from doberman.hosthooks.setup import (
     parse_host_choice,
 )
 
+
+@pytest.fixture(autouse=True)
+def _no_real_codex_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Round 6 item 5: `detect_hosts` also probes ``shutil.which("codex")``
+    now (the same probe `doctor`'s "Codex CLI" check uses) - isolate every
+    test in this file from whether THIS machine happens to have a real Codex
+    CLI on PATH, same as the module docstring's existing "no real
+    ~/.claude/~/.codex" promise. `test_detect_hosts_codex_via_which_alone`
+    below overrides this to exercise the new probe explicitly."""
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: None if name == "codex" else real_which(name, *a, **k),
+    )
+
+
 # ---------------------------------------------------------------------------
 # detect_hosts
 # ---------------------------------------------------------------------------
@@ -30,6 +48,23 @@ def test_detect_hosts_nothing_present(tmp_path: Path) -> None:
     home.mkdir()
     root.mkdir()
     assert detect_hosts(str(root), home) == set()
+
+
+def test_detect_hosts_codex_via_which_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round 6 item 5: an npm-installed Codex CLI that has never been run yet
+    (no ``~/.codex`` config dir exists) still reads as present - same probe
+    `doctor`'s "Codex CLI" check uses (``shutil.which("codex")``), so setup
+    never under-detects Codex relative to what `doctor` would report."""
+    monkeypatch.setattr(
+        shutil, "which", lambda name, *a, **k: "/usr/bin/codex" if name == "codex" else None
+    )
+    home = tmp_path / "home"
+    root = tmp_path / "root"
+    home.mkdir()
+    root.mkdir()
+    assert detect_hosts(str(root), home) == {"codex"}
 
 
 def test_detect_hosts_claude_in_home(tmp_path: Path) -> None:
@@ -165,6 +200,17 @@ def test_host_menu_lines_covers_all_hosts() -> None:
         assert any(host.label in line for line in lines)
 
 
+def test_host_menu_lines_covers_all_hosts_even_when_a_tag_wraps() -> None:
+    """Round 6 item 7: marking every host detected pushes mcp's line (already
+    65 columns for the label alone) past 78 once its "<- detected" tag is
+    added, so `wrap_detail` splits it into two physical lines - the label
+    text itself still appears intact on one of them at the default width."""
+    lines = host_menu_lines({h.key for h in HOSTS})
+    assert len(lines) >= len(HOSTS)
+    for host in HOSTS:
+        assert any(host.label in line for line in lines)
+
+
 def test_host_menu_lines_marks_only_detected() -> None:
     lines = host_menu_lines({"claude"})
     claude_line = next(line for line in lines if "Claude Code" in line)
@@ -173,11 +219,14 @@ def test_host_menu_lines_marks_only_detected() -> None:
     assert "detected" not in codex_line
 
 
-def test_host_menu_lines_detected_tags_align() -> None:
-    """Every ``<- detected`` tag starts at the same column, regardless of label length."""
+def test_host_menu_lines_never_exceed_78_columns() -> None:
+    """Round 6 item 7: the old design padded every label to the widest one
+    (mcp's, 65 columns) so every ``<- detected`` tag lined up in a column -
+    but mcp's own line was already 85 columns unpadded, so full alignment
+    across all four is mathematically incompatible with a 78-column budget.
+    Wrapping (via `wrap_detail`) replaces alignment as the priority here."""
     lines = host_menu_lines({h.key for h in HOSTS})
-    columns = {line.index("<- detected") for line in lines}
-    assert len(columns) == 1, f"tags not aligned: {lines}"
+    assert all(len(line) <= 78 for line in lines), lines
 
 
 def test_host_menu_lines_have_no_trailing_whitespace() -> None:

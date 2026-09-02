@@ -64,22 +64,26 @@ doberman setup --yes
 
 `--yes` accepts the defaults (detected hosts, or Claude Code if nothing is detected; balanced mode)
 with no prompts, useful for CI or scripting. Pass `--host` (repeatable) to pick hosts explicitly,
-e.g. `doberman setup --yes --host claude --host codex`. Pass `--dry-run` to preview the mode, the
-preference weights, and every file it would write, with nothing persisted (mirrors `install-hooks
---dry-run`); `--global` writes your real home directory, so without `--yes` it asks to confirm
-first, and with `--yes` it prints the exact path before writing. Pass `--no-telemetry` to opt out
-for good without answering the telemetry question (same as `doberman telemetry off`, just
-one-step). Every menu prompt (which hosts, which mode, each tuning weight) accepts `q` or `quit` to
-abort cleanly instead of writing anything, printed right in the prompt as `(q to quit)`. Either way,
-basic protection works immediately. The closing doctor pass is not cosmetic: if it finds a critical
-(most commonly the `doberman` command not being on PATH yet — the remedy now names the exact
-directory to add), the wizard prints `-- Setup incomplete --` and exits `1` instead of claiming
-success — re-run `doberman doctor` for the fix, then `doberman setup` again. A run that only wired
-`mcp` and/or `openclaw` (no hooks-based host) prints `-- Setup pending --` instead of `complete` and
-exits `3` (not `0` — nothing runs yet, but nothing is broken either, so a script can tell it apart
-from both a fully-live run and a broken one) — nothing runs yet until you paste the printed block
-(or, for OpenClaw, follow its plugin README) and restart, so the closing "verify it's live" line
-points at that manual step rather than claiming the hooks are already active. When the wizard
+e.g. `doberman setup --yes --host claude --host codex`, or `--host all` to wire all four at once.
+Pass `--dry-run` to preview the mode, the preference weights, and every file it would write, with
+nothing persisted (mirrors `install-hooks --dry-run`); `--global` writes your real home directory,
+so without `--yes` it asks to confirm first, and with `--yes` it prints the exact path before
+writing. Pass `--no-telemetry` to opt out for good without answering the telemetry question (same
+as `doberman telemetry off`, just one-step) — aborting the telemetry question itself (`q`, or a
+closed stdin) is not consent either and also leaves it off. Every menu prompt (which hosts, which
+mode, each tuning weight) accepts `q` or `quit` to abort cleanly instead of writing anything,
+printed right in the prompt as `(q to quit)`. Either way, basic protection works immediately. The
+closing doctor pass is not cosmetic: if it finds a critical (most commonly the `doberman` command
+not being on PATH yet — the remedy now names the exact directory to add), the wizard prints
+`!! Setup incomplete !!` and exits `1` instead of claiming success — re-run `doberman doctor` for
+the fix, then `doberman setup` again. A run that wired ONLY `mcp` and/or `openclaw` (no hooks-based
+host at all) prints `!! Setup pending !!` instead of `-- Setup complete --`; a MIXED run (e.g.
+`--host claude --host mcp`, where claude is live but mcp still needs its manual paste-and-restart
+step) prints `!! Setup partly pending !!` instead — both non-`complete` headers use a second `!!`
+marker (not just color) so they're distinguishable in a piped/`NO_COLOR` transcript too, and both
+exit `3` (not `0` — something still needs a manual step, but nothing is broken either, so a script
+can tell either apart from both a fully-live run and a broken one) — the `Hosts:` block in the
+summary names, per host, which one is done and which still needs the manual step. When the wizard
 finishes, [set a possession factor](#4-set-a-password-and-2fa) — `doberman doctor`, one of the
 pointers in `doberman setup`'s own closing `Also:` line, already flags an unset one and names the
 same command.

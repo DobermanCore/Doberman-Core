@@ -37,6 +37,23 @@ def test_encode_safe_stdio_prevents_cp1252_crash(monkeypatch):
     sys.stderr.flush()
 
 
+def test_encode_safe_stdio_line_buffers_both_streams(monkeypatch):
+    """Round 6 item 12: stdout must line-buffer too, not just stderr - a
+    redirected/piped stdout otherwise defaults to full block buffering, so a
+    stderr `error:`/reprompt line can land in a merged (``2>&1``) transcript
+    well before the stdout prompt line it's actually answering, because
+    stdout's buffer hadn't flushed yet."""
+    out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", line_buffering=False)
+    err = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", line_buffering=False)
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+
+    _ensure_encode_safe_stdio()
+
+    assert sys.stdout.line_buffering is True
+    assert sys.stderr.line_buffering is True
+
+
 def test_install_hooks_dry_run_output_is_ascii_and_cp1252_safe(tmp_path):
     # The onboarding command that crashed on Windows: its output must be ASCII
     # (renders everywhere) and cp1252-encodable (never raises on the default

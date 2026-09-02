@@ -352,10 +352,12 @@ def _check_fingerprint_key() -> CheckResult:
             "Fingerprint key", CheckStatus.WARN, "not yet created (generated on first use)"
         )
     if os.name == "nt":
-        # POSIX mode bits are meaningless on Windows ACLs — can't verify, so warn
-        # rather than claim a false OK.
+        # POSIX mode bits are meaningless on Windows ACLs, so permissions
+        # can't be verified here - but the key genuinely IS present, and
+        # there is nothing actionable for the user to fix about an OS
+        # limitation (round 6 item 11: this is an OK fact, not a warning).
         return CheckResult(
-            "Fingerprint key", CheckStatus.WARN, "present (permissions not verifiable on Windows)"
+            "Fingerprint key", CheckStatus.OK, "present (permissions not verifiable on Windows)"
         )
     mode = stat.S_IMODE(p.stat().st_mode)
     if mode & 0o077:

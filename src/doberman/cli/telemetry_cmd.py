@@ -98,6 +98,13 @@ def configure_setup_consent(non_interactive: bool, *, confirm=typer.confirm) -> 
     already says it. *confirm* lets the setup wizard inject its own
     abort-aware wrapper (round 5 item 2) in place of a bare ``typer.confirm``;
     it defaults to ``typer.confirm`` for any other caller.
+
+    Round 6 item P1: an abort mid-question (EOF/'q', when *confirm* is the
+    wizard's own wrapper) is not consent. Left alone, the on-disk state (or
+    the lack of one) would still read the implicit "default on" posture -
+    telemetry is enabled with no state file at all - so this explicitly
+    disables telemetry (never minting a distinct id; ``telemetry.disable``
+    only clears the consent flag) before the abort is re-raised unchanged.
     """
     from doberman import telemetry
 
@@ -108,7 +115,12 @@ def configure_setup_consent(non_interactive: bool, *, confirm=typer.confirm) -> 
         return
     for line in wrap_detail(TELEMETRY_EXPLANATION, indent=0):
         typer.echo(line)
-    if confirm("Send anonymous usage stats to help improve Doberman?", True):
+    try:
+        consented = confirm("Send anonymous usage stats to help improve Doberman?", True)
+    except BaseException:
+        telemetry.disable()
+        raise
+    if consented:
         telemetry.enable()
     else:
         telemetry.disable()

@@ -7,6 +7,7 @@ prompt, echo, or write files — the command layer does that.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,13 +101,18 @@ def detect_hosts(project_root: str, home: Path) -> set[str]:
     """Best-effort detection of which hosts are already set up on this machine.
 
     ``openclaw`` has no reliable marker, so it is never auto-detected — the
-    wizard always offers it, never preselects it.
+    wizard always offers it, never preselects it. Codex detection (round 6
+    item 5) uses the same probe `doctor`'s own "Codex CLI" check does
+    (``shutil.which("codex")``) IN ADDITION TO the existing ``~/.codex``
+    config-dir check — an npm-installed Codex CLI that has never been run yet
+    (so no ``~/.codex`` exists) still reads as present, instead of silently
+    under-detecting it relative to what `doctor` would report.
     """
     root = Path(project_root)
     detected: set[str] = set()
     if (home / ".claude").exists() or (root / ".claude").exists():
         detected.add("claude")
-    if (home / ".codex").exists() or (root / ".codex").exists():
+    if (home / ".codex").exists() or (root / ".codex").exists() or shutil.which("codex"):
         detected.add("codex")
     if (
         (root / ".cursor").exists()
@@ -120,14 +126,21 @@ def detect_hosts(project_root: str, home: Path) -> set[str]:
 def host_menu_lines(detected: set[str]) -> list[str]:
     """Return formatted menu lines for the four hosts, marking detected ones.
 
-    Labels are padded to the widest one so every ``<- detected`` tag lines up
-    in a column, regardless of which host it's marking.
+    Round 6 item 7: this used to pad every label to the widest one (mcp's,
+    65 columns) so every ``<- detected`` tag lined up in a column - but that
+    padding pushed even the SHORT labels' lines past 78 columns (mcp's own
+    unpadded line already runs to 85), and once :func:`wrap_detail` had to
+    wrap them, the padding-driven width forced the short entries to wrap too
+    (splitting "<-" onto its own line ahead of "detected"). Dropping the
+    column alignment - a single ``"  <- detected"`` right after the label,
+    same as any other host - fixes both: short entries stay one line, and
+    only mcp's genuinely-too-long one wraps.
     """
-    width = max(len(host.label) for host in HOSTS)
     lines: list[str] = []
     for i, host in enumerate(HOSTS, start=1):
-        tag = "   <- detected" if host.key in detected else ""
-        lines.append(f"  [{i}] {host.label:<{width}}{tag}".rstrip())
+        tag = "  <- detected" if host.key in detected else ""
+        raw = f"  [{i}] {host.label}{tag}"
+        lines.extend(wrap_detail(raw, indent=0, hang=6))
     return lines
 
 

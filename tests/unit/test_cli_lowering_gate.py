@@ -194,6 +194,28 @@ def test_lowering_with_no_factor_enrolled_fails_closed(kind, tmp_path, monkeypat
     _assert_single_ledger_method(root, "no_factor_enrolled", approved=0)
 
 
+@pytest.mark.parametrize("kind", ["mode", "prefs"])
+def test_lowering_with_no_factor_enrolled_never_shows_the_confirm_prompt(
+    kind, tmp_path, monkeypatch
+):
+    """Round 6 item 9: the no-factor-enrolled precondition is checked BEFORE
+    the WEAKENING confirm prompt, not after - `_Boom` raises if `confirm()`
+    is even invoked, so a caller must never review + confirm a scary diff
+    only to be denied anyway for a reason the confirm step could not have
+    changed. (The ledger's ``no_factor_enrolled`` method - rather than
+    ``denied``, which is what `_Boom`'s raise would be caught and recorded as
+    if `confirm()` HAD been reached - is what proves it was skipped.)"""
+    root = str(tmp_path)
+    _use_prompter(monkeypatch, _Boom)
+
+    result = _invoke_lowering(kind, root)
+
+    assert result.exit_code == 1
+    assert result.stderr.startswith("error: ")
+    _assert_lowering_state(kind, root, applied=False)
+    _assert_single_ledger_method(root, "no_factor_enrolled", approved=0)
+
+
 def test_mode_raising_never_prompts_and_applies(tmp_path, monkeypatch):
     root = str(tmp_path)
     _use_prompter(monkeypatch, _Boom)
