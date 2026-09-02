@@ -37,14 +37,12 @@ def test_tty_prompt_states_the_deadline(monkeypatch):
 
 
 def test_gui_dialog_states_the_deadline():
-    """The GUI dialog always appends the deadline note to its message panel.
-
-    The dialog is Canvas-drawn now (no Frame/Label to intercept), and the deadline
-    is the always-muted trailing segment ``_message_segments`` appends to every
-    message — so assert that contract directly, deterministically and with no display.
+    """The GUI dialog's countdown label reuses the CLI's wording pattern
+    ("auto-denies in ... if unanswered") at minute:second resolution — a live
+    tick, not the CLI's static, coarser-grained note (see ``_build_countdown``
+    in test_gui_prompter.py for the ticking/expiry behavior itself).
     """
-    note = render.deadline_note(gui_prompter.DEFAULT_DIALOG_TIMEOUT_S)
-    segments = gui_prompter._message_segments("Approve THIS exact action?")
-
-    assert note == "auto-denies in 2m if unanswered"
-    assert segments[-1] == (note, "muted")
+    assert render.deadline_note(gui_prompter.DEFAULT_DIALOG_TIMEOUT_S) == (
+        "auto-denies in 2m if unanswered"
+    )
+    assert gui_prompter._mmss(gui_prompter.DEFAULT_DIALOG_TIMEOUT_S) == "2:00"
