@@ -15,6 +15,7 @@ test ever touches real per-user state.
 import asyncio
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -550,3 +551,18 @@ def test_bin_dir_hint_never_raises_and_returns_a_string() -> None:
     hint = _bin_dir_hint()
     assert isinstance(hint, str)
     assert hint
+
+
+def test_doctor_wraps_with_a_hanging_indent_at_columns_60(tmp_path: Path) -> None:
+    """Round 7 item 7: a wrapped check detail (many are a remedy sentence)
+    must never start flush at column 0 on a narrow terminal - continuation
+    lines land indented under the status mark instead."""
+    root = str(tmp_path)  # nothing installed -> "Host hooks" FAILs with a long remedy
+
+    result = runner.invoke(app, ["doctor", "--path", root], env={"COLUMNS": "60"})
+
+    lines = result.output.splitlines()
+    idx = next(i for i, line in enumerate(lines) if line.startswith("[FAIL] Host hooks:"))
+    continuation = lines[idx + 1]
+    assert continuation.startswith("       ")  # 7-space hang, never column 0
+    assert continuation.strip()  # sanity: this line actually has wrapped text

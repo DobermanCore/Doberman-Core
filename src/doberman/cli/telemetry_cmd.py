@@ -105,6 +105,12 @@ def configure_setup_consent(non_interactive: bool, *, confirm=typer.confirm) -> 
     telemetry is enabled with no state file at all - so this explicitly
     disables telemetry (never minting a distinct id; ``telemetry.disable``
     only clears the consent flag) before the abort is re-raised unchanged.
+
+    Round 7 item P1: the question's own default comes from the CURRENT
+    state (``telemetry.status().enabled``), never a hardcoded ``True`` - a
+    prior explicit opt-out (``--no-telemetry``, ``telemetry off``, or an
+    earlier "n" here) must show ``[y/N]`` on a later run, so a bare Enter
+    re-affirms "off" instead of silently reversing it back to "on".
     """
     from doberman import telemetry
 
@@ -115,8 +121,9 @@ def configure_setup_consent(non_interactive: bool, *, confirm=typer.confirm) -> 
         return
     for line in wrap_detail(TELEMETRY_EXPLANATION, indent=0):
         typer.echo(line)
+    default = telemetry.status().enabled
     try:
-        consented = confirm("Send anonymous usage stats to help improve Doberman?", True)
+        consented = confirm("Send anonymous usage stats to help improve Doberman?", default)
     except BaseException:
         telemetry.disable()
         raise
@@ -181,6 +188,13 @@ def telemetry_status() -> None:
     label = "enabled" if enabled else "disabled"
     if enabled and state.consent_at is None:
         label += " (default; `doberman telemetry off` to stop)"
+    elif not enabled:
+        # round 7 item 8: name the opt-in command here too, symmetric with
+        # the "off" pointer the default-on case already gets above - a
+        # disabled reading (whether from an explicit opt-out or a forced-off
+        # kill switch listed below) shouldn't leave the reader to guess how
+        # to turn it back on.
+        label += " (`doberman telemetry on` to opt back in)"
     typer.echo(f"Telemetry: {label}")
     typer.echo(f"Distinct id: {state.distinct_id or '(not created)'}")
     for reason in state.forced_off_reasons:

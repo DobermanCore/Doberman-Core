@@ -148,6 +148,22 @@ def test_first_cli_command_prints_the_notice_to_stderr_once(tmp_path, monkeypatc
     telemetry._join_sender_threads(timeout=1.0)
 
 
+def test_status_disabled_names_the_opt_in_command(tmp_path, monkeypatch):
+    """Round 7 item 8: `telemetry status` names `doberman telemetry on` when
+    disabled, symmetric with the "(default; ... to stop)" pointer the
+    default-on reading already gets."""
+    from doberman import telemetry
+
+    _clear_kill_switches(monkeypatch)
+    monkeypatch.setenv("DOBERMAN_HOME", str(tmp_path))
+    telemetry.disable(home=tmp_path)
+
+    result = runner.invoke(cli_module.app, ["telemetry", "status"])
+
+    assert result.exit_code == 0, result.output
+    assert "Telemetry: disabled (`doberman telemetry on` to opt back in)" in result.output
+
+
 def test_enable_and_capture_posts_allowlisted_payload(tmp_path, monkeypatch):
     from doberman import telemetry
 

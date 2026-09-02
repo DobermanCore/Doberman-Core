@@ -2017,3 +2017,189 @@ def test_openclaw_doc_pointer_is_a_real_github_url(tmp_path: Path) -> None:
         "https://github.com/DobermanCore/Doberman-Core/blob/main/adapters/openclaw/README.md"
         in result.output
     )
+
+
+# ---------------------------------------------------------------------------
+# Round 7: telemetry default, mode-refusal banner, single "Next:" on a
+# partly-pending close, global-hooks blast radius, 'q' at y/N confirms,
+# tuning-step preset restate, MCP section width (items 1-8)
+# ---------------------------------------------------------------------------
+
+
+def test_telemetry_prompt_defaults_off_after_a_prior_opt_out(tmp_path: Path) -> None:
+    """Round 7 item P1 (1): a prior `--no-telemetry` run means a LATER
+    interactive `setup` shows "[y/N]" (not "[Y/n]") and a bare Enter keeps it
+    off - the consent prompt's default now comes from the current on-disk
+    state, not a hardcoded `True`."""
+    from doberman import telemetry
+
+    first = runner.invoke(app, ["setup", "--yes", "--no-telemetry", "--path", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+    assert telemetry.status().enabled is False
+
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\n\nn\n",  # telemetry answer is blank ("")
+    )
+    assert result.exit_code == 0, result.output
+    assert "Send anonymous usage stats to help improve Doberman? [y/N]" in result.output
+    assert telemetry.status().enabled is False  # bare Enter re-affirmed "off", didn't reverse it
+
+
+def test_yes_never_re_enables_a_persisted_opt_out(tmp_path: Path) -> None:
+    """Round 7 item P1 (1): `--yes` never re-enables a persisted opt-out -
+    it only ever reports the current state, it never calls
+    `telemetry.enable()`."""
+    from doberman import telemetry
+
+    first = runner.invoke(app, ["setup", "--yes", "--no-telemetry", "--path", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+    assert telemetry.status().enabled is False
+
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert telemetry.status().enabled is False
+
+
+def test_refused_mode_lowering_is_named_in_the_closing_header(tmp_path: Path) -> None:
+    """Round 7 item P1 (2): a refused `--mode <lower>` request is folded into
+    the closing header itself, not just the "Mode:" line below it - exit
+    stays 0 (the run completed as designed, not "you got the mode you asked
+    for")."""
+    first = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+
+    result = runner.invoke(app, ["setup", "--yes", "--mode", "light", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Setup complete (mode kept: balanced; light refused)" in result.output
+
+
+def test_partly_pending_close_has_exactly_one_next_line(tmp_path: Path) -> None:
+    """Round 7 item 3: a MIXED (partly-pending) run used to fire the demo
+    offer's own "Next:" line IN ADDITION to the pending block's - two
+    "Next:" lines in one close. `hooks_kind_wired and not pending` guards the
+    demo offer so a partly-pending close prints exactly one."""
+    result = runner.invoke(
+        app, ["setup", "--yes", "--host", "claude", "--host", "mcp", "--path", str(tmp_path)]
+    )
+    assert result.exit_code == 3, result.output
+    assert "!! Setup partly pending !!" in result.output
+    next_lines = [line for line in result.output.splitlines() if line.strip().startswith("Next:")]
+    assert len(next_lines) == 1, result.output
+
+
+def test_global_hooks_prompt_states_its_blast_radius(tmp_path: Path) -> None:
+    """Round 7 item 4: the "Install hooks globally?" confirm is preceded by
+    a one-line warning naming its actual scope - every OTHER project on this
+    machine, not just this repo."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    note = "Global hooks apply to every project on this machine, not just this repo."
+    question = "Install hooks globally (~/.claude/settings.json)?"
+    assert note in result.output
+    assert result.output.index(note) < result.output.index(question)
+
+
+def test_q_at_tune_weights_confirm_aborts(tmp_path: Path) -> None:
+    """Round 7 item 5: 'q' at a y/N confirm aborts the same as at a menu -
+    Click's own `confirm()` has no notion of 'q'; treating it as invalid
+    input would just loop, and treating it as "no" would silently decline
+    tuning instead of quitting."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nq\n",
+    )
+    assert result.exit_code == 1, result.output
+    assert "Aborted" in result.stderr
+
+
+def test_q_at_global_hooks_confirm_aborts(tmp_path: Path) -> None:
+    """Round 7 item 5: same as above, for the "Install hooks globally?" confirm."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nq\n",
+    )
+    assert result.exit_code == 1, result.output
+    assert "Aborted" in result.stderr
+
+
+def test_q_at_telemetry_confirm_aborts_and_leaves_telemetry_disabled(tmp_path: Path) -> None:
+    """Round 7 item 5: same as above, for the telemetry consent confirm -
+    also mirrors round 6 item P1: quitting there is not consent, so
+    telemetry stays disabled."""
+    from doberman import telemetry
+
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\nq\n",
+    )
+    assert result.exit_code == 1, result.output
+    assert "Aborted" in result.stderr
+    assert telemetry.status().enabled is False
+
+
+def test_q_at_demo_offer_declines_demo_without_failing_setup(tmp_path: Path) -> None:
+    """Round 7 item 5: 'q' at the closing demo offer only declines the demo -
+    setup already succeeded by then, so this must never flip the exit code,
+    but the same "Aborted - ..." wording every other 'q' prints still shows
+    up (on stderr) - 'q' never quietly reads as a plain "no" here either."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\nn\nq\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Aborted" in result.stderr
+    assert "Next: `doberman demo --fast`" in result.output
+
+
+def test_tuning_step_glosses_all_four_weights_and_restates_the_preset(tmp_path: Path) -> None:
+    """Round 7 item 6: every dimension gets its one-line gloss (confidentiality,
+    reversibility, interruption tolerance, blast radius) AND the chosen
+    preset's name is restated right above the four prompts - the preset's
+    own weights line printed earlier (before "Tune individual weights?") can
+    have scrolled off by the time someone answers dimension 4."""
+    from doberman.hosthooks.setup import DIMENSION_DESCRIPTIONS
+    from doberman.policy.preferences import DIMENSIONS
+    from doberman.render import wrap_detail
+
+    weight_inputs = "\n".join(["", "", "", ""])
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input=f"\nbalanced\ny\n{weight_inputs}\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Tuning the 'balanced' preset:" in result.output
+    tuning_idx = result.output.index("Tuning the 'balanced' preset:")
+    for dim in DIMENSIONS:
+        first_line = wrap_detail(DIMENSION_DESCRIPTIONS[dim], indent=2, hang=0)[0]
+        assert first_line in result.output
+        assert tuning_idx < result.output.index(first_line)
+
+
+def test_mcp_section_rule_reaches_78_like_its_siblings(tmp_path: Path) -> None:
+    """Round 7 item 8: the MCP section's rule fills to the same 78-column
+    width every other section header reaches, despite its title being much
+    longer than its siblings'."""
+    result = runner.invoke(
+        app,
+        ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)],
+        env={"COLUMNS": "100"},
+    )
+    header_lines = [
+        line
+        for line in result.output.splitlines()
+        if line.startswith("--") or line.startswith("!!")
+    ]
+    assert header_lines
+    lengths = {len(line) for line in header_lines}
+    assert lengths == {78}, header_lines

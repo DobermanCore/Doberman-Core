@@ -476,6 +476,21 @@ _OPENCLAW_README_URL = (
 )
 
 
+def _abort_message(written: str | None) -> str:
+    """The exact text every abort in this wizard prints.
+
+    Round 7 item 5: pulled out of :func:`_abort_setup` so the closing demo
+    offer's own 'q' can print the identical wording without also raising
+    ``typer.Exit`` - by the time that prompt is reached ``setup`` has already
+    fully succeeded, so quitting the still-optional demo must never flip its
+    exit code (see the demo offer below), but the phrasing stays consistent
+    with every other abort in this wizard.
+    """
+    if written:
+        return f"Aborted - {written} already written; nothing else was."
+    return "Aborted - nothing written."
+
+
 def _abort_setup(*, mid_line: bool = False, written: str | None = None) -> None:
     """Abort the setup wizard cleanly: 'q'/'quit', an exhausted stdin, or too
     many invalid answers in a row all end the same way - never a bare Click
@@ -495,11 +510,40 @@ def _abort_setup(*, mid_line: bool = False, written: str | None = None) -> None:
     """
     if mid_line:
         typer.echo(err=True)
-    if written:
-        typer.echo(f"Aborted - {written} already written; nothing else was.", err=True)
-    else:
-        typer.echo("Aborted - nothing written.", err=True)
+    typer.echo(_abort_message(written), err=True)
     raise typer.Exit(code=1)
+
+
+def _read_yes_no_or_quit(prompt_text: str, default: bool) -> str:
+    """Read one y/n answer, building the same ``"[Y/n]"``/``"[y/N]"`` prompt
+    Click's own ``confirm()`` would (so this is a drop-in replacement for it),
+    but read through ``typer.prompt`` (like :func:`_prompt_menu`) instead of
+    ``typer.confirm`` so 'q'/'quit' can be recognized too - Click's own
+    ``confirm()`` loop has no notion of 'q'; unrecognized input there just
+    reprints "Error: invalid input" and re-reads forever, with no escape
+    (round 7 item 5).
+
+    Returns the lowercased, stripped answer as one of ``"y"``, ``"n"``,
+    ``"q"``, or ``""`` (blank - caller applies *default*); loops on any other
+    input the same way Click's ``confirm()`` does. Raises ``EOFError``/
+    ``typer.Abort`` exactly like ``typer.prompt`` on a closed/exhausted stdin
+    or Ctrl-C - every caller decides what that means for itself, the same
+    split :func:`_confirm_or_abort` and the closing demo offer already need.
+    """
+    suffix = "Y/n" if default else "y/N"
+    full_prompt = f"{prompt_text} [{suffix}]"
+    while True:
+        raw = typer.prompt(full_prompt, default="", show_default=False)
+        value = raw.strip().lower()
+        if value in ("y", "yes"):
+            return "y"
+        if value in ("n", "no"):
+            return "n"
+        if value in ("q", "quit"):
+            return "q"
+        if value == "":
+            return ""
+        typer.echo("Error: invalid input", err=True)
 
 
 def _confirm_or_abort(prompt_text: str, default: bool, *, written: str | None = None) -> bool:
@@ -508,11 +552,19 @@ def _confirm_or_abort(prompt_text: str, default: bool, *, written: str | None = 
     message, never a bare Click ``Aborted!``, matching every other prompt in
     this wizard (:func:`_prompt_menu`). *written* is forwarded to
     :func:`_abort_setup` verbatim (see there).
+
+    Round 7 item 5: 'q'/'quit' aborts here too, the same as every
+    :func:`_prompt_menu` menu - see :func:`_read_yes_no_or_quit`.
     """
     try:
-        return typer.confirm(prompt_text, default=default)
+        answer = _read_yes_no_or_quit(prompt_text, default)
     except (EOFError, typer.Abort):
         _abort_setup(mid_line=True, written=written)
+    if answer == "q":
+        _abort_setup(written=written)
+    if answer == "":
+        return default
+    return answer == "y"
 
 
 def _prompt_menu(prompt_text: str, default: str, parse, *, written: str | None = None):
@@ -598,7 +650,16 @@ def mode(
     is always frictionless.
     """
     if name is None:
-        typer.echo(load_mode(path))
+        current = load_mode(path)
+        # round 7 item 8: no policy has ever been saved for this repo, so
+        # `current` is the pure fallback default, never an explicit choice -
+        # say so, the same way `telemetry status` names its own implicit
+        # default (round 5 item 12), instead of printing a bare mode name
+        # that reads as a deliberate decision someone made.
+        if load_policy(path) is None:
+            typer.echo(f"{current} (default)")
+        else:
+            typer.echo(current)
         return
     try:
         saved = _apply_mode_change(name, path, "doberman mode CLI")
@@ -1259,7 +1320,11 @@ def doctor(
         typer.echo(_section(section_name))
         for result in section_results:
             header = f"{marks[result.status]} {result.name}: "
-            for line in wrap_detail(f"{header}{result.detail}", indent=0):
+            # round 7 item 7: a hanging indent, so a wrapped remedy (many
+            # detail strings ARE a remedy sentence, e.g. the Hook command
+            # FAIL) never starts flush at column 0 on a narrow terminal -
+            # continuation lines land indented under the mark instead.
+            for line in wrap_detail(f"{header}{result.detail}", indent=0, hang=7):
                 typer.echo(line)
 
     typer.echo("")
@@ -3507,6 +3572,11 @@ def setup(
 
         if tune_prefs:
             vector = preset_vector
+            # round 7 item 6: restate which preset is being tuned right above
+            # the four prompts - the preset's own weights line printed above
+            # (before the "Tune individual weights?" question) can have
+            # scrolled off by the time someone answers the fourth prompt.
+            typer.echo(f"Tuning the {persisted_mode.value!r} preset:")
             typer.echo("Enter a weight in [0, 1] for each dimension (press Enter to keep current):")
             changed_dims: list[str] = []
             for i, dim in enumerate(DIMENSIONS):
@@ -3625,6 +3695,14 @@ def setup(
             claude_scope = "project"
         else:
             _print_step_section("Hook installation (Claude Code)", stage="claude")
+            # round 7 item 4: name the blast radius before asking - "globally"
+            # alone doesn't say WHOSE global, and a wrong answer here wires
+            # every other project on this machine into this repo's posture.
+            for line in wrap_detail(
+                "Global hooks apply to every project on this machine, not just this repo.",
+                indent=0,
+            ):
+                typer.echo(line)
             use_global = _confirm_or_abort(
                 "Install hooks globally (~/.claude/settings.json)?",
                 False,
@@ -3871,9 +3949,19 @@ def setup(
         header = "Setup pending"
     else:
         header = "Setup complete"
+    marker = "--" if header == "Setup complete" else "!!"
+    # round 7 item P1 (2): a refused `--mode <lower>` request is folded right
+    # into the closing header, not just the "Mode:" line below it - a reader
+    # who only sees the header (or a script keying off it) still learns the
+    # requested mode was refused. The exit code is unchanged either way (0 for
+    # "Setup complete": the run completed as designed - see docs/CLI.md and
+    # docs/SETUP.md, which spell out that exit 0 means "ran to completion",
+    # never "you got the mode you asked for").
+    if persisted_mode is not chosen_mode:
+        header += f" (mode kept: {persisted_mode.value}; {chosen_mode.value} refused)"
     docs_url = "https://github.com/DobermanCore/Doberman-Core/blob/main/docs/SETUP.md"
 
-    _print_step_section(header, marker="--" if header == "Setup complete" else "!!")
+    _print_step_section(header, marker=marker)
     # item 4: wrap through wrap_detail with a hanging indent, so a long "not
     # lowered" reason wraps under the mode value's column instead of running
     # off past 78 columns. Wrap the PLAIN text first (styling wraps the mode
@@ -4020,11 +4108,16 @@ def setup(
         ):
             typer.echo(line)
 
-    if hooks_kind_wired:
+    if hooks_kind_wired and not pending:
         # item 7: the demo offer counts as a step too; item 12: the prompt
         # text itself carries no "Next:" label - only the final printed line
         # (the fallback below, or --yes's own line) does. item 8 (round 5):
         # a pending run no longer reaches this offer at all - see above.
+        # round 7 item 3: a MIXED (partly-pending) run has ``hooks_kind_wired``
+        # non-empty too, so ``not pending`` is the guard that actually keeps
+        # this offer out of that case - without it the "pending" block above
+        # AND this offer's own EOF/--yes/"n" fallback each print their own
+        # "Next:" line, so a partly-pending close showed two.
         # item 7 (round 6): runs to 90+ chars unwrapped once the step counter
         # is appended - wrap it like every other prompt text in the wizard.
         # `typer.confirm` writes this string as-is before reading input, so
@@ -4041,7 +4134,7 @@ def setup(
             typer.echo(style_text("Next: `doberman demo --fast`", bold=True))
         else:
             try:
-                want_demo = typer.confirm(style_text(demo_question, bold=True), default=True)
+                answer = _read_yes_no_or_quit(style_text(demo_question, bold=True), True)
             except (EOFError, typer.Abort):
                 # A closed/exhausted stdin (or Ctrl-C) here must never fail an
                 # already-succeeded setup. The confirm prompt already wrote
@@ -4049,7 +4142,16 @@ def setup(
                 # line first keeps the "Next:" fallback below from gluing
                 # onto it.
                 typer.echo()
-                want_demo = False
+                answer = "n"
+            if answer == "q":
+                # round 7 item 5: 'q' here declines the demo, not the whole
+                # run - setup already succeeded by this point (this offer
+                # never even runs otherwise - see ``not pending`` above), so
+                # quitting the still-optional demo must never flip the exit
+                # code. The wording matches every other abort in this wizard
+                # even though the exit code doesn't (see _abort_message).
+                typer.echo(_abort_message(_wired_files_clause()), err=True)
+            want_demo = answer in ("y", "")
             if want_demo:
                 typer.echo("")
                 demo_outcomes = run_demo(

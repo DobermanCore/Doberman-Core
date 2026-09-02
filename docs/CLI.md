@@ -10,7 +10,7 @@ Day-to-day posture, status, and review commands.
 |---------|---------|-----------|
 | `doberman scan` | Read-only risk map of the repo's capabilities and sensitive surface. | `--path`/`-p`, `--quiet`/`-q`, `--json`, `--mcp` |
 | `doberman review` | Show the recommended policy checklist; save it with `--yes`. | `--path`/`-p`, `--yes`/`-y` |
-| `doberman mode [NAME]` | Show or set the security strength mode (light/balanced/strict/paranoid). | `--path`/`-p` |
+| `doberman mode [NAME]` | Show or set the security strength mode (light/balanced/strict/paranoid). With no argument on a repo with no saved policy yet, prints the fallback default tagged `(default)` rather than a bare name, since nothing has actually been chosen. | `--path`/`-p` |
 | `doberman enforcement [STATE]` | Show or set the enforcement dial (enforce/monitor/off). | `--path`/`-p` |
 | `doberman prefs [DIMENSION] [VALUE]` | Show or set the subjective preference vector. | `--path`/`-p` |
 | `doberman egress-velocity [KNOB] [VALUE]` | Show or set the egress-velocity thresholds (`burst`, `volume-bytes`, `fanout`). Lowering a threshold is frictionless; raising one is gated. | `--path`/`-p` |
@@ -33,10 +33,10 @@ Day-to-day posture, status, and review commands.
 | `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
 | `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
-| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host and ask for telemetry consent. Every menu prompt (hosts, mode, weight tuning) accepts `q`/`quit` to abort cleanly. Exits non-zero (`!! Setup incomplete !!`) if the closing doctor pass finds a critical; a host-kind-free run (mcp/openclaw only) prints `!! Setup pending !!` and a MIXED run (some hooks-kind host wired, some still manual) prints `!! Setup partly pending !!` — both exit `3`. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable; also accepts `all`), `--path`/`-p`, `--dry-run`, `--no-telemetry` |
+| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host and ask for telemetry consent (its default mirrors the current on-disk state, so a prior opt-out isn't silently reversed by a bare Enter). Every menu prompt (hosts, mode, weight tuning) and every yes/no confirm (telemetry, global scope, weight tuning, the closing demo offer) accepts `q`/`quit` to abort cleanly — except the closing demo offer, where `q` only declines the demo since setup has already succeeded by then. Exits non-zero (`!! Setup incomplete !!`) if the closing doctor pass finds a critical; a host-kind-free run (mcp/openclaw only) prints `!! Setup pending !!` and a MIXED run (some hooks-kind host wired, some still manual) prints `!! Setup partly pending !!` — both exit `3`. A refused `--mode <lower>` request still exits `0` — the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`); exit `0` means the run completed, not that the requested mode was applied. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable; also accepts `all`), `--path`/`-p`, `--dry-run`, `--no-telemetry` |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
 | `doberman telemetry off` | Opt out after one final best-effort disabled event. | none |
-| `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches. | none |
+| `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches; a disabled reading names `doberman telemetry on` to opt back in, symmetric with the default-on reading's own `doberman telemetry off` pointer. | none |
 | `doberman session-summary` | Print the device-global session-guard summary and exit. Always exits 0; never blocks a session. | none |
 | `doberman serve` | Run Doberman as an MCP proxy in front of a downstream MCP tool server. | `--path`/`-p` |
 | `doberman version` | Print the installed Doberman version. `doberman --version` / `-V` does the same. | none |
@@ -179,6 +179,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `egress-velocity` | `2` | Unknown knob, missing value, or a non-positive value. |
 | `egress-velocity` | `1` | Threshold change denied by the gate. |
 | `doctor` | `1` | One or more critical checks failed. |
+| `setup` | `0` | The run completed as designed — this is NOT the same claim as "you got the mode you asked for". A `--mode <lower>` request the raise-only gate refuses still exits `0`; the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`) and the `Mode:` line repeats the reason. |
 | `setup` | `1` | The closing doctor pass found a critical (e.g. hooks call `doberman`, which is not on PATH) — printed as `!! Setup incomplete !!`, never `complete`. |
 | `setup` | `3` | A run that wired ONLY `mcp`/`openclaw` (no hooks-based host at all) — printed as `!! Setup pending !!`; a MIXED run (some hooks-kind host wired, some still manual) — printed as `!! Setup partly pending !!`. Not an error either way: a manual paste-and-restart step still stands between here and protection, so both are distinguished from a fully-live `0` and a broken `1`. |
 | `password set` | `1` | Passwords did not match, or enrollment failed. |

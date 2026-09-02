@@ -281,3 +281,32 @@ def test_password_set_force_requires_current_password(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert password.verify(rotated) is True
     assert _PASSWORD not in result.output
+
+
+def test_mode_with_no_argument_names_the_default_when_no_policy_saved(tmp_path):
+    """Round 7 item 8: `mode` with no argument, on a repo with no saved
+    policy at all, prints the fallback default with an explicit "(default)"
+    tag - a bare "balanced" reads as a deliberate choice someone made, but
+    nothing has actually been persisted yet."""
+    root = str(tmp_path)
+    assert load_policy(root) is None  # nothing saved yet
+
+    result = runner.invoke(app, ["mode", "--path", root])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "balanced (default)"
+
+
+def test_mode_with_no_argument_omits_the_tag_once_a_policy_is_saved(tmp_path):
+    """The same command on a repo that has explicitly gone through `setup`
+    (even to the same 'balanced' value) prints the bare mode name - it is no
+    longer an implicit default, it is what was actually persisted."""
+    root = str(tmp_path)
+    setup_result = runner.invoke(app, ["setup", "--yes", "--path", root])
+    assert setup_result.exit_code == 0, setup_result.output
+    assert load_policy(root) is not None
+
+    result = runner.invoke(app, ["mode", "--path", root])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "balanced"
