@@ -238,8 +238,10 @@ def test_challenge_parts_has_the_documented_keys():
         "tool",
         "notice",
         "deadline_s",
+        "action_id",
     ):
         assert key in parts
+    assert parts["action_id"] == "act-7"  # the action's own id -- for outcome logging only
 
 
 def test_challenge_parts_tags_by_name_not_by_indentation():

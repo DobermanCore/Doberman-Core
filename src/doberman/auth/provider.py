@@ -148,6 +148,10 @@ def challenge_parts(
     countdown is owned by :class:`~doberman.auth.gui_prompter.GuiPrompter`
     itself) — a value here would be decorative at best and misleading at
     worst if a renderer trusted it over the deadline it actually enforces.
+
+    ``action_id`` is included for outcome LOGGING only (the GUI logs one INFO
+    line per dialog: the outcome and this id, never the target) — it is never
+    itself rendered to the human.
     """
     target = action.target or "(no target)"
     notice = action.metadata.get("approval_memory_notice")
@@ -179,6 +183,7 @@ def challenge_parts(
         "tool": action.tool_name,
         "notice": notice,
         "deadline_s": None,
+        "action_id": action.id,
     }
 
 

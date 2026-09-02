@@ -435,6 +435,25 @@ def test_window_is_topmost_dark_and_fixed_size(monkeypatch, fake_root):
     assert fake_root.resizable_args == (False, False)
 
 
+def _rgb(color: str) -> tuple[int, int, int]:
+    return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+
+def _relative_luminance(color: str) -> float:
+    def _lin(channel: int) -> float:
+        c = channel / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = _rgb(color)
+    return 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+
+
+def _contrast_ratio(color_a: str, color_b: str) -> float:
+    la, lb = _relative_luminance(color_a), _relative_luminance(color_b)
+    lighter, darker = max(la, lb), min(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
 def test_palette_is_dark_tan_and_amber():
     """Design contract: warm near-black surfaces, tan brand, amber Approve — no neon.
 
@@ -444,10 +463,6 @@ def test_palette_is_dark_tan_and_amber():
     Deny is now the SOLID button (tan fill, dark ink) and Approve is outlined on the
     panel color — the fail-closed default reads as the visually dominant one.
     """
-
-    def _rgb(color: str) -> tuple[int, int, int]:
-        return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
-
     for surface in (gui_prompter._BG, gui_prompter._PANEL):
         assert max(_rgb(surface)) < 48  # near-black surfaces
 
@@ -459,7 +474,21 @@ def test_palette_is_dark_tan_and_amber():
     assert ag > bg_  # amber is more yellow (greener) than the tan brand
 
     assert max(_rgb(gui_prompter._BRAND_FG)) < 60  # dark ink for contrast on the tan Deny button
-    assert gui_prompter._RING == gui_prompter._FG  # the focus ring is white, not amber
+
+
+def test_focus_ring_reaches_wcag_non_text_contrast_against_both_buttons():
+    """WCAG 1.4.11 (non-text contrast): a focus indicator needs >= 3:1 against
+    whatever it sits adjacent to. The OLD ring (== _FG, near-white) measured
+    only ~2.14:1 against the Deny fill (_BRAND) and ~1.58:1 against Approve's
+    amber (_APPROVE) -- and no light color can do better: even pure white
+    tops out at ~2.4:1 against the tan Deny fill, so the fix had to go dark,
+    not lighter. _RING now reuses the existing _RULE hairline-border token,
+    which clears 3:1 against both with real margin.
+    """
+    assert _contrast_ratio(gui_prompter._RING, gui_prompter._BRAND) >= 3.0
+    assert _contrast_ratio(gui_prompter._RING, gui_prompter._APPROVE) >= 3.0
+    # distinct hue from both accents, as the module's own comment still claims
+    assert gui_prompter._RING not in (gui_prompter._BRAND, gui_prompter._APPROVE)
 
 
 def test_confirm_dialog_default_keyboard_action_denies():
@@ -504,6 +533,30 @@ def real_root():
     root.destroy()
 
 
+def _fake_focus_tracking(root, *widgets):
+    """Replace ``root.focus_get`` and each widget's ``focus_set`` with a small,
+    self-consistent in-memory stand-in for Tk's real OS/window-manager-mediated
+    focus tracking.
+
+    A headless/CI display is not guaranteed to grant a newly created window
+    real input focus at all (observed there as a flaky ``root.focus_get() is
+    None`` even after ``focus_force()``/``focus_set()`` — a display-server
+    reality this module's own handlers already tolerate by no-op'ing, never
+    something a deterministic test should depend on). What is actually worth
+    testing is the HANDLERS' conditional logic against whatever the OS reports
+    as focused, not whether any particular runner's window manager grants it —
+    so this fakes just that one seam and leaves everything else real.
+
+    Starts on ``widgets[0]`` (if given); returns the mutable state dict for
+    assertions.
+    """
+    state = {"widget": widgets[0] if widgets else None}
+    root.focus_get = lambda: state["widget"]
+    for widget in widgets:
+        widget.focus_set = lambda w=widget: state.__setitem__("widget", w)
+    return state
+
+
 def test_real_dialog_widgets_dark_theme_and_masked_entry(real_root):
     """With a real display: the code entry is masked and surfaces use the dark palette."""
     import tkinter
@@ -536,7 +589,7 @@ def test_deny_starts_focused_and_return_invokes_only_the_focused_button(real_roo
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
     assert set(buttons) == {"Deny", "Approve"}
-    assert root.focus_get() is buttons["Deny"]
+    _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])  # starts on Deny
 
     root.event_generate("<Return>")
     root.update()
@@ -557,28 +610,58 @@ def test_moving_focus_to_approve_lets_return_approve(real_root):
     root.update()
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
+    state = _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])
     buttons["Deny"].event_generate("<Right>")
     root.update()
-    assert root.focus_get() is buttons["Approve"]
+    assert state["widget"] is buttons["Approve"]
 
     root.event_generate("<Return>")
     root.update()
     assert answer.get("value") is True
 
 
-def test_control_return_is_still_gated_by_focus(real_root):
-    """The deliberate-approve accelerator only ever invokes whichever button is
-    ALREADY focused -- with Deny focused (the default), Ctrl+Enter still denies.
+def test_control_return_is_a_no_op_when_deny_is_focused(real_root):
+    """Ctrl+Enter is a deliberate APPROVE-only accelerator -- with Deny focused
+    (the default), it must do NOTHING: never approve (that would defeat the
+    "must move focus onto Approve first" gate) and never deny either (a plain
+    Return already does that; Ctrl+Enter denying too would make it a second,
+    redundant way to deny, which is not what it's for).
     """
+    import tkinter.ttk as ttk
+
     root = real_root
     answer: dict = {}
     gui_prompter._configure_window(root)
     gui_prompter._populate_confirm(root, "Approve?", answer, 120.0)
     root.update()
 
+    buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
+    _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])  # starts on Deny
+
     root.event_generate("<Control-Return>")
     root.update()
-    assert answer.get("value") is False
+    assert "value" not in answer  # neither approved nor denied -- a true no-op
+
+
+def test_control_return_approves_when_approve_is_focused(real_root):
+    """Once focus has been deliberately moved onto Approve (Left/Right),
+    Ctrl+Enter DOES act as the deliberate-approve accelerator."""
+    import tkinter.ttk as ttk
+
+    root = real_root
+    answer: dict = {}
+    gui_prompter._configure_window(root)
+    gui_prompter._populate_confirm(root, "Approve?", answer, 120.0)
+    root.update()
+
+    buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
+    _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])
+    buttons["Deny"].event_generate("<Right>")
+    root.update()
+
+    root.event_generate("<Control-Return>")
+    root.update()
+    assert answer.get("value") is True
 
 
 def test_keyboard_hint_is_ascii_and_mentions_enter(real_root):
@@ -615,15 +698,56 @@ def test_target_panel_collapses_a_long_no_space_target_and_keeps_the_question_vi
     target_text = texts[0]
     assert int(target_text.cget("height")) <= gui_prompter._TARGET_MAX_LINES
 
+    expected_toggle = f"Show all {len(long_target)} characters"
     toggles = [
         w
         for w in _walk_widgets(frame)
-        if isinstance(w, ttk.Button) and w.cget("text") == "Show full target"
+        if isinstance(w, ttk.Button) and w.cget("text") == expected_toggle
     ]
-    assert toggles, "a target this long must offer a Show full target toggle"
+    assert toggles, "a target this long must offer a 'Show all N characters' toggle"
 
     labels = [w.cget("text") for w in _walk_widgets(frame) if isinstance(w, tkinter.Label)]
     assert gui_prompter._QUESTION in labels  # never clipped out of view
+
+
+def test_target_panel_ellipsis_is_muted_and_distinct_from_target_text(real_root):
+    """The middle-ellipsis marker itself must render in the muted colour so it
+    can never be mistaken for real target text (P0 confusability regression)."""
+    import tkinter
+
+    root = real_root
+    long_target = "https://api.example.com/upload?" + "a" * 370
+    frame = gui_prompter._content_frame(root)
+    gui_prompter._build_target_panel(root, frame, long_target)
+    root.update()
+
+    target_text = next(w for w in _walk_widgets(frame) if isinstance(w, tkinter.Text))
+    ranges = target_text.tag_ranges("muted")
+    assert ranges, "the ellipsis must be tagged so it can be styled distinctly"
+    assert target_text.tag_cget("muted", "foreground") == gui_prompter._MUTED
+    muted_text = target_text.get(ranges[0], ranges[1])
+    assert muted_text.strip() == gui_prompter._ELLIPSIS.strip()
+
+
+def test_target_panel_text_stays_normal_state_and_read_only(real_root):
+    """The target Text widget must stay in the keyboard tab order (state
+    "normal", never "disabled" -- a disabled widget drops out of Tab order and
+    off most screen readers) while still refusing to accept typed edits."""
+    import tkinter
+
+    root = real_root
+    frame = gui_prompter._content_frame(root)
+    gui_prompter._build_target_panel(root, frame, "a short target")
+    root.update()
+
+    target_text = next(w for w in _walk_widgets(frame) if isinstance(w, tkinter.Text))
+    assert target_text.cget("state") == "normal"
+
+    before = target_text.get("1.0", "end")
+    target_text.focus_set()
+    target_text.event_generate("<KeyPress>", keysym="a", state=0)
+    root.update()
+    assert target_text.get("1.0", "end") == before  # typing never edits it
 
 
 def test_target_panel_toggle_expands_to_the_full_target(real_root):
@@ -638,11 +762,11 @@ def test_target_panel_toggle_expands_to_the_full_target(real_root):
     toggle = next(
         w
         for w in _walk_widgets(frame)
-        if isinstance(w, ttk.Button) and w.cget("text") == "Show full target"
+        if isinstance(w, ttk.Button) and w.cget("text") == f"Show all {len(long_target)} characters"
     )
     toggle.invoke()
     root.update()
-    assert toggle.cget("text") == "Hide full target"
+    assert toggle.cget("text") == "Show less"
 
     import tkinter
 
@@ -665,6 +789,7 @@ def test_countdown_ticks_then_denies_on_expiry(real_root):
     expired = []
     label = gui_prompter._build_countdown(root, root, 120.0, on_expire=lambda: expired.append(True))
     assert label.cget("text") == "auto-denies in 2:00 if unanswered"
+    assert label.cget("fg") == gui_prompter._MUTED
 
     # Fire the scheduled ticks in order, exactly as Tk's event loop would.
     while scheduled and not expired:
@@ -673,6 +798,18 @@ def test_countdown_ticks_then_denies_on_expiry(real_root):
 
     assert expired == [True]
     assert label.cget("text") == "Denied - no answer in 2:00"
+
+
+def test_countdown_adopts_severity_ramp_as_time_runs_low(real_root):
+    """The countdown label turns amber under 30s and bold BLOCK-red under
+    10s -- the same visual language the risk severity chip uses."""
+    root = real_root
+    scheduled: list[object] = []
+    root.after = lambda _delay_ms, callback: scheduled.append(callback)  # type: ignore[method-assign]
+
+    label = gui_prompter._build_countdown(root, root, 8.0, on_expire=lambda: None)
+    assert label.cget("fg") == gui_prompter._SEV_CRITICAL  # under 10s from the very first paint
+    assert "bold" in label.cget("font")
 
 
 def test_code_entry_rejects_non_digit_input(real_root):
@@ -692,9 +829,10 @@ def test_code_entry_rejects_non_digit_input(real_root):
 
 
 def test_blank_code_submit_shows_inline_error_never_denies_silently(real_root):
-    """Submitting a blank/non-digit code shows an inline message and leaves the
-    dialog open (the timeout still applies) -- it must never quietly deny OR
-    let a blank string reach the verifier."""
+    """Submitting a blank code shows an inline message naming the exact count
+    (never repeating the prompt) and leaves the dialog open (the timeout
+    still applies) -- it must never quietly deny OR let a blank string reach
+    the verifier."""
     import tkinter
 
     root = real_root
@@ -714,7 +852,82 @@ def test_blank_code_submit_shows_inline_error_never_denies_silently(real_root):
 
     assert "value" not in answer  # never resolved -- the dialog is still waiting
     labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
-    assert any("6-digit code" in text for text in labels)
+    assert any("you entered 0" in text for text in labels)
+
+
+def test_partial_code_submit_names_the_exact_count(real_root):
+    """A 4-digit partial code names the count, not a generic re-prompt."""
+    import tkinter
+    import tkinter.ttk as ttk
+
+    root = real_root
+    answer: dict = {}
+    gui_prompter._populate_code(root, "Enter your 2FA code", answer, 120.0)
+    root.update()
+
+    entry = next(w for w in _walk_widgets(root) if isinstance(w, tkinter.Entry))
+    entry.insert(0, "1234")
+    submit = next(
+        w
+        for w in _walk_widgets(root)
+        if isinstance(w, ttk.Button) and w.cget("text") == "Approve with code"
+    )
+    submit.invoke()
+    root.update()
+
+    assert "value" not in answer
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    assert any("you entered 4" in text for text in labels)
+
+
+def test_code_label_appears_above_the_entry(real_root):
+    root = real_root
+    answer: dict = {}
+    gui_prompter._populate_code(root, "Enter your 2FA code", answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    assert gui_prompter._CODE_LABEL in labels
+
+
+def test_code_entry_width_is_eight(real_root):
+    root = real_root
+    answer: dict = {}
+    gui_prompter._populate_code(root, "Enter your 2FA code", answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    entry = next(w for w in _walk_widgets(root) if isinstance(w, tkinter.Entry))
+    assert int(entry.cget("width")) == 8
+
+
+def test_control_return_in_entry_submits_a_valid_code(real_root):
+    root = real_root
+    answer: dict = {}
+    gui_prompter._populate_code(root, "Enter your 2FA code", answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    entry = next(w for w in _walk_widgets(root) if isinstance(w, tkinter.Entry))
+    entry.insert(0, "123456")
+    entry.event_generate("<Control-Return>")
+    root.update()
+    assert answer.get("value") == "123456"
+
+
+def test_check_code_validates_digit_count_and_content():
+    """Pure-function coverage of the inline-error logic (no Tk widgets needed)."""
+    assert gui_prompter._check_code("123456") == ("123456", None)
+    assert gui_prompter._check_code("123 456") == ("123456", None)  # paste-safe
+    assert gui_prompter._check_code("") == (None, "Codes are 6 digits - you entered 0.")
+    assert gui_prompter._check_code("1234") == (None, "Codes are 6 digits - you entered 4.")
+    code, error = gui_prompter._check_code("12a456")
+    assert code is None
+    assert error == "Only digits, please."
 
 
 def test_valid_code_submit_resolves_the_dialog(real_root):
@@ -736,6 +949,362 @@ def test_valid_code_submit_resolves_the_dialog(real_root):
     submit.invoke()
     root.update()
     assert answer.get("value") == "123456"
+
+
+# --- P0: countdown expiry resolves through the SAME first-answer-wins door --------
+
+
+def test_expiry_locks_the_answer_so_a_later_return_cannot_override_it(real_root):
+    """The core P0 regression: once the countdown reaches zero, the answer is
+    resolved to a denial IMMEDIATELY (not 1.5s later, when the "Denied" flash
+    finishes), both buttons are disabled, and Return is unbound -- a keypress
+    landing during the flash must never turn the denial into an approval.
+    """
+    import tkinter.ttk as ttk
+
+    root = real_root
+    scheduled: list[object] = []
+    root.after = lambda _delay_ms, callback: scheduled.append(callback)  # type: ignore[method-assign]
+
+    answer: dict = {}
+    gui_prompter._populate_confirm(root, "Approve?", answer, 5.0)
+    root.update()
+
+    buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
+    _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])
+    buttons["Deny"].event_generate("<Right>")  # focus moves onto Approve, as if mid-decision
+    root.update()
+
+    # Drive every scheduled tick (root.after is faked above) until expiry resolves it.
+    while scheduled and "value" not in answer:
+        scheduled.pop(0)()
+
+    assert answer.get("value") is False
+    assert answer.get("reason") == "expired"
+    assert "disabled" in buttons["Approve"].state()
+    assert "disabled" in buttons["Deny"].state()
+
+    # Approve still holds focus; a real Return keypress must still be inert --
+    # Return is unbound now, AND a disabled button's own invoke() is a no-op.
+    root.event_generate("<Return>")
+    root.update()
+    assert answer.get("value") is False  # unchanged -- still denied
+    assert answer.get("reason") == "expired"  # not overwritten to "approved"
+
+
+def test_expiry_schedules_the_close_after_the_flash_not_immediately(real_root):
+    """Regression (found via the round-2 visual capture, not a unit test --
+    the previous ``_decide`` shared by both the button/Escape paths AND the
+    expiry path called ``root.quit()`` unconditionally, which closed the
+    window the INSTANT the countdown hit zero, before the "Denied" flash was
+    ever visible). Resolving the answer on expiry must NOT itself call
+    ``root.quit()`` synchronously -- only ``_build_countdown``'s own
+    ``root.after(1500, root.quit)`` may close the window, after the flash.
+    """
+    root = real_root
+    scheduled: list[tuple[int, object]] = []
+    quit_calls: list[bool] = []
+    root.after = lambda delay_ms, callback: scheduled.append((delay_ms, callback))  # type: ignore[method-assign]
+    root.quit = lambda: quit_calls.append(True)  # type: ignore[method-assign]
+
+    answer: dict = {}
+    gui_prompter._populate_confirm(root, "Approve?", answer, 5.0)
+    root.update()
+
+    # Fire every short (tick) callback; stop at the 1500ms deferred-close one
+    # WITHOUT firing it -- that's the "still inside the flash" moment.
+    while scheduled:
+        delay, callback = scheduled.pop(0)
+        if delay >= 1500:
+            assert callback is root.quit
+            break
+        callback()
+
+    assert answer.get("value") is False
+    assert answer.get("reason") == "expired"
+    assert quit_calls == []  # the window must still be "open" -- quit not yet called
+
+
+def test_decide_first_answer_wins_directly():
+    """Unit-level pin of the guard itself, independent of the countdown: once
+    ``answer`` carries a "value", a second resolution attempt is a no-op."""
+    answer: dict = {}
+
+    def _decide(value, reason):
+        if "value" in answer:
+            return
+        answer["value"] = value
+        answer["reason"] = reason
+
+    _decide(False, "expired")
+    _decide(True, "approved")  # must NOT override the first resolution
+    assert answer == {"value": False, "reason": "expired"}
+
+
+# --- Agent identity ------------------------------------------------------------------
+
+
+def test_agent_identity_line_renders_role_and_tool():
+    assert gui_prompter._agent_identity_line({"role": "builder", "tool": "shell"}) == (
+        "Agent: builder - via shell"
+    )
+
+
+def test_agent_identity_line_partial_and_absent():
+    assert gui_prompter._agent_identity_line({"role": "builder", "tool": None}) == "Agent: builder"
+    assert gui_prompter._agent_identity_line({"role": None, "tool": "shell"}) == "Agent: via shell"
+    assert gui_prompter._agent_identity_line({"role": None, "tool": None}) is None
+
+
+def test_agent_identity_line_appears_under_the_headline(real_root):
+    root = real_root
+    answer: dict = {}
+    parts = dict(_SAMPLE_PARTS, role="builder", tool="shell")
+    gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    assert "Agent: builder - via shell" in labels
+
+
+# --- Risk severity ramp + chip --------------------------------------------------------
+
+
+def test_severity_from_risk_text_extracts_the_risk_word():
+    assert gui_prompter._severity_from_risk_text("Risk: high - this needs your code") == "high"
+    assert gui_prompter._severity_from_risk_text("RISK: CRITICAL") == "critical"
+    assert gui_prompter._severity_from_risk_text("Risk: medium - confirm to continue") == "medium"
+    assert gui_prompter._severity_from_risk_text("Risk: low - confirm to continue") == "low"
+    assert gui_prompter._severity_from_risk_text("no risk word here") is None
+
+
+def test_severity_ramp_critical_and_high_are_bold_block_red():
+    color, bold = gui_prompter._severity_ramp("critical")
+    assert (color, bold) == (gui_prompter._SEV_CRITICAL, True)
+    assert gui_prompter._severity_ramp("high") == (gui_prompter._SEV_CRITICAL, True)
+
+
+def test_severity_ramp_medium_is_amber_not_bold():
+    assert gui_prompter._severity_ramp("medium") == (gui_prompter._APPROVE, False)
+
+
+def test_severity_ramp_low_and_unknown_are_body_colour():
+    assert gui_prompter._severity_ramp("low") == (gui_prompter._FG, False)
+    assert gui_prompter._severity_ramp(None) == (gui_prompter._FG, False)
+
+
+def test_risk_chip_and_text_never_rest_on_colour_alone(real_root):
+    """Both the chip AND the risk sentence show the actual word -- someone who
+    can't perceive colour still sees "HIGH"."""
+    import tkinter
+
+    root = real_root
+    frame = gui_prompter._content_frame(root)
+    gui_prompter._build_risk_line(frame, "Risk: high - this needs your code", "high")
+    root.update()
+
+    labels = [w.cget("text") for w in _walk_widgets(frame) if isinstance(w, tkinter.Label)]
+    assert any("HIGH" in text for text in labels)  # the chip
+    assert any("Risk: high" in text for text in labels)  # the sentence
+
+
+def test_high_risk_confirm_dialog_shows_a_red_bold_chip(real_root):
+    root = real_root
+    answer: dict = {}
+    parts = dict(_SAMPLE_PARTS, risk="Risk: high - this needs your code")
+    gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    chip = next(
+        w for w in _walk_widgets(root) if isinstance(w, tkinter.Label) and "HIGH" in w.cget("text")
+    )
+    assert chip.cget("bg") == gui_prompter._SEV_CRITICAL
+
+
+# --- Technical tone parity: no duplicated risk line, verb included --------------------
+
+
+def test_technical_tone_does_not_duplicate_the_risk_line(real_root):
+    """Technical tone's headline already embeds "[RISK: HIGH]" -- the separate
+    severity-chip risk line must not ALSO be drawn (that would be the same
+    fact shown twice)."""
+    root = real_root
+    answer: dict = {}
+    parts = dict(
+        _SAMPLE_PARTS,
+        tone="technical",
+        headline="[RISK: HIGH]  Doberman authentication required [two_factor]",
+        risk="RISK: HIGH",
+    )
+    gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    risk_mentions = [text for text in labels if "RISK: HIGH" in text or "HIGH" in text]
+    # Only the headline itself should mention it -- no second, separate chip/line.
+    assert sum(1 for text in labels if text == "RISK: HIGH") == 0
+    assert any("[RISK: HIGH]" in text for text in risk_mentions)
+
+
+def test_technical_tone_shows_the_verb(real_root):
+    root = real_root
+    answer: dict = {}
+    parts = dict(_SAMPLE_PARTS, tone="technical", verb="shell")
+    gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    assert any("shell" in text for text in labels)
+
+
+def test_human_tone_still_shows_the_severity_chip(real_root):
+    root = real_root
+    answer: dict = {}
+    gui_prompter._populate_confirm_parts(root, _SAMPLE_PARTS, answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    assert any(text.strip() == "HIGH" for text in labels)
+
+
+# --- Attention on open ----------------------------------------------------------------
+
+
+def test_flash_and_bell_calls_bell_and_never_raises_when_unavailable():
+    class _NoBell:
+        def bell(self):
+            raise RuntimeError("no sound device")
+
+    gui_prompter._flash_and_bell(_NoBell())  # must not raise
+
+
+def test_flash_and_bell_rings_the_bell(fake_root):
+    called = []
+    fake_root.bell = lambda: called.append(True)
+    gui_prompter._flash_and_bell(fake_root)
+    assert called == [True]
+
+
+# --- Outcome logging: one INFO line per dialog, action id only, never the target ------
+
+
+def test_run_dialog_logs_outcome_and_action_id_never_the_target(monkeypatch, fake_root, caplog):
+    def _fake_populate(root, message, answer, timeout_s):
+        answer["value"] = True
+        answer["reason"] = "approved"
+
+    monkeypatch.setattr(gui_prompter, "_populate_confirm", _fake_populate)
+    with caplog.at_level("INFO", logger="doberman.auth.gui_prompter"):
+        gui_prompter._confirm_dialog("Approve THIS exact SECRET target")
+    messages = [r.message for r in caplog.records]
+    assert any("outcome=approved" in m for m in messages)
+    assert not any("SECRET" in m for m in messages)  # never the target/message content
+
+
+def test_run_dialog_logs_the_action_id_from_parts(monkeypatch, fake_root, caplog):
+    def _fake_populate(root, parts, answer, timeout_s):
+        answer["value"] = False
+        answer["reason"] = "denied"
+
+    monkeypatch.setattr(gui_prompter, "_populate_confirm_parts", _fake_populate)
+    parts = dict(_SAMPLE_PARTS, action_id="act-log-1")
+    with caplog.at_level("INFO", logger="doberman.auth.gui_prompter"):
+        gui_prompter._confirm_dialog_parts(parts)
+    messages = [r.message for r in caplog.records]
+    assert any("action=act-log-1" in m for m in messages)
+
+
+def test_run_dialog_logs_exactly_one_line_per_outcome(monkeypatch, fake_root, caplog):
+    def _fake_populate(root, message, answer, timeout_s):
+        answer["value"] = False
+        answer["reason"] = "expired"
+
+    monkeypatch.setattr(gui_prompter, "_populate_confirm", _fake_populate)
+    with caplog.at_level("INFO", logger="doberman.auth.gui_prompter"):
+        gui_prompter._confirm_dialog("Approve?")
+    assert len(caplog.records) == 1
+    assert "outcome=expired" in caplog.records[0].message
+
+
+# --- Placement: work area clamp -------------------------------------------------------
+
+
+def test_center_on_screen_clamps_the_bottom_edge_inside_the_work_area(monkeypatch, fake_root):
+    """A tall dialog must never have its bottom edge pushed past the monitor's
+    work area (which would push the buttons off-screen)."""
+    monkeypatch.setattr(gui_prompter, "_monitor_rect_under_cursor", lambda: (0, 0, 1920, 1080))
+    fake_root.winfo_reqheight = lambda: 1000  # a very tall (e.g. expanded) dialog
+    gui_prompter._center_on_screen(fake_root)
+    geometry = fake_root.geometries[-1]
+    # geometry is "+x+y" -- extract y and confirm the bottom edge (y + height)
+    # never exceeds the work area's bottom (0 + 1080).
+    y = int(geometry.split("+")[2])
+    assert y + 1000 <= 1080
+    assert y >= 0
+
+
+# --- DPI: prefers PER_MONITOR_AWARE_V2, falls back on failure -------------------------
+
+
+def test_enable_dpi_awareness_prefers_per_monitor_v2(monkeypatch):
+    pytest.importorskip("tkinter")
+    monkeypatch.setattr(gui_prompter.sys, "platform", "win32")
+
+    calls = []
+
+    class _FakeUser32:
+        def SetProcessDpiAwarenessContext(self, _ctx):
+            calls.append("v2")
+            return 1  # success
+
+    class _FakeShcore:
+        def SetProcessDpiAwareness(self, _mode):
+            calls.append("legacy")
+
+    class _FakeWindll:
+        user32 = _FakeUser32()
+        shcore = _FakeShcore()
+
+    import ctypes as real_ctypes
+
+    monkeypatch.setattr(real_ctypes, "windll", _FakeWindll())
+    gui_prompter._enable_dpi_awareness()
+    assert calls == ["v2"]  # legacy fallback never called when v2 succeeds
+
+
+def test_enable_dpi_awareness_falls_back_when_v2_unavailable(monkeypatch):
+    pytest.importorskip("tkinter")
+    monkeypatch.setattr(gui_prompter.sys, "platform", "win32")
+
+    calls = []
+
+    class _FakeUser32:
+        def SetProcessDpiAwarenessContext(self, _ctx):
+            raise AttributeError("not available on this Windows build")
+
+    class _FakeShcore:
+        def SetProcessDpiAwareness(self, _mode):
+            calls.append("legacy")
+
+    class _FakeWindll:
+        user32 = _FakeUser32()
+        shcore = _FakeShcore()
+
+    import ctypes as real_ctypes
+
+    monkeypatch.setattr(real_ctypes, "windll", _FakeWindll())
+    gui_prompter._enable_dpi_awareness()
+    assert calls == ["legacy"]
 
 
 # --- FallbackPrompter ---------------------------------------------------------------
