@@ -28,12 +28,15 @@ def _open_tty() -> tuple[TextIO, TextIO]:
     the distinct console devices. Raises ``OSError`` when no terminal is attached — the
     caller turns that into a denial.
     """
-    if sys.platform == "win32":
+    # Every real test fakes this whole function (``monkeypatch.setattr(tty_prompter,
+    # "_open_tty", ...)``) rather than call it -- a real controlling terminal (either
+    # branch) cannot be constructed in any CI sandbox, Windows or POSIX.
+    if sys.platform == "win32":  # pragma: no cover — needs a real attached console
         return (
             open("CONIN$", encoding="utf-8"),  # noqa: SIM115 — closed by the caller's finally
             open("CONOUT$", "w", encoding="utf-8"),  # noqa: SIM115 — closed by the caller's finally
         )
-    tty = open("/dev/tty", "r+", encoding="utf-8")  # noqa: SIM115 — closed by the caller's finally
+    tty = open("/dev/tty", "r+", encoding="utf-8")  # noqa: SIM115 — pragma: no cover
     return tty, tty
 
 

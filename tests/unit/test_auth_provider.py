@@ -535,6 +535,47 @@ def test_plugin_raising_is_denied_with_error_method():
     assert result.method == "error"
 
 
+def test_plain_why_falls_back_to_the_decisions_own_explanation_with_no_reason_codes():
+    """No reason codes on the DECISION -> the decision's own explanation, not an
+    empty/raised why. Pydantic's model validation forbids a real, normally-
+    constructed AUTH ``Decision`` from ever having empty ``reason_codes``, so
+    this defensive fallback is exercised via ``model_construct`` (bypasses
+    validation) -- a corrupt/hand-built/future Decision must still degrade
+    gracefully here, never raise.
+    """
+    objective = GuardrailResult(
+        verdict=Verdict.AUTH,
+        risk=Risk.medium,
+        reason_codes=[ReasonCode.role_out_of_scope],
+        explanation="why",
+    )
+    decision = Decision.model_construct(
+        action_id="act-7",
+        final_verdict=Verdict.AUTH,
+        final_risk=Risk.medium,
+        objective=objective,
+        reason_codes=[],
+        explanation="why",
+        decided_at=_NOW,
+    )
+    prompter = FakePrompter(confirm=False)
+    LocalAuthProvider().authenticate(
+        decision, _action("backend/api.ts"), AuthTier.soft_confirm, prompter=prompter
+    )
+    assert "Why." in prompter.messages[0]
+
+
+def test_notify_outcome_raising_is_swallowed_and_never_affects_the_result():
+    class _RaisingNotifier(FakePrompter):
+        def notify_outcome(self, parts, outcome):
+            raise RuntimeError("boom")
+
+    result = LocalAuthProvider().authenticate(
+        _auth_decision(), _action(), AuthTier.soft_confirm, prompter=_RaisingNotifier(confirm=True)
+    )
+    assert result.approved is True
+
+
 def test_two_factor_code_prompt_names_the_exact_target():
     """Item 8: the terminal's SECOND (code) step keeps the action binding the
     first (confirm) step already established -- a human landing on a bare
