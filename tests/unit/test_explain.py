@@ -27,6 +27,8 @@ from doberman.explain import (
     REDACTED_FIELDS,
     build_explanation_payload,
     explain_decision,
+    explain_decision_with_source,
+    llm_enrichment_enabled,
     template_explanation,
 )
 
@@ -154,6 +156,72 @@ def test_explain_decision_on_empty_row_never_raises():
     text = explain_decision({})
     assert isinstance(text, str)
     assert text
+
+
+def test_template_explanation_is_ascii_only():
+    # cp1252-safe on Windows: no em dash or other non-ASCII punctuation, for
+    # either verdict's closing sentence.
+    for verdict in ("BLOCK", "AUTH", "PASS"):
+        text = template_explanation(_row(final_verdict=verdict))
+        assert text.isascii(), text
+
+
+def test_template_explanation_decided_layer_is_plain_words_not_raw_schema():
+    objective = template_explanation(_row(decided_layer="objective"))
+    assert "objective guardrail layer" in objective
+    combined = template_explanation(_row(decided_layer="combined"))
+    assert "objective and subjective guardrail layers together" in combined
+    assert "combined guardrail layer" not in combined
+
+
+def test_pass_row_with_no_reason_codes_says_what_was_checked():
+    row = _row(final_verdict="PASS", reason_codes_json=json.dumps([]))
+    text = template_explanation(row)
+    assert "no specific reason codes were recorded" not in text.lower()
+    assert "checked" in text.lower()
+    assert "clean" in text.lower()
+
+
+def test_explain_decision_with_source_reports_template_when_disabled(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DOBERMAN_EXPLAIN_LLM", raising=False)
+    row = _row()
+    text, source = explain_decision_with_source(row)
+    assert source == "template"
+    assert text == template_explanation(row)
+
+
+def test_explain_decision_with_source_reports_llm_on_success(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_EXPLAIN_LLM", "1")
+    _install_fake_anthropic(monkeypatch, lambda kwargs: _FakeMessage("stubbed narrator text"))
+    text, source = explain_decision_with_source(_row())
+    assert (text, source) == ("stubbed narrator text", "llm")
+
+
+def test_explain_decision_with_source_reports_template_on_llm_failure(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_EXPLAIN_LLM", "1")
+
+    def _boom(_kwargs):
+        raise RuntimeError("network error")
+
+    _install_fake_anthropic(monkeypatch, _boom)
+    row = _row()
+    text, source = explain_decision_with_source(row)
+    assert source == "template"
+    assert text == template_explanation(row)
+
+
+def test_llm_enrichment_enabled_mirrors_the_gate(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DOBERMAN_EXPLAIN_LLM", raising=False)
+    assert llm_enrichment_enabled() is False
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_EXPLAIN_LLM", "1")
+    _install_fake_anthropic(monkeypatch, _never_called)
+    assert llm_enrichment_enabled() is True
 
 
 # --- redaction allowlist (security) ------------------------------------------
@@ -343,3 +411,10 @@ def test_tui_appears_in_help():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "tui" in result.output
+
+
+def test_tui_command_with_missing_path_exits_2_before_the_textual_check(tmp_path):
+    missing = tmp_path / "does-not-exist"
+    result = runner.invoke(app, ["tui", "--path", str(missing)])
+    assert result.exit_code == 2
+    assert "does not exist" in result.output

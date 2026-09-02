@@ -126,6 +126,18 @@ if _MISSING_REASON_DESCRIPTIONS:  # pragma: no cover — reminder, not a hard fa
         "explain: no description for reason codes %s", sorted(_MISSING_REASON_DESCRIPTIONS)
     )
 
+# Plain-words phrasing for `decided_layer` (see storage/log.py's `_decided_layer`:
+# "objective" | "combined"). Anything unrecognized falls back to a humanized form
+# of the raw value, same defensive pattern as `_describe_reason`.
+_LAYER_DESCRIPTIONS: dict[str, str] = {
+    "objective": "the objective guardrail layer",
+    "combined": "the objective and subjective guardrail layers together",
+}
+
+
+def _describe_layer(layer: str) -> str:
+    return _LAYER_DESCRIPTIONS.get(layer, layer.replace("_", " "))
+
 
 def build_explanation_payload(row: dict) -> dict:
     """Defensive allowlist projection of a decision row for the LLM.
@@ -165,11 +177,17 @@ def template_explanation(row: dict) -> str:
     what = f"{role} attempted {action_type}"
     if target:
         what += f" on {target}"
-    sentences = [f"{what}.", f"The {layer} guardrail layer decided {verdict}."]
+    layer_desc = _describe_layer(layer)
+    sentences = [f"{what}.", f"{layer_desc[0].upper()}{layer_desc[1:]} decided {verdict}."]
 
     if reason_codes:
         reasons_text = "; ".join(_describe_reason(c) for c in reason_codes)
         sentences.append(f"Reasons: {reasons_text}.")
+    elif verdict == "PASS":
+        sentences.append(
+            "Nothing was flagged: the action was checked against the built-in "
+            "guardrails and found clean."
+        )
     else:
         sentences.append("No specific reason codes were recorded for this decision.")
 
@@ -182,7 +200,7 @@ def template_explanation(row: dict) -> str:
             sentences.append("This action was approved via 5-minute memory (soft_confirm).")
     elif verdict == "BLOCK":
         sentences.append(
-            "This was a hard block — it will only be allowed after a policy or role "
+            "This was a hard block - it will only be allowed after a policy or role "
             "change, not by re-authenticating."
         )
 
@@ -218,6 +236,36 @@ def _llm_explain(payload: dict) -> str:
     return text
 
 
+def llm_enrichment_enabled() -> bool:
+    """Public check: would `explain_decision` attempt LLM enrichment right now?
+
+    Same three-way gate as :func:`explain_decision` (dep installed AND key AND
+    env flag) — exposed so a caller (the `tui` decision browser) can decide up
+    front whether to even schedule an enrichment attempt, without duplicating
+    the gate logic itself.
+    """
+    return _llm_enrichment_enabled()
+
+
+def explain_decision_with_source(row: dict, *, use_llm: bool | None = None) -> tuple[str, str]:
+    """Like :func:`explain_decision`, but also reports where the text came from.
+
+    Returns ``(text, source)`` where ``source`` is ``"llm"`` (successfully
+    narrated) or ``"template"`` (LLM disabled, or enabled but failed and fell
+    back) — lets a caller distinguish "never attempted" from "attempted and
+    fell back" for its own display, without this function ever raising.
+    """
+    enabled = use_llm is not False and _llm_enrichment_enabled()
+    if not enabled:
+        return template_explanation(row), "template"
+
+    try:
+        return _llm_explain(build_explanation_payload(row)), "llm"
+    except Exception:  # noqa: BLE001 — LLM enrichment is best-effort, never fatal
+        logger.debug("explain: LLM enrichment failed, falling back to template", exc_info=True)
+        return template_explanation(row), "template"
+
+
 def explain_decision(row: dict, *, use_llm: bool | None = None) -> str:
     """Plain-language "why" for a redacted decision row.
 
@@ -228,12 +276,5 @@ def explain_decision(row: dict, *, use_llm: bool | None = None) -> str:
     in the LLM path — missing dep, no key, network, timeout, bad response —
     falls back to :func:`template_explanation`; this function never raises.
     """
-    enabled = use_llm is not False and _llm_enrichment_enabled()
-    if not enabled:
-        return template_explanation(row)
-
-    try:
-        return _llm_explain(build_explanation_payload(row))
-    except Exception:  # noqa: BLE001 — LLM enrichment is best-effort, never fatal
-        logger.debug("explain: LLM enrichment failed, falling back to template", exc_info=True)
-        return template_explanation(row)
+    text, _source = explain_decision_with_source(row, use_llm=use_llm)
+    return text
