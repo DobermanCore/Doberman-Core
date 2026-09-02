@@ -1715,14 +1715,20 @@ def log(
 @app.command(rich_help_panel="Daily")
 def tui(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    last: int = typer.Option(500, "--last", "-n", help="Load the most recent N decisions."),
 ) -> None:
     """Browse the redacted decision log interactively, with a plain-language "why" panel.
 
     Every row shown is already redacted - a path class, reason codes, the verdict,
-    and the auth outcome - the same data `doberman log` prints. Requires the
-    optional 'textual' extra; `doberman log` remains the plain, dependency-free
-    fallback.
+    the risk, and the auth outcome - the same data `doberman log` prints. Requires
+    the optional 'textual' extra; `doberman log` remains the plain,
+    dependency-free fallback. The load is bounded by `--last` (mirrors
+    `doberman log --last`); the header shows how many rows are loaded versus how
+    many currently match the in-app filter.
     """
+    if not Path(path).is_dir():
+        typer.echo(f"error: --path {path!r} does not exist", err=True)
+        raise typer.Exit(code=2)
     if importlib.util.find_spec("textual") is None:
         typer.echo(
             "error: The TUI requires the optional 'textual' extra: "
@@ -1732,7 +1738,7 @@ def tui(
         raise typer.Exit(code=1)
     from doberman.tui import run_tui
 
-    run_tui(path)
+    run_tui(path, last=max(0, last))
 
 
 _DASH_HOST = "127.0.0.1"
