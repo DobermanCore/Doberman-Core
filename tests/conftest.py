@@ -253,7 +253,8 @@ def _isolated_doberman_logger_state(monkeypatch):
 # (10 x height 8: ~30 ms). Where the model's shape is the thing under test - the
 # benchmark and gate modules - ``pytestmark = pytest.mark.real_hst`` keeps the
 # production size; the nightly deep workflow sets ``DOBERMAN_TEST_REAL_HST=1`` to
-# run the whole suite at production size and guard this shortcut.
+# run the whole suite at production size and guard this shortcut, and the Windows
+# PR leg sets ``DOBERMAN_TEST_FAST_HST_GATES=1`` to run even the gates fast.
 #
 # Done as a setup HOOK, not a fixture: module-scoped fixtures (the poisoning
 # eval, the subjective benchmark) are built before any function-scoped fixture
@@ -278,9 +279,17 @@ def _apply_hst_size(trees: int, height: int) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item: pytest.Item) -> None:
-    real = item.get_closest_marker("real_hst") is not None or bool(
-        os.environ.get("DOBERMAN_TEST_REAL_HST")
-    )
+    if os.environ.get("DOBERMAN_TEST_REAL_HST"):
+        real = True  # the nightly: the whole suite at production size
+    elif os.environ.get("DOBERMAN_TEST_FAST_HST_GATES"):
+        # The Windows PR leg: even the gate modules run fast. Their production-size
+        # eval is DB-heavy (minutes on Windows, ~100x faster on Linux) and, under
+        # its 20-minute marker, a slow Windows runner let it stall the leg to the
+        # job cap four times on 2026-09-01/02. Production size still runs on every
+        # Linux PR leg and on every nightly leg (Windows included, 60-minute caps).
+        real = False
+    else:
+        real = item.get_closest_marker("real_hst") is not None
     _apply_hst_size(*(_HST_PRODUCTION if real else _HST_FAST))
 
 
