@@ -9,6 +9,7 @@ They do prove:
 
 * the package layout and ``doberman.audit_sinks`` entry-point declaration are correct;
 * ``ExampleAuditSink`` satisfies the core ``AuditSink`` protocol;
+* core's real ``emit_to_sinks()`` fan-out reaches the example sink;
 * ``emit`` never raises, including on a malformed record;
 * the sink's output never echoes a raw secret placed in the record.
 
@@ -19,6 +20,7 @@ tests (``examples/plugin-audit-sink/tests/``) and documented in its README.
 from __future__ import annotations
 
 import importlib
+import json
 import pathlib
 import sys
 import tomllib
@@ -27,7 +29,7 @@ from pathlib import Path
 import pytest
 
 from doberman.engine.registry import discover_audit_sinks
-from doberman.storage.sinks import AuditSink
+from doberman.storage.sinks import AuditSink, emit_to_sinks
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLE_ROOT = _REPO_ROOT / "examples" / "plugin-audit-sink"
@@ -90,6 +92,21 @@ def test_example_pyproject_declares_doberman_audit_sinks_entry_point():
 
 def test_example_sink_satisfies_audit_sink_protocol(example_sink_cls):
     assert isinstance(example_sink_cls(), AuditSink)
+
+
+def test_example_sink_fires_through_emit_to_sinks(example_sink_cls, tmp_path, monkeypatch):
+    from example_audit_sink.sinks import SINK_FILE_ENV
+
+    sink_file = tmp_path / "audit.jsonl"
+    monkeypatch.setenv(SINK_FILE_ENV, str(sink_file))
+    sink = example_sink_cls()
+    monkeypatch.setattr("doberman.engine.registry.discover_audit_sinks", lambda: [sink])
+
+    emit_to_sinks(_SAMPLE_RECORD, repo_root=str(tmp_path))
+
+    lines = sink_file.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == _SAMPLE_RECORD
 
 
 def test_example_sink_emit_never_raises(example_sink_cls, tmp_path, monkeypatch):
