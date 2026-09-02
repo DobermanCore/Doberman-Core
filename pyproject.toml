@@ -46,6 +46,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-xdist", "pytest-timeout", "ruff>=0.15,<0.16", "import-linter", "textual", "hypothesis", "starlette", "uvicorn", "httpx"]
 explain = ["anthropic"]
+judge = ["anthropic"]
 tui = ["textual"]
 dash = ["starlette", "uvicorn"]
 sbom = ["pip-audit"]
