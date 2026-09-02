@@ -19,6 +19,7 @@ The tkinter machinery is monkeypatched at module seams (mirroring how the TTY te
 fake ``_open_tty``) so everything here runs headless and deterministically.
 """
 
+import re
 import sys
 import threading
 import time
@@ -845,6 +846,29 @@ def _walk_widgets(widget):
         yield from _walk_widgets(child)
 
 
+def _press(widget, sequence):
+    """Run ``widget``'s own binding for ``sequence`` without going through Tk's
+    key-event delivery.
+
+    ``event_generate`` for a KeyPress is not delivered to the named window: Tk
+    redirects every key event to the application's focus window and DISCARDS
+    it when there is none -- and a CI process that is not the foreground
+    session can lose Tk-internal focus at any moment (Windows sends
+    WM_KILLFOCUS asynchronously after ``focus_force``), which is exactly the
+    flake seen on the Windows leg. The handlers under test read
+    ``root.focus_get()`` (faked above), so dispatching the bound callback
+    directly tests the same logic deterministically. tkinter registers the
+    callback as a Tcl command whose name is the first word of the bound
+    script; it is called with the 19 ``%``-substitution slots, which
+    ``Misc._substitute`` accepts as zero placeholders (``??`` trips its unguarded ``getint``).
+    """
+    script = widget.bind(sequence)
+    if not script:
+        return  # nothing bound (e.g. after expiry unbinds Return): a real key would no-op too
+    funcid = re.search(r"\[(\S+) ", script).group(1)
+    widget.tk.call(funcid, *(["0"] * 19))
+
+
 @pytest.fixture
 def real_root():
     """A real, mapped (not withdrawn) Tk root -- focus tracking needs a mapped
@@ -926,7 +950,7 @@ def test_deny_starts_focused_and_return_invokes_only_the_focused_button(real_roo
     assert {"Deny", "Approve"} <= set(buttons)
     _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])  # starts on Deny
 
-    root.event_generate("<Return>")
+    _press(root, "<Return>")
     root.update()
     assert answer.get("value") is False  # Deny was focused -> Enter denies, never approves
 
@@ -946,11 +970,11 @@ def test_moving_focus_to_approve_lets_return_approve(real_root):
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
     state = _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])
-    buttons["Deny"].event_generate("<Right>")
+    _press(buttons["Deny"], "<Right>")
     root.update()
     assert state["widget"] is buttons["Approve"]
 
-    root.event_generate("<Return>")
+    _press(root, "<Return>")
     root.update()
     assert answer.get("value") is True
 
@@ -973,7 +997,7 @@ def test_control_return_is_a_no_op_when_deny_is_focused(real_root):
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
     _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])  # starts on Deny
 
-    root.event_generate("<Control-Return>")
+    _press(root, "<Control-Return>")
     root.update()
     assert "value" not in answer  # neither approved nor denied -- a true no-op
 
@@ -991,10 +1015,10 @@ def test_control_return_approves_when_approve_is_focused(real_root):
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
     _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])
-    buttons["Deny"].event_generate("<Right>")
+    _press(buttons["Deny"], "<Right>")
     root.update()
 
-    root.event_generate("<Control-Return>")
+    _press(root, "<Control-Return>")
     root.update()
     assert answer.get("value") is True
 
@@ -1485,7 +1509,7 @@ def test_code_dialog_shows_the_severity_chip_too(real_root):
 def test_control_return_in_entry_submits_a_valid_code(real_root, monkeypatch):
     """Item 12: a headless Windows CI runner does not reliably deliver real
     OS keyboard focus to a plain ``Entry`` widget, so
-    ``entry.event_generate("<Control-Return>")`` can silently no-op there --
+    ``_press(entry, "<Control-Return>")`` can silently no-op there --
     unlike the Deny/Approve button tests above, whose ``<Control-Return>`` is
     bound on ROOT and reads a (fakeable) ``root.focus_get()``, the entry's own
     binding (:func:`gui_prompter._wire_code_submit`) is wired directly on the
@@ -1576,7 +1600,7 @@ def test_expiry_locks_the_answer_so_a_later_return_cannot_override_it(real_root)
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
     _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])
-    buttons["Deny"].event_generate("<Right>")  # focus moves onto Approve, as if mid-decision
+    _press(buttons["Deny"], "<Right>")  # focus moves onto Approve, as if mid-decision
     root.update()
 
     # Drive every scheduled tick (root.after is faked above) until expiry resolves it.
@@ -1590,7 +1614,7 @@ def test_expiry_locks_the_answer_so_a_later_return_cannot_override_it(real_root)
 
     # Approve still holds focus; a real Return keypress must still be inert --
     # Return is unbound now, AND a disabled button's own invoke() is a no-op.
-    root.event_generate("<Return>")
+    _press(root, "<Return>")
     root.update()
     assert answer.get("value") is False  # unchanged -- still denied
     assert answer.get("reason") == "expired"  # not overwritten to "approved"
@@ -2487,10 +2511,10 @@ def test_critical_approve_delay_gate_holds_against_ctrl_return(real_root):
         elif text == "Approve" or text.startswith("Wait "):
             buttons["Approve"] = w
     _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])
-    buttons["Deny"].event_generate("<Right>")
+    _press(buttons["Deny"], "<Right>")
     root.update()
 
-    root.event_generate("<Control-Return>")
+    _press(root, "<Control-Return>")
     root.update()
     assert "value" not in answer  # the gate held -- no answer yet
 
