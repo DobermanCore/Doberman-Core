@@ -40,10 +40,20 @@ def test_verdict_label_str_plain_output_byte_identical_to_old_format(monkeypatch
         assert render.verdict_label_str(value) == f"{value:<5}"
 
 
-def test_tui_verdict_style_mapping_covers_exactly_pass_auth_block():
+def test_tui_verdict_cell_uses_renders_palette_for_every_verdict():
     # doberman.tui imports textual at module scope (by design -- see its
     # docstring); skip cleanly in the standalone dev venv, same as test_tui.py.
+    # The TUI keeps no private palette of its own any more (design critique
+    # P1) -- its verdict cell style must come straight from
+    # `render.verdict_rich_style`, keyed on the `Verdict` enum, for PASS/AUTH/BLOCK.
     pytest.importorskip("textual")
-    from doberman.tui import _VERDICT_STYLES as tui_verdict_styles
+    from doberman.models import Verdict
+    from doberman.tui import _verdict_cell
 
-    assert set(tui_verdict_styles) == {"PASS", "AUTH", "BLOCK"}
+    for verdict in Verdict:
+        cell = _verdict_cell(verdict.value)
+        assert cell.style == render.verdict_rich_style(verdict)
+        assert cell.style  # every real verdict has a non-empty color
+
+    # A corrupt/future verdict value never raises and gets no style.
+    assert _verdict_cell("ALLOW").style == ""
