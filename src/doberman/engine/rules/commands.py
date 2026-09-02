@@ -111,12 +111,23 @@ _VERIFICATION_BYPASS_LONG_FLAGS = {"--no-verify", "--no-gpg-sign"}
 #: takes none, so a generic "any other leading -/-- token" skip covers it.
 _GIT_GLOBAL_OPTIONS_WITH_VALUE = {"-C", "-c"}
 
-#: git commit short options that consume a value — either as the rest of
-#: their own cluster (``-mFixBug``) or, when the cluster ends exactly at the
-#: option letter (bare ``-m``), as the following token. Once one of these is
-#: seen, the remainder of that cluster is the option's value, never further
-#: flags.
-_GIT_COMMIT_VALUE_SHORT_OPTIONS = set("mFCctS")
+#: git commit short options that take a MANDATORY value — either as the rest
+#: of their own cluster (``-mFixBug``) or, when the cluster ends exactly at
+#: the option letter (bare ``-m``), as the following token. Once one of these
+#: is seen, the remainder of that cluster is the option's value, and — for
+#: the bare form — so is the whole next token; neither is ever scanned for
+#: further flags.
+_GIT_COMMIT_MANDATORY_VALUE_SHORT_OPTIONS = set("mFCct")
+
+#: git commit short options whose value is OPTIONAL, and — critically — when
+#: present is ONLY ever attached in the SAME token. ``-S[<keyid>]`` (GPG-sign)
+#: is git's one such commit option: ``-Skeyid`` carries the keyid, but a bare
+#: ``-S`` never consumes the next token — unlike the mandatory-value options
+#: above. Seeing one of these still ends the cluster scan (the rest of the
+#: token, if any, is its value), but must NEVER set skip_next — doing so
+#: would swallow the next flag token whole (e.g. ``-S --no-verify`` would
+#: silently skip ``--no-verify``), a fail-open bug.
+_GIT_COMMIT_OPTIONAL_VALUE_SHORT_OPTIONS = set("S")
 
 # Command-substitution bodies: $(...) and `...`. We recurse into these so a
 # destructive command hidden inside a substitution is still evaluated.
@@ -853,9 +864,13 @@ def _git_commit_bypasses_verification(tokens: list[str]) -> bool:
     other short commit flags (``-an``, ``-nm``), so any single-dash token
     containing the letter ``n`` counts — UNLESS that ``n`` sits inside a
     value-taking short option's attached value (``-mnote``), in which case the
-    rest of that token (and, for a bare ``-m``, the following token) is the
-    option's VALUE and is never scanned as flags. This also means a commit
-    message is never misread as the flag."""
+    rest of that token is the option's VALUE and never scanned as flags —
+    and, for a bare MANDATORY-value option (``-m``, ``-F``, ...), so is the
+    whole next token. ``-S`` (GPG-sign) takes only an OPTIONAL, same-token
+    value (``-Skeyid``); a bare ``-S`` never consumes the next token, so
+    ``-S --no-verify`` and ``-S -n`` still resolve to bypass. A bare ``--``
+    ends option parsing (git convention), so nothing after it is scanned as a
+    flag. This also means a commit message is never misread as a flag."""
     argv = _git_subcommand_argv(tokens)
     if not argv or argv[0] != "commit":
         return False
@@ -864,6 +879,8 @@ def _git_commit_bypasses_verification(tokens: list[str]) -> bool:
         if skip_next:
             skip_next = False
             continue
+        if token == "--":  # noqa: S105 — the git "end of options" marker, not a secret
+            break  # end of options; remaining tokens are positional, never flags
         if token in _VERIFICATION_BYPASS_LONG_FLAGS:
             return True
         if not (token.startswith("-") and not token.startswith("--")):
@@ -871,9 +888,11 @@ def _git_commit_bypasses_verification(tokens: list[str]) -> bool:
         for i, ch in enumerate(token[1:], start=1):
             if ch == "n":
                 return True
-            if ch in _GIT_COMMIT_VALUE_SHORT_OPTIONS:
+            if ch in _GIT_COMMIT_MANDATORY_VALUE_SHORT_OPTIONS:
                 skip_next = len(token) == i + 1  # bare "-m": value is the NEXT token
                 break
+            if ch in _GIT_COMMIT_OPTIONAL_VALUE_SHORT_OPTIONS:
+                break  # "-S"/"-Skeyid": value (if any) is never a separate token
     return False
 
 

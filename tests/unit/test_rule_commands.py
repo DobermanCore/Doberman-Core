@@ -719,3 +719,41 @@ def test_plain_git_commit_with_message_passes():
     # outright, not merely avoid BLOCK.
     result = _cmd('git commit -m "fix parser"', action_type=ActionType.git_op)
     assert result.verdict is Verdict.PASS
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # git's "-S[<keyid>]" takes an OPTIONAL value that is only ever
+        # attached in the same token; a bare "-S" must never swallow the
+        # NEXT token as its value the way a mandatory-value option (-m) does
+        # — doing so would silently skip a real bypass flag right after it.
+        "git commit -S --no-verify",
+        "git commit -S -n",
+    ],
+)
+def test_git_commit_bare_optional_value_flag_does_not_swallow_next_flag(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.verification_bypass_flag in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -S",  # bare -S, no bypass flag anywhere else: no bypass
+        "git commit -Sabc123 -m x",  # -S's value is attached to its own token
+    ],
+)
+def test_git_commit_optional_value_flag_alone_passes(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.verification_bypass_flag not in result.reason_codes
+
+
+def test_git_commit_end_of_options_marker_stops_flag_scan():
+    # A bare "--" ends option parsing (git convention); anything after it is
+    # a positional argument (e.g. a pathspec), never a flag.
+    result = _cmd("git commit -- -n", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.verification_bypass_flag not in result.reason_codes
