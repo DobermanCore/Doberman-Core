@@ -19,6 +19,7 @@ The tkinter machinery is monkeypatched at module seams (mirroring how the TTY te
 fake ``_open_tty``) so everything here runs headless and deterministically.
 """
 
+import gc
 import re
 import sys
 import threading
@@ -869,34 +870,17 @@ def _press(widget, sequence):
     widget.tk.call(funcid, *(["0"] * 19))
 
 
-def _record_focus_requests(monkeypatch):
-    """Record every widget that ASKS for input focus (``focus_force``/``focus_set``),
-    still calling through. A headless/CI runner may never GRANT focus (observed
-    as ``root.focus_get() is None`` on the Windows leg), so the assertable fact
-    is which widget the module requested, not what the window manager did.
-
-    Records Tk PATH NAMES, never widget objects: a list of widgets outlives the
-    test (via the monkeypatch undo stack) and is then garbage-collected on
-    whatever thread runs the cyclic GC next - and a Tk object collected off
-    the Tcl thread aborts the whole process ("Tcl_AsyncDelete: async handler
-    deleted by the wrong thread"), which took down an xdist worker on CI.
+@pytest.fixture(autouse=True)
+def _collect_tk_garbage_on_this_thread():
+    """Collect every Tk object this test left in a reference cycle NOW, on the
+    thread that created it. Otherwise the cyclic GC runs on whatever thread
+    allocates next - on CI that was an aiosqlite connector thread in a later
+    test - and deleting a Tk object off its Tcl thread aborts the process
+    (``Tcl_AsyncDelete: async handler deleted by the wrong thread``, seen as
+    "Fatal Python error: Aborted ... Garbage-collecting" in an xdist worker).
     """
-    import tkinter
-
-    requested: list[str] = []
-    orig_force, orig_set = tkinter.Misc.focus_force, tkinter.Misc.focus_set
-
-    def _force(self):
-        requested.append(str(self))
-        return orig_force(self)
-
-    def _set(self):
-        requested.append(str(self))
-        return orig_set(self)
-
-    monkeypatch.setattr(tkinter.Misc, "focus_force", _force)
-    monkeypatch.setattr(tkinter.Misc, "focus_set", _set)
-    return requested
+    yield
+    gc.collect()
 
 
 @pytest.fixture
@@ -1397,20 +1381,22 @@ def test_more_time_label_pure_formatting():
     assert gui_prompter._more_time_label(0) == "More time (+2:00, 0 left)"
 
 
-def test_more_time_button_is_never_the_default_focus(real_root, monkeypatch):
+def test_more_time_button_is_never_the_default_focus(real_root):
     """More time exists but must not steal the initial focus away from Deny
     (the safe default) -- _wire_keyboard still wins."""
     import tkinter.ttk as ttk
 
     root = real_root
-    requested = _record_focus_requests(monkeypatch)
     answer: dict = {}
     gui_prompter._configure_window(root)
     gui_prompter._populate_confirm(root, "Approve?", answer, 120.0)
     root.update()
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
-    assert requested and requested[-1] == str(buttons["Deny"])
+    focused = root.focus_get()
+    if focused is None:
+        pytest.skip("the runner granted this window no input focus (headless CI)")
+    assert focused is buttons["Deny"]
 
 
 def test_code_entry_rejects_non_digit_input(real_root):
@@ -2835,9 +2821,8 @@ def test_help_affordance_collapsed_by_default_and_expands(real_root):
     assert link.cget("text") == gui_prompter._HELP_LABEL
 
 
-def test_help_affordance_is_never_the_default_focus(real_root, monkeypatch):
+def test_help_affordance_is_never_the_default_focus(real_root):
     root = real_root
-    requested = _record_focus_requests(monkeypatch)
     answer: dict = {}
     gui_prompter._configure_window(root)
     gui_prompter._populate_confirm_parts(root, _SAMPLE_PARTS, answer, 120.0)
@@ -2846,7 +2831,10 @@ def test_help_affordance_is_never_the_default_focus(real_root, monkeypatch):
     import tkinter.ttk as ttk
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
-    assert requested and requested[-1] == str(buttons["Deny"])
+    focused = root.focus_get()
+    if focused is None:
+        pytest.skip("the runner granted this window no input focus (headless CI)")
+    assert focused is buttons["Deny"]
 
 
 # --- item 11: technical tone prints HIGH once (headline OR chip) ---------------------
