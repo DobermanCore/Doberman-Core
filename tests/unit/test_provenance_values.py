@@ -1,0 +1,51 @@
+"""C1: whole-value keyed-HMAC extraction (hostname / URL / email) for the
+untrusted-value echo tripwire. Extraction only — no verdict authority here.
+"""
+
+from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+from doberman.storage.fingerprint import fingerprint
+
+
+def test_url_host_and_bare_host_and_www_all_fingerprint_the_same_host():
+    url_fps = untrusted_value_fingerprints("see HTTPS://EVIL.COM/a?b=1 for details")
+    bare_fps = untrusted_value_fingerprints("visit evil.com now")
+    www_fps = untrusted_value_fingerprints("visit www.evil.com now")
+
+    host_fp = fingerprint("evil.com")
+    assert host_fp in url_fps
+    assert bare_fps == {host_fp}
+    assert www_fps == {host_fp}
+
+
+def test_url_also_yields_the_whole_url_value_with_query_stripped():
+    fps = untrusted_value_fingerprints("fetch https://evil.com/path/x?token=secret")
+    assert fingerprint("https://evil.com/path/x") in fps
+    # the query string is never fingerprinted as part of the URL value
+    assert fingerprint("https://evil.com/path/x?token=secret") not in fps
+
+
+def test_email_address_is_extracted_and_lowercased():
+    fps = untrusted_value_fingerprints("contact Attacker@Evil.com about this")
+    assert fingerprint("attacker@evil.com") in fps
+
+
+def test_prose_with_no_host_url_or_email_yields_empty_set():
+    assert untrusted_value_fingerprints("the weather is nice today, isn't it") == set()
+
+
+def test_empty_text_yields_empty_set():
+    assert untrusted_value_fingerprints("") == set()
+
+
+def test_filename_shaped_tokens_are_not_treated_as_hosts():
+    # README.md / package.json look host-shaped (label.label) but are filenames,
+    # not destinations — the non-TLD-label filter excludes the common cases.
+    fps = untrusted_value_fingerprints("see README.md and package.json for setup")
+    assert fingerprint("readme.md") not in fps
+    assert fingerprint("package.json") not in fps
+
+
+def test_value_cap_holds_at_200():
+    text = " ".join(f"https://host{i}.example.com/x" for i in range(300))
+    fps = untrusted_value_fingerprints(text)
+    assert len(fps) <= 200
