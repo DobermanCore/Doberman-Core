@@ -107,7 +107,7 @@ hand.
 | Your host | How Doberman attaches | Where |
 |---|---|---|
 | Claude Code | Hooks: gate every built-in and MCP tool call (recommended) | [`doberman setup`](#2-run-doberman-setup) or [Claude Code hooks](#claude-code-hooks) |
-| Codex CLI | Hooks | `doberman setup --host codex` or `doberman install-hooks --host codex`, see [Claude Code hooks](#claude-code-hooks) |
+| Codex CLI | Hooks | `doberman setup --host codex` or `doberman install-hooks --host codex`, see [Codex CLI](#codex-cli) |
 | Claude Desktop, Cursor, any MCP client | MCP proxy: wrap your tool server | `doberman setup` prints the config; see [MCP proxy](#mcp-proxy) |
 | OpenClaw | Native plugin adapter | `doberman setup` prints the pointer; see [OpenClaw](#openclaw) |
 
@@ -229,6 +229,34 @@ shell too: a Bash command that writes or deletes the config, or runs `doberman u
 posture- and auth-mutating verb (`mode`, `prefs`, `enforcement`, `2fa`, `password`, `revoke`,
 `taint`, `uninstall`), while read/utility verbs (`status`, `doctor`, `log`, `scan`, `review`) stay
 allowed.
+
+### Codex CLI
+
+`--host codex` wires a single `PreToolUse` hook (`doberman hook codex-pre`) into Codex's own
+`hooks.json`, not Claude's `settings.json` — everything else about `install-hooks` (idempotent,
+`--dry-run`, `already wired: <path>` on a no-op re-run, `uninstall-hooks --host codex` to remove it)
+works the same way:
+
+```bash
+doberman install-hooks --host codex
+```
+
+```bash
+doberman install-hooks --host codex --global
+```
+
+The default (no `--global`) writes `<repo>/.codex/hooks.json`, wired for this project only;
+`--global` writes `~/.codex/hooks.json`, wired for every project Codex runs in. `--local` has no
+Codex equivalent — there's no per-project-untracked scope the way Claude Code has one.
+
+**Trust it once.** Codex asks you to trust a new hook the first time it actually *runs*, not at
+install time: run a Codex command and approve the hook when prompted, or launch with
+`--dangerously-bypass-hook-trust` only if you already vet the hook source yourself. Until you trust
+it the hook is wired but inert — Codex skips it rather than gating the call. Once trusted, Doberman
+gates every tool call in that scope from then on; unlike Claude Code's hooks, there's no session
+restart to wait for.
+
+Verify it's live: ask Codex to `cat .env` and confirm it is blocked.
 
 ### MCP proxy
 

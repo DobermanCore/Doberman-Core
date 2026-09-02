@@ -450,7 +450,9 @@ def _section(title: str, width: int | None = None, *, marker: str = "--") -> str
     colorblindness all lose the red/yellow styling). ``"--"`` reads as one
     continuous rule (``-- title ----...``); any other marker gets its own
     closing copy right after the title, since (unlike ``-``) it doesn't read
-    as a continuation of the fill dashes (``!! title !!----...``).
+    as a continuation of the fill dashes (``!! title !! ----...`` - round 8
+    item P1: one space before the fill, same as the ``"--"`` case gets, not
+    glued straight onto the closing marker).
     """
     if width is None:
         term_width, _ = shutil.get_terminal_size(fallback=(100, 24))
@@ -460,9 +462,9 @@ def _section(title: str, width: int | None = None, *, marker: str = "--") -> str
         plain_prefix = f"-- {title} "
         dashes = "-" * max(0, width - len(plain_prefix))
         return f"-- {styled} {dashes}"
-    plain_prefix = f"{marker} {title} {marker}"
+    plain_prefix = f"{marker} {title} {marker} "
     dashes = "-" * max(0, width - len(plain_prefix))
-    return f"{marker} {styled} {marker}{dashes}"
+    return f"{marker} {styled} {marker} {dashes}"
 
 
 #: How many invalid answers a `setup` wizard menu tolerates before it gives up
@@ -515,13 +517,16 @@ def _abort_setup(*, mid_line: bool = False, written: str | None = None) -> None:
 
 
 def _read_yes_no_or_quit(prompt_text: str, default: bool) -> str:
-    """Read one y/n answer, building the same ``"[Y/n]"``/``"[y/N]"`` prompt
-    Click's own ``confirm()`` would (so this is a drop-in replacement for it),
-    but read through ``typer.prompt`` (like :func:`_prompt_menu`) instead of
-    ``typer.confirm`` so 'q'/'quit' can be recognized too - Click's own
-    ``confirm()`` loop has no notion of 'q'; unrecognized input there just
-    reprints "Error: invalid input" and re-reads forever, with no escape
-    (round 7 item 5).
+    """Read one y/n answer, building a ``"[Y/n/q]"``/``"[y/N/q]"`` prompt -
+    Click's own ``confirm()`` builds ``"[Y/n]"``/``"[y/N]"`` (no notion of
+    'q'; unrecognized input there just reprints "Error: invalid input" and
+    re-reads forever, with no escape) but read through ``typer.prompt`` (like
+    :func:`_prompt_menu`) instead so 'q'/'quit' can be recognized too (round 7
+    item 5). Round 8 item P1: 'q' is now advertised in the suffix itself
+    (every caller here already accepts it) instead of being a silent escape
+    hatch nobody discovers without reading the docs, and the invalid-input
+    error matches :func:`_prompt_menu`'s own lowercase ``error: ...`` grammar
+    rather than Click's capitalized generic one.
 
     Returns the lowercased, stripped answer as one of ``"y"``, ``"n"``,
     ``"q"``, or ``""`` (blank - caller applies *default*); loops on any other
@@ -530,7 +535,7 @@ def _read_yes_no_or_quit(prompt_text: str, default: bool) -> str:
     or Ctrl-C - every caller decides what that means for itself, the same
     split :func:`_confirm_or_abort` and the closing demo offer already need.
     """
-    suffix = "Y/n" if default else "y/N"
+    suffix = "Y/n/q" if default else "y/N/q"
     full_prompt = f"{prompt_text} [{suffix}]"
     while True:
         raw = typer.prompt(full_prompt, default="", show_default=False)
@@ -543,7 +548,7 @@ def _read_yes_no_or_quit(prompt_text: str, default: bool) -> str:
             return "q"
         if value == "":
             return ""
-        typer.echo("Error: invalid input", err=True)
+        typer.echo("error: answer y, n, or q", err=True)
 
 
 def _confirm_or_abort(prompt_text: str, default: bool, *, written: str | None = None) -> bool:
@@ -670,12 +675,24 @@ def mode(
         # item P1 (round 5): name WHY, never the old bare "mode change denied;
         # unchanged" - `apply_mode_change` only ever returns None on a refused
         # lowering (raising is always frictionless), so this is unconditionally
-        # accurate.
-        typer.echo(
-            "error: lowering needs a possession factor - run 'doberman password set' "
-            "first, then retry",
-            err=True,
-        )
+        # accurate. Round 8 item P1: with NOTHING enrolled, "then retry" was a
+        # second hop the user had to discover on their own - a bare retry
+        # fails closed again with no possession factor to satisfy the gate.
+        # Name the whole path in one line instead. With a factor already
+        # enrolled, a retry genuinely is the whole fix (supply the code/
+        # confirm this time), so that message stays as-is.
+        if totp.is_enrolled() or password.is_enrolled():
+            typer.echo(
+                "error: lowering needs a possession factor - run 'doberman password set' "
+                "first, then retry",
+                err=True,
+            )
+        else:
+            typer.echo(
+                "error: lowering needs a possession factor: run 'doberman password set', "
+                f"then 'doberman mode {name}'",
+                err=True,
+            )
         raise typer.Exit(code=1)
     typer.echo(f"mode set to {saved}")
 
@@ -967,15 +984,18 @@ def message_tone(
 
 
 def _hook_install_states(path: str) -> list[tuple[str, str, bool]]:
-    """Per-scope Doberman hook install state (delegates to the shared helper).
+    """Per-scope Doberman hook install state, Claude AND Codex alike.
 
-    Kept as a thin wrapper so ``status`` (and its tests) keep a stable name; the
-    logic lives in :func:`doberman.hosthooks.install.hook_install_states` so
-    ``doctor`` can reuse it without importing the CLI module.
+    Round 8 item P0: sourced from :func:`doberman.hosthooks.install_codex.protection_state`,
+    the one predicate ``doctor`` already used (its "Host hooks"/"Hook command"
+    checks) so a Codex-only wired repo reads as protected here too instead of
+    only in ``doctor`` — the two can no longer drift out of sync. Kept as a
+    thin wrapper so ``status`` (and its tests) keep a stable name to monkeypatch.
     """
-    from doberman.hosthooks.install import hook_install_states
+    from doberman.hosthooks.install_codex import protection_state
 
-    return hook_install_states(path)
+    _protected, _reason, hooks = protection_state(path)
+    return hooks
 
 
 def _status_payload(path: str) -> dict:
@@ -3323,12 +3343,6 @@ def setup(
         n = step_index.get(stage or title)
         return _section(f"{title} [{n} of {step_total}]" if n else title, marker=marker)
 
-    def _step_counter(stage: str) -> str:
-        """The bracketed ``[N of M]`` suffix for a stage shown inline (the
-        demo offer isn't a `_section` header - item 7), or "" under --yes."""
-        n = step_index.get(stage)
-        return f" [{n} of {step_total}]" if n else ""
-
     def _print_step_section(title: str, stage: str | None = None, *, marker: str = "--") -> None:
         """Print one section header, preceded by exactly one blank line -
         never two in a row (item 11)."""
@@ -3492,12 +3506,25 @@ def setup(
     mode_ledger_pending: tuple[Classification, str, str] | None = None
 
     if yes and not first_run and mode_order.index(chosen_mode) < mode_order.index(current_mode):
-        _note(
-            f"note: --yes cannot lower the mode from {current_mode.value} to "
-            f"{chosen_mode.value}: a lowering needs a possession factor (a 2FA code if "
-            f"enrolled, otherwise your Doberman password). Run `doberman mode "
-            f"{chosen_mode.value}` interactively."
-        )
+        # Round 8 item P1: with a factor already enrolled, running
+        # interactively genuinely is the whole fix (it can prompt for the
+        # code/confirm --yes can't). With NOTHING enrolled, "run interactively"
+        # is a second hop that still fails closed - the gate denies before it
+        # would even prompt (no factor to prompt for) - so name the real first
+        # step instead.
+        if totp.is_enrolled() or password.is_enrolled():
+            _note(
+                f"note: --yes cannot lower the mode from {current_mode.value} to "
+                f"{chosen_mode.value}: a lowering needs a possession factor (a 2FA code if "
+                f"enrolled, otherwise your Doberman password). Run `doberman mode "
+                f"{chosen_mode.value}` interactively."
+            )
+        else:
+            _note(
+                f"note: --yes cannot lower the mode from {current_mode.value} to "
+                f"{chosen_mode.value}: lowering needs a possession factor: run 'doberman "
+                f"password set', then 'doberman mode {chosen_mode.value}'."
+            )
         mode_applied = False
     elif chosen_mode is current_mode:
         pass  # no-op: nothing to gate or ledger; save_mode below just re-affirms it
@@ -3528,11 +3555,21 @@ def setup(
                     method=method,
                 )
             )
-            _note(
-                "note: mode not lowered (a lowering needs an enrolled possession factor - "
-                "a 2FA code if enrolled, otherwise your Doberman password); keeping the "
-                "current mode"
-            )
+            if totp.is_enrolled() or password.is_enrolled():
+                _note(
+                    "note: mode not lowered (a lowering needs an enrolled possession factor - "
+                    "a 2FA code if enrolled, otherwise your Doberman password); keeping the "
+                    "current mode"
+                )
+            else:
+                # Round 8 item P1: name the whole path, not just the reason -
+                # nothing enrolled means a bare retry (interactive or not)
+                # fails closed again with no factor to satisfy the gate.
+                _note(
+                    "note: mode not lowered - lowering needs a possession factor: run "
+                    f"'doberman password set', then 'doberman mode {chosen_mode.value}'; "
+                    "keeping the current mode"
+                )
             mode_applied = False
 
     persisted_mode = chosen_mode if mode_applied else current_mode
@@ -3975,11 +4012,23 @@ def setup(
         # a stdout-only redirect drops every earlier stderr `note:` that
         # already glossed it, so this line is that reader's first (and only)
         # encounter with the term.
-        plain_mode_line += (
-            f" (requested {chosen_mode.value}; not lowered - a possession factor (a "
-            f"2FA code if enrolled, otherwise your Doberman password) is required, "
-            f"run 'doberman mode {chosen_mode.value}')"
-        )
+        # Round 8 item P1: with nothing enrolled, naming just the retry
+        # command was a second hop - a bare `doberman mode <name>` fails
+        # closed again with no factor to satisfy the gate. Name the whole
+        # path in that case; with a factor already enrolled, the retry
+        # command alone is the whole fix.
+        if totp.is_enrolled() or password.is_enrolled():
+            plain_mode_line += (
+                f" (requested {chosen_mode.value}; not lowered - a possession factor (a "
+                f"2FA code if enrolled, otherwise your Doberman password) is required, "
+                f"run 'doberman mode {chosen_mode.value}')"
+            )
+        else:
+            plain_mode_line += (
+                f" (requested {chosen_mode.value}; not lowered - lowering needs a "
+                f"possession factor: run 'doberman password set', then 'doberman mode "
+                f"{chosen_mode.value}')"
+            )
     mode_lines = wrap_detail(plain_mode_line, indent=0, hang=12)
     fg, bold = _MODE_STYLE[persisted_mode.value]
     mode_lines[0] = mode_lines[0].replace(
@@ -4048,11 +4097,24 @@ def setup(
         # true only if at least one hooks-kind host was freshly written this
         # run; a run where every one was already wired says so instead.
         any_freshly_written = any(wired_state.get(h) == "wrote" for h, _ in hooks_kind_wired)
-        hooks_message = (
-            "Hooks written. Doberman activates when you restart your session."
-            if any_freshly_written
-            else "Hooks already in place. Doberman activates when you restart your session."
+        verb = "Hooks written." if any_freshly_written else "Hooks already in place."
+        # Round 8 item P1: Claude Code and Codex activate differently - saying
+        # only "restart your session" is flatly wrong for a Codex-only wire
+        # (nothing to restart; Codex arms the hook once you trust it on its
+        # first run, already explained mid-wiring above). Say whichever is
+        # actually true for the host(s) this run wired.
+        wired_kind_keys = {h for h, _ in hooks_kind_wired}
+        codex_activation = (
+            "Codex asks you to trust the hook the first time it runs; Doberman "
+            "gates its tool calls after that."
         )
+        if wired_kind_keys == {"codex"}:
+            activation = codex_activation
+        elif "codex" in wired_kind_keys:
+            activation = f"Doberman activates when you restart your session. {codex_activation}"
+        else:
+            activation = "Doberman activates when you restart your session."
+        hooks_message = f"{verb} {activation}"
         for line in wrap_detail(hooks_message, indent=0):
             typer.echo(line)
         blank_pending = False
@@ -4118,21 +4180,25 @@ def setup(
         # this offer out of that case - without it the "pending" block above
         # AND this offer's own EOF/--yes/"n" fallback each print their own
         # "Next:" line, so a partly-pending close showed two.
-        # item 7 (round 6): runs to 90+ chars unwrapped once the step counter
-        # is appended - wrap it like every other prompt text in the wizard.
-        # `typer.confirm` writes this string as-is before reading input, so
-        # an embedded newline just moves the visible prompt (and the
-        # ``[Y/n]:`` suffix/answer that follows it) onto the wrapped line.
+        # item 7 (round 6): runs to 90+ chars unwrapped - wrap it like every
+        # other prompt text in the wizard. `typer.confirm` writes this string
+        # as-is before reading input, so an embedded newline just moves the
+        # visible prompt (and the ``[Y/n]:`` suffix/answer that follows it)
+        # onto the wrapped line. Round 8 item P1: the ``[N of M]`` step
+        # counter used to be appended mid-sentence here - it now lives in its
+        # own section header (``_print_step_section`` below), same as every
+        # other step, instead of tacked onto the question text.
         demo_question = "\n".join(
             wrap_detail(
                 "See it work? Run a scripted attack through the real engine now "
-                "(`doberman demo --fast`)" + _step_counter("Demo"),
+                "(`doberman demo --fast`)",
                 indent=0,
             )
         )
         if yes:
             typer.echo(style_text("Next: `doberman demo --fast`", bold=True))
         else:
+            _print_step_section("See it work", stage="Demo")
             try:
                 answer = _read_yes_no_or_quit(style_text(demo_question, bold=True), True)
             except (EOFError, typer.Abort):

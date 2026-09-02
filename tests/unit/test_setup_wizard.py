@@ -216,10 +216,13 @@ def test_yes_refuses_to_lower_mode_without_prompting(tmp_path: Path) -> None:
     # indent, so join across the line break only (a plain `" ".join(.split())`
     # would also collapse the "Mode:       balanced" column padding).
     joined = re.sub(r"\s*\n\s*", " ", result.output)
+    # Round 8 item P1: nothing is enrolled, so the summary now names the
+    # WHOLE path (password set, then the retry) instead of a bare retry that
+    # would just fail closed again.
     assert (
-        "Mode:       balanced (requested light; not lowered - a possession factor (a "
-        "2FA code if enrolled, otherwise your Doberman password) is required, "
-        "run 'doberman mode light')" in joined
+        "Mode:       balanced (requested light; not lowered - lowering needs a "
+        "possession factor: run 'doberman password set', then 'doberman mode "
+        "light')" in joined
     )
     assert load_mode(str(tmp_path)) == "balanced"
     prefs = load_preferences(str(tmp_path))
@@ -237,9 +240,9 @@ def test_yes_lowering_refusal_survives_2_dev_null(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     joined = re.sub(r"\s*\n\s*", " ", result.stdout)
     assert (
-        "Mode:       balanced (requested light; not lowered - a possession factor (a "
-        "2FA code if enrolled, otherwise your Doberman password) is required, "
-        "run 'doberman mode light')" in joined
+        "Mode:       balanced (requested light; not lowered - lowering needs a "
+        "possession factor: run 'doberman password set', then 'doberman mode "
+        "light')" in joined
     )
 
 
@@ -358,9 +361,9 @@ def test_demo_prompt_eof_never_fails_a_succeeded_setup(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
     next_idx = lines.index("Next: `doberman demo --fast`")
-    # The confirm's own prompt line ends in "[Y/n]: " with no newline of its
-    # own; our fallback must land as its own line, not glued onto that tail.
-    assert lines[next_idx - 1].endswith("[Y/n]: ")
+    # The confirm's own prompt line ends in "[Y/n/q]: " with no newline of
+    # its own; our fallback must land as its own line, not glued onto that tail.
+    assert lines[next_idx - 1].endswith("[Y/n/q]: ")
     assert any(line.startswith("Also: ") for line in lines[next_idx:])
     assert "BLOCK" not in result.output
 
@@ -489,7 +492,7 @@ def test_interactive_telemetry_yes_persists_and_emits_setup_event(
 
     assert result.exit_code == 0, result.output
     assert telemetry.status().enabled is True
-    question = "Send anonymous usage stats to help improve Doberman? [Y/n]"
+    question = "Send anonymous usage stats to help improve Doberman? [Y/n/q]"
     # The full explanation now wraps onto multiple lines (item 9), so pin the
     # ordering check to its first sentence rather than the whole (now
     # possibly-split-across-lines) note.
@@ -2028,8 +2031,8 @@ def test_openclaw_doc_pointer_is_a_real_github_url(tmp_path: Path) -> None:
 
 def test_telemetry_prompt_defaults_off_after_a_prior_opt_out(tmp_path: Path) -> None:
     """Round 7 item P1 (1): a prior `--no-telemetry` run means a LATER
-    interactive `setup` shows "[y/N]" (not "[Y/n]") and a bare Enter keeps it
-    off - the consent prompt's default now comes from the current on-disk
+    interactive `setup` shows "[y/N/q]" (not "[Y/n/q]") and a bare Enter keeps
+    it off - the consent prompt's default now comes from the current on-disk
     state, not a hardcoded `True`."""
     from doberman import telemetry
 
@@ -2043,7 +2046,7 @@ def test_telemetry_prompt_defaults_off_after_a_prior_opt_out(tmp_path: Path) -> 
         input="\nbalanced\nn\nn\n\nn\n",  # telemetry answer is blank ("")
     )
     assert result.exit_code == 0, result.output
-    assert "Send anonymous usage stats to help improve Doberman? [y/N]" in result.output
+    assert "Send anonymous usage stats to help improve Doberman? [y/N/q]" in result.output
     assert telemetry.status().enabled is False  # bare Enter re-affirmed "off", didn't reverse it
 
 

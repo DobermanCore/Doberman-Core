@@ -70,11 +70,19 @@ def _safe_check(name: str, critical: bool, fn):
 
 
 def _check_hooks(path: str) -> CheckResult:
-    from doberman.hosthooks.install import hook_install_states
-    from doberman.hosthooks.install_codex import codex_hook_install_states
+    from doberman.hosthooks.install_codex import codex_hook_install_states, protection_state
 
-    installed = [scope for scope, _p, ok in hook_install_states(path) if ok]
-    installed += [f"codex:{scope}" for scope, _p, ok in codex_hook_install_states(path) if ok]
+    # Round 8 item P0: sourced from the shared predicate (also used by
+    # `status`) so this listing can never drift out of sync with it; the
+    # plugin scope isn't part of that predicate (see its docstring), so it's
+    # still probed and appended here directly, same as before.
+    _protected, _reason, hooks = protection_state(path)
+    installed = [scope for scope, _p, ok in hooks if ok]
+    installed += [
+        f"codex:{scope}"
+        for scope, _p, ok in codex_hook_install_states(path)
+        if scope == "plugin" and ok
+    ]
     if installed:
         return CheckResult("Host hooks", CheckStatus.OK, f"installed ({', '.join(installed)})")
     return CheckResult(
@@ -117,16 +125,16 @@ def _check_hook_command(path: str) -> CheckResult:
     happens on *this* process's PATH, which can differ from the host's, so the
     detail says so.
     """
-    from doberman.hosthooks.install import hook_install_states
-    from doberman.hosthooks.install_codex import codex_hook_install_states
+    from doberman.hosthooks.install_codex import protection_state
 
     resolved = shutil.which("doberman")
     if resolved:
         return CheckResult("Hook command", CheckStatus.OK, f"`doberman` resolves to {resolved}")
-    installed = any(ok for _scope, _p, ok in hook_install_states(path)) or any(
-        ok for scope, _p, ok in codex_hook_install_states(path) if scope != "plugin"
-    )
-    if not installed:
+    # Round 8 item P0: same shared predicate as `_check_hooks`/`status` - its
+    # "no_hooks" reason is exactly "nothing installed in any scope that
+    # counts here" (Claude's three scopes + Codex user/repo, plugin excluded).
+    _protected, reason, _hooks = protection_state(path)
+    if reason == "no_hooks":
         return CheckResult(
             "Hook command",
             CheckStatus.WARN,

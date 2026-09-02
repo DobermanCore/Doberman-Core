@@ -34,8 +34,9 @@ Day-to-day posture, status, and review commands.
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
 | `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
 | `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host and ask for telemetry consent (its default mirrors the current on-disk state, so a prior opt-out isn't silently reversed by a bare Enter). Every menu prompt (hosts, mode, weight tuning) and every yes/no confirm (telemetry, global scope, weight tuning, the closing demo offer) accepts `q`/`quit` to abort cleanly — except the closing demo offer, where `q` only declines the demo since setup has already succeeded by then. Exits non-zero (`!! Setup incomplete !!`) if the closing doctor pass finds a critical; a host-kind-free run (mcp/openclaw only) prints `!! Setup pending !!` and a MIXED run (some hooks-kind host wired, some still manual) prints `!! Setup partly pending !!` — both exit `3`. A refused `--mode <lower>` request still exits `0` — the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`); exit `0` means the run completed, not that the requested mode was applied. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable; also accepts `all`), `--path`/`-p`, `--dry-run`, `--no-telemetry` |
+| `doberman telemetry` | With no subcommand, prints the same status line `telemetry status` does (symmetric with bare `doberman mode`). | none |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
-| `doberman telemetry off` | Opt out after one final best-effort disabled event. | none |
+| `doberman telemetry off` | Opt out. Sends one final best-effort disabled event only if telemetry had already minted an id (nothing to send, and no id minted, if this is the very first choice made on a fresh install). | none |
 | `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches; a disabled reading names `doberman telemetry on` to opt back in, symmetric with the default-on reading's own `doberman telemetry off` pointer. | none |
 | `doberman session-summary` | Print the device-global session-guard summary and exit. Always exits 0; never blocks a session. | none |
 | `doberman serve` | Run Doberman as an MCP proxy in front of a downstream MCP tool server. | `--path`/`-p` |
@@ -170,7 +171,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `serve` | `2` | No downstream server command given after `--`. |
 | `serve` | `1` | MCP proxy runtime error. |
 | `mode` | `2` | Invalid mode name. |
-| `mode` | `1` | A lowering was denied by the possession-factor gate (`error: lowering needs a possession factor - run 'doberman password set' first, then retry`). |
+| `mode` | `1` | A lowering was denied by the possession-factor gate. With nothing enrolled: `error: lowering needs a possession factor: run 'doberman password set', then 'doberman mode <name>'`. With a factor already enrolled (the prompt was declined or failed): `error: lowering needs a possession factor - run 'doberman password set' first, then retry`. |
 | `enforcement` | `2` | Unknown enforcement state (must be `enforce`, `monitor`, or `off`). |
 | `enforcement` | `1` | Enforcement change denied by the gate. |
 | `role disable-default` | `1` | Disable denied by the gate. |

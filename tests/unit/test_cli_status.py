@@ -373,6 +373,51 @@ def test_status_not_on_path_headline_names_the_fixing_command(tmp_path, monkeypa
     assert "doberman doctor" in first_line
 
 
+# ---------------------------------------------------------------------------
+# Round 8 item P0: one shared protection predicate with `doctor` - a
+# Codex-only wired repo must read as protected here too, not only there.
+# ---------------------------------------------------------------------------
+
+
+def test_status_protected_reflects_codex_only_wiring(tmp_path, monkeypatch):
+    """`--host codex` wires only the Codex hook (no Claude settings.json at
+    all) - `status` used to source its "Protected: ..." headline and Hooks
+    section from Claude's ``hook_install_states`` alone, so this used to read
+    as unprotected even though `doctor`'s "Host hooks" check already knew
+    better."""
+    import shutil
+
+    root = str(tmp_path)
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: "/venv/bin/doberman" if name == "doberman" else None,
+    )
+
+    before = runner.invoke(app, ["status", "--path", root])
+    assert before.exit_code == 0, before.output
+    assert before.stdout.splitlines()[0] == (
+        "Protected: no - no hooks installed for any host (run `doberman setup`)"
+    )
+
+    installed = runner.invoke(app, ["install-hooks", "--host", "codex", "--path", root])
+    assert installed.exit_code == 0, installed.output
+
+    after = runner.invoke(app, ["status", "--path", root])
+    assert after.exit_code == 0, after.output
+    assert after.stdout.splitlines()[0] == "Protected: yes"
+    hooks_idx = after.stdout.index("-- Hooks --")
+    policy_idx = after.stdout.index("-- Policy --")
+    hooks_section = after.stdout[hooks_idx:policy_idx]
+    assert "codex:repo" in hooks_section
+    assert "[installed]" in hooks_section
+
+    json_result = runner.invoke(app, ["status", "--path", root, "--json"])
+    payload = json.loads(json_result.stdout)
+    codex_hooks = [h for h in payload["hooks"] if h["scope"] == "codex:repo"]
+    assert codex_hooks and codex_hooks[0]["installed"] is True
+
+
 def test_status_never_leaks_enrolled_secret_in_either_view(tmp_path):
     """A synthetic TOTP secret seeded into state must never appear in text or JSON."""
     totp.enroll()

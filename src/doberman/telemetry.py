@@ -209,10 +209,20 @@ def enable(home: Path | None = None) -> TelemetryState:
 
 
 def disable(home: Path | None = None) -> TelemetryState:
-    """Emit one final event, then persist disabled state without rotating the id."""
+    """Emit one final event when there's already an id to attribute it to, then
+    persist disabled state without rotating (or ever minting) one.
+
+    Round 8 item P1: ``current.enabled`` alone used to gate the final event,
+    but it defaults to ``True`` with no state file at all - the very first
+    ``telemetry off`` on a fresh, never-consented install used to mint an id
+    (inside :func:`capture`) purely to send a "telemetry_disabled" event
+    nobody was waiting for, then discard it right back to "" below. Gate on
+    an id already existing instead - only an install that had actually been
+    sending gets a goodbye event; a fresh opt-out sends and mints nothing.
+    """
     try:
         current = _read_state(home)
-        if current.enabled:
+        if current.enabled and current.distinct_id:
             capture("telemetry_disabled", home=home)
         _write_state(
             replace(

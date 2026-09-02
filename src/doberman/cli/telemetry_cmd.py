@@ -8,7 +8,9 @@ from doberman.render import wrap_detail
 
 telemetry_app = typer.Typer(
     help="Anonymous usage telemetry (on by default; `doberman telemetry off` stops it).",
-    no_args_is_help=True,
+    # Round 8 item P1: bare `doberman telemetry` prints the status line (see
+    # the callback below), the same as bare `doberman mode` - never help.
+    no_args_is_help=False,
 )
 
 _NESTED_GROUPS = ("2fa", "password", "taint", "tools", "memory", "role")
@@ -158,6 +160,16 @@ def capture_setup_completed(
             "source": "yes" if non_interactive else "wizard",
         },
     )
+
+
+@telemetry_app.callback(invoke_without_command=True)
+def telemetry_root(ctx: typer.Context) -> None:
+    """With no subcommand, show the same status line ``telemetry status`` does
+    (round 8 item P1) - symmetric with bare ``doberman mode`` printing the
+    current mode instead of Typer's generic help.
+    """
+    if ctx.invoked_subcommand is None:
+        telemetry_status()
 
 
 @telemetry_app.command("on")

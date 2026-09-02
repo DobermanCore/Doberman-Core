@@ -227,6 +227,26 @@ def test_enable_emits_enabled_event_and_disable_emits_final_event(tmp_path, monk
     ]
 
 
+def test_disable_from_fresh_default_on_state_mints_no_id(tmp_path, monkeypatch):
+    """Round 8 item P1: the very first `telemetry off` on a fresh install
+    (default-on, never explicitly consented, no id minted yet) must not mint
+    an id just to send a "telemetry_disabled" goodbye event nobody asked for
+    - and must send nothing at all."""
+    from doberman import telemetry
+
+    _clear_kill_switches(monkeypatch)
+    monkeypatch.setenv(telemetry.ENV_KEY, _KEY)
+    requests = _capture_requests(telemetry, monkeypatch)
+
+    assert telemetry.status(home=tmp_path).distinct_id == ""
+    disabled = telemetry.disable(home=tmp_path)
+
+    assert disabled.enabled is False
+    assert disabled.distinct_id == ""
+    assert telemetry.status(home=tmp_path).distinct_id == ""
+    assert _bodies(telemetry, requests) == []
+
+
 def test_redaction_guard_drops_unknown_properties_and_identity_strings(tmp_path, monkeypatch):
     from doberman import telemetry
 
