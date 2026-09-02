@@ -326,3 +326,15 @@ def test_judge_request_never_leaks_beyond_redacted_features(monkeypatch):
     assert "evil.example.com" not in sent
     payload_keys = set(json.loads(seen["messages"][0]["content"]))
     assert payload_keys <= set(features.keys())
+
+
+def test_judge_agreement_bench_skips_cleanly_without_credentials(monkeypatch, capsys):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DOBERMAN_JUDGE_ENABLED", raising=False)
+    from tests.benchmarks.suites import judge_agreement
+
+    exit_code = judge_agreement.main([])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "skip" in out.lower()
+    assert "ANTHROPIC_API_KEY" in out or "DOBERMAN_JUDGE_ENABLED" in out
