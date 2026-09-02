@@ -144,12 +144,19 @@ def test_stats_refresh_on_an_interval_not_just_at_load(tmp_path):
     assert "setInterval(refreshStats, STATS_REFRESH_MS)" in html
 
 
-def test_feed_timestamp_renders_compact_not_full_iso(tmp_path):
+def test_feed_timestamp_renders_relative_age_not_raw_iso(tmp_path):
+    """Round 7: a bare `.slice(11, 19)` HH:MM:SS with no timezone label read as
+    an unlabeled UTC clock. The row now shows a client-computed relative age
+    (`formatRelativeAge`), with the absolute local time (+ the raw UTC value,
+    explicitly labeled) in `title` - never an unlabeled clock either way."""
     html = _index_html(tmp_path)
-    # HH:MM:SS sliced from the ISO string; the full timestamp stays available
-    # in `doberman log` / the TUI.
-    assert ".slice(11, 19)" in html
+    assert ".slice(11, 19)" not in html
     assert '" @ " + row.ts;' not in html
+    assert "function formatRelativeAge(tsIso) {" in html
+    assert "function absoluteTimeTitle(tsIso) {" in html
+    assert "timeEl.title = absoluteTimeTitle(row.ts);" in html
+    assert '" local";' in html
+    assert '" UTC)";' in html
 
 
 def test_pending_list_is_not_rebuilt_when_the_queue_is_unchanged(tmp_path):

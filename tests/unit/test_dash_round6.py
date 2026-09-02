@@ -96,15 +96,21 @@ def test_feed_row_explanation_omits_the_reasons_clause():
 
 
 def test_collapsed_row_shows_headline_expanded_shows_full_explanation(tmp_path):
+    """Round 7: expanding no longer REPLACES the headline with the full
+    sentence (a collapsed row must still show the fragment that told it
+    apart from its neighbors) - the full sentence is now a separate,
+    initially-hidden element appended right under the (always-visible)
+    headline. See test_dash_round7.py for the fuller coverage."""
     html = _index_html(tmp_path)
-    assert 'explanationEl.dataset.headline = row.headline || "";' in html
-    assert 'explanationEl.dataset.full = row.explanation || "";' in html
     assert "explanationEl.textContent = row.headline || row.explanation;" in html
+    assert 'explanationEl.dataset.headline = row.headline || "";' not in html
+    assert 'fullEl.className = "row-explanation-full";' in html
+    assert "fullEl.hidden = true;" in html
     start = html.index("function toggleActiveFeedExplanation() {")
     end = html.index("\n      }", start)
     block = html[start:end]
-    assert "explanationEl.dataset.full || explanationEl.dataset.headline" in block
-    assert "explanationEl.dataset.headline || explanationEl.dataset.full" in block
+    assert 'var fullEl = li.querySelector(".row-explanation-full");' in block
+    assert "fullEl.hidden = !expanded;" in block
 
 
 def test_headline_leads_the_accessible_name(tmp_path):
@@ -283,7 +289,9 @@ def test_shortcuts_off_dims_the_binding_list_and_marks_the_title(tmp_path):
     html = _index_html(tmp_path)
     assert '<dl id="shortcuts-dl">' in html
     assert '<p class="panel-title" id="shortcuts-panel-title">Shortcuts</p>' in html
-    assert "#shortcuts-dl.dimmed { opacity: .55; }" in html
+    # Round 7: scoped to `.gated` rows only, not the whole list (see
+    # test_dash_round7.py) - Up/Down/Enter/Space/Home/End are never gated.
+    assert "#shortcuts-dl.dimmed dt.gated, #shortcuts-dl.dimmed dd.gated { opacity: .55; }" in html
     start = html.index("function renderShortcutsToggle() {")
     end = html.index("\n      }", start)
     block = html[start:end]

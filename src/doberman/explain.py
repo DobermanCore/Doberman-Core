@@ -231,7 +231,12 @@ def template_explanation(row: dict, *, with_reasons: bool = True) -> str:
     codes some other way (the dash feed's glossed ``gloss-list``, see
     ``doberman.dash.app._feed_row``) so the sentence isn't said twice.
     """
-    role = row.get("agent_role") or "the agent"
+    role = row.get("agent_role")
+    # "unknown" is a real (not merely absent) `agent_role` value on some rows -
+    # rendering it literally read as "unknown attempted shell_exec.", which
+    # looks like a bug rather than a deliberate "we don't know" statement.
+    if not role or role == "unknown":
+        role = "an agent"
     action_type = row.get("action_type") or "an action"
     target = row.get("target_path_class")
     verdict = row.get("final_verdict") or "UNKNOWN"

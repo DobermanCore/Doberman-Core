@@ -155,7 +155,12 @@ def test_deny_gets_the_same_arm_then_confirm_gesture_as_approve(tmp_path):
     html = _index_html(tmp_path)
     assert 'denyBtn.textContent = "Confirm deny (" + remaining + ")";' in html
     assert "var denyArmTimer = null;" in html
-    assert "<dt>d</dt><dd>Arm Deny on the first pending item, then Enter to confirm</dd>" in html
+    # Round 7: this row is now `.gated` (dimmed by `Shortcuts: off`, see
+    # test_dash_round7.py) - the binding itself is unchanged.
+    assert (
+        '<dt class="gated">d</dt><dd class="gated">Arm Deny on the first pending item, '
+        "then Enter to confirm</dd>" in html
+    )
     # The keyboard shortcut's "already armed -> just focus" branch is no
     # longer restricted to `a` only.
     assert 'if (actionBtn.dataset.armed === "1") { actionBtn.focus(); return; }' in html
@@ -311,8 +316,11 @@ def test_calm_guard_pip_is_pass_green_not_tan(tmp_path):
 
 def test_mobile_fold_hides_decisions_and_reasons_stat_groups(tmp_path):
     html = _index_html(tmp_path)
+    # Round 7: the same media block also forces one non-wrapping line (see
+    # test_dash_round7.py) - a substring check, not the old exact-block
+    # match, since that block grew those extra rules.
     assert (
-        "@media (max-width: 640px) {\n    #stats-decisions, #stats-reasons { display: none; }\n  }"
+        "@media (max-width: 640px) {\n    #stats-decisions, #stats-reasons { display: none; }"
         in html
     )
 
@@ -372,7 +380,9 @@ def test_served_shell_has_no_em_dash(tmp_path):
 
 def test_shortcuts_panel_has_a_wide_viewport_css_fallback_anchor(tmp_path):
     html = _index_html(tmp_path)
+    # Round 7: the same media block also widens the panel so Close shares a
+    # row with the toggles (see test_dash_round7.py) - a substring check,
+    # not the old exact-block match, since that block grew those extra rules.
     assert (
-        "@media (min-width: 641px) {\n    #shortcuts-panel { top: 4.5rem; right: 1.25rem; }\n  }"
-        in html
+        "@media (min-width: 641px) {\n    #shortcuts-panel { top: 4.5rem; right: 1.25rem; }" in html
     )

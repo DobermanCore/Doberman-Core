@@ -120,6 +120,26 @@ def test_template_explanation_for_block_row_mentions_policy_or_role_change():
     assert "policy" in text.lower() or "role" in text.lower()
 
 
+# --- round 7: an absent/"unknown" agent_role never renders literally ---------
+
+
+def test_missing_agent_role_renders_as_an_agent():
+    row = _row(agent_role=None)
+    text = template_explanation(row)
+    assert text.startswith("an agent attempted ")
+
+
+def test_agent_role_literally_unknown_renders_as_an_agent_not_the_word_unknown():
+    # "unknown" is a real (not merely absent) SourceContext/agent_role value on
+    # some rows - rendering it literally used to read as "unknown attempted
+    # shell_exec.", which looks like a bug rather than a deliberate "we don't
+    # know" statement.
+    row = _row(agent_role="unknown")
+    text = template_explanation(row)
+    assert text.startswith("an agent attempted ")
+    assert "unknown attempted" not in text
+
+
 # --- round 5: the layer sentence is plain words, not jargon -------------------
 
 

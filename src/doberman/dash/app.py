@@ -207,6 +207,13 @@ _HTML_SHELL = """<!doctype html>
   button, input, select {
     font: inherit;
   }
+  /* Placeholder text defaults to a browser-chosen, often-translucent grey in
+     several engines - measured under 4.5:1 on this palette's input
+     backgrounds. `opacity: 1` stops that translucency from further diluting
+     the token, which is itself engineered to clear 4.5:1 against the
+     `--ink-2` input background in both themes (see the `--fg-3` comment
+     above). */
+  ::placeholder { color: var(--fg-3); opacity: 1; }
   button {
     cursor: pointer; min-height: 44px; min-width: 44px; padding: .5rem .9rem;
     display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
@@ -219,7 +226,18 @@ _HTML_SHELL = """<!doctype html>
     display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
     gap: .6rem 1rem;
     padding-bottom: 1.1rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--rule-2);
+    /* Pinned so the connection/guard/posture controls (and the mode-change
+       trigger) stay reachable while scrolling a long feed - the popover and
+       scrim are `position: fixed` (viewport-relative, see positionModeForm),
+       so anchoring them off a sticky trigger needs no change there. z-index
+       stays BELOW the scrim (14) / mode-form (15) / shortcuts panel (20) so
+       an open popover still stacks above the pinned bar, not under it. */
+    position: sticky; top: 0; z-index: 10; background: var(--ink-0);
   }
+  /* JS toggles this once `window.scrollY > 0` (see the scroll listener below)
+     - a stronger separator than the always-on border above, so the pinned
+     bar visibly lifts off the content scrolling underneath it. */
+  .topbar.scrolled { box-shadow: 0 1px 0 var(--rule-2), 0 6px 12px -8px oklch(0% 0 0 / 35%); }
   .brand { display: inline-flex; align-items: center; gap: .6rem; }
   .brand img { height: 28px; width: auto; flex: none; display: block; }
   .brand .word {
@@ -284,8 +302,13 @@ _HTML_SHELL = """<!doctype html>
   /* Round 6: `Shortcuts: off` dims the binding list itself, and the panel
      title grows an "(off)" suffix (see renderShortcutsToggle) - the toggle
      button alone saying "off" was easy to miss against a full dl of bindings
-     that mostly still work (only the bare single-character ones are gated). */
-  #shortcuts-dl.dimmed { opacity: .55; }
+     that mostly still work (only the bare single-character ones are gated).
+     Round 7: scoped to `.gated` only (the five bare single-key rows: / r ? a
+     d) - the toggle never gates Up/Down/Enter/Space/Home/End (those are the
+     feed's own roving-focus listener, wired independently of
+     shortcutsEnabled()), so dimming the WHOLE list read as "none of this
+     works" when most of it still did. */
+  #shortcuts-dl.dimmed dt.gated, #shortcuts-dl.dimmed dd.gated { opacity: .55; }
   .badge {
     display: inline-flex; align-items: center; font-family: var(--mono);
     font-size: var(--fs-1); font-weight: 700; letter-spacing: .02em;
@@ -324,9 +347,16 @@ _HTML_SHELL = """<!doctype html>
   #stats .retry-link { min-height: auto; padding: 0; }
   /* Mobile fold: only the verdict badges + the freshness timestamp survive -
      the decisions/top-reasons groups cost vertical room the first feed row
-     needs at 390px (see docs/SETUP.md's mobile note). */
+     needs at 390px (see docs/SETUP.md's mobile note). Round 7: what's left
+     (three badges + the recent-window detail + the timestamp) still wrapped
+     to two lines at 390px - drop the "recent N: ..." detail too and force
+     one non-wrapping line (scrollable, not clipped, if it's ever still too
+     tight) so "the stats show one line" holds at the narrowest width this
+     dashboard supports. */
   @media (max-width: 640px) {
     #stats-decisions, #stats-reasons { display: none; }
+    #stats { flex-wrap: nowrap; overflow-x: auto; }
+    #stats-verdicts .detail { display: none; }
   }
   .empty-state {
     padding: 2rem 1.5rem; border: 1px dashed var(--rule); border-radius: var(--r);
@@ -419,11 +449,17 @@ _HTML_SHELL = """<!doctype html>
   }
   #refresh-btn:hover { border-color: var(--tan-hi); color: var(--tan-hi); }
   .feed-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin: .7rem 0 .8rem; }
-  /* #feed-count + the announce toggle share one row even in the <=640px
-     column layout (see .feed-toolbar's mobile override) - two elements, one
-     wrapper, so they don't each cost a full row at the width where vertical
-     space is tightest (round 6 - the first feed row must start within 600px). */
-  .feed-toolbar-meta { display: inline-flex; align-items: center; gap: .6rem; }
+  /* Round 7: the verdict select, the count, and the mobile "Filters"
+     disclosure toggle travel together as one unit so they can share a row in
+     the <=640px column layout (see the mobile override below) - `display:
+     contents` at every OTHER width unwraps it back into plain flex children
+     of .feed-toolbar, so nothing changes visually at desktop widths. */
+  .feed-toolbar-row1 { display: contents; }
+  /* Verdict chips (desktop/wide) vs. a single <select> (<=640px, see
+     #feed-verdict-select below) are two separate controls kept in sync by
+     setVerdictFilter() - a native <select> reads and operates far better
+     than a wrapped row of pill buttons once there's no room for five of
+     them side by side. */
   .filter-chip-group { display: flex; gap: .4rem; flex-wrap: wrap; }
   .filter-chip {
     font-family: var(--mono); font-size: var(--fs-1); padding: .4rem .9rem;
@@ -450,6 +486,31 @@ _HTML_SHELL = """<!doctype html>
     border: 1px solid var(--rule); border-radius: var(--r-sm); background: var(--ink-2); color: var(--fg);
     flex: 1 1 12rem;
   }
+  /* Hidden by default (desktop keeps the chip group, see .filter-chip-group
+     above) - shown only <=640px, see the mobile block below. */
+  #feed-verdict-select {
+    display: none;
+    font-family: var(--mono); font-size: var(--fs-1); padding: .4rem .7rem;
+    border: 1px solid var(--rule); border-radius: var(--r-sm); background: var(--ink-2); color: var(--fg);
+  }
+  /* Same ghost-button look as the theme/shortcuts toggles - a convenience
+     disclosure, not a control that changes what's on screen by itself.
+     Hidden at desktop: the filter input + announce toggle it discloses are
+     already inline there (see #feed-filters-panel below). */
+  #feed-filters-toggle-btn {
+    display: none;
+    font-family: var(--font); font-size: var(--fs-1); font-weight: 600; padding: .35rem .8rem;
+    border: 1px solid var(--rule); border-radius: var(--r-sm); background: transparent; color: var(--fg-3);
+  }
+  #feed-filters-toggle-btn:hover { border-color: var(--tan-hi); color: var(--tan-hi); }
+  /* Desktop: no wrapping box at all - `display: contents` unwraps the text
+     filter + announce toggle back into plain flex children of
+     .feed-toolbar, same trick as .feed-toolbar-row1 above. An author
+     `display` here outranks the UA's `[hidden]` rule (the mode form and the
+     feed's own row-hiding above have the identical bug), so this stays
+     visible regardless of the mobile disclosure's collapsed/expanded state -
+     the <=640px override below is what actually makes `hidden` hide it. */
+  #feed-filters-panel { display: contents; }
   #feed {
     max-height: 60vh; overflow-y: auto;
     border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--ink-1);
@@ -517,7 +578,16 @@ _HTML_SHELL = """<!doctype html>
     color: var(--fg); font-family: var(--font); font-size: var(--fs-2);
     line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  #feed li .row-explanation.expanded { white-space: normal; max-width: 62ch; }
+  /* Round 7: expanding a row no longer REPLACES the headline with the full
+     sentence (a keyboard user landing back on a collapsed row used to lose
+     the very fragment that told rows apart) - the full sentence is now its
+     OWN element, appended under the (always-visible) headline, hidden until
+     the row is expanded. */
+  #feed li .row-explanation-full {
+    color: var(--fg); font-family: var(--font); font-size: var(--fs-2);
+    line-height: 1.5; margin-top: .3rem; max-width: 62ch;
+  }
+  #feed li .row-explanation-full[hidden] { display: none; }
   /* The metadata line (verdict/risk badges + action/target/reason codes) now
      reads as the SECONDARY line under the explanation - already muted mono
      via .detail above; this just adds the spacing that used to sit above
@@ -626,12 +696,23 @@ _HTML_SHELL = """<!doctype html>
   }
   @media (min-width: 641px) {
     #shortcuts-panel { top: 4.5rem; right: 1.25rem; }
+    /* Wide enough that the theme toggle, the on/off toggle, and Close all
+       fit .panel-actions' one flex row without wrapping - at the base
+       20rem max-width (set for the <=640px fixed-corner case) three buttons
+       of this length wrapped to two lines. */
+    #shortcuts-panel { max-width: 27rem; }
+    .panel-actions { flex-wrap: nowrap; }
   }
   @media (max-width: 640px) {
     #shortcuts-panel { right: 1.25rem; bottom: 1.25rem; }
   }
   #shortcuts-panel:focus { outline: none; }
-  #feed-count { color: var(--fg-3); font-size: var(--fs-1); align-self: center; }
+  /* Round 7: body colour + --fs-2 (was --fg-3/--fs-1, easy to miss next to
+     the muted announce toggle it used to sit beside) - "2 of 43 shown" is
+     feedback about what's actually on screen, not a muted aside, and it now
+     sits right next to the verdict control that produced it (see
+     .feed-toolbar-row1 above) rather than paired with the announce toggle. */
+  #feed-count { color: var(--fg); font-size: var(--fs-2); align-self: center; }
   /* Empty (no active filter) at initial load - a `<span>` with no `display:
      none` still costs a full row in the mobile column layout for zero
      content. Same pattern as #mode-hint:empty above. */
@@ -680,6 +761,31 @@ _HTML_SHELL = """<!doctype html>
     #feed li .detail { flex-basis: 100%; }
     #pending-list .countdown { margin-left: 0; flex-basis: 100%; }
     .feed-toolbar { flex-direction: column; align-items: stretch; margin: .35rem 0 .4rem; gap: .4rem; }
+    /* Round 7: the four verdict chips become one native <select> - a row of
+       five pill buttons (Needs attention/All/BLOCK/AUTH/PASS) has no room at
+       this width, and a <select> reads and operates better than a wrapped
+       button row anyway. */
+    .filter-chip-group { display: none; }
+    #feed-verdict-select { display: inline-block; }
+    /* The select + the count + the "Filters" disclosure trigger share ONE
+       row (see .feed-toolbar-row1's desktop `display: contents` above) -
+       the goal is still the first feed row starting within 600px (round 6),
+       so nothing here costs it more than one line. */
+    .feed-toolbar-row1 {
+      display: flex; align-items: center; flex-wrap: wrap; gap: .5rem .6rem; width: 100%;
+    }
+    #feed-filters-toggle-btn { display: inline-flex; }
+    /* The text filter + "Announce new rows" toggle move BEHIND the "Filters"
+       disclosure (collapsed by default - see renderFeedFiltersToggle) so
+       they don't cost the first-feed-row budget above; expanding reveals
+       them stacked, same reasoning as #feed-filter's `flex: none` below. An
+       author `display` on the same element outranks the UA's `[hidden]`
+       rule (the mode form and the feed's own row-hiding above have the
+       identical bug), so both states need restating here. */
+    #feed-filters-panel[hidden] { display: none; }
+    #feed-filters-panel:not([hidden]) {
+      display: flex; flex-direction: column; align-items: stretch; gap: .5rem; width: 100%;
+    }
     #feed-filter {
       width: 100%;
       /* In a column flex-toolbar the main axis is now vertical, so the
@@ -740,22 +846,33 @@ _HTML_SHELL = """<!doctype html>
       </div>
       <div class="feed-toolbar">
         <div class="filter-chip-group" role="group" aria-label="Filter by verdict">
-          <button type="button" class="filter-chip" data-verdict="" aria-pressed="true">All</button>
+          <button type="button" class="filter-chip" data-verdict="needs_attention" aria-pressed="true">Needs attention</button>
+          <button type="button" class="filter-chip" data-verdict="" aria-pressed="false">All</button>
           <button type="button" class="filter-chip" data-verdict="BLOCK" aria-pressed="false">BLOCK</button>
           <button type="button" class="filter-chip" data-verdict="AUTH" aria-pressed="false">AUTH</button>
           <button type="button" class="filter-chip" data-verdict="PASS" aria-pressed="false">PASS</button>
         </div>
-        <label class="sr-only" for="feed-filter">Filter recent decisions by text</label>
-        <input type="search" id="feed-filter" placeholder="Filter (press / to focus)">
-        <span class="feed-toolbar-meta">
+        <div class="feed-toolbar-row1">
+          <select id="feed-verdict-select" aria-label="Filter by verdict">
+            <option value="needs_attention">Needs attention</option>
+            <option value="">All</option>
+            <option value="BLOCK">BLOCK</option>
+            <option value="AUTH">AUTH</option>
+            <option value="PASS">PASS</option>
+          </select>
           <span id="feed-count" aria-live="polite"></span>
+          <button type="button" id="feed-filters-toggle-btn" aria-expanded="false" aria-controls="feed-filters-panel">Filters</button>
+        </div>
+        <div id="feed-filters-panel" hidden>
+          <label class="sr-only" for="feed-filter">Filter recent decisions by text</label>
+          <input type="search" id="feed-filter" placeholder="Filter (press / to focus)">
           <button type="button" id="feed-announce-toggle-btn" aria-pressed="true">Announce new rows: on</button>
-        </span>
+        </div>
       </div>
       <ul id="feed" role="log" aria-live="off" tabindex="0" aria-label="Recent decisions"></ul>
       <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
       <div id="feed-nomatch" class="empty-state" hidden>
-        No decisions match this filter.
+        <span id="feed-nomatch-text">No decisions match this filter.</span>
         <button type="button" id="feed-clear-filters-btn" class="retry-link">Clear filters</button>
       </div>
       <div id="feed-truncated" class="feed-note" hidden>older rows not shown - see doberman log</div>
@@ -779,14 +896,14 @@ _HTML_SHELL = """<!doctype html>
   <div id="shortcuts-panel" hidden role="region" aria-label="Keyboard shortcuts" tabindex="-1">
     <p class="panel-title" id="shortcuts-panel-title">Shortcuts</p>
     <dl id="shortcuts-dl">
-      <dt>/</dt><dd>Focus the decisions filter</dd>
+      <dt class="gated">/</dt><dd class="gated">Focus the decisions filter</dd>
       <dt>&uarr; / &darr;</dt><dd>Move the active row in the decisions feed</dd>
       <dt>Enter / Space</dt><dd>Expand or collapse the active row's explanation</dd>
       <dt>Home / End</dt><dd>Jump to the first/last row in the feed</dd>
-      <dt>r</dt><dd>Refresh stats + pending</dd>
-      <dt>a</dt><dd>Arm Approve on the first pending item, then Enter to confirm</dd>
-      <dt>d</dt><dd>Arm Deny on the first pending item, then Enter to confirm</dd>
-      <dt>?</dt><dd>Toggle this panel</dd>
+      <dt class="gated">r</dt><dd class="gated">Refresh stats + pending</dd>
+      <dt class="gated">a</dt><dd class="gated">Arm Approve on the first pending item, then Enter to confirm</dd>
+      <dt class="gated">d</dt><dd class="gated">Arm Deny on the first pending item, then Enter to confirm</dd>
+      <dt class="gated">?</dt><dd class="gated">Toggle this panel</dd>
       <dt>Esc</dt><dd>Clear the decisions filter, or close this panel or the mode form</dd>
     </dl>
     <div class="panel-actions">
@@ -864,6 +981,8 @@ _HTML_SHELL = """<!doctype html>
         strict: "Strict raises the bulk-delete threshold to 10 items and the " +
           "abnormality threshold to 0.5, and drops Paranoid's egress hard-block"
       };
+
+      function pad2(n) { return n < 10 ? "0" + n : String(n); }
 
       var announcer = document.getElementById("announcer");
       var lastAnnounced = "";
@@ -946,6 +1065,16 @@ _HTML_SHELL = """<!doctype html>
       themeToggleBtn.addEventListener("click", toggleTheme);
       panelThemeToggleBtn.addEventListener("click", toggleTheme);
 
+      // Sticky topbar (round 7): a bottom hairline/shadow that only shows
+      // once the page has actually scrolled - at scrollY 0 the plain
+      // border-bottom is enough, so this doesn't double up on it.
+      var topbarEl = document.querySelector(".topbar");
+      function syncTopbarScrolled() {
+        topbarEl.classList.toggle("scrolled", window.scrollY > 0);
+      }
+      window.addEventListener("scroll", syncTopbarScrolled, { passive: true });
+      syncTopbarScrolled();
+
       var dot = document.getElementById("dot");
       var label = document.getElementById("label");
       var favicon = document.getElementById("favicon");
@@ -968,9 +1097,15 @@ _HTML_SHELL = """<!doctype html>
       var modeEditing = false;
       var modesOrder = [];
       var currentModeName = null;
+      // True from a blocked Escape/outside-click dismiss (see
+      // attemptCloseModeForm) until Save, Cancel, or a new select change -
+      // guards MODE_FORM_BLOCKED_DISMISS_HINT below from being silently
+      // overwritten by the next background stats poll's refreshModeHint().
+      var modeDismissBlocked = false;
       var feedEl = document.getElementById("feed");
       var feedTruncatedEl = document.getElementById("feed-truncated");
       var feedRowsEverTruncated = false;
+      var feedRowsDroppedCount = 0;
       var feedRowCounter = 0;
       var activeFeedEntry = null;
       var MAX_FEED_ROWS = 200;
@@ -1170,9 +1305,10 @@ _HTML_SHELL = """<!doctype html>
         var asOf = document.createElement("span");
         asOf.className = "detail";
         var now = new Date();
-        function pad2(n) { return n < 10 ? "0" + n : String(n); }
+        // "(local)" - this is the viewer's own wall clock, not the server's
+        // and not UTC; never let it read as an unlabeled clock of unknown zone.
         asOf.textContent = "updated " +
-          pad2(now.getHours()) + ":" + pad2(now.getMinutes()) + ":" + pad2(now.getSeconds());
+          pad2(now.getHours()) + ":" + pad2(now.getMinutes()) + ":" + pad2(now.getSeconds()) + " (local)";
         statsEl.appendChild(asOf);
       }
 
@@ -1300,14 +1436,22 @@ _HTML_SHELL = """<!doctype html>
       // Only refreshes the hint's TEXT/color - never touches the arm timer,
       // so a blocked Escape/outside-click dismiss (see attemptCloseModeForm)
       // can surface the "Unsaved change" line without silently disarming an
-      // in-progress downgrade confirmation.
+      // in-progress downgrade confirmation. Round 7: while that blocked
+      // dismiss's OWN wording is showing (modeDismissBlocked), this is a
+      // no-op - a background stats poll landing mid-block (renderStats calls
+      // this every 5s while modeEditing) must not silently overwrite
+      // MODE_FORM_BLOCKED_DISMISS_HINT with the routine raise/lower text.
       function refreshModeHint() {
+        if (modeDismissBlocked) { return; }
         modeHintEl.textContent = modeHintText();
         modeHintEl.classList.toggle("lowering", computeModeDirection() === "lower");
       }
 
       function updateModeHint() {
-        // A different selection invalidates any in-progress downgrade arm.
+        // A different selection both invalidates any in-progress downgrade
+        // arm AND clears a blocked-dismiss hint - the user just acted on the
+        // form, so the stale warning no longer applies.
+        modeDismissBlocked = false;
         syncModeSaveButton();
         refreshModeHint();
       }
@@ -1394,6 +1538,7 @@ _HTML_SHELL = """<!doctype html>
         modeSuccessEl.textContent = "";
         modeHintEl.textContent = "";
         modeHintEl.classList.remove("lowering");
+        modeDismissBlocked = false;
         cancelModeArm();
         // Cancel (or any other path here) genuinely DISCARDS an unsaved pick -
         // reopening the popover before the next stats poll must not still
@@ -1413,6 +1558,7 @@ _HTML_SHELL = """<!doctype html>
       // blocked dismiss otherwise looked like nothing happened at all).
       function attemptCloseModeForm() {
         if (pendingModeChange()) {
+          modeDismissBlocked = true;
           modeHintEl.textContent = MODE_FORM_BLOCKED_DISMISS_HINT;
           modeHintEl.classList.toggle("lowering", computeModeDirection() === "lower");
           nudgeModeForm();
@@ -1463,6 +1609,10 @@ _HTML_SHELL = """<!doctype html>
       function submitModeChange() {
         var chosen = modeSelect.value;
         if (!chosen) { return; }
+        // The user just acted (Save) - a stale blocked-dismiss hint from an
+        // earlier Escape/outside-click no longer applies either way, success
+        // or failure both render their own message below.
+        modeDismissBlocked = false;
         var body = { mode: chosen };
         if (modeCodeInput.value) { body.code = modeCodeInput.value; }
         modeErrorEl.textContent = "";
@@ -1938,19 +2088,62 @@ _HTML_SHELL = """<!doctype html>
       }
       refreshBtn.addEventListener("click", manualRefresh);
 
-      // Find a BLOCK: verdict chips + a text filter over what's already on
-      // screen (no new endpoint - the feed is already fully client-side).
+      // Find a BLOCK: verdict chips (desktop) / a <select> (<=640px, see
+      // #feed-verdict-select) + a text filter over what's already on screen
+      // (no new endpoint - the feed is already fully client-side). Default
+      // view is "Needs attention" (BLOCK + AUTH, round 7) - a fresh
+      // dashboard leads with what needs a human, not a wall of PASS noise;
+      // "All" and "PASS" stay one explicit choice away. Persisted per
+      // browser so a reload doesn't silently reset back to noise either.
+      var DEFAULT_VERDICT_FILTER = "needs_attention";
+      var VERDICT_FILTER_KEY = "doberman-dash-feed-verdict-filter";
+      var VALID_VERDICT_FILTERS = ["", "needs_attention", "BLOCK", "AUTH", "PASS"];
+      function readStoredVerdictFilter() {
+        try {
+          var stored = window.localStorage.getItem(VERDICT_FILTER_KEY);
+          return VALID_VERDICT_FILTERS.indexOf(stored) !== -1 ? stored : null;
+        } catch (e) {
+          return null;
+        }
+      }
+      function writeStoredVerdictFilter(value) {
+        try { window.localStorage.setItem(VERDICT_FILTER_KEY, value); } catch (e) { /* privacy mode: won't persist */ }
+      }
+
       var feedEntries = [];
-      var activeVerdict = "";
+      var activeVerdict = readStoredVerdictFilter();
+      if (activeVerdict === null) { activeVerdict = DEFAULT_VERDICT_FILTER; }
       var activeQuery = "";
 
       function matchesFilter(entry) {
-        if (activeVerdict && entry.verdict !== activeVerdict) { return false; }
+        if (activeVerdict === "needs_attention") {
+          if (entry.verdict !== "BLOCK" && entry.verdict !== "AUTH") { return false; }
+        } else if (activeVerdict && entry.verdict !== activeVerdict) {
+          return false;
+        }
         if (activeQuery && entry.searchText.indexOf(activeQuery) === -1) { return false; }
         return true;
       }
+
       var feedCountEl = document.getElementById("feed-count");
+      var feedEmptyEl = document.getElementById("feed-empty");
       var feedNoMatchEl = document.getElementById("feed-nomatch");
+      var feedNoMatchTextEl = document.getElementById("feed-nomatch-text");
+      var feedClearFiltersBtn = document.getElementById("feed-clear-filters-btn");
+      var filterChips = document.querySelectorAll(".filter-chip");
+      var feedVerdictSelect = document.getElementById("feed-verdict-select");
+      var feedFilterInput = document.getElementById("feed-filter");
+
+      // The one string used whenever the DEFAULT filter is what's hiding
+      // everything - whether the feed is genuinely empty so far, or it has
+      // rows that are all PASS (filtered out by "Needs attention" itself).
+      var ATTENTION_EMPTY_TEXT =
+        "No blocks or approvals yet - Doberman's watching quietly (show All to see passes)";
+
+      function isDefaultFilterActive() {
+        return activeVerdict === DEFAULT_VERDICT_FILTER && !activeQuery;
+      }
+
       function applyFeedFilter() {
         var shown = 0;
         feedEntries.forEach(function (entry) {
@@ -1962,40 +2155,69 @@ _HTML_SHELL = """<!doctype html>
         feedCountEl.textContent = filtering && feedEntries.length
           ? shown + " of " + feedEntries.length + " shown"
           : "";
-        feedNoMatchEl.hidden = !(filtering && feedEntries.length > 0 && shown === 0);
+        var defaultActive = isDefaultFilterActive();
+        // #feed-empty is CSS-shown only when the feed has never received a
+        // single row (see `#feed:not(:empty) ~ #feed-empty`) - on the
+        // default filter that state gets the attention-aware copy too, so a
+        // brand-new dashboard never reads as a burned-out one.
+        feedEmptyEl.textContent = defaultActive
+          ? ATTENTION_EMPTY_TEXT
+          : "No decisions yet. Doberman's watching quietly.";
+        var noMatch = filtering && feedEntries.length > 0 && shown === 0;
+        feedNoMatchEl.hidden = !noMatch;
+        if (noMatch) {
+          feedNoMatchTextEl.textContent = defaultActive ? ATTENTION_EMPTY_TEXT : "No decisions match this filter.";
+          feedClearFiltersBtn.textContent = defaultActive ? "Show all" : "Clear filters";
+        }
         // The roving-focus row must never point at a row the filter just hid.
         if (activeFeedEntry && activeFeedEntry.li.hidden) { setActiveFeedEntry(null); }
       }
 
-      var filterChips = document.querySelectorAll(".filter-chip");
-      function resetFeedFilters() {
+      // Single source of truth for BOTH verdict controls (the desktop chip
+      // group and the <=640px <select>, see #feed-verdict-select) - whichever
+      // one the viewport is showing, the other stays in sync so a resize
+      // never leaves a stale pressed/selected state on the hidden one.
+      function setVerdictFilter(verdict) {
+        activeVerdict = verdict;
         filterChips.forEach(function (c) {
-          c.setAttribute("aria-pressed", (c.dataset.verdict || "") === "" ? "true" : "false");
+          c.setAttribute("aria-pressed", (c.dataset.verdict || "") === verdict ? "true" : "false");
         });
-        activeVerdict = "";
-        activeQuery = "";
-        feedFilterInput.value = "";
+        feedVerdictSelect.value = verdict;
+        writeStoredVerdictFilter(verdict);
         applyFeedFilter();
       }
+
+      // Lands back on the app's DEFAULT view (Needs attention), not raw
+      // "All" - clearing filters should return to something sane, not noise.
+      function resetFeedFilters() {
+        activeQuery = "";
+        feedFilterInput.value = "";
+        setVerdictFilter(DEFAULT_VERDICT_FILTER);
+      }
+
       filterChips.forEach(function (chip) {
         chip.addEventListener("click", function () {
-          filterChips.forEach(function (c) {
-            c.setAttribute("aria-pressed", c === chip ? "true" : "false");
-          });
-          activeVerdict = chip.dataset.verdict || "";
-          applyFeedFilter();
+          setVerdictFilter(chip.dataset.verdict || "");
         });
       });
+      feedVerdictSelect.addEventListener("change", function () {
+        setVerdictFilter(feedVerdictSelect.value);
+      });
 
-      var feedFilterInput = document.getElementById("feed-filter");
       feedFilterInput.addEventListener("input", function () {
         activeQuery = feedFilterInput.value.trim().toLowerCase();
         applyFeedFilter();
       });
 
-      var feedClearFiltersBtn = document.getElementById("feed-clear-filters-btn");
       feedClearFiltersBtn.addEventListener("click", function () {
-        resetFeedFilters();
+        // The default filter itself is what's showing nothing - "Show all"
+        // (verdict-only, matching the copy's own promise) rather than the
+        // generic reset, which would just reselect the same empty filter.
+        if (isDefaultFilterActive()) {
+          setVerdictFilter("");
+        } else {
+          resetFeedFilters();
+        }
         // Clearing the filter is meaningless if focus stays on a button
         // that's about to disappear (the no-match empty state hides right
         // here) - hand it back to the feed itself. Deferred a tick (same
@@ -2004,6 +2226,27 @@ _HTML_SHELL = """<!doctype html>
         // body for a newly-unfocusable element can otherwise land AFTER this
         // handler returns, overriding a same-tick .focus() call here.
         setTimeout(function () { feedEl.focus(); }, 0);
+      });
+
+      // Reflect whichever filter (persisted, or the default) was chosen
+      // before either control's own listener ever fires - also paints the
+      // initial #feed-empty copy correctly before the first row ever
+      // arrives.
+      setVerdictFilter(activeVerdict);
+
+      // Mobile-only "Filters" disclosure (round 7) - the text filter + the
+      // announce toggle collapse behind it at <=640px (see #feed-filters-panel
+      // above); at every other width the CSS unwraps the panel back into
+      // plain flex children regardless of this, so `hidden` here only ever
+      // has a visible effect on the width it's meant to.
+      var feedFiltersToggleBtn = document.getElementById("feed-filters-toggle-btn");
+      var feedFiltersPanel = document.getElementById("feed-filters-panel");
+      function setFeedFiltersOpen(open) {
+        feedFiltersPanel.hidden = !open;
+        feedFiltersToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+      }
+      feedFiltersToggleBtn.addEventListener("click", function () {
+        setFeedFiltersOpen(feedFiltersPanel.hidden);
       });
 
       // #feed is `role="log" aria-live="off"` (round 6 - `role="log"` alone
@@ -2100,25 +2343,16 @@ _HTML_SHELL = """<!doctype html>
       function toggleActiveFeedExplanation() {
         if (!activeFeedEntry) { return; }
         var li = activeFeedEntry.li;
-        var explanationEl = li.querySelector(".row-explanation");
+        var fullEl = li.querySelector(".row-explanation-full");
         var glossListEl = li.querySelector(".gloss-list");
-        if (!explanationEl && !glossListEl) { return; }
-        // A row with an explanation toggles that (its own class carries the
-        // expanded/collapsed state); a row with only glossed reason codes
-        // (no explanation) has nothing to toggle but the gloss list itself,
-        // so the row's own aria-expanded is the source of truth there.
-        // Round 6: expanding also swaps the element's OWN text from the
-        // short collapsed headline to the full explanation sentence (and
-        // back on collapse) - see the "decision" SSE handler below, which
-        // stashes both on data-headline/data-full.
-        var expanded = explanationEl
-          ? explanationEl.classList.toggle("expanded")
-          : li.getAttribute("aria-expanded") !== "true";
-        if (explanationEl) {
-          explanationEl.textContent = expanded
-            ? (explanationEl.dataset.full || explanationEl.dataset.headline || "")
-            : (explanationEl.dataset.headline || explanationEl.dataset.full || "");
-        }
+        if (!fullEl && !glossListEl) { return; }
+        // The row's own aria-expanded is the single source of truth here
+        // (round 7: the headline element itself no longer changes state -
+        // see the "decision" SSE handler below, which builds it as a plain,
+        // always-visible node) - reveals whichever of the full sentence /
+        // gloss list this row actually has.
+        var expanded = li.getAttribute("aria-expanded") !== "true";
+        if (fullEl) { fullEl.hidden = !expanded; }
         li.setAttribute("aria-expanded", expanded ? "true" : "false");
         if (glossListEl) { glossListEl.hidden = !expanded; }
       }
@@ -2272,6 +2506,61 @@ _HTML_SHELL = """<!doctype html>
         }
       });
 
+      // Relative age for a feed row's timestamp (round 7) - client-computed
+      // from the row's own UTC `ts` (an aware ISO 8601 string, always
+      // offset-bearing - see doberman/storage/log.py's
+      // `datetime.now(timezone.utc).isoformat()`), a time a human can
+      // actually place ("3m ago", "2h ago", "yesterday 11:00") rather than a
+      // bare HH:MM:SS with no zone. Refreshed on a timer (see
+      // refreshFeedTimes) so an open tab doesn't silently go stale
+      // ("3m ago" forever).
+      function localDateKey(d) {
+        return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+      }
+
+      function formatRelativeAge(tsIso) {
+        var thenMs = Date.parse(tsIso);
+        if (isNaN(thenMs)) { return "-"; }
+        var nowMs = Date.now();
+        var diffS = Math.max(0, Math.round((nowMs - thenMs) / 1000));
+        if (diffS < 60) { return "just now"; }
+        var diffM = Math.round(diffS / 60);
+        if (diffM < 60) { return diffM + "m ago"; }
+        var diffH = Math.round(diffM / 60);
+        if (diffH < 24) { return diffH + "h ago"; }
+        var then = new Date(thenMs);
+        var now = new Date(nowMs);
+        var hm = pad2(then.getHours()) + ":" + pad2(then.getMinutes());
+        var yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+        if (localDateKey(then) === localDateKey(yesterday)) { return "yesterday " + hm; }
+        return then.getFullYear() + "-" + pad2(then.getMonth() + 1) + "-" + pad2(then.getDate()) + " " + hm;
+      }
+
+      // The absolute time a human can actually place: LOCAL wall-clock time
+      // first (what the reader's own clock says this instant was), the raw
+      // UTC value second and explicitly labeled - never an unlabeled UTC
+      // clock passed off as local, or vice versa.
+      function absoluteTimeTitle(tsIso) {
+        var ms = Date.parse(tsIso);
+        if (isNaN(ms)) { return ""; }
+        var d = new Date(ms);
+        var local = d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()) + " " +
+          pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()) + " local";
+        var utc = String(tsIso)
+          .replace("T", " ")
+          .replace(/([+-]\\d\\d:\\d\\d|Z)$/, "")
+          .replace(/\\.\\d+$/, "");
+        return local + " (" + utc + " UTC)";
+      }
+
+      var FEED_TIME_REFRESH_MS = 30000;
+      function refreshFeedTimes() {
+        Array.prototype.forEach.call(feedEl.querySelectorAll(".row-time[data-ts]"), function (node) {
+          node.textContent = formatRelativeAge(node.dataset.ts);
+        });
+      }
+      setInterval(refreshFeedTimes, FEED_TIME_REFRESH_MS);
+
       // EventSource cannot set request headers, so the token travels as a
       // query param here only (see doberman.dash.app._feed_token_matches).
       try {
@@ -2333,35 +2622,52 @@ _HTML_SHELL = """<!doctype html>
             detail.appendChild(document.createTextNode("from:" + row.source_context + " "));
           }
           if (row.reason_codes && row.reason_codes.length) {
-            appendReasonCodeSpans(detail, row.reason_codes, ",");
+            appendReasonCodeSpans(detail, row.reason_codes, ", ");
           } else {
             detail.appendChild(document.createTextNode("no auth"));
           }
-          detail.appendChild(document.createTextNode(
-            " @ " + (String(row.ts || "").slice(11, 19) || "-")
-          ));
+          detail.appendChild(document.createTextNode(" @ "));
+          var timeEl = document.createElement("span");
+          timeEl.className = "row-time";
+          if (row.ts) {
+            timeEl.dataset.ts = row.ts;
+            timeEl.textContent = formatRelativeAge(row.ts);
+            timeEl.title = absoluteTimeTitle(row.ts);
+          } else {
+            timeEl.textContent = "-";
+          }
+          detail.appendChild(timeEl);
           rowMain.appendChild(detail);
 
           // BLOCK/AUTH only (CLAUDE.md #9 - every such row carries a human
           // explanation AND a short reason-first `headline`, see
           // doberman.explain.headline; _feed_row leaves both empty for
-          // PASS). Round 6: the COLLAPSED state now shows the HEADLINE
+          // PASS). Round 6: the COLLAPSED state shows the HEADLINE
           // ("Recursive delete blocked - shell_exec"), not the full
           // sentence - eight consecutive BLOCKs used to all start with the
           // identical "<role> attempted <action>." until each was expanded.
-          // Expanding (click/tap or Enter/Space, see
-          // toggleActiveFeedExplanation) swaps this SAME element's text to
-          // the full explanation; collapsing swaps it back. This is the
-          // row's PRIMARY text (body face, full contrast) and comes FIRST in
-          // the DOM - rowMain (verdict/risk badges + the now-secondary,
-          // muted-mono action/target/reason-code line) follows it.
+          // This is the row's PRIMARY text (body face, full contrast) and
+          // comes FIRST in the DOM - rowMain (verdict/risk badges + the now-
+          // secondary, muted-mono action/target/reason-code line) follows.
+          // Round 7: expanding no longer REPLACES this text with the full
+          // sentence - the headline stays put, and the full sentence is a
+          // SEPARATE element appended right under it, hidden until the row
+          // is expanded (see toggleActiveFeedExplanation) - a keyboard user
+          // landing back on a collapsed row must still see the fragment
+          // that told it apart from its neighbors.
           if (row.headline || row.explanation) {
             var explanationEl = document.createElement("div");
             explanationEl.className = "row-explanation";
-            explanationEl.dataset.headline = row.headline || "";
-            explanationEl.dataset.full = row.explanation || "";
             explanationEl.textContent = row.headline || row.explanation;
             li.appendChild(explanationEl);
+
+            if (row.explanation && row.explanation !== row.headline) {
+              var fullEl = document.createElement("div");
+              fullEl.className = "row-explanation-full";
+              fullEl.textContent = row.explanation;
+              fullEl.hidden = true;
+              li.appendChild(fullEl);
+            }
           }
           li.appendChild(rowMain);
 
@@ -2421,7 +2727,13 @@ _HTML_SHELL = """<!doctype html>
             ).toLowerCase()
           };
           feedEntries.push(entry);
-          li.hidden = !matchesFilter(entry);
+          // Round 7: was a bare `li.hidden = !matchesFilter(entry);` - with
+          // the default filter now ALWAYS active ("Needs attention" isn't
+          // "no filter"), the "N of M shown" count/no-match text needs to
+          // stay current as rows stream in, not just when the user touches
+          // a filter control. applyFeedFilter() re-derives every row's
+          // `hidden` too, so this remains the single source of truth.
+          applyFeedFilter();
 
           // Rows expand by mouse and touch, not only by Enter: clicking/
           // tapping an expandable row makes it the roving-focus active row
@@ -2442,12 +2754,17 @@ _HTML_SHELL = """<!doctype html>
             feedEl.removeChild(feedEl.firstChild);
             if (activeFeedEntry === removedEntry) { setActiveFeedEntry(null); }
             feedRowsEverTruncated = true;
+            feedRowsDroppedCount += 1;
           }
           // Idempotent, not a one-way latch: re-hides if the row count ever
           // drops back under the cap (it never rises back above it once
           // trimmed, so this only ever shows once truncation has actually
           // happened - never merely upon first reaching the cap).
           feedTruncatedEl.hidden = !feedRowsEverTruncated || feedEntries.length < MAX_FEED_ROWS;
+          if (feedRowsEverTruncated) {
+            feedTruncatedEl.textContent =
+              "older rows not shown (" + feedRowsDroppedCount + ") - see doberman log";
+          }
           if (nearBottom) {
             feedEl.scrollTop = feedEl.scrollHeight;
           }
