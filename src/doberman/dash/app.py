@@ -114,7 +114,11 @@ _HTML_SHELL = """<!doctype html>
     --rule-2: oklch(52% 0.016 55);
     --fg: oklch(96% 0 0);
     --fg-2: oklch(82% 0.004 55);
-    --fg-3: oklch(64% 0.006 55);
+    /* 66%, not 64%: --fg-3 on the feed row's :hover background (--ink-2, the
+       lightest dark-mode ink step) measured 4.48:1 at 64% - just under the
+       4.5:1 body-text floor. 66% clears it with margin (~4.85:1) while
+       staying visually "muted" against --fg/--fg-2. */
+    --fg-3: oklch(66% 0.006 55);
     --tan: oklch(74% 0.140 58);
     --tan-hi: oklch(84% 0.150 64);
     --mono: ui-monospace, "SF Mono", Consolas, monospace;
@@ -172,7 +176,7 @@ _HTML_SHELL = """<!doctype html>
     --ink-0: oklch(13% 0.008 55); --ink-1: oklch(22% 0.011 55);
     --ink-2: oklch(27% 0.012 55); --ink-3: oklch(33% 0.013 55);
     --rule: oklch(56% 0.016 55); --rule-2: oklch(52% 0.016 55);
-    --fg: oklch(96% 0 0); --fg-2: oklch(82% 0.004 55); --fg-3: oklch(64% 0.006 55);
+    --fg: oklch(96% 0 0); --fg-2: oklch(82% 0.004 55); --fg-3: oklch(66% 0.006 55);
     --tan: oklch(74% 0.140 58); --tan-hi: oklch(84% 0.150 64);
     --pass: oklch(76% 0.16 152); --pass-bg: oklch(76% 0.16 152 / 10%);
     --auth: oklch(82% 0.155 78); --auth-bg: oklch(82% 0.155 78 / 10%);
@@ -315,14 +319,25 @@ _HTML_SHELL = """<!doctype html>
     font-family: var(--mono); font-size: var(--fs-3); font-weight: 700; color: var(--auth);
     margin-left: auto;
   }
-  #pending-list .row-explanation { margin: .5rem 0 1rem; color: var(--fg-2); line-height: 1.6; max-width: 62ch; }
+  /* Sentence first (primary, full-contrast body text), codes second (see
+     .reason-line below) - same hierarchy as the feed's now-primary explanation. */
+  #pending-list .row-explanation { margin: .5rem 0 .5rem; color: var(--fg); line-height: 1.6; max-width: 62ch; }
+  #pending-list .reason-line {
+    margin: 0 0 1rem; color: var(--fg-3); font-family: var(--mono); font-size: var(--fs-1);
+    overflow-wrap: anywhere;
+  }
   #pending-list input {
     font-family: var(--mono); font-size: var(--fs-3); padding: .45rem .6rem; margin: 0 .5rem .5rem 0;
     letter-spacing: .12em; width: 9rem;
     background: var(--ink-0); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px;
   }
   #pending-list button { margin: 0 .5rem .5rem 0; }
-  #pending-list button.deny { background: var(--block); border: 1px solid var(--block); color: var(--ink-0); }
+  /* Deny is the solid/primary action (Approve stays outlined) but in the
+     neutral/tan fill, not red - a filled red Deny read as "the dangerous
+     button" in review. --block stays reserved for verdict/risk badges and
+     the mode form's downgrade Save (see #mode-save-btn.danger below), where
+     red actually signals danger rather than a routine security decision. */
+  #pending-list button.deny { background: var(--tan); border: 1px solid var(--tan); color: var(--ink-0); }
   #pending-list button.deny:hover { filter: brightness(1.15); }
   #pending-list button.approve { background: transparent; border: 1px solid var(--auth); color: var(--auth); }
   #pending-list button.approve:hover { background: var(--auth-bg); }
@@ -336,6 +351,11 @@ _HTML_SHELL = """<!doctype html>
     background: none; border: none; color: var(--tan-hi); text-decoration: underline;
     padding: 0; min-height: auto; min-width: auto;
   }
+  /* The clear-filters link borrows .retry-link's compact look, but as the one
+     actionable control in the no-match empty state it still needs a real
+     44px hit target, not a link's inline auto sizing (it measured under the
+     floor at 390px, but the same gap exists at any width). */
+  #feed-clear-filters-btn { min-height: 44px; min-width: 44px; }
   .section-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: 1.4rem; }
   #refresh-btn {
     font-family: var(--font); font-size: var(--fs-2); font-weight: 600;
@@ -348,8 +368,21 @@ _HTML_SHELL = """<!doctype html>
     font-family: var(--mono); font-size: var(--fs-1); padding: .4rem .9rem;
     border: 1px solid var(--rule); border-radius: 999px; background: var(--ink-2); color: var(--fg-2);
   }
+  /* An active chip colors by the verdict it filters to (BLOCK=red, AUTH=amber,
+     PASS=green) - a filter for BLOCK rows should itself read as a BLOCK signal,
+     not the generic amber every chip used before. "All" (no data-verdict) gets
+     the neutral treatment. */
   .filter-chip[aria-pressed="true"] {
+    background: var(--neutral-bg); border-color: var(--rule); color: var(--fg);
+  }
+  .filter-chip[data-verdict="BLOCK"][aria-pressed="true"] {
+    background: var(--block-bg); border-color: var(--block); color: var(--block);
+  }
+  .filter-chip[data-verdict="AUTH"][aria-pressed="true"] {
     background: var(--auth-bg); border-color: var(--auth); color: var(--auth);
+  }
+  .filter-chip[data-verdict="PASS"][aria-pressed="true"] {
+    background: var(--pass-bg); border-color: var(--pass); color: var(--pass);
   }
   #feed-filter {
     font-family: var(--font); font-size: var(--fs-2); padding: .5rem .8rem;
@@ -372,20 +405,45 @@ _HTML_SHELL = """<!doctype html>
   #feed li[hidden] { display: none; }
   #feed li:last-child { border-bottom: none; }
   #feed li:hover { background: var(--ink-2); }
-  /* Roving-focus target for #feed's aria-activedescendant (Up/Down/Home/End) -
-     an outline (not another background alone) so it reads distinctly from the
-     plain :hover tint above. */
+  /* A row with an explanation is click/tap-expandable (see the feed's click
+     handler below); a bare PASS row with no explanation carries nothing to
+     expand, so it gets no pointer cursor. */
+  #feed li.has-explanation { cursor: pointer; }
+  /* Real roving focus (Up/Down/Home/End move DOM focus here, see
+     setActiveFeedEntry) - the outline is the single visual indicator for
+     both focus and "active" state, so the native :focus-visible ring below
+     is suppressed to avoid a double ring on the same row. */
   #feed li.active { background: var(--ink-2); outline: 1px solid var(--tan-hi); outline-offset: -1px; }
+  #feed li:focus { outline: none; }
   #feed li .detail { color: var(--fg-3); overflow-wrap: anywhere; }
-  #feed li .detail .reason-code[title] { text-decoration: underline dotted; text-underline-offset: 2px; }
-  /* Second line, body face (not mono) - one line by default, Enter/Space
-     expands it (see the feed keydown handler) since some explanations run
-     well past a single line. */
+  /* Shared with the pending card's own reason line below - not scoped to the
+     feed, since both use the same glossed-span markup (appendReasonCodeSpans). */
+  .reason-code[title] { text-decoration: underline dotted; text-underline-offset: 2px; }
+  /* The "?" toggle next to a glossed reason code: a small inline affordance,
+     not a full-size button, so it deliberately opts out of the 44px floor
+     (mirrors .retry-link) - it's a secondary disclosure, not a primary action. */
+  .gloss-q {
+    min-height: 1.2em; min-width: 1.2em; padding: 0 .15em; margin-left: .2em;
+    border: none; background: none; color: var(--fg-3); font-size: .9em;
+    text-decoration: underline; border-radius: 3px; line-height: 1;
+  }
+  .gloss-q:hover, .gloss-q[aria-expanded="true"] { color: var(--tan-hi); }
+  .gloss-text { margin-left: .35em; font-style: italic; }
+  /* First line, body face, full contrast - the human "why" is the row's
+     PRIMARY text; the verdict/action metadata below it is secondary. One
+     line by default, click/tap or Enter/Space (roving focus) expands it
+     (see the feed's click handler and keydown handler) since some
+     explanations run well past a single line. */
   #feed li .row-explanation {
-    margin-top: .3rem; color: var(--fg-2); font-family: var(--font); font-size: var(--fs-2);
+    color: var(--fg); font-family: var(--font); font-size: var(--fs-2);
     line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   #feed li .row-explanation.expanded { white-space: normal; max-width: 62ch; }
+  /* The metadata line (verdict/risk badges + action/target/reason codes) now
+     reads as the SECONDARY line under the explanation - already muted mono
+     via .detail above; this just adds the spacing that used to sit above
+     .row-explanation instead. */
+  #feed li .row-explanation ~ .row-main { margin-top: .3rem; }
   .feed-note {
     padding: .6rem 1.1rem; color: var(--fg-3); font-family: var(--mono); font-size: var(--fs-1);
     border-top: 1px solid var(--rule-2);
@@ -427,13 +485,27 @@ _HTML_SHELL = """<!doctype html>
   }
   #mode-save-btn { border-color: var(--pass); color: var(--pass); }
   #mode-save-btn:hover { background: var(--pass-bg); }
+  /* A selected mode LOWER than the current one restyles Save to the BLOCK
+     color and requires the same arm-then-confirm gesture as Approve (see the
+     modeSaveBtn click handler) - a strictness downgrade is gated at least as
+     hard as an approval, never a single frictionless click. */
+  #mode-save-btn.danger { border-color: var(--block); color: var(--block); }
+  #mode-save-btn.danger:hover { background: var(--block-bg); }
   #mode-cancel-btn:hover { background: var(--neutral-bg); }
   #mode-success { color: var(--pass); font-family: var(--mono); font-size: var(--fs-1); }
   #mode-error { color: var(--block); font-family: var(--mono); font-size: var(--fs-1); }
+  /* >=641px: anchored under the "?" trigger by JS (positionShortcutsPanel),
+     same technique as the mode-form popover - top/right set inline, no
+     default here. <=640px falls back to the fixed viewport corner below,
+     since a topbar button can itself have wrapped to an unpredictable
+     position at that width. */
   #shortcuts-panel {
-    position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 20; max-width: 20rem;
+    position: fixed; z-index: 20; max-width: 20rem;
     padding: 1rem 1.25rem; border-radius: var(--r-lg);
     background: var(--ink-1); box-shadow: var(--shadow-card); font-size: var(--fs-2);
+  }
+  @media (max-width: 640px) {
+    #shortcuts-panel { right: 1.25rem; bottom: 1.25rem; }
   }
   #shortcuts-panel:focus { outline: none; }
   #feed-count { color: var(--fg-3); font-size: var(--fs-1); align-self: center; }
@@ -453,6 +525,12 @@ _HTML_SHELL = """<!doctype html>
     .topbar-right { width: 100%; }
     /* Wrapped groups would otherwise show a stray leading divider. */
     .topbar-group + .topbar-group { border-left: none; padding-left: 0; margin-left: 0; }
+    /* A squeezed flex row lets a badge/pill shrink below its text's natural
+       width, which - with no nowrap - wraps "mode: paranoid" onto two lines
+       instead of shrinking the group's own layout. Keep each pill one line
+       and let the GROUP wrap onto a second row instead. */
+    .badge, .status-pill { white-space: nowrap; }
+    .topbar-group { flex-wrap: wrap; row-gap: .4rem; }
     #mode-form:not([hidden]) { flex-direction: column; align-items: stretch; }
     #mode-form select, #mode-form input { width: 100%; }
     .mode-form-actions { width: 100%; }
@@ -461,7 +539,14 @@ _HTML_SHELL = """<!doctype html>
     #feed li .detail { flex-basis: 100%; }
     #pending-list .countdown { margin-left: 0; flex-basis: 100%; }
     .feed-toolbar { flex-direction: column; align-items: stretch; }
-    #feed-filter { width: 100%; }
+    #feed-filter {
+      width: 100%;
+      /* In a column flex-toolbar the main axis is now vertical, so the
+         general `flex: 1 1 12rem` rule (written for a row layout) makes this
+         input GROW to fill the remaining vertical space instead of sizing to
+         its own content - it measured 192px tall. `flex: none` opts back out. */
+      flex: none;
+    }
   }
 </style>
 </head>
@@ -491,7 +576,8 @@ _HTML_SHELL = """<!doctype html>
   </header>
   <main>
     <h1 class="sr-only">Doberman local dashboard</h1>
-    <div id="mode-form" hidden>
+    <div id="mode-form" hidden role="dialog" aria-modal="false" aria-labelledby="mode-form-title">
+      <p id="mode-form-title" class="sr-only">Change security mode</p>
       <select id="mode-select" aria-label="Security mode"></select>
       <p id="mode-hint" aria-live="polite"></p>
       <label class="sr-only" for="mode-code">2FA code or password, only needed to lower strictness</label>
@@ -937,16 +1023,45 @@ _HTML_SHELL = """<!doctype html>
       // frictionless; lower needs a possession-factor code - purely a
       // function of array position, so a future mode added to SecurityMode
       // needs no change here.
-      function updateModeHint() {
+      function computeModeDirection() {
         var chosenIdx = modesOrder.indexOf(modeSelect.value);
         var curIdx = modesOrder.indexOf(currentModeName);
-        if (chosenIdx === -1 || curIdx === -1 || chosenIdx === curIdx) {
-          modeHintEl.textContent = "";
-        } else if (chosenIdx > curIdx) {
+        if (chosenIdx === -1 || curIdx === -1 || chosenIdx === curIdx) { return "none"; }
+        return chosenIdx > curIdx ? "raise" : "lower";
+      }
+
+      // A downgrade is gated at least as hard as an Approve: Save restyles to
+      // the BLOCK color and needs the same arm-then-confirm gesture (5s
+      // window, visible countdown) before it actually submits. Raising stays
+      // a single click. Server-side semantics are unchanged either way - this
+      // is purely a client-side speed bump on top of the same POST.
+      var modeArmed = false;
+      var modeArmTimer = null;
+
+      function cancelModeArm() {
+        clearInterval(modeArmTimer);
+        modeArmTimer = null;
+        modeArmed = false;
+      }
+
+      function syncModeSaveButton() {
+        cancelModeArm();
+        var direction = computeModeDirection();
+        modeSaveBtn.classList.toggle("danger", direction === "lower");
+        modeSaveBtn.textContent = direction === "lower" ? ("Lower to " + modeSelect.value) : "Save";
+      }
+
+      function updateModeHint() {
+        var direction = computeModeDirection();
+        if (direction === "raise") {
           modeHintEl.textContent = "Raise: applies immediately";
+        } else if (direction === "lower") {
+          modeHintEl.textContent = "Lower: needs your 2FA code or password - this weakens the guard";
         } else {
-          modeHintEl.textContent = "Lower: needs your 2FA code or password";
+          modeHintEl.textContent = "";
         }
+        // A different selection invalidates any in-progress downgrade arm.
+        syncModeSaveButton();
       }
       modeSelect.addEventListener("change", updateModeHint);
 
@@ -993,6 +1108,7 @@ _HTML_SHELL = """<!doctype html>
         modeErrorEl.textContent = "";
         modeSuccessEl.textContent = "";
         modeHintEl.textContent = "";
+        cancelModeArm();
         modeEditBtn.setAttribute("aria-expanded", "false");
         if (wasOpen) { modeEditBtn.focus(); }
       }
@@ -1002,7 +1118,41 @@ _HTML_SHELL = """<!doctype html>
       });
       modeCancelBtn.addEventListener("click", closeModeForm);
 
-      modeSaveBtn.addEventListener("click", function () {
+      // Light dismiss: a click outside the open popover closes it - UNLESS a
+      // mode change is actually pending (a different mode picked, or a
+      // downgrade mid-arm), in which case an outside click must not silently
+      // discard it - keep the popover open and surface the hint instead.
+      document.addEventListener("click", function (e) {
+        if (modeForm.hidden) { return; }
+        if (modeForm.contains(e.target) || e.target === modeEditBtn) { return; }
+        if (modeArmed || computeModeDirection() !== "none") {
+          updateModeHint();
+          return;
+        }
+        closeModeForm();
+      });
+
+      // Focus containment: Tab/Shift+Tab cycles within the popover's own
+      // controls while it is open, rather than escaping to the rest of the
+      // page (a light-dismiss popover is still a dialog while focus is in it).
+      modeForm.addEventListener("keydown", function (e) {
+        if (e.key !== "Tab") { return; }
+        var focusable = Array.prototype.slice
+          .call(modeForm.querySelectorAll("select, input, button"))
+          .filter(function (el) { return !el.disabled; });
+        if (!focusable.length) { return; }
+        var first = focusable[0];
+        var last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      });
+
+      function submitModeChange() {
         var chosen = modeSelect.value;
         if (!chosen) { return; }
         var body = { mode: chosen };
@@ -1040,6 +1190,27 @@ _HTML_SHELL = """<!doctype html>
           modeSaveBtn.disabled = false;
           modeErrorEl.textContent = "network error - try again";
         });
+      }
+
+      modeSaveBtn.addEventListener("click", function () {
+        if (computeModeDirection() === "lower" && !modeArmed) {
+          // First press only arms: a countdown identical in shape to
+          // Approve's, so lowering strictness never happens on one click.
+          modeArmed = true;
+          var remaining = 5;
+          modeSaveBtn.textContent = "Confirm lower (" + remaining + ")";
+          modeArmTimer = setInterval(function () {
+            remaining -= 1;
+            if (remaining <= 0) {
+              syncModeSaveButton();
+              return;
+            }
+            modeSaveBtn.textContent = "Confirm lower (" + remaining + ")";
+          }, 1000);
+          return;
+        }
+        cancelModeArm();
+        submitModeChange();
       });
 
       var pendingList = document.getElementById("pending-list");
@@ -1131,6 +1302,49 @@ _HTML_SHELL = """<!doctype html>
         });
       }
 
+      // Shared by the feed's detail line and the pending card's reason line:
+      // each code is its own span (not one joined string) so it can carry a
+      // title="..." gloss from REASON_DESCRIPTIONS - the same dict
+      // doberman.explain.template_explanation uses server-side. A code
+      // missing from the dict just skips the title. Right after a glossed
+      // code, a small "?" toggle reveals the SAME gloss text as ordinary
+      // inline text - title="..." only ever shows on :hover, so keyboard and
+      // touch users would otherwise never see it at all.
+      function appendReasonCodeSpans(container, codes, separator) {
+        codes.forEach(function (code, i) {
+          if (i > 0) { container.appendChild(document.createTextNode(separator)); }
+          var codeSpan = document.createElement("span");
+          codeSpan.className = "reason-code";
+          codeSpan.textContent = code;
+          var gloss = REASON_DESCRIPTIONS[code];
+          if (!gloss) {
+            container.appendChild(codeSpan);
+            return;
+          }
+          codeSpan.title = gloss;
+          container.appendChild(codeSpan);
+          var toggle = document.createElement("button");
+          toggle.type = "button";
+          toggle.className = "gloss-q";
+          toggle.textContent = "?";
+          toggle.setAttribute("aria-expanded", "false");
+          toggle.setAttribute("aria-label", "What does " + code + " mean?");
+          var glossText = document.createElement("span");
+          glossText.className = "gloss-text";
+          glossText.textContent = gloss;
+          glossText.hidden = true;
+          toggle.addEventListener("click", function (e) {
+            // Never let this also trigger the row's own click-to-expand.
+            e.stopPropagation();
+            var open = toggle.getAttribute("aria-expanded") === "true";
+            toggle.setAttribute("aria-expanded", open ? "false" : "true");
+            glossText.hidden = open;
+          });
+          container.appendChild(toggle);
+          container.appendChild(glossText);
+        });
+      }
+
       var lastPendingKey = null;
 
       function renderPending(rows) {
@@ -1180,15 +1394,21 @@ _HTML_SHELL = """<!doctype html>
           header.appendChild(countdown);
           li.appendChild(header);
 
-          var reasons = document.createElement("div");
-          reasons.className = "detail";
-          reasons.textContent = (row.reason_codes || []).join(", ") || "no reason codes recorded";
-          li.appendChild(reasons);
-
+          // Sentence first (primary), codes second (secondary, muted mono,
+          // glossed) - same hierarchy as the feed's now-primary explanation.
           var explanation = document.createElement("div");
           explanation.className = "row-explanation";
           explanation.textContent = row.explanation || "";
           li.appendChild(explanation);
+
+          var reasons = document.createElement("div");
+          reasons.className = "reason-line";
+          if (row.reason_codes && row.reason_codes.length) {
+            appendReasonCodeSpans(reasons, row.reason_codes, ", ");
+          } else {
+            reasons.appendChild(document.createTextNode("no reason codes recorded"));
+          }
+          li.appendChild(reasons);
 
           var totpInput = null;
           if (row.needs_totp) {
@@ -1401,8 +1621,10 @@ _HTML_SHELL = """<!doctype html>
       var feedClearFiltersBtn = document.getElementById("feed-clear-filters-btn");
       feedClearFiltersBtn.addEventListener("click", resetFeedFilters);
 
-      // --- Feed roving focus (Up/Down/Home/End move it, Enter/Space expands
-      // the active row's explanation) - see the shortcuts panel for the keys. ---
+      // --- Feed roving focus (Up/Down/Home/End move REAL DOM focus, not just
+      // a CSS class + aria-activedescendant - a screen reader hears each row
+      // as focus actually lands on it). Enter/Space expands the active row's
+      // explanation - see the shortcuts panel for the full key list. ---
 
       function visibleFeedEntries() {
         return feedEntries.filter(function (entry) { return !entry.li.hidden; });
@@ -1411,13 +1633,10 @@ _HTML_SHELL = """<!doctype html>
       function setActiveFeedEntry(entry) {
         if (activeFeedEntry) { activeFeedEntry.li.classList.remove("active"); }
         activeFeedEntry = entry || null;
-        if (!activeFeedEntry) {
-          feedEl.removeAttribute("aria-activedescendant");
-          return;
-        }
+        if (!activeFeedEntry) { return; }
         activeFeedEntry.li.classList.add("active");
-        feedEl.setAttribute("aria-activedescendant", activeFeedEntry.li.id);
         activeFeedEntry.li.scrollIntoView({ block: "nearest" });
+        activeFeedEntry.li.focus();
       }
 
       function moveActiveFeedEntry(delta) {
@@ -1438,8 +1657,11 @@ _HTML_SHELL = """<!doctype html>
 
       function toggleActiveFeedExplanation() {
         if (!activeFeedEntry) { return; }
-        var explanationEl = activeFeedEntry.li.querySelector(".row-explanation");
-        if (explanationEl) { explanationEl.classList.toggle("expanded"); }
+        var li = activeFeedEntry.li;
+        var explanationEl = li.querySelector(".row-explanation");
+        if (!explanationEl) { return; }
+        var expanded = explanationEl.classList.toggle("expanded");
+        li.setAttribute("aria-expanded", expanded ? "true" : "false");
       }
 
       feedEl.addEventListener("keydown", function (e) {
@@ -1449,6 +1671,21 @@ _HTML_SHELL = """<!doctype html>
         else if (e.key === "End") { e.preventDefault(); jumpActiveFeedEntry(true); }
         else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleActiveFeedExplanation(); }
       });
+      // The scroller itself is tabindex="0" (in the tab order); a row is
+      // tabindex="-1" (only reachable via roving focus, never via Tab). So
+      // when the SCROLLER is what receives focus (a fresh Tab into it, not a
+      // row already claiming it), hand focus straight on to the active row
+      // (or the first one). `focus` doesn't bubble, so this only fires when
+      // feedEl itself is the direct target - never on every row focus.
+      feedEl.addEventListener("focus", function (e) {
+        if (e.target !== feedEl) { return; }
+        var visible = visibleFeedEntries();
+        if (!visible.length) { return; }
+        var target = activeFeedEntry && visible.indexOf(activeFeedEntry) !== -1
+          ? activeFeedEntry
+          : visible[0];
+        setActiveFeedEntry(target);
+      });
 
       // A small non-modal shortcuts panel (see the keydown handler below for
       // the bindings it documents) - discoverable via the topbar button too,
@@ -1457,9 +1694,27 @@ _HTML_SHELL = """<!doctype html>
       var shortcutsPanel = document.getElementById("shortcuts-panel");
       var shortcutsCloseBtn = document.getElementById("shortcuts-close-btn");
 
+      // >=641px: anchor under #shortcuts-btn, same technique as the mode
+      // form's positionModeForm. <=640px: the CSS media query pins it back to
+      // the fixed viewport corner (the trigger may itself have wrapped).
+      function positionShortcutsPanel() {
+        if (window.matchMedia && window.matchMedia("(max-width: 640px)").matches) {
+          shortcutsPanel.style.top = "";
+          shortcutsPanel.style.right = "";
+          return;
+        }
+        if (shortcutsBtn.scrollIntoView) { shortcutsBtn.scrollIntoView({ block: "nearest" }); }
+        var rect = shortcutsBtn.getBoundingClientRect();
+        shortcutsPanel.style.top = Math.max(8, rect.bottom + 8) + "px";
+        shortcutsPanel.style.right = Math.max(8, window.innerWidth - rect.right) + "px";
+      }
+      window.addEventListener("resize", function () { if (!shortcutsPanel.hidden) { positionShortcutsPanel(); } });
+      window.addEventListener("scroll", function () { if (!shortcutsPanel.hidden) { positionShortcutsPanel(); } }, { passive: true });
+
       function openShortcuts() {
         shortcutsPanel.hidden = false;
         shortcutsBtn.setAttribute("aria-expanded", "true");
+        positionShortcutsPanel();
         shortcutsPanel.focus();
       }
       function closeShortcuts() {
@@ -1475,10 +1730,14 @@ _HTML_SHELL = """<!doctype html>
 
       // Keyboard: / focuses the filter, r refreshes, ? toggles the shortcuts
       // panel, a/d act on the first pending card (arm step preserved for
-      // approve), Escape closes whatever panel is open. Ignored while
-      // already typing in a field, except Escape which always works.
+      // approve), Escape closes ONE thing per press - whichever is topmost
+      // (the mode popover, then the shortcuts panel, then the filter) - never
+      // all of them at once. Ignored while already typing in a field, except
+      // Escape which always works.
       document.addEventListener("keydown", function (e) {
         if (e.key === "Escape") {
+          if (!modeForm.hidden) { closeModeForm(); return; }
+          if (!shortcutsPanel.hidden) { closeShortcuts(); return; }
           // The filter is not a trap: clear it and hand focus back to the
           // feed itself, rather than leaving the user stuck in the input.
           if (document.activeElement === feedFilterInput) {
@@ -1487,8 +1746,6 @@ _HTML_SHELL = """<!doctype html>
             applyFeedFilter();
             feedEl.focus();
           }
-          if (!modeForm.hidden) { closeModeForm(); }
-          if (!shortcutsPanel.hidden) { closeShortcuts(); }
           return;
         }
         var tag = (document.activeElement && document.activeElement.tagName) || "";
@@ -1535,6 +1792,9 @@ _HTML_SHELL = """<!doctype html>
           }
           var li = document.createElement("li");
           li.id = "feed-row-" + (++feedRowCounter);
+          // Roving-focus target (see setActiveFeedEntry) - reachable by
+          // Up/Down/Home/End, never by Tab.
+          li.tabIndex = -1;
 
           var rowMain = document.createElement("div");
           rowMain.className = "row-main";
@@ -1563,24 +1823,16 @@ _HTML_SHELL = """<!doctype html>
           // (UTC) - the full ISO timestamp is noise at a glance and stays
           // available in `doberman log` / the TUI.
           detail.appendChild(document.createTextNode(
-            row.action_type +
-            " " + (row.target_path_class || "no target") +
-            " from:" + (row.source_context || "-") + " "
+            row.action_type + " " + (row.target_path_class || "no target") + " "
           ));
-          // Each code is its own span (not one joined string) so it can carry
-          // a title="..." gloss from REASON_DESCRIPTIONS - the same dict
-          // doberman.explain.template_explanation uses server-side. A code
-          // missing from the dict (a future ReasonCode) just skips the title.
+          // "unknown" is a real SourceContext value, not an absent one - a row
+          // showing "from:unknown" on every single PASS was noise with no
+          // signal, so the origin is only rendered when it's actually known.
+          if (row.source_context && row.source_context !== "unknown") {
+            detail.appendChild(document.createTextNode("from:" + row.source_context + " "));
+          }
           if (row.reason_codes && row.reason_codes.length) {
-            row.reason_codes.forEach(function (code, i) {
-              if (i > 0) { detail.appendChild(document.createTextNode(",")); }
-              var codeSpan = document.createElement("span");
-              codeSpan.className = "reason-code";
-              codeSpan.textContent = code;
-              var gloss = REASON_DESCRIPTIONS[code];
-              if (gloss) { codeSpan.title = gloss; }
-              detail.appendChild(codeSpan);
-            });
+            appendReasonCodeSpans(detail, row.reason_codes, ",");
           } else {
             detail.appendChild(document.createTextNode("no auth"));
           }
@@ -1588,18 +1840,40 @@ _HTML_SHELL = """<!doctype html>
             " @ " + (String(row.ts || "").slice(11, 19) || "-")
           ));
           rowMain.appendChild(detail);
-          li.appendChild(rowMain);
 
           // BLOCK/AUTH only (CLAUDE.md #9 - every such row carries a human
-          // explanation; _feed_row leaves it empty for PASS) - body face, not
-          // mono, one line by default (Enter/Space on the active row expands
-          // it - see the feed's keydown handler).
+          // explanation; _feed_row leaves it empty for PASS). This is the
+          // row's PRIMARY text (body face, full contrast) and comes FIRST in
+          // the DOM - rowMain (verdict/risk badges + the now-secondary,
+          // muted-mono action/target/reason-code line) follows it. One line
+          // by default; click/tap the row (see the click listener below) or
+          // Enter/Space on the active row (see the feed's keydown handler)
+          // expands it.
           if (row.explanation) {
             var explanationEl = document.createElement("div");
             explanationEl.className = "row-explanation";
             explanationEl.textContent = row.explanation;
             li.appendChild(explanationEl);
           }
+          li.appendChild(rowMain);
+
+          if (row.explanation) {
+            li.classList.add("has-explanation");
+            li.setAttribute("aria-expanded", "false");
+          }
+
+          // An accessible name independent of the visual layout above -
+          // a screen reader hears this the moment roving focus lands here,
+          // rather than having to walk the row's child nodes itself.
+          var accessibleReasons = row.reason_codes && row.reason_codes.length
+            ? row.reason_codes.join(", ")
+            : "no reason codes";
+          li.setAttribute(
+            "aria-label",
+            row.verdict + " " + row.action_type + " " +
+            (row.target_path_class || "no target") + " - " +
+            (row.explanation || accessibleReasons)
+          );
 
           // Rows are appended oldest-first, so the newest decision is always
           // the last child - keep the scrollable list pinned to that end
@@ -1618,6 +1892,17 @@ _HTML_SHELL = """<!doctype html>
           };
           feedEntries.push(entry);
           li.hidden = !matchesFilter(entry);
+
+          // Rows expand by mouse and touch, not only by Enter: clicking/
+          // tapping a row with an explanation makes it the roving-focus
+          // active row (so subsequent arrow keys continue from here) and
+          // toggles the same .expanded state Enter/Space does.
+          if (row.explanation) {
+            li.addEventListener("click", function () {
+              setActiveFeedEntry(entry);
+              toggleActiveFeedExplanation();
+            });
+          }
 
           // The empty state is CSS-only (`#feed:not(:empty) ~ #feed-empty`) -
           // appending the first row is enough to reveal the real list.

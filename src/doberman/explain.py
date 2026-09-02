@@ -119,6 +119,59 @@ REASON_DESCRIPTIONS: dict[str, str] = {
     "artifact_digest_mismatch": (
         "the fetched content's digest did not match its pinned expected digest"
     ),
+    "proxy_handler_error": "an unexpected error escaped the proxy's tool-call handler",
+    "environment_dump_command": (
+        "the command reads or prints the process environment, a common carrier for secrets"
+    ),
+    "egress_requires_auth": "this destination requires authentication before the action can proceed",
+    "tool_schema_changed": "the live tool's contract changed since it was first pinned",
+    "pii_data_class_egress": (
+        "the outbound payload contains checksum-valid personal or financial data bound for "
+        "an external destination"
+    ),
+    "oversized_encoded_blob": (
+        "the payload carries a large base64-encoded blob, a common shape for smuggling data out"
+    ),
+    "single_use_elevation_unclaimable": (
+        "the one-time elevation covering this action was already spent or could not be claimed"
+    ),
+    "correlated_trifecta": (
+        "this action, combined with earlier ones in the session, adds up to the "
+        "lethal-trifecta pattern"
+    ),
+    "correlated_destructive_flow": (
+        "this action, combined with earlier ones in the session, adds up to a destructive pattern"
+    ),
+    "turn_gate_error": "the pre-inference turn gate failed to evaluate cleanly",
+    "instruction_nullification": (
+        "the input matched an instruction-nullification pattern "
+        '(e.g. "ignore your previous instructions")'
+    ),
+    "authority_override": (
+        "the input matched an authority-override pattern (impersonation, mode-switch framing, "
+        "or an ask to reveal the system prompt)"
+    ),
+    "secret_export": "the input asked for a credential, key, or token to be exported",
+    "encoded_payload": "the input carried a long high-entropy encoded blob or a punycode host",
+    "indirect_injection": (
+        "the matched pattern was found in untrusted (pasted or tool-fetched) content, "
+        "not the user's own words"
+    ),
+    "embedded_instruction": (
+        "untrusted pasted or tool-fetched text contained an instruction directed at the agent"
+    ),
+    "persona_override": "the input tried to make the agent adopt a different persona or role",
+    "obfuscated_content": (
+        "the input contained sub-threshold encoded runs, zero-width characters, or long hex escapes"
+    ),
+    "urgency_secrecy_framing": (
+        'the input used urgency or secrecy framing (e.g. "do this quietly, don\'t tell the user")'
+    ),
+    "stylometric_outlier": "the turn's writing style is an extreme outlier for this entity",
+    "repeat_after_block": "this input resubmits a request that was already blocked",
+    "turn_blocked_repeatedly": (
+        "repeated resubmission of a blocked request locked this session out for the cooldown window"
+    ),
 }
 
 # Fail at import time if a ReasonCode is ever added without a description — a

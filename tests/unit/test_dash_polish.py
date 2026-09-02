@@ -185,9 +185,16 @@ def test_feed_row_renders_a_risk_badge(tmp_path):
     assert 'row.risk && row.risk !== "low"' in html
 
 
-def test_feed_row_renders_source_context(tmp_path):
+def test_feed_row_renders_source_context_only_when_known(tmp_path):
+    """ "unknown" is a real SourceContext value, not an absent one - a row must
+    not render "from:unknown" as if it were signal; the origin is shown only
+    when it names something concrete."""
     html = _index_html(tmp_path)
-    assert '" from:" + (row.source_context || "-") +' in html
+    assert 'row.source_context && row.source_context !== "unknown"' in html
+    assert '"from:" + row.source_context' in html
+    # The old unconditional form (always prints "from:X", "-" for anything
+    # falsy) must be gone, not merely supplemented.
+    assert '" from:" + (row.source_context || "-") +' not in html
 
 
 def test_recent_decisions_header_has_a_refresh_button(tmp_path):

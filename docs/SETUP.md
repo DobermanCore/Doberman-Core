@@ -408,18 +408,22 @@ decision path. This channel engages only while the dashboard's own heartbeat is 
 heartbeat or an unanswered approval falls back to the next channel (MCP elicitation, then GUI
 dialog, then terminal) with no added latency.
 
-Every `BLOCK`/`AUTH` row in the recent-decisions feed (and every pending card) carries a one-line
-human explanation, and its reason codes are individually glossed with a hover tooltip.
+Every `BLOCK`/`AUTH` row in the recent-decisions feed (and every pending card) leads with a one-line
+human explanation, with its reason codes glossed underneath — both a hover tooltip and a small `?`
+next to each code that toggles the same gloss as ordinary text, so keyboard and touch users get it
+too, not only a mouse hovering. A row's explanation expands by click or tap as well as Enter/Space.
 
-Keyboard shortcuts (`/` to filter, `Esc` to clear it, arrow keys/Home/End to move the active feed
-row, Enter/Space to expand its explanation, `r` to refresh, `a`/`d` to act on the first pending item,
-`?` for the full list) work from anywhere on the page; a manual light/dark toggle persists per
-browser regardless of the OS theme, and the browser tab's favicon tints amber while an approval is
-pending.
+Keyboard shortcuts (`/` to filter, `Esc` to clear it or close whichever popover/panel is topmost,
+arrow keys/Home/End to move the active feed row, Enter/Space to expand its explanation, `r` to
+refresh, `a`/`d` to act on the first pending item, `?` for the full list) work from anywhere on the
+page; a manual light/dark toggle persists per browser regardless of the OS theme, and the browser
+tab's favicon tints amber while an approval is pending.
 
 You can also switch Light/Balanced/Strict/Paranoid from the dashboard. It goes through the same
-gate as `doberman mode`: raising applies immediately, and lowering prompts for the same possession
-factor; with neither enrolled it fails closed. Every attempt lands in the same append-only
+gate as `doberman mode`: raising applies immediately with a single click; lowering restyles Save to
+a warning color and needs the same two-step arm-then-confirm gesture (a 5s countdown) as approving a
+pending action, plus the same possession factor; with neither enrolled it fails closed. Every attempt
+lands in the same append-only
 ledger (`doberman policy-history`).
 
 ### Run the demo
