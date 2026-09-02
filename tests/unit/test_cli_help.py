@@ -130,6 +130,21 @@ def test_dashboard_alias_is_hidden_from_root_help():
     assert root_command.commands["dashboard"].hidden is True
 
 
+def test_no_unlabeled_commands_panel_and_getting_started_leads():
+    """Every command has an explicit `rich_help_panel` (item 3) - the unlabeled
+    "Commands" panel Typer/Rich prints first is empty, so the first panel
+    actually rendered is "Getting started", not a grab-bag of groups."""
+    root_output = _normalize_help_output(
+        runner.invoke(app, ["--help"], env={"FORCE_COLOR": "1"}).output
+    )
+    assert "Getting started" in root_output
+    getting_started_idx = root_output.index("Getting started")
+    for later in ("Advanced", "2fa", "taint", "plugins"):
+        assert getting_started_idx < root_output.index(later), (
+            f"Getting started should render before {later!r}"
+        )
+
+
 def test_getting_started_panel_leads_with_setup_then_demo():
     """`setup` (the guided path) leads "Getting started", `demo` (the best
     onboarding asset) follows it - both ahead of doctor/install-hooks/update."""

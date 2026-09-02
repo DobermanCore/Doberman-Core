@@ -17,7 +17,7 @@ Day-to-day posture, status, and review commands.
 | `doberman message-tone [TONE]` | Show or set the AUTH challenge tone (human/technical). Cosmetic display only; it changes nothing about what is evaluated or logged. | `--path`/`-p` |
 | `doberman role enable-default` | Turn on the built-in, opt-in least-privilege default role. | `--path`/`-p` |
 | `doberman role disable-default` | Turn the default role off. A weaken, so it is gated. | `--path`/`-p` |
-| `doberman status` | Active role, mode, policy summary, hook install state, taint state, and recent decisions. | `--path`/`-p`, `--json` |
+| `doberman status` | Leads with a `Protected: yes` / `Protected: no - <reason>` headline, then active role, mode, policy summary, hook install state, taint state, and recent decisions. | `--path`/`-p`, `--json` |
 | `doberman doctor` | Read-only health self-check; exits non-zero if a critical check fails. | `--path`/`-p`, `--json` |
 | `doberman update` | Check PyPI for a newer Doberman and print the upgrade command (never installs). Off under `DO_NOT_TRACK`/`CI`/`DOBERMAN_UPDATE_CHECK=off`. | — |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
@@ -33,7 +33,7 @@ Day-to-day posture, status, and review commands.
 | `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
 | `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
-| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host. Exits non-zero if the closing doctor pass finds a critical. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable), `--path`/`-p`, `--dry-run` |
+| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host and ask for telemetry consent. Exits non-zero (`-- Setup incomplete --`) if the closing doctor pass finds a critical; a host-kind-free run (mcp/openclaw only) prints `-- Setup pending --` and still exits `0`. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable), `--path`/`-p`, `--dry-run` |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
 | `doberman telemetry off` | Opt out after one final best-effort disabled event. | none |
 | `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches. | none |
@@ -178,7 +178,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `egress-velocity` | `2` | Unknown knob, missing value, or a non-positive value. |
 | `egress-velocity` | `1` | Threshold change denied by the gate. |
 | `doctor` | `1` | One or more critical checks failed. |
-| `setup` | `1` | The closing doctor pass found a critical (e.g. hooks call `doberman`, which is not on PATH) — printed as `-- Setup incomplete --`, never `complete`. |
+| `setup` | `1` | The closing doctor pass found a critical (e.g. hooks call `doberman`, which is not on PATH) — printed as `-- Setup incomplete --`, never `complete`. A run that only wired `mcp`/`openclaw` (no hooks-based host) prints `-- Setup pending --` instead and still exits `0` — that is not an error, just nothing running yet. |
 | `password set` | `1` | Passwords did not match, or enrollment failed. |
 | `2fa setup` | `1` | TOTP enrollment failed. |
 | `2fa remove` | `1` | Not enrolled, confirmation declined, or unenroll failed. |

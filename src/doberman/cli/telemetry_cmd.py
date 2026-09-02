@@ -41,25 +41,34 @@ def _subcommand_callback(group: str):
 
 def register_cli_telemetry(root_app: typer.Typer, *sub_apps: typer.Typer) -> None:
     """Register the telemetry group and nested command callbacks."""
-    root_app.add_typer(telemetry_app, name="telemetry")
+    root_app.add_typer(telemetry_app, name="telemetry", rich_help_panel="Advanced")
     for group, sub_app in zip(_NESTED_GROUPS, sub_apps, strict=True):
         sub_app.callback()(_subcommand_callback(group))
 
 
+#: Reused verbatim so the explanation reads the same whether or not a question
+#: follows it (``--yes`` never asks, but still says what telemetry sends).
+TELEMETRY_EXPLANATION = (
+    "Counts and command names only. Never paths, prompts, secrets, or reason payloads. "
+    "See docs/TELEMETRY.md."
+)
+
+
 def configure_setup_consent(non_interactive: bool) -> None:
-    """Ask the setup-only consent question; ``--yes`` keeps the default (on) and prints the notice."""
+    """Ask the setup-only consent question; ``--yes`` keeps the default (on) and prints the notice.
+
+    The caller is expected to have already printed a section header (e.g.
+    ``_section("Telemetry")``) — this only prints the one-line explanation and,
+    when interactive, asks the question.
+    """
     from doberman import telemetry
 
+    typer.echo(TELEMETRY_EXPLANATION)
     if non_interactive:
         notice = telemetry.first_run_notice()
         if notice:
             typer.echo(notice, err=True)
         return
-    typer.echo("")
-    typer.echo(
-        "Counts and command names only. Never paths, prompts, secrets, or reason payloads. "
-        "See docs/TELEMETRY.md."
-    )
     if typer.confirm("Send anonymous usage stats to help improve Doberman?", default=True):
         telemetry.enable()
     else:

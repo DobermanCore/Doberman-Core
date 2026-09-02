@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from doberman.policy.modes import SecurityMode
+from doberman.render import wrap_detail
 
 #: One-line description for each mode shown during the setup wizard.
 MODE_DESCRIPTIONS: dict[SecurityMode, str] = {
@@ -44,22 +45,21 @@ class Host:
     key: str  # "claude" | "codex" | "mcp" | "openclaw"
     label: str
     kind: str  # "hooks" | "mcp" | "plugin"
-    restart_hint: str  # printed in the summary for "hooks"-kind hosts only
 
 
-#: Hosts the wizard offers, in menu/wiring order. ``restart_hint`` is only ever
-#: shown for "hooks"-kind hosts (claude, codex); mcp/openclaw print their own
-#: one-line pointers during per-host wiring instead.
+#: Hosts the wizard offers, in menu/wiring order. The generic "Hooks written.
+#: Doberman activates when you restart your session." summary line covers the
+#: restart instruction for every "hooks"-kind host; mcp/openclaw print their
+#: own one-line pointers during per-host wiring instead.
 HOSTS: tuple[Host, ...] = (
-    Host("claude", "Claude Code (hooks)", "hooks", "Restart your Claude Code session."),
-    Host("codex", "Codex CLI (hooks)", "hooks", "Restart your Codex CLI session."),
+    Host("claude", "Claude Code (hooks)", "hooks"),
+    Host("codex", "Codex CLI (hooks)", "hooks"),
     Host(
         "mcp",
         "Cursor / Claude Desktop / other MCP agent (proxy: doberman serve)",
         "mcp",
-        "",
     ),
-    Host("openclaw", "OpenClaw (plugin hook)", "plugin", ""),
+    Host("openclaw", "OpenClaw (plugin hook)", "plugin"),
 )
 
 
@@ -152,10 +152,18 @@ def parse_host_choice(raw: str, detected: set[str]) -> list[str]:
 
 
 def mode_menu_lines() -> list[str]:
-    """Return formatted menu lines for the four security modes."""
+    """Return formatted menu lines for the four security modes.
+
+    A description too long for the terminal (the ``strict`` one routinely is)
+    wraps with a hanging indent, so continuation lines land under the
+    description column rather than at the left margin.
+    """
     lines: list[str] = []
     for i, mode in enumerate(SecurityMode, start=1):
-        lines.append(f"  {i}) {mode.value:<10} {MODE_DESCRIPTIONS[mode]}")
+        prefix = f"  {i}) {mode.value:<10} "
+        wrapped = wrap_detail(MODE_DESCRIPTIONS[mode], indent=len(prefix))
+        lines.append(prefix + wrapped[0][len(prefix) :])
+        lines.extend(wrapped[1:])
     return lines
 
 

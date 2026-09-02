@@ -164,7 +164,12 @@ def test_doctor_config_corrupt_fails_closed(tmp_path):
     result = runner.invoke(app, ["doctor", "--path", root])
     assert result.exit_code == 1
     assert "[FAIL] Config:" in result.stdout
-    assert "failed to load" in result.stdout
+    # The full detail embeds this test's (possibly very long, environment-
+    # dependent) tmp_path, so the wrapped output can legitimately put "failed"
+    # and "to load" on different physical lines - compare whitespace-
+    # normalized instead of pinning it to one line.
+    normalized = " ".join(result.stdout.split())
+    assert "failed to load" in normalized
 
 
 def test_doctor_db_missing_warns_but_passes(tmp_path):

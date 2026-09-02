@@ -256,6 +256,56 @@ def test_status_text_has_blank_line_section_breaks(tmp_path):
     assert "\n\nRecent decisions:" in result.stdout
 
 
+# ---------------------------------------------------------------------------
+# Headline verdict (item 9)
+# ---------------------------------------------------------------------------
+
+
+def test_status_headline_protected_no_when_nothing_installed(tmp_path, monkeypatch):
+    # The "global" scope reads the real machine's `~/.claude/settings.json`,
+    # which this dev box may have genuinely wired - force every scope to
+    # "not installed" so this assertion is deterministic regardless of host.
+    monkeypatch.setattr(
+        cli_main,
+        "_hook_install_states",
+        lambda path: [("project", "x", False), ("global", "y", False), ("local", "z", False)],
+    )
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[0] == "Protected: no - no hooks installed for any host (run `doberman setup`)"
+
+
+def test_status_headline_protected_yes_when_installed_and_on_path(tmp_path, monkeypatch):
+    import shutil
+
+    root = str(tmp_path)
+    local_path = resolve_settings_path("local", root)
+    write_settings(local_path, merge_doberman_hooks({}))
+    monkeypatch.setattr(
+        shutil, "which", lambda name, *a, **k: "/venv/bin/doberman" if name == "doberman" else None
+    )
+
+    result = runner.invoke(app, ["status", "--path", root])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[0] == "Protected: yes"
+
+
+def test_status_headline_protected_no_when_installed_but_not_on_path(tmp_path, monkeypatch):
+    import shutil
+
+    root = str(tmp_path)
+    local_path = resolve_settings_path("local", root)
+    write_settings(local_path, merge_doberman_hooks({}))
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: None)
+
+    result = runner.invoke(app, ["status", "--path", root])
+    assert result.exit_code == 0, result.output
+    first_line = result.stdout.splitlines()[0]
+    assert first_line.startswith("Protected: no - ")
+    assert "not on PATH" in first_line
+
+
 def test_status_never_leaks_enrolled_secret_in_either_view(tmp_path):
     """A synthetic TOTP secret seeded into state must never appear in text or JSON."""
     totp.enroll()

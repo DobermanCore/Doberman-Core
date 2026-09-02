@@ -49,10 +49,10 @@ command), see the [PATH appendix](#appendix-a-stale-doberman-on-path). Maintaine
 
 One command does the whole job on any host. An interactive wizard detects which agents you have
 installed (Claude Code, Codex CLI, an MCP client, OpenClaw), asks which ones to guard, picks your
-security mode, asks whether to send anonymous usage stats, tunes your guardrails, and wires each
-chosen host — finishing with a doctor pass and, if you wired a hooks-based host (Claude Code or
-Codex), an offer to run a scripted attack through the real engine right there so you can watch it
-work:
+security mode, tunes your guardrails, and wires each chosen host, then asks whether to send
+anonymous usage stats — finishing with a doctor pass and, if you wired a hooks-based host (Claude
+Code or Codex), an offer to run a scripted attack through the real engine right there so you can
+watch it work:
 
 ```bash
 doberman setup
@@ -70,9 +70,12 @@ preference weights, and every file it would write, with nothing persisted (mirro
 first, and with `--yes` it prints the exact path before writing. Either way, basic protection works
 immediately. The closing doctor pass is not cosmetic: if it finds a critical (most commonly the
 `doberman` command not being on PATH yet), the wizard prints `-- Setup incomplete --` and exits `1`
-instead of claiming success — re-run `doberman doctor` for the fix, then `doberman setup` again.
-When the wizard finishes, [set a possession factor](#4-set-a-password-and-2fa) — it's the first
-line of `doberman setup`'s own next steps.
+instead of claiming success — re-run `doberman doctor` for the fix, then `doberman setup` again. A
+run that only wired `mcp` and/or `openclaw` (no hooks-based host) prints `-- Setup pending --`
+instead of `complete` and exits `0` — nothing runs yet until you paste the printed block into your
+client and restart it, so the closing "verify it's live" line points at that manual step rather
+than claiming the hooks are already active. When the wizard finishes, [set a possession
+factor](#4-set-a-password-and-2fa) — it's the first line of `doberman setup`'s own next steps.
 
 On a different host, or want to see exactly what gets wired? The next section covers each path by
 hand.
@@ -188,8 +191,10 @@ is a hard `deny` in every mode, even light.
 
 Both handlers fail closed and stay import-light, so they add minimal latency to each call. Every
 decision lands in the same local, redacted history: `doberman log` shows PreToolUse AUTH/BLOCK
-outcomes alongside PostToolUse ones, and `doberman status` reports the installed version, which
-settings file(s) carry the hooks, and the last five decisions.
+outcomes alongside PostToolUse ones, and `doberman status` leads with a one-line `Protected: yes`
+/ `Protected: no - <reason>` verdict (hooks installed for at least one host and `doberman`
+resolvable on PATH), then reports the installed version, which settings file(s) carry the hooks,
+and the last five decisions.
 
 **Doberman protects its own hooks.** Once installed, the agent can't quietly remove them. A write
 or edit to `.claude/settings.json` is blocked, and other `.claude/` changes require

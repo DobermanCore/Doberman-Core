@@ -172,10 +172,26 @@ def test_yes_refuses_to_lower_mode_without_prompting(tmp_path: Path) -> None:
     assert "[y/N]" not in result.output
     assert "Reason:" not in result.output
     assert "not lowered" in result.output
-    assert "Mode:       balanced (requested light; not lowered)" in result.output
+    assert (
+        "Mode:       balanced (requested light; not lowered - see 'doberman mode')" in result.output
+    )
     assert load_mode(str(tmp_path)) == "balanced"
     prefs = load_preferences(str(tmp_path))
     assert prefs.confidentiality == pytest.approx(0.5)
+
+
+def test_yes_lowering_refusal_survives_2_dev_null(tmp_path: Path) -> None:
+    """The refusal must be on real stdout - `2>/dev/null` cannot hide it (item 11).
+    ``result.stdout`` is real stdout only (Click separates it from stderr), so
+    this is exactly what a caller piping stderr to /dev/null would still see."""
+    first = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+
+    result = runner.invoke(app, ["setup", "--yes", "--mode", "light", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert (
+        "Mode:       balanced (requested light; not lowered - see 'doberman mode')" in result.stdout
+    )
 
 
 def test_yes_raise_over_existing_policy_applies_free(tmp_path: Path) -> None:
@@ -234,12 +250,14 @@ def test_interactive_numeric_mode_choice(tmp_path: Path) -> None:
 
 def test_interactive_tune_prefs(tmp_path: Path) -> None:
     """Tuning prefs in interactive mode persists custom weights."""
-    # Input: mode=balanced, tune=y, confidentiality=0.9, others keep defaults, global=n
+    # Input order: hosts, mode, tune=y, confidentiality=0.9 (rest keep defaults),
+    # claude scope=n, telemetry=n (Telemetry now prompts after hosts are wired),
+    # demo=n.
     weight_inputs = "\n".join(["0.9", "", "", ""])  # conf=0.9, rest = keep default
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input=f"\nbalanced\nn\ny\n{weight_inputs}\nn\nn\n",
+        input=f"\nbalanced\ny\n{weight_inputs}\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     prefs = load_preferences(str(tmp_path))
@@ -257,6 +275,26 @@ def test_setup_reprompts_on_bad_mode(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "unknown mode" in result.output
     assert "try again" in result.output
+
+
+def test_demo_prompt_eof_never_fails_a_succeeded_setup(tmp_path: Path) -> None:
+    """stdin closing right at the optional closing demo prompt (item 2) must
+    never turn a succeeded setup into a failure - it degrades to the same
+    static demo pointer `--yes` prints, and stays the last line."""
+    # Input order: hosts, mode, tune=n, claude scope=n, telemetry=n - then
+    # stdin runs out exactly at the demo confirm (no trailing answer for it).
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\nn",
+    )
+    assert result.exit_code == 0, result.output
+    # The confirm's own prompt text was echoed with no trailing newline before
+    # stdin ran out, so the fallback pointer lands glued to it on the same
+    # physical line - assert the output *ends with* it rather than requiring
+    # a standalone line.
+    assert result.output.rstrip("\n").endswith("See it work: `doberman demo --fast`")
+    assert "BLOCK" not in result.output
 
 
 def test_interactive_demo_offer_declined_by_default(tmp_path: Path) -> None:
@@ -305,7 +343,7 @@ def test_setup_explains_each_tuned_dimension(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input=f"\nbalanced\nn\ny\n{weight_inputs}\nn\nn\n",
+        input=f"\nbalanced\ny\n{weight_inputs}\nn\nn\nn\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -353,10 +391,12 @@ def test_interactive_telemetry_yes_persists_and_emits_setup_event(
         "capture",
         lambda event, properties=None, **_kwargs: events.append((event, properties)),
     )
+    # Input order: hosts, mode, tune=n, claude scope=n, telemetry=y (Telemetry
+    # now prompts after hosts are wired), demo=n.
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="\nbalanced\ny\nn\nn\nn\n",
+        input="\nbalanced\nn\nn\ny\nn\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -379,10 +419,12 @@ def test_interactive_telemetry_yes_persists_and_emits_setup_event(
 def test_interactive_telemetry_default_yes_records_the_choice(tmp_path: Path) -> None:
     from doberman import telemetry
 
+    # Input order: hosts, mode, tune=n, claude scope=n, telemetry="" (accept
+    # the Y default), demo=n.
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="\nbalanced\n\nn\nn\nn\n",
+        input="\nbalanced\nn\nn\n\nn\n",
     )
     assert result.exit_code == 0, result.output
     state = telemetry.status()
@@ -500,8 +542,10 @@ def test_yes_host_mcp_doctor_scoped_and_shows_canary(tmp_path: Path) -> None:
     assert "  - Host hooks" not in result.output
     assert "  - Hook command" not in result.output
     assert "hooks n/a" in result.output
+    normalized = " ".join(result.output.split())
     assert (
-        "Verify it's live: ask your agent to read .env and confirm it is blocked." in result.output
+        "After you paste the block and restart your client: ask your agent to read "
+        ".env and confirm it is blocked." in normalized
     )
     assert "activates when you restart" not in result.output
 
@@ -514,6 +558,42 @@ def test_yes_host_openclaw_doctor_scoped(tmp_path: Path) -> None:
     assert "  - Hook command" not in result.output
     assert "hooks n/a" in result.output
     assert "activates when you restart" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# "Setup pending" (item 1 + 13): mcp/openclaw-only never claims "complete"
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_only_header_is_pending_not_complete(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "-- Setup pending --" in result.output
+    assert "-- Setup complete --" not in result.output
+    assert "Hooks written." not in result.output
+
+
+def test_openclaw_only_header_is_pending_not_complete(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--host", "openclaw", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "-- Setup pending --" in result.output
+    assert "-- Setup complete --" not in result.output
+    assert "Hooks written." not in result.output
+
+
+def test_mcp_only_still_offers_the_demo_pointer(tmp_path: Path) -> None:
+    """The demo runs in-process, so it's valid to offer on the pending path too (item 13)."""
+    result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "See it work: `doberman demo --fast`" in result.output
+
+
+def test_claude_host_still_gets_setup_complete(tmp_path: Path) -> None:
+    """A hook-kind host wired (claude) still reads as complete, not pending."""
+    result = runner.invoke(app, ["setup", "--yes", "--host", "claude", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "-- Setup complete --" in result.output
+    assert "-- Setup pending --" not in result.output
 
 
 def test_invalid_host_exits_2_naming_valid_hosts(tmp_path: Path) -> None:
@@ -623,10 +703,21 @@ def test_yes_honest_incomplete_when_hook_command_critical(
     assert "-- Setup incomplete --" in result.output
     assert "-- Setup complete --" not in result.output
     assert "Hooks written. Doberman activates when you restart your session." not in result.output
-    # Remediation and next steps still print.
+    # Remediation and next steps still print - but nothing else (item 5): the
+    # incomplete path ends on the remedy, not the success epilogue.
     assert "Hook command" in result.output
     assert "Check health:" in result.output
-    assert "Change your mind:" in result.output
+    assert "Docs:" in result.output
+    assert "Telemetry:" not in result.output
+    assert "Next step:" not in result.output
+    assert "Change your mind:" not in result.output
+    assert "Docs:" in result.output
+    docs_idx = result.output.index("Docs:")
+    health_idx = result.output.index("Check health:")
+    assert docs_idx < health_idx
+    normalized = " ".join(result.output.split())
+    assert "Not protecting this repo yet: Hook command - " in normalized
+    assert "Fix it, then run `doberman doctor` to confirm." in normalized
 
 
 def test_interactive_honest_incomplete_when_hook_command_critical(
@@ -734,6 +825,28 @@ def test_dry_run_mcp_host_has_no_file_to_write(tmp_path: Path) -> None:
     assert not (tmp_path / ".claude").exists()
 
 
+def test_dry_run_writes_no_telemetry_state_and_previews_the_consent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--dry-run` means write nothing - telemetry state (distinct id,
+    notice-shown) is a write like any other, so it must stay untouched, and the
+    dry-run preview gets its own line for it (item 12)."""
+    import os
+
+    from doberman.storage.device_metrics import HOME_ENV
+
+    home = os.environ[HOME_ENV]
+    before = sorted(Path(home).rglob("*")) if Path(home).exists() else []
+
+    result = runner.invoke(app, ["setup", "--yes", "--dry-run", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "[dry-run] would record telemetry consent:" in result.output
+    after = sorted(Path(home).rglob("*")) if Path(home).exists() else []
+    assert after == before, f"dry-run wrote files under HOME: {set(after) - set(before)}"
+    assert not (Path(home) / ".doberman" / "telemetry.json").exists()
+
+
 # ---------------------------------------------------------------------------
 # --global confirmation gate (item 5)
 # ---------------------------------------------------------------------------
@@ -800,7 +913,13 @@ def test_global_interactive_declined_falls_back_to_project_scope(
 def test_yes_summary_always_shows_telemetry_on_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # `is_enabled()` also forces off under CI/DO_NOT_TRACK (telemetry.py's
+    # `_forced_off_reasons`) - clear every kill switch, not just the one this
+    # test is nominally about, so this is deterministic on CI too (CI sets
+    # `CI=true`, which previously made this "on" assertion fail there).
     monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert (
@@ -820,6 +939,8 @@ def test_telemetry_summary_line_shows_even_after_help_already_marked_the_notice_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
     from doberman import telemetry
 
     telemetry.first_run_notice()  # simulate: a user who read `--help` first
@@ -836,7 +957,10 @@ def test_telemetry_summary_line_shows_even_after_help_already_marked_the_notice_
 def test_summary_ends_with_a_docs_pointer(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert "Docs: https://github.com/DobermanCore/Doberman-Core/blob/main/docs/SETUP.md" in result.output
+    assert (
+        "Docs: https://github.com/DobermanCore/Doberman-Core/blob/main/docs/SETUP.md"
+        in result.output
+    )
 
 
 def test_strict_mode_glosses_trifecta_actions(tmp_path: Path) -> None:
@@ -846,7 +970,11 @@ def test_strict_mode_glosses_trifecta_actions(tmp_path: Path) -> None:
         input="\n3\nn\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
-    assert "sensitive data + untrusted content + external destination" in result.output
+    # The strict description wraps onto a continuation line (item 6); the
+    # phrase itself may straddle that wrap point, so compare whitespace-
+    # normalized rather than pinning it to a single physical line.
+    normalized = " ".join(result.output.split())
+    assert "sensitive data + untrusted content + external destination" in normalized
 
 
 def test_setup_help_has_no_raw_rst_double_backticks() -> None:
@@ -959,6 +1087,20 @@ def test_mode_menu_lines_covers_all_modes() -> None:
     from doberman.policy.modes import SecurityMode
 
     lines = mode_menu_lines()
-    assert len(lines) == len(list(SecurityMode))
+    # A long description (e.g. "strict") wraps into more than one line, so
+    # this is a floor, not an exact count.
+    assert len(lines) >= len(list(SecurityMode))
     for mode in SecurityMode:
         assert any(mode.value in line for line in lines)
+
+
+def test_mode_menu_lines_wraps_long_descriptions_with_a_hanging_indent() -> None:
+    """The `strict` description overflows a single line; its continuation(s)
+    indent to the description column, never to column 0."""
+    from doberman.hosthooks.setup import mode_menu_lines
+
+    lines = mode_menu_lines()
+    strict_idx = next(i for i, line in enumerate(lines) if line.lstrip().startswith("3)"))
+    next_line = lines[strict_idx + 1]
+    assert next_line.startswith("                ")  # hanging indent, not column 0
+    assert next_line.strip()
