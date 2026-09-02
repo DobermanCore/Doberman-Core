@@ -78,6 +78,7 @@ from starlette.routing import Route
 from doberman.branding import DASH_MARK_PNG_B64
 from doberman.config import load_mode
 from doberman.dash.stats import build_stats, reason_codes
+from doberman.explain import REASON_DESCRIPTIONS, template_explanation
 from doberman.policy.drift import apply_mode_change
 from doberman.policy.modes import SecurityMode
 from doberman.storage import approvals
@@ -106,11 +107,11 @@ _HTML_SHELL = """<!doctype html>
   :root {
     color-scheme: dark light;
     --ink-0: oklch(13% 0.008 55);
-    --ink-1: oklch(16% 0.009 55);
-    --ink-2: oklch(19.5% 0.010 55);
-    --ink-3: oklch(25% 0.012 55);
-    --rule: oklch(34% 0.012 55);
-    --rule-2: oklch(28% 0.011 55);
+    --ink-1: oklch(22% 0.011 55);
+    --ink-2: oklch(27% 0.012 55);
+    --ink-3: oklch(33% 0.013 55);
+    --rule: oklch(56% 0.016 55);
+    --rule-2: oklch(52% 0.016 55);
     --fg: oklch(96% 0 0);
     --fg-2: oklch(82% 0.004 55);
     --fg-3: oklch(64% 0.006 55);
@@ -119,13 +120,13 @@ _HTML_SHELL = """<!doctype html>
     --mono: ui-monospace, "SF Mono", Consolas, monospace;
     --font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --pass: oklch(76% 0.16 152);
-    --pass-bg: oklch(76% 0.16 152 / 14%);
+    --pass-bg: oklch(76% 0.16 152 / 10%);
     --auth: oklch(82% 0.155 78);
-    --auth-bg: oklch(82% 0.155 78 / 14%);
+    --auth-bg: oklch(82% 0.155 78 / 10%);
     --block: oklch(66% 0.205 26);
-    --block-bg: oklch(66% 0.205 26 / 14%);
+    --block-bg: oklch(66% 0.205 26 / 10%);
     --neutral: var(--fg-3);
-    --neutral-bg: oklch(64% 0.006 55 / 14%);
+    --neutral-bg: oklch(64% 0.006 55 / 10%);
     --r-sm: 8px;
     --r: 10px;
     --r-lg: 12px;
@@ -141,9 +142,9 @@ _HTML_SHELL = """<!doctype html>
   }
   @media (prefers-color-scheme: light) {
     :root {
-      --ink-0: #f7f7f8; --ink-1: #ffffff; --ink-2: #eef0f2; --ink-3: #e2e5e9;
-      --rule: #c7ccd2; --rule-2: #dde1e6;
-      --fg: #15181d; --fg-2: #3a4048; --fg-3: #5b6572;
+      --ink-0: #eaecee; --ink-1: #ffffff; --ink-2: #dfe2e5; --ink-3: #d2d6da;
+      --rule: #707478; --rule-2: #7c8084;
+      --fg: #15181d; --fg-2: #2f353c; --fg-3: #48515b;
       --tan: #6b4a1f; --tan-hi: #52380f;
       --pass: #116329;  --pass-bg: rgba(17, 99, 41, .12);
       --auth: #7d5200;  --auth-bg: rgba(125, 82, 0, .12);
@@ -157,9 +158,9 @@ _HTML_SHELL = """<!doctype html>
      an explicit choice always wins over the OS preference in both
      directions. No attribute at all (the default) leaves the OS in charge. */
   :root[data-theme="light"] {
-    --ink-0: #f7f7f8; --ink-1: #ffffff; --ink-2: #eef0f2; --ink-3: #e2e5e9;
-    --rule: #c7ccd2; --rule-2: #dde1e6;
-    --fg: #15181d; --fg-2: #3a4048; --fg-3: #5b6572;
+    --ink-0: #eaecee; --ink-1: #ffffff; --ink-2: #dfe2e5; --ink-3: #d2d6da;
+    --rule: #707478; --rule-2: #7c8084;
+    --fg: #15181d; --fg-2: #2f353c; --fg-3: #48515b;
     --tan: #6b4a1f; --tan-hi: #52380f;
     --pass: #116329;  --pass-bg: rgba(17, 99, 41, .12);
     --auth: #7d5200;  --auth-bg: rgba(125, 82, 0, .12);
@@ -168,15 +169,15 @@ _HTML_SHELL = """<!doctype html>
     --shadow-card: 0 6px 20px -10px oklch(0% 0 0 / 18%);
   }
   :root[data-theme="dark"] {
-    --ink-0: oklch(13% 0.008 55); --ink-1: oklch(16% 0.009 55);
-    --ink-2: oklch(19.5% 0.010 55); --ink-3: oklch(25% 0.012 55);
-    --rule: oklch(34% 0.012 55); --rule-2: oklch(28% 0.011 55);
+    --ink-0: oklch(13% 0.008 55); --ink-1: oklch(22% 0.011 55);
+    --ink-2: oklch(27% 0.012 55); --ink-3: oklch(33% 0.013 55);
+    --rule: oklch(56% 0.016 55); --rule-2: oklch(52% 0.016 55);
     --fg: oklch(96% 0 0); --fg-2: oklch(82% 0.004 55); --fg-3: oklch(64% 0.006 55);
     --tan: oklch(74% 0.140 58); --tan-hi: oklch(84% 0.150 64);
-    --pass: oklch(76% 0.16 152); --pass-bg: oklch(76% 0.16 152 / 14%);
-    --auth: oklch(82% 0.155 78); --auth-bg: oklch(82% 0.155 78 / 14%);
-    --block: oklch(66% 0.205 26); --block-bg: oklch(66% 0.205 26 / 14%);
-    --neutral: var(--fg-3); --neutral-bg: oklch(64% 0.006 55 / 14%);
+    --pass: oklch(76% 0.16 152); --pass-bg: oklch(76% 0.16 152 / 10%);
+    --auth: oklch(82% 0.155 78); --auth-bg: oklch(82% 0.155 78 / 10%);
+    --block: oklch(66% 0.205 26); --block-bg: oklch(66% 0.205 26 / 10%);
+    --neutral: var(--fg-3); --neutral-bg: oklch(64% 0.006 55 / 10%);
     --shadow-card: 0 6px 20px -10px oklch(0% 0 0 / 55%);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -227,6 +228,12 @@ _HTML_SHELL = """<!doctype html>
     border-left: 1px solid var(--rule);
   }
   .topbar-right { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  /* Three visually separated clusters - status / posture / utilities - so the
+     topbar reads as grouped controls instead of one long undifferentiated row. */
+  .topbar-group { display: inline-flex; align-items: center; gap: .6rem; }
+  .topbar-group + .topbar-group {
+    padding-left: .9rem; margin-left: .3rem; border-left: 1px solid var(--rule-2);
+  }
   .chip {
     display: inline-flex; align-items: center; gap: .4rem;
     font-family: var(--mono); font-size: var(--fs-1); letter-spacing: .02em;
@@ -354,18 +361,31 @@ _HTML_SHELL = """<!doctype html>
     border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--ink-1);
   }
   #feed li {
-    display: flex; align-items: baseline; gap: .5rem;
     padding: .6rem 1.1rem; border-bottom: 1px solid var(--rule-2);
     font-size: var(--fs-2); font-family: var(--mono);
     transition: background-color var(--d);
   }
+  #feed li .row-main { display: flex; align-items: baseline; gap: .5rem; }
   /* The filter hides rows with the `hidden` attribute; an author `display`
      on the same element outranks the UA's [hidden] rule, so restate it here
      (the mode form had exactly this bug). */
   #feed li[hidden] { display: none; }
   #feed li:last-child { border-bottom: none; }
   #feed li:hover { background: var(--ink-2); }
+  /* Roving-focus target for #feed's aria-activedescendant (Up/Down/Home/End) -
+     an outline (not another background alone) so it reads distinctly from the
+     plain :hover tint above. */
+  #feed li.active { background: var(--ink-2); outline: 1px solid var(--tan-hi); outline-offset: -1px; }
   #feed li .detail { color: var(--fg-3); overflow-wrap: anywhere; }
+  #feed li .detail .reason-code[title] { text-decoration: underline dotted; text-underline-offset: 2px; }
+  /* Second line, body face (not mono) - one line by default, Enter/Space
+     expands it (see the feed keydown handler) since some explanations run
+     well past a single line. */
+  #feed li .row-explanation {
+    margin-top: .3rem; color: var(--fg-2); font-family: var(--font); font-size: var(--fs-2);
+    line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #feed li .row-explanation.expanded { white-space: normal; max-width: 62ch; }
   .feed-note {
     padding: .6rem 1.1rem; color: var(--fg-3); font-family: var(--mono); font-size: var(--fs-1);
     border-top: 1px solid var(--rule-2);
@@ -381,9 +401,19 @@ _HTML_SHELL = """<!doctype html>
     display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
     margin: -.2rem 0 1.2rem; font-size: var(--fs-2);
   }
-  #mode-form .mode-form-note {
-    flex-basis: 100%; margin: 0 0 .2rem; color: var(--fg-3); font-size: var(--fs-1);
+  /* >=641px: an anchored popover under the posture cluster (positioned in JS -
+     see positionModeForm - right-aligned to #mode-edit-btn) instead of an
+     inline band, with the surface/shadow of a card. <=640px keeps the
+     full-width band below (see the max-width:640px block). */
+  @media (min-width: 641px) {
+    #mode-form:not([hidden]) {
+      position: fixed; width: 28rem; max-width: calc(100vw - 2rem);
+      padding: 1rem 1.25rem; margin: 0; border-radius: var(--r-lg);
+      background: var(--ink-1); box-shadow: var(--shadow-card); z-index: 15;
+    }
   }
+  #mode-hint { flex-basis: 100%; margin: -.15rem 0 .2rem; color: var(--fg-3); font-size: var(--fs-1); }
+  #mode-hint:empty { display: none; }
   #mode-form select, #mode-form input {
     font-size: var(--fs-2); padding: .35rem .55rem;
     background: var(--ink-2); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px;
@@ -393,7 +423,7 @@ _HTML_SHELL = """<!doctype html>
   #mode-form button {
     font-size: var(--fs-2); font-weight: 600; padding: .35rem .85rem;
     border: 1px solid var(--rule); border-radius: 4px; background: transparent;
-    color: inherit; min-height: auto;
+    color: inherit;
   }
   #mode-save-btn { border-color: var(--pass); color: var(--pass); }
   #mode-save-btn:hover { background: var(--pass-bg); }
@@ -408,18 +438,26 @@ _HTML_SHELL = """<!doctype html>
   #shortcuts-panel:focus { outline: none; }
   #feed-count { color: var(--fg-3); font-size: var(--fs-1); align-self: center; }
   .row-done { color: var(--pass); font-weight: 600; margin-top: .4rem; }
-  #shortcuts-panel h2 { margin-top: 0; }
+  /* A styled <p>, not a heading - this panel is a transient overlay, not a
+     section of the page outline. */
+  #shortcuts-panel .panel-title {
+    font-family: var(--mono); font-size: var(--fs-1); font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--fg-3);
+    margin: 0 0 .6rem;
+  }
   #shortcuts-panel dl { display: grid; grid-template-columns: auto 1fr; gap: .3rem .8rem; margin: .5rem 0 .8rem; }
   #shortcuts-panel dt { font-family: var(--mono); color: var(--tan-hi); }
   #shortcuts-panel dd { color: var(--fg-2); }
   @media (max-width: 640px) {
     .topbar { flex-direction: column; align-items: flex-start; }
     .topbar-right { width: 100%; }
+    /* Wrapped groups would otherwise show a stray leading divider. */
+    .topbar-group + .topbar-group { border-left: none; padding-left: 0; margin-left: 0; }
     #mode-form:not([hidden]) { flex-direction: column; align-items: stretch; }
     #mode-form select, #mode-form input { width: 100%; }
     .mode-form-actions { width: 100%; }
     .mode-form-actions button { flex: 1 1 0; }
-    #feed li { flex-wrap: wrap; }
+    #feed li .row-main { flex-wrap: wrap; }
     #feed li .detail { flex-basis: 100%; }
     #pending-list .countdown { margin-left: 0; flex-basis: 100%; }
     .feed-toolbar { flex-direction: column; align-items: stretch; }
@@ -436,20 +474,26 @@ _HTML_SHELL = """<!doctype html>
       <span class="project">%%DASH_PROJECT_NAME%%</span>
     </div>
     <div class="topbar-right">
-      <span class="chip" id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></span>
-      <span class="badge badge-neutral" id="mode-badge">mode: -</span>
-      <button type="button" id="mode-edit-btn" aria-expanded="false" aria-controls="mode-form">change</button>
-      <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
-      <span class="status-pill ok" id="guard-status"><span class="pip" id="guard-pip" aria-hidden="true">●</span><span id="guard-label">ON GUARD</span></span>
-      <button type="button" id="theme-toggle-btn">Switch to light theme</button>
-      <button type="button" id="shortcuts-btn" aria-haspopup="true" aria-expanded="false">Shortcuts (?)</button>
+      <div class="topbar-group">
+        <span class="chip" id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></span>
+        <span class="status-pill ok" id="guard-status"><span class="pip" id="guard-pip" aria-hidden="true">●</span><span id="guard-label">ON GUARD</span></span>
+      </div>
+      <div class="topbar-group">
+        <span class="badge badge-neutral" id="mode-badge">mode: -</span>
+        <button type="button" id="mode-edit-btn" aria-expanded="false" aria-controls="mode-form">change</button>
+        <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
+      </div>
+      <div class="topbar-group">
+        <button type="button" id="theme-toggle-btn">Switch to light theme</button>
+        <button type="button" id="shortcuts-btn" aria-haspopup="true" aria-expanded="false">Shortcuts (?)</button>
+      </div>
     </div>
   </header>
   <main>
     <h1 class="sr-only">Doberman local dashboard</h1>
     <div id="mode-form" hidden>
-      <p class="mode-form-note">Raising is immediate; lowering needs your code.</p>
       <select id="mode-select" aria-label="Security mode"></select>
+      <p id="mode-hint" aria-live="polite"></p>
       <label class="sr-only" for="mode-code">2FA code or password, only needed to lower strictness</label>
       <input id="mode-code" type="password" autocomplete="off"
         placeholder="code (to lower strictness)">
@@ -478,25 +522,31 @@ _HTML_SHELL = """<!doctype html>
           <button type="button" class="filter-chip" data-verdict="AUTH" aria-pressed="false">AUTH</button>
           <button type="button" class="filter-chip" data-verdict="PASS" aria-pressed="false">PASS</button>
         </div>
+        <span id="feed-count" aria-live="polite"></span>
         <label class="sr-only" for="feed-filter">Filter recent decisions by text</label>
         <input type="search" id="feed-filter" placeholder="Filter (press / to focus)">
-        <span id="feed-count" aria-live="polite"></span>
       </div>
       <ul id="feed" role="log" tabindex="0" aria-label="Recent decisions"></ul>
       <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
-      <div id="feed-nomatch" class="empty-state" hidden>No decisions match this filter.</div>
+      <div id="feed-nomatch" class="empty-state" hidden>
+        No decisions match this filter.
+        <button type="button" id="feed-clear-filters-btn" class="retry-link">Clear filters</button>
+      </div>
       <div id="feed-truncated" class="feed-note" hidden>older rows not shown - see doberman log</div>
     </section>
   </main>
   <div id="shortcuts-panel" hidden role="region" aria-label="Keyboard shortcuts" tabindex="-1">
-    <h2>Shortcuts</h2>
+    <p class="panel-title">Shortcuts</p>
     <dl>
       <dt>/</dt><dd>Focus the decisions filter</dd>
+      <dt>&uarr; / &darr;</dt><dd>Move the active row in the decisions feed</dd>
+      <dt>Enter / Space</dt><dd>Expand or collapse the active row's explanation</dd>
+      <dt>Home / End</dt><dd>Jump to the first/last row in the feed</dd>
       <dt>r</dt><dd>Refresh stats + pending</dd>
       <dt>a</dt><dd>Arm Approve on the first pending item, then Enter to confirm</dd>
       <dt>d</dt><dd>Deny the first pending item</dd>
       <dt>?</dt><dd>Toggle this panel</dd>
-      <dt>Esc</dt><dd>Close this panel or the mode form</dd>
+      <dt>Esc</dt><dd>Clear the decisions filter, or close this panel or the mode form</dd>
     </dl>
     <button type="button" id="shortcuts-close-btn">Close</button>
   </div>
@@ -524,6 +574,21 @@ _HTML_SHELL = """<!doctype html>
         enforce: "badge badge-pass",
         monitor: "badge badge-auth",
         off: "badge badge-block"
+      };
+      // Plain-words gloss for a reason code (title="..." tooltip on the feed's
+      // reason-code spans) - the exact same dict doberman.explain.template_explanation
+      // uses server-side, interpolated once at render time so there is only one
+      // source of truth for these descriptions. A code missing here (a future
+      // ReasonCode) just renders with no title.
+      var REASON_DESCRIPTIONS = %%DASH_REASON_DESCRIPTIONS_JSON%%;
+      // Modes are always returned by /api/mode in strictness order (light ->
+      // paranoid); this labels each option and lets the raise/lower hint below
+      // be computed purely from array position, no hardcoded ordering logic.
+      var MODE_LABELS = {
+        light: "light - least strict",
+        balanced: "balanced - default",
+        strict: "strict - more strict",
+        paranoid: "paranoid - most strict"
       };
 
       var announcer = document.getElementById("announcer");
@@ -613,9 +678,15 @@ _HTML_SHELL = """<!doctype html>
       var modeCancelBtn = document.getElementById("mode-cancel-btn");
       var modeSuccessEl = document.getElementById("mode-success");
       var modeErrorEl = document.getElementById("mode-error");
+      var modeHintEl = document.getElementById("mode-hint");
       var modeEditing = false;
+      var modesOrder = [];
+      var currentModeName = null;
       var feedEl = document.getElementById("feed");
       var feedTruncatedEl = document.getElementById("feed-truncated");
+      var feedRowsEverTruncated = false;
+      var feedRowCounter = 0;
+      var activeFeedEntry = null;
       var MAX_FEED_ROWS = 200;
 
       // Recolor the mark amber on canvas once (offline, no network request)
@@ -700,7 +771,9 @@ _HTML_SHELL = """<!doctype html>
       function renderConnection() {
         var text, ok;
         if (conn.health === "unauthorized") {
-          ok = false; text = "not authorized - reopen the link printed by doberman dash";
+          ok = false;
+          text = "not authorized - reopen the link printed by doberman dash " +
+            "(the token lives only in the tab that opened it)";
         } else if (conn.health === "down") {
           ok = false; text = "not connected";
         } else if (conn.feed === "dropped") {
@@ -777,12 +850,24 @@ _HTML_SHELL = """<!doctype html>
         modeBadge.textContent = "mode: " + s.mode;
         enforcementBadge.textContent = "enforcement: " + s.enforcement;
         enforcementBadge.className = ENFORCEMENT_BADGE_CLASS[s.enforcement] || "badge badge-neutral";
+        currentModeName = s.mode;
         // Keep the (closed) mode selector's value in sync with reality - but
         // never while the user has the form open with an in-progress choice,
         // or a poll landing mid-edit would silently discard what they picked.
         if (!modeEditing && modeSelect.options.length) {
           modeSelect.value = s.mode;
         }
+        if (modeEditing) { updateModeHint(); }
+
+        // A visible freshness signal: when THIS browser last successfully
+        // refreshed, not a server timestamp - stats.py computes no such field.
+        var asOf = document.createElement("span");
+        asOf.className = "detail";
+        var now = new Date();
+        function pad2(n) { return n < 10 ? "0" + n : String(n); }
+        asOf.textContent = "updated " +
+          pad2(now.getHours()) + ":" + pad2(now.getMinutes()) + ":" + pad2(now.getSeconds());
+        statsEl.appendChild(asOf);
       }
 
       // Stats refresh on an interval, not just at page load - otherwise the
@@ -832,19 +917,52 @@ _HTML_SHELL = """<!doctype html>
         })
         .then(function (m) {
           modeSelect.textContent = "";
-          (m.modes || []).forEach(function (name) {
+          modesOrder = m.modes || [];
+          modesOrder.forEach(function (name) {
             var opt = document.createElement("option");
             opt.value = name;
-            opt.textContent = name;
+            opt.textContent = MODE_LABELS[name] || name;
             modeSelect.appendChild(opt);
           });
           modeSelect.value = m.mode;
+          currentModeName = m.mode;
         })
         .catch(function () {
           // No modes loaded -> leave the selector empty and the edit button
           // inert rather than let the user submit a change we can't populate.
           modeEditBtn.disabled = true;
         });
+
+      // Raise (a stricter mode = a later position in modesOrder) is always
+      // frictionless; lower needs a possession-factor code - purely a
+      // function of array position, so a future mode added to SecurityMode
+      // needs no change here.
+      function updateModeHint() {
+        var chosenIdx = modesOrder.indexOf(modeSelect.value);
+        var curIdx = modesOrder.indexOf(currentModeName);
+        if (chosenIdx === -1 || curIdx === -1 || chosenIdx === curIdx) {
+          modeHintEl.textContent = "";
+        } else if (chosenIdx > curIdx) {
+          modeHintEl.textContent = "Raise: applies immediately";
+        } else {
+          modeHintEl.textContent = "Lower: needs your 2FA code or password";
+        }
+      }
+      modeSelect.addEventListener("change", updateModeHint);
+
+      // >=640px: anchor the popover under #mode-edit-btn, right-aligned to it.
+      // <=640px: the CSS media query below switches it back to a full-width
+      // band, so no inline position is needed there.
+      function positionModeForm() {
+        if (window.matchMedia && window.matchMedia("(max-width: 640px)").matches) {
+          modeForm.style.top = "";
+          modeForm.style.right = "";
+          return;
+        }
+        var rect = modeEditBtn.getBoundingClientRect();
+        modeForm.style.top = (rect.bottom + 8) + "px";
+        modeForm.style.right = Math.max(8, window.innerWidth - rect.right) + "px";
+      }
 
       function openModeForm() {
         modeEditing = true;
@@ -853,6 +971,8 @@ _HTML_SHELL = """<!doctype html>
         modeCodeInput.value = "";
         modeForm.hidden = false;
         modeEditBtn.setAttribute("aria-expanded", "true");
+        positionModeForm();
+        updateModeHint();
         // Focus follows the disclosure: the next Tab must not land on the
         // theme/shortcuts buttons that sit between the trigger and the form.
         setTimeout(function () { modeSelect.focus(); }, 0);
@@ -865,6 +985,7 @@ _HTML_SHELL = """<!doctype html>
         modeCodeInput.value = "";
         modeErrorEl.textContent = "";
         modeSuccessEl.textContent = "";
+        modeHintEl.textContent = "";
         modeEditBtn.setAttribute("aria-expanded", "false");
         if (wasOpen) { modeEditBtn.focus(); }
       }
@@ -902,7 +1023,7 @@ _HTML_SHELL = """<!doctype html>
             // code) still gets the same visible acknowledgment as a gated
             // lower does - the save wasn't silently swallowed either way.
             modeSuccessEl.textContent = "Mode: " + result.data.mode + " - saved";
-            setTimeout(closeModeForm, 900);
+            setTimeout(closeModeForm, 2500);
           } else {
             // textContent only - never render a server error string as markup.
             modeErrorEl.textContent = (result.data && result.data.error) || "mode change failed";
@@ -928,11 +1049,15 @@ _HTML_SHELL = """<!doctype html>
         return isNaN(created) ? null : created + DASHBOARD_AUTHORITY_S * 1000;
       }
 
+      // Truthful about what happens at 0: the challenge MOVES to the
+      // terminal/GUI channel (DashboardPrompter raises PrompterUnavailableError
+      // at the timeout, it does not deny) - never say "auto-denies" here.
       function formatCountdown(msRemaining) {
         var totalSeconds = Math.max(0, Math.round(msRemaining / 1000));
         var m = Math.floor(totalSeconds / 60);
         var s = totalSeconds % 60;
-        return "auto-denies in " + m + ":" + (s < 10 ? "0" : "") + s + " if unanswered";
+        return "answerable here for " + m + ":" + (s < 10 ? "0" : "") + s +
+          ", then it moves to your terminal";
       }
 
       function tickCountdowns() {
@@ -946,7 +1071,7 @@ _HTML_SHELL = """<!doctype html>
           // Past the dashboard's authority horizon the challenge has fallen
           // through to the terminal/GUI channel: say so and stop offering
           // buttons that would only 409. The next poll removes the card.
-          node.textContent = "no longer answerable here - check your terminal";
+          node.textContent = "moved to your terminal - answer it there";
           var expiredCard = node.closest("li");
           if (expiredCard) {
             expiredCard.querySelectorAll("button.approve, button.deny").forEach(function (b) {
@@ -1043,7 +1168,7 @@ _HTML_SHELL = """<!doctype html>
           if (deadlineMs !== null) {
             countdown.dataset.deadline = String(deadlineMs);
           } else {
-            countdown.textContent = "auto-denies if unanswered";
+            countdown.textContent = "moves to your terminal if unanswered here";
           }
           header.appendChild(countdown);
           li.appendChild(header);
@@ -1236,9 +1361,20 @@ _HTML_SHELL = """<!doctype html>
           ? shown + " of " + feedEntries.length + " shown"
           : "";
         feedNoMatchEl.hidden = !(filtering && feedEntries.length > 0 && shown === 0);
+        // The roving-focus row must never point at a row the filter just hid.
+        if (activeFeedEntry && activeFeedEntry.li.hidden) { setActiveFeedEntry(null); }
       }
 
       var filterChips = document.querySelectorAll(".filter-chip");
+      function resetFeedFilters() {
+        filterChips.forEach(function (c) {
+          c.setAttribute("aria-pressed", (c.dataset.verdict || "") === "" ? "true" : "false");
+        });
+        activeVerdict = "";
+        activeQuery = "";
+        feedFilterInput.value = "";
+        applyFeedFilter();
+      }
       filterChips.forEach(function (chip) {
         chip.addEventListener("click", function () {
           filterChips.forEach(function (c) {
@@ -1253,6 +1389,58 @@ _HTML_SHELL = """<!doctype html>
       feedFilterInput.addEventListener("input", function () {
         activeQuery = feedFilterInput.value.trim().toLowerCase();
         applyFeedFilter();
+      });
+
+      var feedClearFiltersBtn = document.getElementById("feed-clear-filters-btn");
+      feedClearFiltersBtn.addEventListener("click", resetFeedFilters);
+
+      // --- Feed roving focus (Up/Down/Home/End move it, Enter/Space expands
+      // the active row's explanation) - see the shortcuts panel for the keys. ---
+
+      function visibleFeedEntries() {
+        return feedEntries.filter(function (entry) { return !entry.li.hidden; });
+      }
+
+      function setActiveFeedEntry(entry) {
+        if (activeFeedEntry) { activeFeedEntry.li.classList.remove("active"); }
+        activeFeedEntry = entry || null;
+        if (!activeFeedEntry) {
+          feedEl.removeAttribute("aria-activedescendant");
+          return;
+        }
+        activeFeedEntry.li.classList.add("active");
+        feedEl.setAttribute("aria-activedescendant", activeFeedEntry.li.id);
+        activeFeedEntry.li.scrollIntoView({ block: "nearest" });
+      }
+
+      function moveActiveFeedEntry(delta) {
+        var visible = visibleFeedEntries();
+        if (!visible.length) { return; }
+        var curPos = activeFeedEntry ? visible.indexOf(activeFeedEntry) : -1;
+        var nextPos = curPos === -1
+          ? (delta > 0 ? 0 : visible.length - 1)
+          : Math.min(visible.length - 1, Math.max(0, curPos + delta));
+        setActiveFeedEntry(visible[nextPos]);
+      }
+
+      function jumpActiveFeedEntry(toEnd) {
+        var visible = visibleFeedEntries();
+        if (!visible.length) { return; }
+        setActiveFeedEntry(toEnd ? visible[visible.length - 1] : visible[0]);
+      }
+
+      function toggleActiveFeedExplanation() {
+        if (!activeFeedEntry) { return; }
+        var explanationEl = activeFeedEntry.li.querySelector(".row-explanation");
+        if (explanationEl) { explanationEl.classList.toggle("expanded"); }
+      }
+
+      feedEl.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowDown") { e.preventDefault(); moveActiveFeedEntry(1); }
+        else if (e.key === "ArrowUp") { e.preventDefault(); moveActiveFeedEntry(-1); }
+        else if (e.key === "Home") { e.preventDefault(); jumpActiveFeedEntry(false); }
+        else if (e.key === "End") { e.preventDefault(); jumpActiveFeedEntry(true); }
+        else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleActiveFeedExplanation(); }
       });
 
       // A small non-modal shortcuts panel (see the keydown handler below for
@@ -1284,6 +1472,14 @@ _HTML_SHELL = """<!doctype html>
       // already typing in a field, except Escape which always works.
       document.addEventListener("keydown", function (e) {
         if (e.key === "Escape") {
+          // The filter is not a trap: clear it and hand focus back to the
+          // feed itself, rather than leaving the user stuck in the input.
+          if (document.activeElement === feedFilterInput) {
+            feedFilterInput.value = "";
+            activeQuery = "";
+            applyFeedFilter();
+            feedEl.focus();
+          }
           if (!modeForm.hidden) { closeModeForm(); }
           if (!shortcutsPanel.hidden) { closeShortcuts(); }
           return;
@@ -1331,11 +1527,15 @@ _HTML_SHELL = """<!doctype html>
             return;
           }
           var li = document.createElement("li");
+          li.id = "feed-row-" + (++feedRowCounter);
+
+          var rowMain = document.createElement("div");
+          rowMain.className = "row-main";
 
           var badge = document.createElement("span");
           badge.className = VERDICT_BADGE_CLASS[row.verdict] || "badge badge-neutral";
           badge.textContent = row.verdict;
-          li.appendChild(badge);
+          rowMain.appendChild(badge);
 
           // The detail line always names something concrete now (a target
           // class or "no target", reason codes or "no auth"), so a low-risk
@@ -1345,21 +1545,54 @@ _HTML_SHELL = """<!doctype html>
             var riskBadge = document.createElement("span");
             riskBadge.className = RISK_BADGE_CLASS[row.risk] || "badge badge-neutral";
             riskBadge.textContent = (row.risk || "-").toUpperCase();
-            li.appendChild(riskBadge);
+            rowMain.appendChild(riskBadge);
           }
 
           var detail = document.createElement("span");
           detail.className = "detail";
-          // textContent only - a row-derived string must render literally,
-          // never as markup (mirrors the TUI's markup=False discipline).
-          // Compact HH:MM:SS (UTC) - the full ISO timestamp is noise at a glance
-          // and stays available in `doberman log` / the TUI.
-          detail.textContent = row.action_type +
+          // textContent-equivalent for everything but the reason codes below -
+          // a row-derived string must render literally, never as markup
+          // (mirrors the TUI's markup=False discipline). Compact HH:MM:SS
+          // (UTC) - the full ISO timestamp is noise at a glance and stays
+          // available in `doberman log` / the TUI.
+          detail.appendChild(document.createTextNode(
+            row.action_type +
             " " + (row.target_path_class || "no target") +
-            " from:" + (row.source_context || "-") +
-            " " + (row.reason_codes && row.reason_codes.length ? row.reason_codes.join(",") : "no auth") +
-            " @ " + (String(row.ts || "").slice(11, 19) || "-");
-          li.appendChild(detail);
+            " from:" + (row.source_context || "-") + " "
+          ));
+          // Each code is its own span (not one joined string) so it can carry
+          // a title="..." gloss from REASON_DESCRIPTIONS - the same dict
+          // doberman.explain.template_explanation uses server-side. A code
+          // missing from the dict (a future ReasonCode) just skips the title.
+          if (row.reason_codes && row.reason_codes.length) {
+            row.reason_codes.forEach(function (code, i) {
+              if (i > 0) { detail.appendChild(document.createTextNode(",")); }
+              var codeSpan = document.createElement("span");
+              codeSpan.className = "reason-code";
+              codeSpan.textContent = code;
+              var gloss = REASON_DESCRIPTIONS[code];
+              if (gloss) { codeSpan.title = gloss; }
+              detail.appendChild(codeSpan);
+            });
+          } else {
+            detail.appendChild(document.createTextNode("no auth"));
+          }
+          detail.appendChild(document.createTextNode(
+            " @ " + (String(row.ts || "").slice(11, 19) || "-")
+          ));
+          rowMain.appendChild(detail);
+          li.appendChild(rowMain);
+
+          // BLOCK/AUTH only (CLAUDE.md #9 - every such row carries a human
+          // explanation; _feed_row leaves it empty for PASS) - body face, not
+          // mono, one line by default (Enter/Space on the active row expands
+          // it - see the feed's keydown handler).
+          if (row.explanation) {
+            var explanationEl = document.createElement("div");
+            explanationEl.className = "row-explanation";
+            explanationEl.textContent = row.explanation;
+            li.appendChild(explanationEl);
+          }
 
           // Rows are appended oldest-first, so the newest decision is always
           // the last child - keep the scrollable list pinned to that end
@@ -1383,10 +1616,16 @@ _HTML_SHELL = """<!doctype html>
           // appending the first row is enough to reveal the real list.
           feedEl.appendChild(li);
           while (feedEl.children.length > MAX_FEED_ROWS) {
+            var removedEntry = feedEntries.shift();
             feedEl.removeChild(feedEl.firstChild);
-            feedEntries.shift();
-            feedTruncatedEl.hidden = false;
+            if (activeFeedEntry === removedEntry) { setActiveFeedEntry(null); }
+            feedRowsEverTruncated = true;
           }
+          // Idempotent, not a one-way latch: re-hides if the row count ever
+          // drops back under the cap (it never rises back above it once
+          // trimmed, so this only ever shows once truncation has actually
+          // happened - never merely upon first reaching the cap).
+          feedTruncatedEl.hidden = !feedRowsEverTruncated || feedEntries.length < MAX_FEED_ROWS;
           if (nearBottom) {
             feedEl.scrollTop = feedEl.scrollHeight;
           }
@@ -1460,6 +1699,17 @@ def _js_string_literal(value: str) -> str:
     return encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
+def _js_json_literal(value: object) -> str:
+    """Encode any JSON-able ``value`` as a raw (unquoted) JS object/array literal.
+
+    Same ``</script>``-breakout escaping as :func:`_js_string_literal`, but for a
+    value embedded directly as JS source (e.g. ``var X = <this>;``) rather than
+    wrapped in a JS string literal.
+    """
+    encoded = json.dumps(value, sort_keys=True)
+    return encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
 def _render_shell(repo_root: str) -> str:
     project = _project_display_name(repo_root)
     page_title = f"{project} — Doberman Dashboard"
@@ -1468,6 +1718,7 @@ def _render_shell(repo_root: str) -> str:
         .replace("%%DASH_PROJECT_NAME%%", html.escape(project))
         .replace("%%DASH_MARK_PNG_B64%%", DASH_MARK_PNG_B64)
         .replace("%%DASH_JS_TITLE_JSON%%", _js_string_literal(page_title))
+        .replace("%%DASH_REASON_DESCRIPTIONS_JSON%%", _js_json_literal(REASON_DESCRIPTIONS))
     )
 
 
@@ -1515,16 +1766,24 @@ def _feed_row(row: dict) -> dict:
     ``shell_exec``, which carries no ``target_path_class``) otherwise renders
     with no signal at all beyond the verdict and action type - both fields
     are already redaction-safe classifications, never a raw target/argument.
+
+    ``explanation`` (CLAUDE.md #9 - every BLOCK/AUTH carries a human
+    explanation) is populated via :func:`doberman.explain.template_explanation`
+    for BLOCK/AUTH rows only, and left empty for PASS - a PASS row needs no
+    "why", and skipping it keeps the SSE payload small on the (usually
+    dominant) common case.
     """
+    verdict = row.get("final_verdict")
     return {
         "id": row.get("id"),
         "ts": row.get("ts"),
-        "verdict": row.get("final_verdict"),
+        "verdict": verdict,
         "action_type": row.get("action_type"),
         "target_path_class": row.get("target_path_class"),
         "risk": row.get("risk"),
         "source_context": row.get("source_context"),
         "reason_codes": reason_codes(row),
+        "explanation": template_explanation(row) if verdict in ("BLOCK", "AUTH") else "",
     }
 
 

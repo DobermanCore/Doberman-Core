@@ -400,16 +400,22 @@ refresh is always shown in the UI (never silently), with a retry control.
 An `AUTH` challenge can be answered from the dashboard instead of the terminal: it lists pending
 approvals and resolves one at a time, a single-use transition, so two concurrent resolves of the
 same row can never both win. Each pending card shows a live countdown to the dashboard's own 90s
-answer window (`auto-denies in M:SS if unanswered`) — the terminal/GUI fallback engages after that,
-independent of the approval row's own longer DB TTL. The dashboard never verifies a TOTP code
-itself; it relays the human's decision (and, for tiers that need one, the code) to the same
-auth-challenge machinery already running in the decision path. This channel engages only while the
-dashboard's own heartbeat is fresh; a stale heartbeat or an unanswered approval falls back to the
-next channel (MCP elicitation, then GUI dialog, then terminal) with no added latency.
+answer window (`answerable here for M:SS, then it moves to your terminal`) — at 0 the challenge has
+genuinely moved to the terminal/GUI channel (not been denied), independent of the approval row's own
+longer DB TTL. The dashboard never verifies a TOTP code itself; it relays the human's decision (and,
+for tiers that need one, the code) to the same auth-challenge machinery already running in the
+decision path. This channel engages only while the dashboard's own heartbeat is fresh; a stale
+heartbeat or an unanswered approval falls back to the next channel (MCP elicitation, then GUI
+dialog, then terminal) with no added latency.
 
-Keyboard shortcuts (`/` to filter, `r` to refresh, `a`/`d` to act on the first pending item, `?` for
-the full list) work from anywhere on the page; a manual light/dark toggle persists per browser
-regardless of the OS theme, and the browser tab's favicon tints amber while an approval is pending.
+Every `BLOCK`/`AUTH` row in the recent-decisions feed (and every pending card) carries a one-line
+human explanation, and its reason codes are individually glossed with a hover tooltip.
+
+Keyboard shortcuts (`/` to filter, `Esc` to clear it, arrow keys/Home/End to move the active feed
+row, Enter/Space to expand its explanation, `r` to refresh, `a`/`d` to act on the first pending item,
+`?` for the full list) work from anywhere on the page; a manual light/dark toggle persists per
+browser regardless of the OS theme, and the browser tab's favicon tints amber while an approval is
+pending.
 
 You can also switch Light/Balanced/Strict/Paranoid from the dashboard. It goes through the same
 gate as `doberman mode`: raising applies immediately, and lowering prompts for the same possession

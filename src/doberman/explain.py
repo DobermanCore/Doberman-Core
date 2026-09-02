@@ -63,7 +63,10 @@ _LLM_SYSTEM_PROMPT = (
 # Human-readable descriptions for the ReasonCode constants (doberman/models.py).
 # Anything not listed here (e.g. a future code) falls back to a humanized form of
 # the code itself, so this dict never has to be kept perfectly in sync to be safe.
-_REASON_DESCRIPTIONS: dict[str, str] = {
+# Public (no leading underscore): doberman.dash.app reuses this exact dict to gloss
+# reason codes with a title="..." tooltip client-side, rather than hand-duplicating
+# a second copy of these descriptions in the served JS.
+REASON_DESCRIPTIONS: dict[str, str] = {
     "normalization_failed": "the action could not be normalized into a well-formed request",
     "unknown_tool": "the tool was not recognized",
     "downstream_error": "the downstream service returned an error",
@@ -120,7 +123,7 @@ _REASON_DESCRIPTIONS: dict[str, str] = {
 
 # Fail at import time if a ReasonCode is ever added without a description — a
 # silently-humanized fallback is fine at runtime, but we want a nudge in review.
-_MISSING_REASON_DESCRIPTIONS = {rc.value for rc in ReasonCode} - set(_REASON_DESCRIPTIONS)
+_MISSING_REASON_DESCRIPTIONS = {rc.value for rc in ReasonCode} - set(REASON_DESCRIPTIONS)
 if _MISSING_REASON_DESCRIPTIONS:  # pragma: no cover — reminder, not a hard failure
     logger.debug(
         "explain: no description for reason codes %s", sorted(_MISSING_REASON_DESCRIPTIONS)
@@ -150,7 +153,7 @@ def _parse_reason_codes(reason_codes_json: object) -> list[str]:
 
 
 def _describe_reason(code: str) -> str:
-    return _REASON_DESCRIPTIONS.get(code, code.replace("_", " "))
+    return REASON_DESCRIPTIONS.get(code, code.replace("_", " "))
 
 
 def template_explanation(row: dict) -> str:
