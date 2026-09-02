@@ -115,14 +115,22 @@ _NEXT_AUTH = (
 )
 
 
-def next_step_line(verdict: str | None) -> str | None:
+_TUI_HINT = "; press w for detail"
+
+
+def next_step_line(verdict: str | None, *, tui_hint: bool = True) -> str | None:
     """The "Next" remedy line for a raw verdict string (or `None`/anything
-    unrecognized, e.g. PASS) - `None` when there's nothing to act on."""
+    unrecognized, e.g. PASS) - `None` when there's nothing to act on.
+
+    ``tui_hint=False`` drops the trailing "press w for detail" - that key
+    only exists inside the tui, so `doberman log --why` must not print it."""
     if verdict == Verdict.BLOCK.value:
-        return _NEXT_BLOCK
-    if verdict == Verdict.AUTH.value:
-        return _NEXT_AUTH
-    return None
+        line = _NEXT_BLOCK
+    elif verdict == Verdict.AUTH.value:
+        line = _NEXT_AUTH
+    else:
+        return None
+    return line if tui_hint else line.removesuffix(_TUI_HINT)
 
 
 def deadline_note(seconds: float) -> str:

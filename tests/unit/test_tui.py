@@ -845,7 +845,7 @@ async def test_why_screen_shows_row_identity_header_and_bBa_in_its_footer(tmp_pa
         assert isinstance(app.screen, WhyScreen)
         full_text = _static_text(app.screen.query_one("#why-text"))
         first_line = full_text.splitlines()[0]
-        assert first_line == "X BLOCK  01:45:24  high  file_read  backend/secrets/*.env"
+        assert first_line == "X BLOCK  2026-07-07 01:45:24  high  file_read  backend/secrets/*.env"
         # The modal's own Footer needs an extra tick to lay out its FooterKey
         # children after the screen push.
         await pilot.pause()

@@ -1729,7 +1729,7 @@ def log(
         if why and row["final_verdict"] in ("BLOCK", "AUTH"):
             for line in wrap_detail(first_sentence(row)):
                 typer.echo(line)
-            next_line = next_step_line(row["final_verdict"])
+            next_line = next_step_line(row["final_verdict"], tui_hint=False)
             if next_line:
                 for line in wrap_detail(next_line):
                     typer.echo(line)

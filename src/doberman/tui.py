@@ -325,7 +325,10 @@ def _why_header_line(row: dict) -> str:
     (round 3 design critique item 4)."""
     verdict_str = str(row.get("final_verdict") or "-")
     glyph = _VERDICT_GLYPHS.get(verdict_str, "?")
-    time_str = _time_cell(row)
+    # The full-screen why has room: always show the date too, so paging across
+    # a multi-day log never shows two rows with a byte-identical header.
+    ts = _parse_ts(row.get("ts"))
+    time_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "-"
     risk_str = str(row.get("risk") or "-")
     action_str = str(row.get("action_type") or "-")
     target_str = str(row.get("target_path_class") or "-")
