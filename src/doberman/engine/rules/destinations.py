@@ -32,6 +32,7 @@ from pydantic import AwareDatetime
 from doberman.egress.broker import BrokerVerdict, ConnectionEvent, EgressBroker, consult_broker
 from doberman.egress.velocity import EgressVelocityTracker, VelocityThresholds
 from doberman.engine.registry import discover_egress_brokers
+from doberman.engine.rules.commands import command_line_from_arguments
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -112,14 +113,45 @@ def _registered_match(host: str, trusted: Iterable[str]) -> bool:
     return False
 
 
-def _is_egress_classified(action: SecurityObject) -> bool:
-    """True for the action types this rule (and RB.3 reconciliation) classify."""
-    return action.action_type in (
+def _carries_command(action: SecurityObject, ctx: EvalContext | None = None) -> bool:
+    """True for the command-bearing action types, OR when the raw arguments
+    still compose a command line whatever the tool's declared type.
+
+    A caller-supplied tool name is not a trust boundary (#519/#527): a
+    command-shaped payload (``command``/``cmd``/``script``/``args``) under an
+    unrecognized tool name must be classified as command egress exactly like
+    the same payload under ``shell_exec``/``package_install``/``git_op``.
+
+    ``ctx`` is optional: :class:`~doberman.egress.broker.EgressBroker.classify`
+    (a third-party plugin protocol method, e.g. :class:`~doberman.egress.
+    local.LocalEgressBroker`) only receives ``action`` and has no ``EvalContext``
+    to consult — with no ``ctx``, this degrades to the action_type-only check
+    (unchanged, prior behavior) rather than raising or widening the plugin
+    contract.
+    """
+    if action.action_type in (
         ActionType.shell_exec,
         ActionType.package_install,
         ActionType.git_op,
-        ActionType.network_request,
-    )
+    ):
+        return True
+    if ctx is None or action.action_type is ActionType.network_request:
+        # A network action's destination IS its URL: an ``args`` list on a
+        # fetch tool is request options, not a shell line, and treating it as
+        # command egress would route the action through the command branch
+        # (broker PASS site, "shell egress" AUTH) instead of the network
+        # branch's embedded-credential / IP-literal checks.
+        return False
+    raw_arguments = ctx.metadata.get("raw_arguments") if isinstance(ctx.metadata, dict) else None
+    if not isinstance(raw_arguments, dict):
+        return False
+    return command_line_from_arguments(raw_arguments) is not None
+
+
+def _is_egress_classified(action: SecurityObject, ctx: EvalContext | None = None) -> bool:
+    """True for the action types (or command-shaped payloads) this rule (and
+    RB.3 reconciliation) classify."""
+    return action.action_type is ActionType.network_request or _carries_command(action, ctx)
 
 
 def _broker_grants_pass(verdict: BrokerVerdict | None) -> bool:
@@ -188,15 +220,17 @@ def _raise_for_velocity(result: GuardrailResult) -> GuardrailResult:
     )
 
 
-def _extract_destination(action: SecurityObject) -> str | None:
-    """The network or command-egress destination this rule classifies."""
+def _extract_destination(action: SecurityObject, ctx: EvalContext | None = None) -> str | None:
+    """The network or command-egress destination this rule classifies.
+
+    ``ctx`` is optional — see :func:`_carries_command`; callers outside this
+    rule (e.g. :class:`~doberman.egress.local.LocalEgressBroker.classify`,
+    which only receives ``action``) get the unchanged, action_type-only
+    behavior.
+    """
     if action.action_type is ActionType.network_request:
         return action.external_destination or action.target
-    if action.action_type in (
-        ActionType.shell_exec,
-        ActionType.package_install,
-        ActionType.git_op,
-    ):
+    if _carries_command(action, ctx):
         return action.external_destination
     # Domain tools still expose recipients to the secret/trifecta floors, but
     # destination-alone AUTH remains suppressed to avoid message-send spam.
@@ -299,7 +333,7 @@ class ExternalDestinationRule:
         the class docstring.
         """
         result = self._evaluate_static(action, ctx)
-        if _is_egress_classified(action):
+        if _is_egress_classified(action, ctx):
             if self._has_route_divergence(action, ctx):
                 result = _raise_for_divergence(result)
             if self._has_velocity_anomaly(action, ctx):
@@ -368,11 +402,7 @@ class ExternalDestinationRule:
 
     def _evaluate_static(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         metadata = action.metadata if isinstance(action.metadata, dict) else {}
-        command_egress = action.action_type in (
-            ActionType.shell_exec,
-            ActionType.package_install,
-            ActionType.git_op,
-        )
+        command_egress = _carries_command(action, ctx)
         broker_verdict: BrokerVerdict | None = None
         if command_egress or action.action_type is ActionType.network_request:
             # RB.4: genuinely consulted now — may grant PASS below via
@@ -386,7 +416,7 @@ class ExternalDestinationRule:
                 "authentication required."
             )
 
-        destination = _extract_destination(action)
+        destination = _extract_destination(action, ctx)
         if not destination:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 

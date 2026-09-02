@@ -200,28 +200,31 @@ def test_discover_egress_brokers_empty_with_nothing_installed():
     assert registry.discover_egress_brokers() == []
 
 
-def test_discover_egress_brokers_finds_shaped_and_skips_others(monkeypatch):
+def test_discover_egress_brokers_finds_shaped_and_skips_others(monkeypatch, enable_plugins):
     instance = _ProvenAllowlistedBroker()
     table = _FakeEntryPoints(
         [_FakeEntryPoint("good", lambda: instance), _FakeEntryPoint("bad", lambda: 42)]
     )
     monkeypatch.setattr(registry, "entry_points", lambda: table)
+    enable_plugins("good", "bad")
     assert registry.discover_egress_brokers() == [instance]
 
 
-def test_discover_egress_brokers_isolates_import_failures(monkeypatch):
+def test_discover_egress_brokers_isolates_import_failures(monkeypatch, enable_plugins):
     def _bad_loader():
         raise ImportError("cannot import broker")
 
     table = _FakeEntryPoints([_FakeEntryPoint("bad", _bad_loader)])
     monkeypatch.setattr(registry, "entry_points", lambda: table)
+    enable_plugins("bad")
     assert registry.discover_egress_brokers() == []
 
 
-def test_discover_egress_brokers_discovery_failure_does_not_crash(monkeypatch):
+def test_discover_egress_brokers_discovery_failure_does_not_crash(monkeypatch, enable_plugins):
     def _boom():
         raise RuntimeError("metadata broken")
 
+    enable_plugins("whatever")  # a name must be enabled for entry_points() to run at all
     monkeypatch.setattr(registry, "entry_points", _boom)
     assert registry.discover_egress_brokers() == []
 
@@ -316,13 +319,14 @@ def test_hook_style_objective_guardrail_never_discovers_egress_brokers(monkeypat
     assert spy.call_count == 0
 
 
-def test_proxy_opt_in_path_resolves_a_registered_broker(monkeypatch):
+def test_proxy_opt_in_path_resolves_a_registered_broker(monkeypatch, enable_plugins):
     # `_default_objective_rules()` is exactly what builds the proxy's
     # long-lived DEFAULT_OBJECTIVE singleton (doberman.proxy.executor) — it
     # must resolve a registered broker, unlike the hook path above.
     instance = _ProvenAllowlistedBroker()
     table = _FakeEntryPoints([_FakeEntryPoint("p", lambda: instance)])
     monkeypatch.setattr(registry, "entry_points", lambda: table)
+    enable_plugins("p")
     rules = _default_objective_rules()
     destination_rules = [r for r in rules if isinstance(r, ExternalDestinationRule)]
     assert len(destination_rules) == 1

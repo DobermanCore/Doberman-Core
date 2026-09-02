@@ -16,13 +16,19 @@ Two safety properties this class guarantees:
   so the decision engine's own fail-closed path is a backstop, not the norm.
 * **Plugins can only raise risk.** Registered plugins go through the exact same
   isolation + ``combine`` as built-ins, so an external plugin can only ever add
-  risk; it has no path to lower a verdict (slice 3.8).
+  risk; it has no path to lower a verdict (slice 3.8). This is now true even
+  of a plugin's *side effects*, not just its return value: a plugin rule runs
+  against its OWN copy of ``ctx.metadata`` (see ``_plugin_ctx``), so a plugin
+  that deletes or rewrites shared metadata (``raw_arguments``, a
+  ``scope_token`` flag, ...) can never affect what a later built-in or plugin
+  sees, and can never affect the caller's own context after ``evaluate``
+  returns.
 """
 
 import logging
 from collections.abc import Sequence
 
-from doberman.engine.decision_engine import Guardrail, combine
+from doberman.engine.decision_engine import Guardrail, combine, plugin_ctx
 from doberman.engine.registry import discover_rules
 from doberman.engine.rules import BUILTIN_RULE_TYPES
 from doberman.models import (
@@ -88,14 +94,21 @@ class ObjectiveGuardrail:
             builtin = [rule_type() for rule_type in BUILTIN_RULE_TYPES]
         plugins: list[Guardrail] = list(discover_rules()) if load_plugins else []
         self._rules: tuple[Guardrail, ...] = (*builtin, *extra_rules, *plugins)
+        # Built-ins (+ extra_rules) share the caller's ctx; only this trailing
+        # slice (plugins) gets its own metadata copy — see plugin_ctx().
+        self._plugin_start = len(builtin) + len(extra_rules)
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         """Evaluate every rule and reduce the results raise-only.
 
         Never raises: each rule is isolated, and the reduction only ever moves
         the verdict/risk up. With every rule abstaining, returns PASS/low.
+        Built-ins run against the shared ``ctx``; plugins run against their
+        own copy (``plugin_ctx``) so a plugin can never mutate metadata a
+        later built-in/plugin or the caller sees.
         """
         combined = _PASS_SEED
-        for rule in self._rules:
-            combined = combine(combined, _isolate(rule, action, ctx))
+        for i, rule in enumerate(self._rules):
+            rule_ctx = plugin_ctx(ctx) if i >= self._plugin_start else ctx
+            combined = combine(combined, _isolate(rule, action, rule_ctx))
         return combined

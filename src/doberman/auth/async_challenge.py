@@ -454,16 +454,18 @@ def active_async_backend() -> AsyncChallengeBackend:
     """Return the active async backend: the first registered one, else in-memory.
 
     Discovery uses the ``doberman.async_challenge_backends`` entry-point group
-    (consistent with the :func:`~doberman.auth.provider.active_provider` pattern).
-    With nothing installed, the in-memory backend runs and behaviour is identical
+    (consistent with the :func:`~doberman.auth.provider.active_provider` pattern),
+    gated by the same opt-in-by-name plugins allowlist as every other seam
+    (:mod:`doberman.engine.plugin_config` — ``doberman plugins enable <name>``).
+    With nothing enabled, the in-memory backend runs and behaviour is identical
     to core-only.
     """
     from doberman.engine.registry import (  # lazy: avoids import cycle at load time
-        _iter_entry_points,
+        _iter_allowed_entry_points,
         _load_and_construct,
     )
 
-    for entry_point in _iter_entry_points(ASYNC_BACKEND_GROUP):
+    for entry_point in _iter_allowed_entry_points(ASYNC_BACKEND_GROUP):
         candidate = _load_and_construct(entry_point)
         if candidate is None:
             continue

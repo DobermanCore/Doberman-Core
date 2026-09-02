@@ -296,7 +296,7 @@ def test_discover_adjudicators_empty_with_nothing_installed():
     assert registry.discover_adjudicators() == []
 
 
-def test_discover_adjudicators_finds_shaped_and_skips_others(monkeypatch):
+def test_discover_adjudicators_finds_shaped_and_skips_others(monkeypatch, enable_plugins):
     class _FakeEP:
         def __init__(self, name, loader):
             self.name = name
@@ -315,6 +315,7 @@ def test_discover_adjudicators_finds_shaped_and_skips_others(monkeypatch):
     instance = LocalReferenceAdjudicator()
     table = _FakeEPs([_FakeEP("good", lambda: instance), _FakeEP("bad", lambda: 42)])
     monkeypatch.setattr(registry, "entry_points", lambda: table)
+    enable_plugins("good", "bad")
     found = registry.discover_adjudicators()
     assert found == [instance]  # adjudicator-shaped kept; the int skipped
 

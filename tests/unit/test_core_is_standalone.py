@@ -44,7 +44,7 @@ def test_default_plugin_registry_has_no_enterprise_plugins():
     assert all("enterprise" not in type(p).__module__ for p in plugins)
 
 
-def test_default_auth_provider_is_local_with_no_enterprise():
+def test_default_auth_provider_is_local_with_no_enterprise(enable_plugins):
     # Slice 7.6 standalone guarantee: with no enterprise package installed the
     # auth-provider entry-point group is empty, so even an allowlist naming a
     # provider finds nothing, and the local provider is active.
@@ -56,7 +56,8 @@ def test_default_auth_provider_is_local_with_no_enterprise():
     )
 
     assert list(_iter_entry_points(AUTH_PROVIDER_GROUP)) == []
-    assert discover_auth_providers(["enterprise"]) == []
+    enable_plugins("enterprise")
+    assert discover_auth_providers() == []
     assert isinstance(active_provider(), LocalAuthProvider)
 
 

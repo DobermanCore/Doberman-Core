@@ -253,8 +253,14 @@ def _candidate_paths(action: SecurityObject) -> list[str]:
 #: policy core must not depend on the proxy adapter (import-linter contract).
 _RAW_PATH_KEYS: tuple[str, ...] = ("path", "file", "filename", "target")
 
+#: The unambiguous subset for tools whose declared type is NOT path-shaped:
+#: ``target`` is a common name for a host/URL/command argument too
+#: (``ping {"target": ...}``), so only the keys that always mean a filesystem
+#: path are consulted there (role-boundary / policy-source rules).
+RAW_PATH_KEYS_STRICT: tuple[str, ...] = ("path", "file", "filename")
 
-def _raw_path_candidates(raw_arguments: dict) -> list[str]:
+
+def raw_path_candidates(raw_arguments: dict, keys: tuple[str, ...] = _RAW_PATH_KEYS) -> list[str]:
     """Extract path candidate(s) from raw (un-redacted) call arguments.
 
     SECURITY: ``normalize`` redacts any string argument over 256 chars (or
@@ -268,8 +274,13 @@ def _raw_path_candidates(raw_arguments: dict) -> list[str]:
     Returns the first path-shaped key's value: a single string yields one
     candidate, a non-empty list/tuple of strings yields all of them (the
     batch case, e.g. a multi-file delete).
+
+    Public (promoted from ``_raw_path_candidates``): also reused by the role-
+    boundary and policy-source rules so a non-path-typed tool whose raw
+    arguments still carry a path-shaped value is classified rather than
+    abstained on just because the tool's declared type isn't path-shaped.
     """
-    for key in _RAW_PATH_KEYS:
+    for key in keys:
         value = raw_arguments.get(key)
         if isinstance(value, str) and value:
             return [value]
@@ -301,7 +312,7 @@ class ProtectedPathRule:
         # Prefer the RAW (un-redacted) path for matching so a length-redacted
         # action.target ("<redacted>") cannot bypass confinement; fall back to
         # the (possibly redacted) action target when no raw path is available.
-        paths = _raw_path_candidates(raw_arguments) if isinstance(raw_arguments, dict) else []
+        paths = raw_path_candidates(raw_arguments) if isinstance(raw_arguments, dict) else []
         if not paths:
             paths = _candidate_paths(action)
         if not paths:

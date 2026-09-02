@@ -139,3 +139,53 @@ def test_role_escalation_combines_into_the_objective_guardrail(tmp_path):
     result = guardrail.evaluate(_action("src/utils/helper.ts"), _ctx(FRONTEND, tmp_path))
     assert result.verdict is Verdict.AUTH
     assert ReasonCode.role_out_of_scope in result.reason_codes
+
+
+# --- Payload-shape classification: the tool NAME is not a trust boundary ----
+# A tool that doesn't normalize to a path action type (e.g. an unrecognized
+# name) but whose raw arguments still carry a path-shaped value must be
+# classified exactly like write_file — the tool NAME is caller-supplied, not
+# a trust boundary (#519/#527, the same regression class as
+# DestructiveCommandRule's payload-shape fix).
+
+
+def test_unrecognized_tool_with_path_argument_matches_write_file_verdict(tmp_path):
+    write_result = RULE.evaluate(_action("backend/db.py"), _ctx(FRONTEND, tmp_path))
+
+    other_action = _action("backend/db.py", action_type=ActionType.other)
+    other_ctx = EvalContext(
+        role=FRONTEND,
+        mode="balanced",
+        metadata={"repo_root": str(tmp_path), "raw_arguments": {"path": "backend/db.py"}},
+    )
+    other_result = RULE.evaluate(other_action, other_ctx)
+
+    assert write_result.verdict is other_result.verdict is Verdict.AUTH
+    assert ReasonCode.role_out_of_scope in write_result.reason_codes
+    assert ReasonCode.role_out_of_scope in other_result.reason_codes
+
+
+def test_shell_command_argument_still_abstains_on_role_boundary(tmp_path):
+    # A shell command's raw argument is a command line, not a path-shaped key
+    # ("path"/"file"/"filename"/"target") — no path candidate exists, so the
+    # rule still abstains (the command/destination rules cover this target).
+    action = _action("ls", action_type=ActionType.shell_exec)
+    ctx = EvalContext(
+        role=FRONTEND,
+        mode="balanced",
+        metadata={"repo_root": str(tmp_path), "raw_arguments": {"command": "ls"}},
+    )
+    assert RULE.evaluate(action, ctx).verdict is Verdict.PASS
+
+
+def test_non_path_tool_target_key_is_not_a_path_candidate(tmp_path):
+    # "target" names a host/URL/command for non-path tools (ping {"target":
+    # "https://host"}); only path/file/filename count there, so the rule
+    # abstains instead of canonicalizing a URL as an out-of-scope path.
+    action = _action("https://example.com", action_type=ActionType.shell_exec)
+    ctx = EvalContext(
+        role=FRONTEND,
+        mode="balanced",
+        metadata={"repo_root": str(tmp_path), "raw_arguments": {"target": "https://example.com"}},
+    )
+    assert RULE.evaluate(action, ctx).verdict is Verdict.PASS

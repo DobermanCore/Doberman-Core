@@ -29,6 +29,7 @@ boundary's own escalation, nothing else.
 """
 
 from doberman.auth.elevation import ElevationGrant, find_cover
+from doberman.engine.rules.paths import RAW_PATH_KEYS_STRICT, raw_path_candidates
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -41,9 +42,13 @@ from doberman.models import (
 from doberman.policy.modes import thresholds_for
 from doberman.roles.roles import RoleBoundary, classify
 
-#: Only path-shaped actions are classified against role path globs. A shell or
-#: network action's ``target`` is a command/URL, not a path, so this rule
-#: abstains on them (the command/destination rules cover those).
+#: Path-shaped action types are always classified against role path globs. A
+#: non-path-typed tool whose raw arguments still carry a path-shaped value
+#: (an unrecognized tool name, {"path": ...}) is also classified — see
+#: ``evaluate`` — since the tool's declared type is caller-supplied and not a
+#: trust boundary. A shell or network action's ``target`` is a command/URL,
+#: not a path, so those still abstain (the command/destination rules cover
+#: them) unless their raw arguments happen to carry a path-shaped key too.
 _PATH_ACTION_TYPES = frozenset(
     {ActionType.file_read, ActionType.file_write, ActionType.file_delete}
 )
@@ -90,10 +95,25 @@ class RoleBoundaryRule:
         role = ctx.role
         if role is None:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
-        if action.action_type not in _PATH_ACTION_TYPES:
-            return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
-        paths = _candidate_paths(action)
+        if action.action_type in _PATH_ACTION_TYPES:
+            paths = _candidate_paths(action)
+        else:
+            # A tool whose declared type isn't path-shaped can still carry a
+            # path-shaped raw argument (an unrecognized tool name, {"path":
+            # ...}) — the tool NAME is caller-supplied and not a trust
+            # boundary, so classify those candidates too rather than
+            # abstaining. Only the unambiguous keys ("path"/"file"/
+            # "filename") count here: a shell or network tool's "target"
+            # is a command line / host, not a path, so it still abstains.
+            raw_arguments = (
+                ctx.metadata.get("raw_arguments") if isinstance(ctx.metadata, dict) else None
+            )
+            paths = (
+                raw_path_candidates(raw_arguments, RAW_PATH_KEYS_STRICT)
+                if isinstance(raw_arguments, dict)
+                else []
+            )
         if not paths:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 

@@ -143,6 +143,12 @@ approvals_app = typer.Typer(
 )
 app.add_typer(approvals_app, name="approvals")
 
+plugins_app = typer.Typer(
+    help="Opt-in-by-name entry-point plugin allowlist (every registry seam).",
+    no_args_is_help=True,
+)
+app.add_typer(plugins_app, name="plugins")
+
 memory_app = typer.Typer(
     help="Learned behavioral memory: profile, gated reset, and retention pruning.",
     no_args_is_help=False,
@@ -1265,6 +1271,56 @@ def twofa_methods_status() -> None:
         typer.echo(
             f"Active 2FA proof: {active.name} — a tap replaces the code; TOTP is the fallback."
         )
+
+
+@plugins_app.command("list")
+def plugins_list() -> None:
+    """List enabled plugin names, and every installed entry point across all seams.
+
+    Installed entry points are discovered WITHOUT loading them (names only) —
+    listing an untrusted plugin's presence must never import its code.
+    """
+    from doberman.engine import plugin_config
+    from doberman.engine.registry import ALL_GROUPS, _iter_entry_points
+
+    enabled = plugin_config.enabled_plugins()
+    typer.echo("Enabled (opt-in by name): " + (", ".join(enabled) if enabled else "(none)"))
+    typer.echo("\nInstalled entry points (not loaded merely to list them):")
+    found = False
+    for group in ALL_GROUPS:
+        for entry_point in _iter_entry_points(group):
+            found = True
+            name = getattr(entry_point, "name", "?")
+            state = "ENABLED" if name in enabled else "disabled"
+            typer.echo(f"  {group:34s} {name:24s} {state}")
+    if not found:
+        typer.echo("  (none installed)")
+
+
+@plugins_app.command("enable")
+def plugins_enable(
+    name: str = typer.Argument(..., help="Entry-point name to trust, e.g. my_rule."),
+) -> None:
+    """Enable a plugin by entry-point name. Nothing is imported until it's named here."""
+    from doberman.engine import plugin_config
+
+    try:
+        names = plugin_config.enable(name)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Enabled {name!r}. Enabled plugins: {', '.join(names)}")
+
+
+@plugins_app.command("disable")
+def plugins_disable(
+    name: str = typer.Argument(..., help="Entry-point name to stop trusting."),
+) -> None:
+    """Disable a plugin. No registry seam will import it again."""
+    from doberman.engine import plugin_config
+
+    names = plugin_config.disable(name)
+    typer.echo(f"Disabled {name!r}. Enabled plugins: {', '.join(names) if names else '(none)'}")
 
 
 @twofa_app.command("remove")

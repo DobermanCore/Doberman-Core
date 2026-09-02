@@ -140,33 +140,39 @@ class _FakeEntryPoints:
         return list(self._by_group.get(group, []))
 
 
-def _install(monkeypatch, adapter_group=()):
-    table = _FakeEntryPoints({registry.ALGEBRA_ADAPTER_GROUP: list(adapter_group)})
+def _install(monkeypatch, enable_plugins, adapter_group=()):
+    adapter_group = list(adapter_group)
+    table = _FakeEntryPoints({registry.ALGEBRA_ADAPTER_GROUP: adapter_group})
     monkeypatch.setattr(registry, "entry_points", lambda: table)
+    names = [ep.name for ep in adapter_group]
+    if names:
+        enable_plugins(*names)
 
 
-def test_nothing_installed_discovers_nothing(monkeypatch):
-    _install(monkeypatch)
+def test_nothing_installed_discovers_nothing(monkeypatch, enable_plugins):
+    _install(monkeypatch, enable_plugins)
     assert registry.discover_algebra_adapters() == []
 
 
-def test_registered_adapter_is_discovered_and_applied(monkeypatch):
-    _install(monkeypatch, adapter_group=[_FakeEntryPoint("sharp", SharpeningAdapter)])
+def test_registered_adapter_is_discovered_and_applied(monkeypatch, enable_plugins):
+    _install(
+        monkeypatch, enable_plugins, adapter_group=[_FakeEntryPoint("sharp", SharpeningAdapter)]
+    )
     adapters = registry.discover_algebra_adapters()
     assert len(adapters) == 1
     refined = apply_adapters(_generic())  # discovery path, no explicit adapters
     assert refined.target_class is TargetClass.sensitive
 
 
-def test_non_adapter_shaped_plugin_is_skipped(monkeypatch):
+def test_non_adapter_shaped_plugin_is_skipped(monkeypatch, enable_plugins):
     class NotAnAdapter:
         pass
 
-    _install(monkeypatch, adapter_group=[_FakeEntryPoint("bad", NotAnAdapter)])
+    _install(monkeypatch, enable_plugins, adapter_group=[_FakeEntryPoint("bad", NotAnAdapter)])
     assert registry.discover_algebra_adapters() == []
 
 
-def test_adapters_do_not_leak_into_rule_or_detector_seams(monkeypatch):
+def test_adapters_do_not_leak_into_rule_or_detector_seams(monkeypatch, enable_plugins):
     table = _FakeEntryPoints(
         {
             registry.ALGEBRA_ADAPTER_GROUP: [_FakeEntryPoint("sharp", SharpeningAdapter)],
@@ -175,6 +181,7 @@ def test_adapters_do_not_leak_into_rule_or_detector_seams(monkeypatch):
         }
     )
     monkeypatch.setattr(registry, "entry_points", lambda: table)
+    enable_plugins("sharp")
     assert registry.discover_rules() == []
     assert registry.discover_detectors() == []
     assert len(registry.discover_algebra_adapters()) == 1

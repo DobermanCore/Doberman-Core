@@ -31,6 +31,10 @@ Safety properties (unchanged from F9):
   proxy logs the overflow); the trifecta floor and detector verdicts ignore it.
 * **Detectors are isolated.** A detector that raises or returns garbage
   becomes a conservative ``AUTH/high (rule_error)`` — never a silent PASS.
+* **Detector plugins get their own context copy.** A plugin detector (opt-in
+  by name, :mod:`doberman.engine.plugin_config`) runs against its own copy of
+  ``ctx.metadata`` (``plugin_ctx``), so it can never mutate the shared dict a
+  later built-in/plugin or the caller sees.
 
 This module is part of the policy core: it must never import ``doberman.proxy``.
 """
@@ -38,7 +42,7 @@ This module is part of the policy core: it must never import ``doberman.proxy``.
 import logging
 from collections.abc import Sequence
 
-from doberman.engine.decision_engine import Guardrail, combine
+from doberman.engine.decision_engine import Guardrail, combine, plugin_ctx
 from doberman.engine.detectors import BUILTIN_DETECTOR_TYPES
 from doberman.engine.registry import discover_detectors
 
@@ -246,6 +250,9 @@ class SubjectiveGuardrail:
         )
         plugins: list[Guardrail] = list(discover_detectors()) if load_plugins else []
         self._detectors: tuple[Guardrail, ...] = (*builtin, *extra_detectors, *plugins)
+        # Built-ins (+ extra_detectors) share the caller's ctx; only this
+        # trailing slice (plugins) gets its own metadata copy — see plugin_ctx().
+        self._plugin_start = len(builtin) + len(extra_detectors)
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         """Reduce the scoring signal + every detector raise-only.
@@ -253,6 +260,9 @@ class SubjectiveGuardrail:
         Never raises from detector failures (each is isolated) and the
         reduction only ever moves the verdict/risk up. A failure in the scoring
         step itself escalates (fail upward, never PASS-through on error).
+        Built-in detectors run against the shared ``ctx``; plugin detectors run
+        against their own copy (``plugin_ctx``) so a plugin can never mutate
+        metadata a later built-in/plugin or the caller sees.
         """
         try:
             combined = _score_result(action, ctx)
@@ -264,6 +274,7 @@ class SubjectiveGuardrail:
                 reason_codes=[ReasonCode.subjective_guardrail_error],
                 explanation="Subjective scoring failed; escalating to authentication.",
             )
-        for detector in self._detectors:
-            combined = combine(combined, _isolate(detector, action, ctx))
+        for i, detector in enumerate(self._detectors):
+            detector_ctx = plugin_ctx(ctx) if i >= self._plugin_start else ctx
+            combined = combine(combined, _isolate(detector, action, detector_ctx))
         return combined

@@ -4,14 +4,33 @@ This page covers Doberman's plugin seams: registering your own rule, and forward
 audit log to your own pipeline. Both work the same way, a Python entry-point group core discovers
 at runtime, so core never imports a plugin package by name.
 
+## Opt in by name first
+
+Installing a plugin package is never enough on its own — **every** entry-point seam (rules,
+detectors, audit sinks, auth providers, and the rest) only imports an entry point whose name you've
+explicitly trusted:
+
+```bash
+doberman plugins list             # enabled names, and every installed-but-maybe-not-enabled entry point
+doberman plugins enable <name>    # e.g. `doberman plugins enable example_rule`
+doberman plugins disable <name>
+```
+
+This closes a gap where a merely-*installed* plugin could influence discovery of another seam before
+your own code ever runs it (an auto-loaded rule plugin, say, setting an env var at import time that a
+different seam reads later). The allowlist is snapshotted once per process before discovery starts, so
+enabling a plugin mid-run has no effect until the next run. A rule/detector plugin also runs against its
+**own copy** of the evaluation context — see "Rule and detector plugins get their own context" below.
+
 ## Write a custom guardrail
 
 Third-party rules register through the **`doberman.rules`** entry-point group
-(`RULE_GROUP` in `src/doberman/engine/registry.py`). Install a package that declares one, and
-`discover_rules()` picks it up automatically; the objective guardrail runs built-in rules and every
-discovered plugin together, reduced with the same raise-only `combine()` used everywhere else, so a
-plugin can only ever add risk, never lower a verdict. A plugin that fails to import, fails to
-construct, or isn't shaped like a `Guardrail` is logged and skipped, never crashes core.
+(`RULE_GROUP` in `src/doberman/engine/registry.py`). Install a package that declares one, then
+`doberman plugins enable <name>` — only then does `discover_rules()` pick it up; the objective
+guardrail runs built-in rules and every enabled plugin together, reduced with the same raise-only
+`combine()` used everywhere else, so a plugin can only ever add risk, never lower a verdict. A plugin
+that fails to import, fails to construct, or isn't shaped like a `Guardrail` is logged and skipped,
+never crashes core.
 
 A five-minute worked example lives at [`examples/plugin-guardrail/`](../examples/plugin-guardrail/)
 (from a git checkout):
@@ -19,8 +38,10 @@ A five-minute worked example lives at [`examples/plugin-guardrail/`](../examples
 ```bash
 pip install -e ".[dev]"
 pip install -e examples/plugin-guardrail
+doberman plugins enable example_rule
 pytest examples/plugin-guardrail/tests -q
-pip uninstall -y doberman-example-plugin-guardrail   # optional: restore core-only discovery
+doberman plugins disable example_rule   # optional: restore core-only discovery
+pip uninstall -y doberman-example-plugin-guardrail
 ```
 
 The tutorial rule, `ExampleRule`, steps up a write to `SECRETS_TODO.md` to `AUTH`, and never puts
@@ -38,9 +59,18 @@ built-ins; prefer `ReasonCode` values from `doberman.models` instead of inventin
 canonicalize paths with `doberman.canonical.canonicalize` before matching; and only return a result
 that *raises* risk for your signal, abstaining (`PASS`) otherwise.
 
-> While the example plugin is installed, core's "no plugins registered" checks will see it, that is
-> expected. Uninstall before re-running the full core suite if you want a clean standalone
-> environment.
+> While the example plugin is installed AND enabled, core's "no plugins registered" checks will see
+> it, that is expected. Disable/uninstall before re-running the full core suite if you want a clean
+> standalone environment.
+
+### Rule and detector plugins get their own context
+
+`EvalContext.metadata` is a plain mutable dict shared with the built-in rules and the subjective
+layer. A rule or detector plugin never sees that shared dict directly: the objective/subjective
+guardrail hands it a **copy** (`ctx.metadata` deep-copied) before calling the plugin. A plugin that
+deletes `raw_arguments` or sets `scope_token=True` on its own copy has no effect on what a later
+built-in, a later plugin, or the caller sees after evaluation — only a plugin's *returned*
+`GuardrailResult` can move risk, and only upward (`combine()`).
 
 ## Forward the audit log (webhook sink)
 
@@ -61,17 +91,19 @@ fields as the local log (path classes, reason codes, verdicts, HMAC fingerprints
 and the auth token value is read from the named env var at POST time, never stored on the sink or
 logged. This is a bridge to your pipeline, not a delivery guarantee.
 
-Additional sinks register the same way, through the **`doberman.audit_sinks`** entry-point group.
-`emit_to_sinks()` in `sinks.py` runs every plugin-registered sink first, then the built-in webhook
-sink and the built-in OpenTelemetry sink (config-gated via `.doberman/audit_otel.yaml`, see
-[the OTel guide](audit_otel.md)); a sink that isn't shaped like an `AuditSink` (no callable `emit`),
-or whose `emit` raises, is logged and skipped, and never affects the decision itself.
+Additional sinks register the same way, through the **`doberman.audit_sinks`** entry-point group:
+register the entry point, then `doberman plugins enable <name>`. `emit_to_sinks()` in `sinks.py` runs
+every enabled plugin-registered sink first, then the built-in webhook sink and the built-in
+OpenTelemetry sink (config-gated via `.doberman/audit_otel.yaml`, see [the OTel guide](audit_otel.md));
+a sink that isn't shaped like an `AuditSink` (no callable `emit`), or whose `emit` raises, is logged
+and skipped, and never affects the decision itself.
 
 ## Auth providers
 
 Alternative backends (SSO/RBAC, hosted/push approvals) register through the **`doberman.auth_providers`**
-entry-point group. Unlike rules and sinks, a registered provider is **opt-in by name**: installing the
-package isn't enough — set `DOBERMAN_AUTH_PROVIDER=<entry-point name>` (comma-separated for more than
-one, in preference order) to activate it. Unset/empty, or no opted-in provider found, and the built-in
-local (CLI + TOTP) provider runs unchanged. Whichever plugin is active, `AuthTier.role_elevation` always
-*also* asks the local provider — a plugin can never grant elevated privileges on its own.
+entry-point group, opted in the same way as every other seam: `doberman plugins enable <name>`.
+Nothing opted in, or no opted-in provider found, and the built-in local (CLI + TOTP) provider runs
+unchanged. Whichever plugin is active, it wraps in a co-gate: the built-in local provider is **always**
+also consulted, for **every** tier, not just role elevation — a plugin's approval is necessary but
+never sufficient, so a compromised or malicious plugin can never authenticate anything on its own; the
+human is always asked too.

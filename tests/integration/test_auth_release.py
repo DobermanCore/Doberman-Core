@@ -9,6 +9,7 @@ from doberman.engine.decision_engine import StaticGuardrail
 from doberman.models import GuardrailResult, ReasonCode, Risk, Verdict
 from doberman.proxy import executor
 from doberman.storage.db import grant_elevation
+from doberman.storage.log import read_decisions
 
 from .test_proxy_passthrough import proxied_session
 
@@ -286,6 +287,18 @@ async def test_unclaimable_single_use_denies_before_forward(
     assert any(
         "single-use elevation already spent or unclaimable" in r.message for r in caplog.records
     )
+    # The human DID approve — the error must read as an unclaimable elevation,
+    # never as the original AUTH challenge's own denial text.
+    text = result.content[0].text
+    assert "blocked by policy" in text
+    assert ReasonCode.single_use_elevation_unclaimable.value in text
+    assert "authentication required" not in text
+
+    rows = await read_decisions(executor.REPO_ROOT)
+    assert len(rows) == 1
+    assert rows[0]["final_verdict"] == "BLOCK"
+    assert ReasonCode.single_use_elevation_unclaimable.value in rows[0]["reason_codes_json"]
+    assert rows[0]["auth_result"] == "unclaimable"
 
 
 async def test_concurrent_calls_share_one_single_use_elevation_only_once(

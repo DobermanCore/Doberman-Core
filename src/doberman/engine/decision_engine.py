@@ -5,6 +5,7 @@ This module is part of the policy core — it must never import
 ``doberman.proxy`` (enforced by import-linter).
 """
 
+import copy
 import logging
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -78,6 +79,28 @@ class StaticGuardrail:
 
 #: Default stubs: observe-everything (PASS/low) until F3/F9 land.
 PASS_STUB = StaticGuardrail(GuardrailResult(verdict=Verdict.PASS, risk=Risk.low))
+
+
+def plugin_ctx(ctx: EvalContext) -> EvalContext:
+    """A per-plugin copy of ``ctx`` — its own, private ``metadata`` dict.
+
+    ``EvalContext`` is only shallow-frozen: the ``metadata`` dict itself is
+    mutable, and built-ins and plugins are handed the SAME dict by default. A
+    rule/detector plugin is untrusted code from an opt-in-by-name package
+    (:mod:`doberman.engine.plugin_config`); without this, a plugin could
+    delete ``raw_arguments`` or set a ``scope_token``/``budget_ok`` flag on the
+    SHARED dict and change what a later built-in or plugin — or the caller,
+    after ``evaluate`` returns — sees. Deep-copies ``metadata`` so nested
+    structures are isolated too; if a value in it is unpicklable (deepcopy
+    raises), falls back to a shallow copy — isolating the top-level dict is
+    still strictly better than sharing it, and a plugin must never be skipped
+    over this.
+    """
+    try:
+        metadata = copy.deepcopy(ctx.metadata)
+    except Exception:  # noqa: BLE001 — an odd value in metadata must not skip the plugin
+        metadata = dict(ctx.metadata)
+    return ctx.model_copy(update={"metadata": metadata})
 
 
 def max_verdict(a: Verdict, b: Verdict) -> Verdict:
