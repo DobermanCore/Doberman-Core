@@ -2992,15 +2992,14 @@ def setup(
         # them as failures; `doberman doctor` has the detail.
         warnings = [r for r in results if r.status is not CheckStatus.OK and r not in critical]
         passed = len(results) - len(critical) - len(warnings)
-        if not critical:
-            line = f"Doctor: {passed} checks passed"
-            if warnings:
-                line += f", {len(warnings)} warning(s) (`doberman doctor` shows them)"
-            typer.echo(line)
-        else:
-            typer.echo(f"Doctor: {len(critical)} critical check(s) need attention:")
-            for r in critical:
-                typer.echo(f"  - {r.name}")
+        line = f"Doctor: {passed} passed"
+        if warnings:
+            line += f", {len(warnings)} warning(s) (`doberman doctor` shows them)"
+        if critical:
+            line += f", {len(critical)} critical — needs attention:"
+        typer.echo(line)
+        for r in critical:
+            typer.echo(f"  - {r.name}")
     except Exception as exc:  # noqa: BLE001 — a diagnostic pass must never crash setup
         typer.echo(f"Doctor: could not run ({type(exc).__name__})")
 

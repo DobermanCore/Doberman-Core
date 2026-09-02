@@ -434,10 +434,13 @@ def test_output_contains_doctor_pass(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "Doctor:" in result.output
-    # A fresh install has only first-run warnings (no decision DB / fingerprint
-    # key yet): the wizard counts them and never lists them as failures.
-    assert "need attention" not in result.output
-    assert "checks passed" in result.output
+    # First-run warnings (no decision DB / fingerprint key yet, no TUI extra)
+    # are counted, never listed as failures. (Whether a *critical* check such
+    # as "Hook command" warns depends on the test runner's PATH, so only the
+    # non-critical names are pinned here.)
+    for first_run_warning in ("Decision DB", "Fingerprint key", "TUI extra"):
+        assert f"  - {first_run_warning}" not in result.output
+    assert "warning(s)" in result.output
 
 
 def test_output_contains_restart_activation_hint(tmp_path: Path) -> None:
