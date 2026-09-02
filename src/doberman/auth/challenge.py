@@ -425,7 +425,7 @@ def run_auth_challenge(
                 "metadata": {
                     **action.metadata,
                     "approval_memory_notice": (
-                        f"You approved this exact action {minutes} min ago — confirm again."
+                        f"You approved this exact action {minutes} min ago - confirm again."
                     ),
                 }
             }
