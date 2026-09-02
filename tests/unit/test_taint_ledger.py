@@ -12,10 +12,15 @@ from doberman.storage.db import db_path, open_db
 from doberman.storage.taint import (
     TAINT_SECRET_ACCESS,
     TAINT_UNTRUSTED_READ,
+    clear_taint,
     entity_scope,
+    match_secret_fingerprint,
+    match_untrusted_value,
     read_taint,
+    record_secret_fingerprints,
     record_taint,
     record_taints,
+    record_untrusted_values,
 )
 
 
@@ -127,3 +132,42 @@ async def test_reopening_a_migrated_db_is_idempotent(tmp_path):
         cols = await _columns(conn, "decisions")
     assert cols.count("session_id") == 1  # not double-added
     assert await read_taint(root, "sess-1") == {TAINT_SECRET_ACCESS: 1}  # data intact
+
+
+# --- session_untrusted_value_fingerprints (C1) ---
+
+
+async def test_record_and_match_untrusted_value(tmp_path):
+    root = str(tmp_path)
+    await record_untrusted_values(root, ["sess-1"], ["hmac:abc"], "WebFetch")
+    assert await match_untrusted_value(root, "sess-1", ["hmac:abc"]) == "WebFetch"
+
+
+async def test_match_untrusted_value_no_hit_is_none(tmp_path):
+    root = str(tmp_path)
+    await record_untrusted_values(root, ["sess-1"], ["hmac:abc"], "WebFetch")
+    assert await match_untrusted_value(root, "sess-1", ["hmac:zzz"]) is None
+
+
+async def test_record_untrusted_values_drops_empty_scopes_and_fingerprints(tmp_path):
+    root = str(tmp_path)
+    await record_untrusted_values(root, ["", None, "sess-1"], [], "WebFetch")
+    assert await match_untrusted_value(root, "sess-1", ["hmac:abc"]) is None
+
+
+async def test_match_untrusted_value_fails_closed_when_no_db(tmp_path):
+    assert await match_untrusted_value(str(tmp_path), "sess-1", ["hmac:abc"]) is None
+
+
+async def test_clear_taint_now_returns_three_counts_and_clears_all_three_tables(tmp_path):
+    root = str(tmp_path)
+    await record_taint(root, "sess-1", TAINT_SECRET_ACCESS)
+    await record_secret_fingerprints(root, ["sess-1"], ["hmac:secret"])
+    await record_untrusted_values(root, ["sess-1"], ["hmac:untrusted"], "WebFetch")
+
+    taint_rows, fp_rows, untrusted_rows = await clear_taint(root)
+
+    assert (taint_rows, fp_rows, untrusted_rows) == (1, 1, 1)
+    assert await read_taint(root, "sess-1") == {}
+    assert await match_secret_fingerprint(root, "sess-1", ["hmac:secret"]) is False
+    assert await match_untrusted_value(root, "sess-1", ["hmac:untrusted"]) is None

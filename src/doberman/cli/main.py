@@ -1752,15 +1752,16 @@ def taint_clear(
         raise typer.Exit(code=1)
 
     try:
-        taint_rows, fingerprint_rows = asyncio.run(clear_taint(path))
+        taint_rows, fingerprint_rows, untrusted_rows = asyncio.run(clear_taint(path))
     except Exception as exc:  # noqa: BLE001 — never report success on a failed clear
         typer.echo(f"error: taint clear failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
     typer.echo(
-        f"Taint cleared ({taint_rows} record(s), {fingerprint_rows} fingerprint(s)). "
-        "This session's memory of a secret being read is gone; egress in this repo "
-        "returns to the mode default until something taints it again."
+        f"Taint cleared ({taint_rows} record(s), {fingerprint_rows} fingerprint(s), "
+        f"{untrusted_rows} untrusted-value fingerprint(s)). "
+        "This session's memory of a secret being read, or an untrusted value being seen, "
+        "is gone; egress in this repo returns to the mode default until something taints it again."
     )
 
 
