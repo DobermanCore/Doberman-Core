@@ -28,6 +28,7 @@ from doberman.explain import (
     build_explanation_payload,
     explain_decision,
     explain_decision_with_source,
+    first_sentence,
     llm_enrichment_enabled,
     template_explanation,
 )
@@ -167,11 +168,31 @@ def test_template_explanation_is_ascii_only():
 
 
 def test_template_explanation_decided_layer_is_plain_words_not_raw_schema():
+    # round 4 design critique item 6: the technical "<layer> decided
+    # <verdict>" phrasing moved out of the headline sentence (now a plain
+    # "Doberman decided X after checking Y") but is kept - via `_describe_layer`
+    # - as a trailing technical detail, never deleted outright.
     objective = template_explanation(_row(decided_layer="objective"))
     assert "objective guardrail layer" in objective
     combined = template_explanation(_row(decided_layer="combined"))
     assert "objective and subjective guardrail layers together" in combined
     assert "combined guardrail layer" not in combined
+
+
+def test_first_sentence_is_the_plain_layer_verdict_summary():
+    # round 4 design critique items 6 + 8: this is deliberately
+    # `template_explanation`'s FIRST sentence, and what `doberman log --why`
+    # prints under a BLOCK/AUTH row.
+    block = _row(final_verdict="BLOCK", decided_layer="objective")
+    assert first_sentence(block) == "Doberman decided BLOCK after checking the rules."
+    assert template_explanation(block).startswith(first_sentence(block))
+
+    auth_combined = _row(final_verdict="AUTH", decided_layer="combined")
+    assert (
+        first_sentence(auth_combined)
+        == "Doberman decided AUTH after checking the rules and the behaviour baseline."
+    )
+    assert first_sentence(auth_combined).isascii()
 
 
 def test_pass_row_with_no_reason_codes_says_what_was_checked():

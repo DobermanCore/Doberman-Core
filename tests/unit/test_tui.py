@@ -32,7 +32,7 @@ from doberman.models import (  # noqa: E402 — after the importorskip, by desig
 from doberman.render import verdict_rich_style  # noqa: E402
 from doberman.storage.db import open_db  # noqa: E402
 from doberman.storage.log import record_decision  # noqa: E402
-from doberman.tui import DecisionExplainerApp, WhyScreen  # noqa: E402
+from doberman.tui import DecisionExplainerApp, WhyScreen, _widths_for  # noqa: E402
 
 _NOW = datetime(2026, 7, 7, 12, 34, 56, tzinfo=timezone.utc)
 _SECRET = "SYNTHETIC-SECRET-AKIA0000TEST"  # noqa: S105 — synthetic test fixture, not a real key
@@ -55,6 +55,23 @@ def _visible_footer_text(app) -> str:
         if key.region.x + key.region.width <= footer.size.width:
             parts.append(f"{key.key_display} {key.description}".strip())
     return "  ".join(parts)
+
+
+async def _wait_for_footer_text(pilot, app, predicate, *, tries: int = 20, delay: float = 0.02):
+    """Poll `_visible_footer_text(app)` through `predicate` until it holds, or
+    `tries` attempts pass. Textual's Footer only recomposes after a dynamic
+    `check_action` change (round 4 design critique item 3's row-action
+    gating) via `refresh_bindings()` -> a signal -> `call_after_refresh` -
+    genuinely eventually-consistent, so a single `pilot.pause()` can
+    legitimately race it under load. Returns the last-seen text either way,
+    so a real failure still shows a useful diff."""
+    text = _visible_footer_text(app)
+    for _ in range(tries):
+        if predicate(text):
+            return text
+        await pilot.pause(delay)
+        text = _visible_footer_text(app)
+    return text
 
 
 def _svg_style_map(svg: str) -> dict[str, str]:
@@ -288,7 +305,9 @@ async def test_time_column_shows_hhmmss_not_the_full_iso_timestamp(tmp_path):
 async def test_auth_cell_short_form_for_memory_approval(tmp_path):
     # round 3 design critique item 10 (CI fix): `doberman log` needs the full
     # "approved via 5-minute memory (soft_confirm)" phrase, but the tui's
-    # 9-wide auth column can't fit it - it asks for the short form.
+    # 7-wide auth column can't fit it - it asks for the short form (round 4:
+    # "memory ok" no longer fits either, once the auth column shrank further
+    # to make room for `why` - it's "mem ok" now).
     root = str(tmp_path)
     await _seed(
         root,
@@ -302,7 +321,7 @@ async def test_auth_cell_short_form_for_memory_approval(tmp_path):
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
         auth_cell = table.get_row_at(0)[4]
-        assert auth_cell.plain == "memory ok"
+        assert auth_cell.plain == "mem ok"
 
 
 async def test_date_bar_shows_the_selected_rows_date_and_the_verdict_legend(tmp_path):
@@ -364,7 +383,7 @@ async def test_filtered_to_zero_matches_is_distinct_from_no_data(tmp_path):
         filter_input.value = "no-such-substring-anywhere"
         await pilot.pause()
         text = _static_text(app.query_one("#explanation"))
-        assert text == "(no rows match the filter)"
+        assert text == "(no rows match the filter - press esc to clear it)"
         assert "hasn't decided anything yet" not in text
         assert "no decision log at" not in text
 
@@ -589,6 +608,46 @@ async def test_jumps_notify_when_nothing_matches(tmp_path, monkeypatch):
         assert notified == ["no AUTH rows in view"]
 
 
+# --- dead keys: no row actions when there's nothing to act on ---------------
+
+
+async def test_row_actions_are_hidden_dead_keys_when_no_rows_are_visible(tmp_path):
+    # round 4 design critique item 3: with nothing loaded, `why`/`copy
+    # id`/next-prev-BLOCK/next-AUTH must not be footer entries that visibly do
+    # nothing when pressed - a dead key is a trap, not a shortcut.
+    root = str(tmp_path)
+    async with open_db(root):
+        pass  # a real, empty decision log - no rows recorded
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        assert app._visible_rows == []
+        for action in ("open_why", "copy_action_id", "next_block", "prev_block", "next_auth"):
+            assert app.check_action(action, ()) is False, action
+        footer_text = await _wait_for_footer_text(
+            pilot, app, lambda t: "next BLOCK" not in t and "copy id" not in t
+        )
+        for label in ("why", "next BLOCK", "prev BLOCK", "next AUTH", "copy id"):
+            assert label not in footer_text, label
+        await pilot.press("w")  # genuinely inert, not just hidden
+        await pilot.pause()
+        assert not isinstance(app.screen, WhyScreen)
+
+
+async def test_row_actions_are_also_hidden_when_a_filter_matches_zero_rows(tmp_path):
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        assert app.check_action("open_why", ()) is True  # one row visible: enabled
+        app.query_one("#filter").value = "no-such-substring-anywhere"
+        await pilot.pause()
+        assert app._visible_rows == []
+        for action in ("open_why", "copy_action_id", "next_block", "prev_block", "next_auth"):
+            assert app.check_action(action, ()) is False, action
+
+
 # --- home/end ------------------------------------------------------------
 
 
@@ -650,7 +709,36 @@ async def test_y_copies_the_selected_action_id(tmp_path, monkeypatch):
         await pilot.press("y")
         await pilot.pause()
         assert copied["text"] == "act-copy-me"
-        assert notified["msg"] == "copy requested: act-copy-me (clipboard via terminal OSC 52)"
+        # round 4 design critique item 9: drop the "OSC 52" jargon, be honest
+        # instead that it's a request the terminal may or may not honor.
+        assert (
+            notified["msg"]
+            == "copy requested: act-copy-me - your terminal decides whether it lands"
+        )
+
+
+async def test_y_also_copies_the_action_id_from_inside_the_why_screen(tmp_path, monkeypatch):
+    # round 4 design critique item 4: `y` must work from inside the why
+    # screen too, copying whichever row that screen is currently showing.
+    root = str(tmp_path)
+    await _seed_block(root, action_id="act-copy-from-why")
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        copied = {}
+        notified = {}
+        monkeypatch.setattr(app, "copy_to_clipboard", lambda text: copied.setdefault("text", text))
+        monkeypatch.setattr(app, "notify", lambda msg, **kw: notified.setdefault("msg", msg))
+        await pilot.press("w")
+        await pilot.pause()
+        assert isinstance(app.screen, WhyScreen)
+        await pilot.press("y")
+        await pilot.pause()
+        assert copied["text"] == "act-copy-from-why"
+        assert "act-copy-from-why" in notified["msg"]
+        # And its footer offers it, same as the main browser's.
+        footer_text = _visible_footer_text(app.screen)
+        assert "copy id" in footer_text
 
 
 # --- focus / full-screen why / help -----------------------------------------
@@ -886,10 +974,11 @@ async def test_no_cell_or_panel_ever_shows_a_seeded_secret(tmp_path):
 async def test_row_derived_markup_renders_literally(tmp_path, monkeypatch):
     # A tampered/crafted stored value must not restyle or spoof the browser via
     # Rich markup — cells and the panel render it as literal text. The value is
-    # sized to fit the target column (12 chars) without truncation, so the
+    # sized to fit the target column (11 chars at 80x24 - round 4 shrank the
+    # base `target` width to make room for `why`) without truncation, so the
     # security property under test isn't entangled with the display truncation.
-    markup = "[b]BLOCK[/b]"
-    assert len(markup) == 12
+    markup = "[b]BLOK[/b]"
+    assert len(markup) == 11
     row = {
         "ts": "2026-07-07T00:00:00+00:00",
         "action_id": "act-markup-1",
@@ -1034,11 +1123,22 @@ async def test_next_line_is_docked_and_on_screen_at_80x24(tmp_path):
         text = _static_text(next_line)
         assert text.startswith("Next:")
         assert "doberman mode" in text
+        assert "doberman review --yes" in text
+        assert text.endswith("press w for detail")
         region = next_line.region
         assert region.width > 0
         assert region.height > 0
         assert region.y >= 0
         assert region.y + region.height <= app.size.height
+        # round 4 design critique item 1: a fixed `height: 1` used to clip the
+        # rendered box to one line even though the underlying text (checked
+        # above) was never truncated - only the RENDER was. Wrapping onto more
+        # than one line, and the tail of the text actually reaching the
+        # screen, is what a `height: 1` box would have hidden.
+        assert region.height >= 2
+        svg = app.export_screenshot()
+        assert "review&#160;--yes" in svg  # mid-text: would be cut by a 1-line box
+        assert "press&#160;w&#160;for&#160;detail" in svg  # the very tail
 
 
 # --- multi-day logs ---------------------------------------------------------
@@ -1097,6 +1197,30 @@ async def test_single_day_log_keeps_hhmmss_time_cell(tmp_path):
         table = app.query_one("#decisions")
         time_cell = table.get_row_at(0)[2]
         assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", time_cell.plain), time_cell.plain
+
+
+# --- column widths: `why` keeps a usable floor at 80 columns ----------------
+
+
+def test_widths_for_80_columns_keeps_why_at_least_8_wide_single_day():
+    # round 4 design critique items 2 + 11: `why` measured only 5 columns at
+    # 80 terminal columns even on a SINGLE-day log (80 columns left zero
+    # spare to distribute) - the room must come from auth/action/target,
+    # never from why.
+    widths = _widths_for(80, multi_day=False)
+    assert widths["why"] >= 8
+    total = sum(widths.values()) + 2 * len(widths)  # + cell padding
+    assert total + 2 + 1 <= 80  # + border columns + the 1-column buffer
+
+
+def test_widths_for_80_columns_keeps_why_at_least_8_wide_multi_day():
+    # Same floor, but on a multi-day log where `time` also widens to fit
+    # "MM-DD HH:MM" - that extra width must come from `target`, never `why`.
+    widths = _widths_for(80, multi_day=True)
+    assert widths["why"] >= 8
+    assert widths["time"] == 11
+    total = sum(widths.values()) + 2 * len(widths)
+    assert total + 2 + 1 <= 80
 
 
 # --- reason codes read as words in the why column ---------------------------
@@ -1160,7 +1284,12 @@ async def test_footer_at_80_columns_shows_the_most_important_bindings(tmp_path):
     app = DecisionExplainerApp(root)
     async with app.run_test(size=(80, 24)) as pilot:
         await _wait_loaded(pilot, app)
-        text = _visible_footer_text(app)
+        # round 4: the footer only recomposes after `refresh_bindings()` once
+        # Textual's own deferred `call_after_refresh` runs - poll rather than
+        # trust a single `pilot.pause()`, which can legitimately race it.
+        text = await _wait_for_footer_text(
+            pilot, app, lambda t: t.startswith("w why  / filter  b next BLOCK  ? help  q quit")
+        )
         assert text.startswith("w why  / filter  b next BLOCK  ? help  q quit")
 
 
@@ -1168,13 +1297,14 @@ async def test_footer_at_120_columns_shows_every_binding(tmp_path):
     root = str(tmp_path)
     await _seed_block(root)
     app = DecisionExplainerApp(root)
+    expected = (
+        "w why  / filter  b next BLOCK  ? help  q quit  B prev BLOCK  "
+        "a next AUTH  y copy id  r reload"
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         await _wait_loaded(pilot, app)
-        text = _visible_footer_text(app)
-        assert text == (
-            "w why  / filter  b next BLOCK  ? help  q quit  B prev BLOCK  "
-            "a next AUTH  y copy id  r reload"
-        )
+        text = await _wait_for_footer_text(pilot, app, lambda t: t == expected)
+        assert text == expected
 
 
 # --- contrast: BLOCK/AUTH chip meets the WCAG floor -----------------------
@@ -1198,11 +1328,23 @@ async def test_block_and_auth_chip_meet_the_contrast_floor_in_both_cursor_states
         reason_codes=[ReasonCode.unknown_external_destination],
         target="curl https://example.com",
     )
+    # round 4 design critique items 5 + 10: medium risk is now a chip too -
+    # plain foreground text measured only 4.06:1 under the cursor row.
+    await _seed(
+        root,
+        action_id="act-medium-1",
+        verdict=Verdict.PASS,
+        risk=Risk.medium,
+        reason_codes=[],
+        target="README.md",
+    )
     app = DecisionExplainerApp(root)
     async with app.run_test(size=(100, 24)) as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
-        table.move_cursor(row=0)  # cursor lands on one of the two BLOCK rows
+        # DESC id order: row0=act-medium-1, row1=act-auth-1, row2=act-block-2,
+        # row3=act-block-1. Land the cursor on a BLOCK row first.
+        table.move_cursor(row=2)
         await pilot.pause()
         svg = app.export_screenshot()
         out_dir = pathlib.Path(__file__).resolve().parents[2] / "test-logs"
@@ -1218,6 +1360,23 @@ async def test_block_and_auth_chip_meet_the_contrast_floor_in_both_cursor_states
         auth_cells = _svg_cell_colors(svg, "! AUTH")
         assert auth_cells
         for text_hex, bg_hex in auth_cells:
+            ratio = _wcag_contrast_ratio(text_hex, bg_hex)
+            assert ratio >= 4.5, (text_hex, bg_hex, ratio)
+
+        # medium risk, not under the cursor in this screenshot.
+        medium_cells = _svg_cell_colors(svg, "medium")
+        assert medium_cells
+        for text_hex, bg_hex in medium_cells:
+            ratio = _wcag_contrast_ratio(text_hex, bg_hex)
+            assert ratio >= 4.5, (text_hex, bg_hex, ratio)
+
+        # And again with the medium-risk row itself under the cursor.
+        table.move_cursor(row=0)
+        await pilot.pause()
+        svg_cursor = app.export_screenshot()
+        medium_cursor_cells = _svg_cell_colors(svg_cursor, "medium")
+        assert medium_cursor_cells
+        for text_hex, bg_hex in medium_cursor_cells:
             ratio = _wcag_contrast_ratio(text_hex, bg_hex)
             assert ratio >= 4.5, (text_hex, bg_hex, ratio)
 
@@ -1244,8 +1403,11 @@ async def test_explain_worker_exception_falls_back_instead_of_hanging_on_narrati
     app = DecisionExplainerApp(root)
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
-        text = _static_text(app.query_one("#explanation"))
-        assert "narrating" in text  # the pending state right after selection
+        # round 4 design critique item 12 (CI fix): assert only the TERMINAL
+        # state, never the transient "narrating..." one - on a loaded/slow CI
+        # runner the debounced worker can already have finished by the time
+        # this test's first assertion would have run, making that assertion
+        # flaky rather than meaningful.
         await pilot.pause(tui_mod._EXPLAIN_DEBOUNCE_S + 0.2)
         await app.workers.wait_for_complete()
         await pilot.pause()

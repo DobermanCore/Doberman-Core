@@ -165,6 +165,28 @@ def _describe_reason(code: str) -> str:
     return _REASON_DESCRIPTIONS.get(code, code.replace("_", " "))
 
 
+def _layer_checked_clause(layer: str) -> str:
+    """What Doberman checked, in plain words (round 4 design critique item 6):
+    "checking the rules" for the objective layer alone, or "...and the
+    behaviour baseline" once the subjective layer weighed in too (``layer ==
+    "combined"``)."""
+    if layer == "combined":
+        return "checking the rules and the behaviour baseline"
+    return "checking the rules"
+
+
+def first_sentence(row: dict) -> str:
+    """The one-line plain-language summary of a decision row: the verdict plus
+    what was checked. Deliberately :func:`template_explanation`'s FIRST
+    sentence (see below) - `doberman log --why` reuses this for a compact
+    one-line "why" without repeating the reason codes `doberman log`'s own row
+    already shows.
+    """
+    verdict = row.get("final_verdict") or "UNKNOWN"
+    layer = row.get("decided_layer") or "objective"
+    return f"Doberman decided {verdict} after {_layer_checked_clause(layer)}."
+
+
 def template_explanation(row: dict) -> str:
     """Deterministic, offline "why" for a decision row. Always available, never raises."""
     role = row.get("agent_role") or "the agent"
@@ -177,8 +199,11 @@ def template_explanation(row: dict) -> str:
     what = f"{role} attempted {action_type}"
     if target:
         what += f" on {target}"
-    layer_desc = _describe_layer(layer)
-    sentences = [f"{what}.", f"{layer_desc[0].upper()}{layer_desc[1:]} decided {verdict}."]
+
+    # Plain-language summary leads (round 4 design critique item 6) - the old
+    # "<layer> decided <verdict>" technical phrasing moves to a trailing
+    # parenthetical below, via `_describe_layer`, rather than being deleted.
+    sentences = [first_sentence(row), f"{what}."]
 
     if reason_codes:
         reasons_text = "; ".join(_describe_reason(c) for c in reason_codes)
@@ -204,6 +229,7 @@ def template_explanation(row: dict) -> str:
             "change, not by re-authenticating."
         )
 
+    sentences.append(f"(Decided by: {_describe_layer(layer)}.)")
     return " ".join(sentences)
 
 

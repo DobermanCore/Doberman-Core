@@ -52,6 +52,7 @@ from doberman.egress.velocity import (
     _VOLUME_THRESHOLD_BYTES,
     VelocityThresholds,
 )
+from doberman.explain import first_sentence
 from doberman.hosthooks.install import DASHBOARD_COMMAND
 from doberman.models import ActionType
 from doberman.policy.checklist import recommend_policy
@@ -71,7 +72,14 @@ from doberman.policy.drift import (
 from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
-from doberman.render import humanize_auth_result, style_text, verdict_label, verdict_label_str
+from doberman.render import (
+    humanize_auth_result,
+    next_step_line,
+    style_text,
+    verdict_label,
+    verdict_label_str,
+    wrap_detail,
+)
 from doberman.storage.approval_memory import clear as clear_approval_memory
 from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
@@ -1664,6 +1672,14 @@ def log(
         "--jsonl",
         help="Emit one redacted JSON object per line (no headings; empty if none).",
     ),
+    why: bool = typer.Option(
+        False,
+        "--why",
+        help=(
+            "Under each BLOCK/AUTH row, also print a one-line plain-language "
+            "why plus the same Next: step the tui shows. Ignored with --jsonl."
+        ),
+    ),
 ) -> None:
     """Show the recent redacted decision log (newest first).
 
@@ -1707,6 +1723,16 @@ def log(
             f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<{_ACTION_WIDTH}} "
             f"{target}  [{reasons}]{auth}"
         )
+        # --why (round 4 design critique item 8): a compact, indented
+        # plain-language line under each BLOCK/AUTH row - the same one-line
+        # summary and "Next" remedy the tui shows, so both surfaces agree.
+        if why and row["final_verdict"] in ("BLOCK", "AUTH"):
+            for line in wrap_detail(first_sentence(row)):
+                typer.echo(line)
+            next_line = next_step_line(row["final_verdict"])
+            if next_line:
+                for line in wrap_detail(next_line):
+                    typer.echo(line)
 
 
 @app.command(rich_help_panel="Daily")

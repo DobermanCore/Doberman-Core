@@ -22,7 +22,7 @@ Day-to-day posture, status, and review commands.
 | `doberman update` | Check PyPI for a newer Doberman and print the upgrade command (never installs). Off under `DO_NOT_TRACK`/`CI`/`DOBERMAN_UPDATE_CHECK=off`. | — |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
 | `doberman policy-versions` | Every policy version that has been in force (newest first); `--show` prints one snapshot, `--verify` checks the catalogue. | `--show`, `--verify`, `--path`/`-p`, `--json` |
-| `doberman log` | Recent redacted decision log, newest first. | `--last`/`-n`, `--path`/`-p`, `--jsonl` |
+| `doberman log` | Recent redacted decision log, newest first. | `--last`/`-n`, `--path`/`-p`, `--jsonl`, `--why` |
 | `doberman decision-log-prune` | Delete resolved decisions by age and/or retained-row budget. Never touches pending AUTH rows or the policy-change ledger. | `--older-than-days`, `--max-rows`, `--path`/`-p` |
 | `doberman tui` | Interactive decision log with a plain-language "why" panel. Keys: `?` help (list every binding), `/` filter, `b`/`B`/`a` next/prev BLOCK or next AUTH, `w`/`enter` full-screen why, `tab` switch focus, `y` copy id, `home`/`end`, `r` reload, `q` quit. Needs the `tui` extra. | `--path`/`-p`, `--last`/`-n` |
 | `doberman dash` | Localhost-only dashboard: live decision feed, stats, and an AUTH approve/deny queue. Needs the `dash` extra. | `--port`, `--path`/`-p` |
@@ -137,6 +137,10 @@ Emits `{version, path, ok, checks[], critical_failures[]}`. `ok` is `true` only 
 ### `doberman log --jsonl`
 
 One redacted JSON object per decision line, newest first. Fields are an allowlist of already-redacted data: `ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id`, `agent_role`, and `risk` when present. Empty stdout when there are no rows.
+
+### `doberman log --why`
+
+Under each `BLOCK`/`AUTH` row (only), prints an indented, terminal-width-wrapped one-line plain-language summary (`doberman.explain`'s deterministic template, offline, e.g. "Doberman decided BLOCK after checking the rules.") plus the same "Next:" remedy step the `tui` browser's why panel shows. Default output (and `--jsonl`) is unchanged; `--why` only adds these extra lines to the human-readable view.
 
 ### `doberman policy-history --json` schema
 

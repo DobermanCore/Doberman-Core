@@ -127,9 +127,46 @@ def test_verdict_rich_style_chip_leaves_pass_as_plain_colored_text():
 
 def test_risk_rich_style_known_levels():
     assert render.risk_rich_style("critical") == "bold #000000 on bright_red"
-    assert render.risk_rich_style("high") == "bold #000000 on red"
-    assert render.risk_rich_style("medium") == "yellow"
+    assert render.risk_rich_style("high") == "bold #000000 on dark_orange"
+    assert render.risk_rich_style("medium") == "bold #000000 on yellow"
     assert render.risk_rich_style("low") == ""
+
+
+def _wcag_contrast_ratio(rgb1, rgb2) -> float:
+    def linear(channel: int) -> float:
+        c = channel / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    def luminance(rgb) -> float:
+        r, g, b = rgb
+        return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+
+    l1, l2 = luminance(rgb1), luminance(rgb2)
+    lighter, darker = max(l1, l2), min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def test_risk_chips_meet_the_contrast_floor_and_form_a_gradient():
+    # round 4 design critique items 5 + 10: critical/high must not share a
+    # color (a real gradient), and every level above low must clear 4.5:1
+    # (medium alone, as plain foreground text, measured only 4.06:1 under the
+    # cursor row). Resolve each style's actual truecolor via Rich itself,
+    # rather than trusting the style string's color name.
+    from rich.style import Style
+
+    fills = {}
+    for risk in ("critical", "high", "medium"):
+        style = Style.parse(render.risk_rich_style(risk))
+        text_rgb = style.color.get_truecolor()
+        bg_rgb = style.bgcolor.get_truecolor()
+        fills[risk] = (text_rgb, bg_rgb)
+        ratio = _wcag_contrast_ratio(
+            (text_rgb.red, text_rgb.green, text_rgb.blue),
+            (bg_rgb.red, bg_rgb.green, bg_rgb.blue),
+        )
+        assert ratio >= 4.5, (risk, text_rgb, bg_rgb, ratio)
+
+    assert fills["critical"][1] != fills["high"][1]  # distinct fills, a real gradient
 
 
 def test_risk_rich_style_unrecognized_value_is_empty_not_a_raise():
@@ -147,10 +184,10 @@ def test_humanize_auth_result_known_values():
 
 
 def test_humanize_auth_result_short_form_for_narrow_columns():
-    # The `tui` browser's 9-wide auth column can't fit the full label - only
+    # The `tui` browser's 7-wide auth column can't fit the full label - only
     # entries with a distinct short form change; everything else (already
     # short) is identical whether or not `short=True`.
-    assert render.humanize_auth_result("soft_confirm+memory", short=True) == "memory ok"
+    assert render.humanize_auth_result("soft_confirm+memory", short=True) == "mem ok"
     assert render.humanize_auth_result("executed", short=True) == "ran"
     assert render.humanize_auth_result("blocked", short=True) == "blocked"
 
@@ -175,3 +212,21 @@ def test_a_242_char_line_wraps_into_multiple_lines():
     lines = render.wrap_detail(text, indent=4, width=100)
     assert len(lines) > 1
     assert all(len(line) <= 100 for line in lines)
+
+
+def test_next_step_line_known_verdicts_and_pass_has_none():
+    # Shared by the `tui` browser's docked "Next" widget and `doberman log
+    # --why` (round 4 design critique item 8) - one source of truth.
+    block = render.next_step_line("BLOCK")
+    assert block is not None
+    assert block.startswith("Next:")
+    assert "doberman mode" in block
+
+    auth = render.next_step_line("AUTH")
+    assert auth is not None
+    assert auth.startswith("Next:")
+    assert "doberman dash" in auth
+
+    assert render.next_step_line("PASS") is None
+    assert render.next_step_line(None) is None
+    assert render.next_step_line("ALLOW") is None  # unrecognized - never raises

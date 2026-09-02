@@ -59,13 +59,17 @@ _CHIP_VERDICT_STYLES: dict[Verdict, str] = {
 
 #: Rich style per risk level for a redacted row's `risk` column - color is a
 #: second signal alongside the plain-word label, never a replacement for it.
+#: Every level above low is a chip (round 4 design critique items 5 and 10):
+#: critical/high must not share a color (`red` read too close to `bright_red`
+#: to form a gradient), and plain `yellow`-on-cursor-row measured only 4.06:1
+#: (below the 4.5:1 floor) - `high` moves to `dark_orange` (#ff8700, 8.72:1
+#: black-on-fill) and `medium` becomes a chip too (yellow fill, 5.01:1
+#: black-on-fill - Rich's named "yellow" is the darker ANSI tone, not a bright
+#: one, which is exactly why the plain-foreground style fell short).
 _RISK_STYLES: dict[str, str] = {
-    # critical/high are inverse chips like the BLOCK/AUTH verdict cells: under
-    # Textual's default theme `bright_red` text is only 3.57:1 on the row
-    # background, and a chip keeps its own background under the cursor row.
     "critical": "bold #000000 on bright_red",
-    "high": "bold #000000 on red",
-    "medium": "yellow",
+    "high": "bold #000000 on dark_orange",
+    "medium": "bold #000000 on yellow",
     "low": "",
 }
 
@@ -82,15 +86,43 @@ _AUTH_RESULT_LABELS: dict[str, str] = {
 }
 
 #: Short forms for the labels above, used only when `short=True` (the `tui`
-#: browser's 9-wide auth column, where the full label would never fit).
+#: browser's 7-wide auth column, where the full label would never fit).
 #: Anything not listed here is already short enough - `short=True` falls back
 #: to the same full label `doberman log` and the why panel/full-screen why use.
 _AUTH_RESULT_SHORT_LABELS: dict[str, str] = {
-    "soft_confirm+memory": "memory ok",
+    "soft_confirm+memory": "mem ok",
 }
 
 _MIN_WRAP_WIDTH = 60
 _MAX_WRAP_WIDTH = 120
+
+#: "Next" lines: one accurate, actionable line per verdict - what a human can
+#: actually do about this decision, using only real `doberman` commands/files
+#: (verified against docs/CLI.md; never invented). Shared by the `tui`
+#: browser's docked next-line widget and `doberman log --why` so the two
+#: surfaces can never drift apart. PASS gets none - there is nothing to act
+#: on. The remedy itself comes first (round 4 design critique item 1: a
+#: bounded-height widget must never clip mid-remedy) - "press w for detail"
+#: (the tui's own full-screen why) trails last, so it's the part safe to lose
+#: if a narrower/shorter render ever clips the tail.
+_NEXT_BLOCK = (
+    "Next: only a policy or role change allows this - 'doberman mode' / "
+    "'doberman review --yes' / .doberman/policies.yaml; press w for detail"
+)
+_NEXT_AUTH = (
+    "Next: re-running the action asks again, or approve/deny it in "
+    "'doberman dash'; press w for detail"
+)
+
+
+def next_step_line(verdict: str | None) -> str | None:
+    """The "Next" remedy line for a raw verdict string (or `None`/anything
+    unrecognized, e.g. PASS) - `None` when there's nothing to act on."""
+    if verdict == Verdict.BLOCK.value:
+        return _NEXT_BLOCK
+    if verdict == Verdict.AUTH.value:
+        return _NEXT_AUTH
+    return None
 
 
 def deadline_note(seconds: float) -> str:
@@ -188,8 +220,8 @@ def humanize_auth_result(auth_result: str | None, *, short: bool = False) -> str
     spaces — never raises, never invents a meaning it wasn't told.
 
     ``short=True`` returns the narrower :data:`_AUTH_RESULT_SHORT_LABELS` form
-    where one exists (e.g. "memory ok" for "soft_confirm+memory") — for the
-    `tui` browser's 9-wide auth column, which can't fit the full label. Every
+    where one exists (e.g. "mem ok" for "soft_confirm+memory") — for the
+    `tui` browser's 7-wide auth column, which can't fit the full label. Every
     other caller (`doberman log`, the why panel/full-screen why) always gets
     the full label.
     """

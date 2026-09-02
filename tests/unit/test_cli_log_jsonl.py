@@ -243,3 +243,38 @@ def test_log_human_action_column_does_not_shift_for_long_types(tmp_path):
     assert len(lines) == 2
     offsets = [line.index(" src/**/*.py") for line in lines]
     assert offsets[0] == offsets[1]
+
+
+def test_log_why_prints_plain_summary_and_next_step_for_block_and_auth_rows(tmp_path):
+    # round 4 design critique item 8: `doberman log --why` adds the same
+    # one-line plain-language summary and "Next" remedy the tui shows, under
+    # each BLOCK/AUTH row only - `_ROWS[1]`'s "ALLOW" is neither, so it gets
+    # nothing extra (an unrecognized/legacy verdict must never raise either).
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return list(_ROWS)
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path), "--why"])
+    assert result.exit_code == 0
+    assert "Doberman decided AUTH after checking the rules." in result.stdout
+    assert "Next: re-running the action asks again" in result.stdout
+    assert "doberman dash" in result.stdout
+    # Nothing is printed under the trailing "ALLOW" row.
+    lines = result.stdout.splitlines()
+    allow_index = next(i for i, ln in enumerate(lines) if ln.startswith("2026-07-30T00:00:01Z"))
+    assert allow_index == len(lines) - 1
+
+
+def test_log_without_why_never_prints_the_extra_lines(tmp_path):
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return list(_ROWS)
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Doberman decided" not in result.stdout
+    assert "Next:" not in result.stdout

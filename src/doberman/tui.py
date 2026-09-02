@@ -77,9 +77,9 @@ _WIDTHS: dict[str, int] = {
     "verdict": 7,
     "time": 8,
     "risk": 8,
-    "auth": 9,
-    "action": 12,
-    "target": 12,
+    "auth": 7,
+    "action": 10,
+    "target": 10,
     "why": 5,
 }
 
@@ -108,15 +108,22 @@ def _widths_for(terminal_width: int, *, multi_day: bool = False) -> dict[str, in
     reviewer scans for, so they get the larger share of any room a wide
     terminal offers. Never narrower than the minimums.
 
+    ``why`` must keep at least 8 columns at 80 terminal columns, single- or
+    multi-day alike (round 4 design critique items 2/11 - it measured only 5
+    even on a single-day log, since 80 columns left zero spare to distribute).
+    The room comes from ``auth``/``action``/``target``'s own minimums (never
+    ``why``'s) - see the reduced values in :data:`_WIDTHS`.
+
     ``multi_day`` widens ``time`` to fit "MM-DD HH:MM" (see ``_time_cell``),
-    borrowing the difference back from ``why``'s minimum so the 80-column
-    no-scroll budget still holds even for a multi-day log at 80 columns.
+    borrowing the difference back from ``target`` (never ``why`` - the whole
+    point of this function) so the 80-column no-scroll budget still holds for
+    a multi-day log too.
     """
     widths = dict(_WIDTHS)
     if multi_day:
         delta = _TIME_WIDTH_MULTI_DAY - widths["time"]
         widths["time"] = _TIME_WIDTH_MULTI_DAY
-        widths["why"] = max(1, widths["why"] - delta)
+        widths["target"] = max(1, widths["target"] - delta)
     used = sum(widths.values()) + _CELL_PADDING * len(widths)
     spare = max(0, terminal_width - used - _BORDER_COLUMNS - 1)
     if spare:
@@ -130,7 +137,12 @@ _MSG_NO_ROWS = (
     "Doberman is running here but hasn't decided anything yet. Trigger a tool "
     "call from your agent, or run 'doberman demo --fast' here, then press r."
 )
-_MSG_NO_MATCH = "(no rows match the filter)"
+_MSG_NO_MATCH = "(no rows match the filter - press esc to clear it)"
+
+#: Actions that need at least one visible row to mean anything - `check_action`
+#: hides all five from the footer (round 4 design critique item 3) rather than
+#: leaving a binding that visibly does nothing when the table is empty.
+_ROW_ACTIONS = frozenset({"open_why", "copy_action_id", "next_block", "prev_block", "next_auth"})
 
 #: Provenance stamps for the top of the why panel (ADR-style honesty about
 #: where the text came from - never silently upgrade/replace without saying so).
@@ -146,29 +158,6 @@ _EXPLAIN_DEBOUNCE_S = 0.3
 #: One-line legend for the ASCII verdict glyphs, shown in the date bar so the
 #: glyph meaning is never something a user has to remember or look up in `?`.
 _LEGEND = "X BLOCK  ! AUTH  . PASS"
-
-#: "Next" lines: one accurate, actionable line per verdict appended to the why
-#: text - what a human can actually do about this decision, using only real
-#: `doberman` commands/files (verified against docs/CLI.md; never invented).
-#: PASS gets none - there is nothing to act on.
-_NEXT_BLOCK = (
-    "Next: this is a hard block - only a policy or role change lets it through "
-    "(`doberman mode` to adjust strength, `doberman review --yes` to save the "
-    "recommended checklist, or edit .doberman/policies.yaml directly). "
-    "Re-running the action will not change this verdict."
-)
-_NEXT_AUTH = (
-    "Next: re-running the action will ask again; a pending approval also shows "
-    "in `doberman dash`'s approve/deny queue."
-)
-
-
-def _next_step_line(verdict: str | None) -> str | None:
-    if verdict == Verdict.BLOCK.value:
-        return _NEXT_BLOCK
-    if verdict == Verdict.AUTH.value:
-        return _NEXT_AUTH
-    return None
 
 
 def _truncate(text: str, width: int) -> str:
@@ -398,6 +387,10 @@ class WhyScreen(ModalScreen[None]):
         Binding("b", "jump_block_next", "next BLOCK", show=True),
         Binding("B", "jump_block_prev", "prev BLOCK", show=True),
         Binding("a", "jump_auth_next", "next AUTH", show=True),
+        # round 4 design critique item 4: `y` works from inside this screen
+        # too - copies the SAME row this screen is currently showing, by
+        # delegating to the App's own action (single source of truth).
+        Binding("y", "copy_action_id", "copy id", show=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -434,6 +427,9 @@ class WhyScreen(ModalScreen[None]):
     def action_jump_auth_next(self) -> None:
         self._jump(verdict=Verdict.AUTH.value, forward=True)
 
+    def action_copy_action_id(self) -> None:
+        self.app.action_copy_action_id()  # type: ignore[attr-defined]
+
 
 class HelpScreen(Screen[None]):
     """`?`: every keybinding this app has, in plain words."""
@@ -443,24 +439,32 @@ class HelpScreen(Screen[None]):
         Binding("q", "close", "close", show=False),
     ]
 
+    # round 4 design critique item 7: four short groups (every line <= 76
+    # chars, so nothing wraps at 80 columns) instead of one long flat list.
     _TEXT = (
         "Doberman decision log - keyboard reference\n"
         "\n"
-        "q            quit\n"
-        "r            reload\n"
-        "?            this help screen\n"
-        "/            filter rows (Enter keeps it, Esc clears it) - matches verdict, target,\n"
-        "             action, reason codes\n"
-        "escape       clear an active filter (works from the table too, not just the filter\n"
-        "             box), or close this screen / the why screen\n"
-        "tab          move focus between the table and the why panel\n"
-        "enter, w     open the full-screen why panel for the selected row\n"
-        "b            jump to the next BLOCK (also works inside the why panel)\n"
-        "B            jump to the previous BLOCK (also works inside the why panel)\n"
-        "a            jump to the next AUTH (also works inside the why panel)\n"
-        "y            copy the selected action id to the clipboard\n"
-        "home         jump to the first row (works no matter which widget has focus)\n"
-        "end          jump to the last row (works no matter which widget has focus)\n"
+        "Navigate\n"
+        "  tab          move focus between the table and the why panel\n"
+        "  b / B        next / previous BLOCK (also inside the why screen)\n"
+        "  a            next AUTH (also inside the why screen)\n"
+        "  home / end   jump to the first / last row (any focused widget)\n"
+        "\n"
+        "Find\n"
+        "  /            filter rows (enter keeps it, escape clears it) -\n"
+        "               matches verdict, action, target, reason codes\n"
+        "  escape       clear an active filter (works from the table too),\n"
+        "               or close the why / help screen\n"
+        "\n"
+        "Read\n"
+        "  enter, w     open the full-screen why panel for the selected row\n"
+        "  y            copy the selected action id (also in the why screen)\n"
+        "\n"
+        "App\n"
+        "  r            reload\n"
+        "  ?            this help screen\n"
+        "  q            quit; closes the why/help screen instead (same as\n"
+        "               escape) whenever one is open\n"
     )
 
     def compose(self) -> ComposeResult:
@@ -542,8 +546,12 @@ class DecisionExplainerApp(App[None]):
     #explanation {
         padding: 1;
     }
+    /* auto/max-height (round 4 design critique item 1): a fixed height: 1
+       silently clipped the "Next" text to whatever fit on one line - it must
+       always be fully visible instead, wrapping onto up to 3 lines. */
     #next-line {
-        height: 1;
+        height: auto;
+        max-height: 3;
         padding: 0 1;
     }
     """
@@ -602,6 +610,12 @@ class DecisionExplainerApp(App[None]):
             if self.focused is filter_input:
                 return True
             return bool(filter_input.value.strip())
+        # round 4 design critique item 3: with no rows to act on (nothing
+        # loaded, or the filter matched zero rows) these five actions would be
+        # dead keys - hide them from the footer instead of leaving a binding
+        # that visibly does nothing when pressed.
+        if action in _ROW_ACTIONS and not self._visible_rows:
+            return False
         return True
 
     async def on_mount(self) -> None:
@@ -670,6 +684,7 @@ class DecisionExplainerApp(App[None]):
 
     def _reset_to_empty(self, message: str) -> None:
         self._visible_rows = []
+        self.refresh_bindings()  # see `_rebuild_table` - same footer-staleness fix
         self._multi_day = False
         self._gutter_row = None
         self._apply_widths(_widths_for(self.size.width, multi_day=False))
@@ -730,6 +745,11 @@ class DecisionExplainerApp(App[None]):
         self._update_subtitle()
 
     def _rebuild_table(self) -> None:
+        # `check_action` reads `self._visible_rows` (round 4 design critique
+        # item 3) but the Footer/binding display only re-polls it on an
+        # explicit nudge - without this, a load/filter that flips
+        # rows-vs-no-rows would leave the footer showing stale bindings.
+        self.refresh_bindings()
         table = self.query_one("#decisions", _DecisionTable)
         previous_key = self._current_key
         table.clear()
@@ -778,7 +798,7 @@ class DecisionExplainerApp(App[None]):
     def _update_next_line(self, row: dict | None) -> None:
         # Docked separately from the panel body (round 3 design critique item
         # 3) so it stays on screen even while the why panel itself scrolls.
-        next_line = _next_step_line(row.get("final_verdict")) if row is not None else None
+        next_line = render.next_step_line(row.get("final_verdict")) if row is not None else None
         self.query_one("#next-line", Static).update(next_line or "")
 
     def _update_gutter(self, index: int) -> None:
@@ -870,7 +890,7 @@ class DecisionExplainerApp(App[None]):
         text = (
             f"{header}\n\n{body}\n\nreason codes: {_reason_codes_text(row)}\naction id: {action_id}"
         )
-        next_line = _next_step_line(row.get("final_verdict"))
+        next_line = render.next_step_line(row.get("final_verdict"))
         return f"{text}\n\n{next_line}" if next_line else text
 
     def current_row(self) -> dict | None:
@@ -952,7 +972,10 @@ class DecisionExplainerApp(App[None]):
             return
         self.copy_to_clipboard(action_id)
         # markup=False: the id is row-derived text and must render literally.
-        self.notify(f"copy requested: {action_id} (clipboard via terminal OSC 52)", markup=False)
+        # round 4 design critique item 9: OSC 52 is the mechanism, not
+        # something a reader needs named - just be honest that it's a request.
+        message = f"copy requested: {action_id} - your terminal decides whether it lands"
+        self.notify(message, markup=False)
 
 
 def run_tui(repo_root: str, *, last: int = 500) -> None:
