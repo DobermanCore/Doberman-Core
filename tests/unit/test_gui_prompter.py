@@ -874,18 +874,24 @@ def _record_focus_requests(monkeypatch):
     still calling through. A headless/CI runner may never GRANT focus (observed
     as ``root.focus_get() is None`` on the Windows leg), so the assertable fact
     is which widget the module requested, not what the window manager did.
+
+    Records Tk PATH NAMES, never widget objects: a list of widgets outlives the
+    test (via the monkeypatch undo stack) and is then garbage-collected on
+    whatever thread runs the cyclic GC next - and a Tk object collected off
+    the Tcl thread aborts the whole process ("Tcl_AsyncDelete: async handler
+    deleted by the wrong thread"), which took down an xdist worker on CI.
     """
     import tkinter
 
-    requested = []
+    requested: list[str] = []
     orig_force, orig_set = tkinter.Misc.focus_force, tkinter.Misc.focus_set
 
     def _force(self):
-        requested.append(self)
+        requested.append(str(self))
         return orig_force(self)
 
     def _set(self):
-        requested.append(self)
+        requested.append(str(self))
         return orig_set(self)
 
     monkeypatch.setattr(tkinter.Misc, "focus_force", _force)
@@ -1404,7 +1410,7 @@ def test_more_time_button_is_never_the_default_focus(real_root, monkeypatch):
     root.update()
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
-    assert requested and requested[-1] is buttons["Deny"]
+    assert requested and requested[-1] == str(buttons["Deny"])
 
 
 def test_code_entry_rejects_non_digit_input(real_root):
@@ -2840,7 +2846,7 @@ def test_help_affordance_is_never_the_default_focus(real_root, monkeypatch):
     import tkinter.ttk as ttk
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
-    assert requested and requested[-1] is buttons["Deny"]
+    assert requested and requested[-1] == str(buttons["Deny"])
 
 
 # --- item 11: technical tone prints HIGH once (headline OR chip) ---------------------
