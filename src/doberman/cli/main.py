@@ -1715,6 +1715,11 @@ def log(
         return
     typer.echo("Doberman decision log")
     typer.echo("=" * 32)
+    # round 7 design critique item 6: `--why` over a window with no BLOCK/AUTH
+    # row must say so explicitly rather than silently printing nothing extra -
+    # a reviewer scanning for "did --why do anything here" shouldn't have to
+    # infer "no" from an absence.
+    any_explained = False
     for row in rows:
         target = row["target_path_class"] or "-"
         reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
@@ -1738,12 +1743,15 @@ def log(
         # one-line `first_sentence` alone. Same "Next" remedy the tui shows,
         # so both surfaces agree.
         if why and row["final_verdict"] in ("BLOCK", "AUTH"):
+            any_explained = True
             for line in wrap_detail(why_body(row)):
                 typer.echo(line)
             next_line = next_step_line(row["final_verdict"], tui_hint=False)
             if next_line:
                 for line in wrap_detail(next_line):
                     typer.echo(line)
+    if why and not any_explained:
+        typer.echo("(no BLOCK or AUTH rows in this window - nothing to explain)")
 
 
 @app.command(rich_help_panel="Daily")

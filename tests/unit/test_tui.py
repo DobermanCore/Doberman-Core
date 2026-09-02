@@ -37,7 +37,11 @@ from doberman.storage.log import record_decision  # noqa: E402
 from doberman.tui import (  # noqa: E402
     DecisionExplainerApp,
     WhyScreen,
+    _abs_utc_and_age,
     _all_targets_missing,
+    _target_width_need,
+    _to_local,
+    _truncate,
     _widths_for,
 )
 
@@ -359,13 +363,15 @@ async def test_auth_cell_short_form_for_memory_approval(tmp_path):
 
 
 async def test_date_bar_shows_the_selected_rows_date_and_the_verdict_legend(tmp_path):
+    # round 7 design critique item 2: the date is now explicitly marked
+    # "(local)" - the table's own `time` column shows local time too.
     root = str(tmp_path)
     await _seed_block(root)
     app = DecisionExplainerApp(root)
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
         date_text = _static_text(app.query_one("#date-bar"))
-        match = re.match(r"(\d{4}-\d{2}-\d{2})  (.+)", date_text)
+        match = re.match(r"(\d{4}-\d{2}-\d{2} \(local\))  (.+)", date_text)
         assert match, date_text
         assert match.group(2) == "X BLOCK  ! AUTH  . PASS"
 
@@ -644,8 +650,9 @@ async def test_a_jumps_to_next_auth(tmp_path):
 
 
 async def test_jumps_notify_when_nothing_matches(tmp_path, monkeypatch):
-    # design critique item 5: b/B/a must say when nothing matched, not just
-    # silently sit still.
+    # design critique item 5: b/B must say when nothing matched, not just
+    # silently sit still. (`a`/next AUTH's own "nothing matches" behavior is
+    # now split across the two tests below it - see round 7 item 4.)
     root = str(tmp_path)
     await _seed(root, action_id="act-1", verdict=Verdict.PASS, reason_codes=[])
     app = DecisionExplainerApp(root)
@@ -656,7 +663,47 @@ async def test_jumps_notify_when_nothing_matches(tmp_path, monkeypatch):
         await pilot.press("b")
         await pilot.pause()
         assert notified == ["no BLOCK rows in view"]
-        notified.clear()
+
+
+async def test_next_auth_is_inert_when_the_loaded_window_has_no_auth_row_at_all(
+    tmp_path, monkeypatch
+):
+    # round 7 design critique item 4: `next_auth` is gated on `_rows` (the
+    # loaded window), not `_visible_rows` - when there is fundamentally no
+    # AUTH row to ever jump to, pressing `a` must be silent, not fire a
+    # "no AUTH rows in view" notify on every press.
+    root = str(tmp_path)
+    await _seed(root, action_id="act-1", verdict=Verdict.PASS, reason_codes=[])
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        assert app.check_action("next_auth", ()) is False
+        notified = []
+        monkeypatch.setattr(app, "notify", lambda msg, **kw: notified.append(msg))
+        await pilot.press("a")
+        await pilot.pause()
+        assert notified == []
+
+
+async def test_next_auth_still_notifies_when_auth_rows_exist_but_are_filtered_out(
+    tmp_path, monkeypatch
+):
+    # Contrast: an AUTH row DOES exist in the loaded window (`_rows`), just
+    # hidden by the current filter (`_visible_rows`) - `next_auth` stays
+    # enabled and the existing "no AUTH rows in view" notify still fires.
+    root = str(tmp_path)
+    await _seed(root, action_id="act-1", verdict=Verdict.PASS, reason_codes=[])
+    await _seed(
+        root, action_id="act-2", verdict=Verdict.AUTH, reason_codes=[ReasonCode.unknown_tool]
+    )
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        assert app.check_action("next_auth", ()) is True
+        app.query_one("#filter").value = "pass"
+        await _wait_for(pilot, lambda: app._visible_rows, lambda rows: len(rows) == 1)
+        notified = []
+        monkeypatch.setattr(app, "notify", lambda msg, **kw: notified.append(msg))
         await pilot.press("a")
         await pilot.pause()
         assert notified == ["no AUTH rows in view"]
@@ -868,7 +915,10 @@ async def test_enter_opens_full_screen_why_with_full_reason_codes_and_action_id(
 async def test_why_screen_shows_row_identity_header_and_bBa_in_its_footer(tmp_path, monkeypatch):
     # round 3 design critique item 4: paging through rows with b/B/a inside
     # the why screen must never lose track of which row is on screen - the
-    # first line names verdict, time, risk, action, target; the footer offers
+    # first line names verdict, the row's absolute UTC time + relative age
+    # (round 7 design critique item 2 - the table's own `time` column now
+    # shows LOCAL time, so this header is the one place always showing the
+    # unambiguous absolute instant), risk, action, target; the footer offers
     # b/B/a directly, not just esc close.
     # A hand-built row (like `test_row_derived_markup_renders_literally`):
     # `_seed`'s helper always writes `action_type=shell_exec` (no path class)
@@ -902,7 +952,15 @@ async def test_why_screen_shows_row_identity_header_and_bBa_in_its_footer(tmp_pa
         assert isinstance(app.screen, WhyScreen)
         full_text = _static_text(app.screen.query_one("#why-text"))
         first_line = full_text.splitlines()[0]
-        assert first_line == "X BLOCK  2026-07-07 01:45:24  high  file_read  backend/secrets/*.env"
+        # Computed the same way production does (round 7 design critique
+        # item 2 - see `_abs_utc_and_age`) rather than hardcoding the
+        # relative-age fragment, which depends on the real wall clock; the
+        # fixed `ts` here (2026-07-07) is stable at day granularity, so this
+        # is not flaky.
+        expected_time_line = _abs_utc_and_age(row)
+        assert first_line == (
+            f"X BLOCK  {expected_time_line}  high  file_read  backend/secrets/*.env"
+        )
         # The modal's own Footer needs an extra tick to lay out its FooterKey
         # children after the screen push.
         await pilot.pause()
@@ -1031,8 +1089,8 @@ async def test_no_cell_or_panel_ever_shows_a_seeded_secret(tmp_path):
 async def test_row_derived_markup_renders_literally(tmp_path, monkeypatch):
     # A tampered/crafted stored value must not restyle or spoof the browser via
     # Rich markup — cells and the panel render it as literal text. The value is
-    # sized to fit the target column (6 chars - round 5 fixed `target` at a
-    # non-growing 6, see design critique item 3) without truncation, so the
+    # sized to fit the target column (6 chars, comfortably under its round 7
+    # floor of 8 - see `_TARGET_WIDTH_FLOOR`) without truncation, so the
     # security property under test isn't entangled with the display truncation.
     markup = "[bold]"
     assert len(markup) == 6
@@ -1208,6 +1266,9 @@ async def test_time_cell_shows_month_day_when_rows_span_multiple_days(tmp_path, 
     # (like `test_row_derived_markup_renders_literally`): `build_record`
     # stamps `ts` with the real wall clock, so `_seed`'s `ts` parameter can't
     # actually control which calendar day a real row lands on.
+    # Round 7 design critique item 2: the cell now shows LOCAL time, so the
+    # expected string is computed via `_to_local` (the same conversion
+    # production uses) rather than assuming the machine's zone is UTC.
     def _row(action_id: str, ts: str) -> dict:
         return {
             "ts": ts,
@@ -1242,8 +1303,10 @@ async def test_time_cell_shows_month_day_when_rows_span_multiple_days(tmp_path, 
         for row_index in range(2):
             time_cell = table.get_row_at(row_index)[2]
             assert re.fullmatch(r"\d{2}-\d{2} \d{2}:\d{2}", time_cell.plain), time_cell.plain
-        assert table.get_row_at(0)[2].plain == "07-07 08:00"
-        assert table.get_row_at(1)[2].plain == "07-08 09:30"
+        expected0 = _to_local(datetime.fromisoformat(rows[0]["ts"])).strftime("%m-%d %H:%M")
+        expected1 = _to_local(datetime.fromisoformat(rows[1]["ts"])).strftime("%m-%d %H:%M")
+        assert table.get_row_at(0)[2].plain == expected0
+        assert table.get_row_at(1)[2].plain == expected1
 
 
 async def test_single_day_log_keeps_hhmmss_time_cell(tmp_path):
@@ -1260,30 +1323,120 @@ async def test_single_day_log_keeps_hhmmss_time_cell(tmp_path):
 # --- column widths: `why` keeps a usable floor at 80 columns ----------------
 
 
-def test_widths_for_80_columns_keeps_why_at_least_13_wide_single_day():
-    # round 4 design critique items 2 + 11: `why` measured only 5 columns at
-    # 80 terminal columns even on a SINGLE-day log (80 columns left zero
-    # spare to distribute) - the room must come from auth/action/target,
-    # never from why. Round 5 item 3 raises the floor further: `target` is
-    # now a fixed 6 that never grows, so ALL spare width goes to `why`. Round
-    # 6 item 1 reserves one more column for Textual's own vertical scrollbar
-    # (see `_BORDER_COLUMNS`), so the floor is 13, not 14 - a smaller cost
-    # than a spurious horizontal scrollbar.
+def test_widths_for_80_columns_keeps_why_and_target_at_their_floor_with_no_real_target(
+    tmp_path,
+):
+    # Round 7 design critique item 1 supersedes round 5 item 3's fixed-6
+    # `target`: with no real target data loaded (`target_need` at its
+    # default floor), `target` and `why` both simply sit at their own floor
+    # (8) once every OTHER column's minimum is paid for at 80 columns - there
+    # is no spare left to grow either one further.
     widths = _widths_for(80, multi_day=False)
-    assert widths["target"] == 6
-    assert widths["why"] >= 13
+    assert widths["target"] == 8
+    assert widths["why"] >= 8
     total = sum(widths.values()) + 2 * len(widths)  # + cell padding
     assert total + 3 + 1 <= 80  # + border/scrollbar columns + the 1-column buffer
 
 
-def test_widths_for_80_columns_keeps_why_at_least_13_wide_multi_day():
-    # Same floor, but on a multi-day log where `time` also widens to fit
-    # "MM-DD HH:MM" - that extra width must come from `target`, never `why`.
+def test_widths_for_80_columns_keeps_why_and_target_at_their_floor_multi_day():
+    # Same floors, but on a multi-day log where `time` also widens to fit
+    # "MM-DD HH:MM" - that extra width comes out of the same spare pool,
+    # never dropping either `target` or `why` below its own floor.
     widths = _widths_for(80, multi_day=True)
-    assert widths["why"] >= 13
+    assert widths["target"] >= 8
+    assert widths["why"] >= 8
     assert widths["time"] == 11
     total = sum(widths.values()) + 2 * len(widths)
     assert total + 3 + 1 <= 80
+
+
+# --- round 7: `target` gets its content need before `why` absorbs the rest --
+
+
+def test_widths_for_80_columns_with_a_real_target_grows_target_and_keeps_why_at_floor():
+    # round 7 design critique item 1: a real `target_path_class` like
+    # "backend/secrets/*.env" (21 chars) must be readable, not pinned at the
+    # old fixed 6 - `target` claims spare width up to its content need
+    # BEFORE `why` gets what's left. At 80 columns there isn't enough spare
+    # to satisfy the full 21-char need, but both columns still clear the
+    # 8-column floor.
+    target_need = len("backend/secrets/*.env")
+    widths = _widths_for(80, target_need=target_need)
+    assert widths["target"] >= 8
+    assert widths["why"] >= 8
+    assert widths["target"] > 8  # target actually grew past its bare floor
+    total = sum(widths.values()) + 2 * len(widths)
+    assert total + 3 + 1 <= 80
+
+
+def test_widths_for_120_columns_with_a_real_target_reaches_its_full_content_need():
+    # At a wider terminal, `target` reaches its FULL content need (21) - it
+    # never grows past what the data actually needs, even with plenty of
+    # spare width available - and `why` absorbs everything left over.
+    target_need = len("backend/secrets/*.env")
+    widths = _widths_for(120, target_need=target_need)
+    assert widths["target"] == target_need
+    assert widths["why"] >= 8
+    assert widths["why"] > widths["target"]  # the wide remainder goes to why
+    total = sum(widths.values()) + 2 * len(widths)
+    assert total + 3 + 1 <= 120
+
+
+def test_truncate_never_shows_a_bare_cut_below_4_chars_without_a_marker():
+    # round 7 design critique item 1: a truncation with no visible "..."
+    # marker must never show fewer than 4 real characters of the value - in
+    # practice no column ever asks for a width this narrow (every floor is
+    # >= 7), so this only guards the function itself.
+    assert _truncate("abcdefgh", 8) == "abcdefgh"  # fits, untouched
+    assert _truncate("abcdefgh", 5) == "ab..."  # marker present, 2 real chars
+    assert _truncate("abcdefgh", 4) == "a..."
+    assert _truncate("abcdefgh", 3) == "..."  # too narrow for any real char + marker
+    assert _truncate("abcdefgh", 1) == "."
+    assert _truncate("abcdefgh", 0) == ""
+
+
+def test_target_width_need_floors_at_8_and_caps_at_24():
+    assert _target_width_need([]) == 8  # nothing loaded yet
+    assert _target_width_need([{"target_path_class": "*.py"}]) == 8  # shorter than the floor
+    assert (
+        _target_width_need([{"target_path_class": "backend/secrets/*.env"}]) == 21
+    )  # exact content need
+    long_target = "a" * 100
+    assert _target_width_need([{"target_path_class": long_target}]) == 24  # capped
+
+
+async def test_target_column_actually_widens_in_the_table_for_a_real_target(tmp_path, monkeypatch):
+    # End-to-end: the table's own `target` column (not just `_widths_for` in
+    # isolation) reflects the loaded rows' content need, and the cell shows
+    # the value without truncation at a wide-enough terminal.
+    target_value = "backend/secrets/*.env"
+    row = {
+        "ts": "2026-07-07T00:00:00+00:00",
+        "action_id": "act-wide-target",
+        "agent_role": "cli",
+        "action_type": "file_read",
+        "target_path_class": target_value,
+        "risk": "high",
+        "source_context": "user",
+        "final_verdict": "BLOCK",
+        "decided_layer": "objective",
+        "reason_codes_json": json.dumps(["sensitive_path_access"]),
+    }
+
+    async def _fake_read(_root, *, limit=None):
+        return [row]
+
+    monkeypatch.setattr("doberman.tui.read_decisions", _fake_read)
+    root = str(tmp_path)
+    async with open_db(root):
+        pass
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await _wait_loaded(pilot, app)
+        assert app._widths["target"] == len(target_value)
+        table = app.query_one("#decisions")
+        target_cell = table.get_row_at(0)[app._headers.index("target")]
+        assert target_cell.plain == target_value
 
 
 def test_widths_for_hides_target_and_gives_its_reclaimed_width_to_why():
@@ -1418,9 +1571,14 @@ async def test_resize_preserves_the_selected_row(tmp_path):
 # --- footer legibility at narrow/wide terminals ---------------------------
 
 
-async def test_footer_at_80_columns_shows_the_most_important_bindings(tmp_path):
-    # design critique item 1: ordered by importance so a narrow footer still
-    # reads useful bindings rather than truncating mid-list.
+_EXPECTED_FOOTER = "w why  / filter  b next BLOCK  ? help  q quit  r reload"
+
+
+async def test_footer_at_80_columns_shows_exactly_the_fixed_six_bindings(tmp_path):
+    # round 7 design critique item 4: the footer never exceeds 6 entries at
+    # ANY width - `B`/`a`/`y` moved to help-only (`show=False`), and `r`
+    # reload is now always shown, so 80 columns shows the exact same set a
+    # wider terminal does (see the test right below).
     root = str(tmp_path)
     await _seed_block(root)
     app = DecisionExplainerApp(root)
@@ -1429,24 +1587,20 @@ async def test_footer_at_80_columns_shows_the_most_important_bindings(tmp_path):
         # round 4: the footer only recomposes after `refresh_bindings()` once
         # Textual's own deferred `call_after_refresh` runs - poll rather than
         # trust a single `pilot.pause()`, which can legitimately race it.
-        text = await _wait_for_footer_text(
-            pilot, app, lambda t: t.startswith("w why  / filter  b next BLOCK  ? help  q quit")
-        )
-        assert text.startswith("w why  / filter  b next BLOCK  ? help  q quit")
+        text = await _wait_for_footer_text(pilot, app, lambda t: t == _EXPECTED_FOOTER)
+        assert text == _EXPECTED_FOOTER
 
 
-async def test_footer_at_120_columns_shows_every_binding(tmp_path):
+async def test_footer_at_120_columns_still_shows_only_the_same_six_bindings(tmp_path):
+    # round 7 design critique item 4: a wider terminal does NOT surface
+    # `B`/`a`/`y` - they are help-only now, at any width.
     root = str(tmp_path)
     await _seed_block(root)
     app = DecisionExplainerApp(root)
-    expected = (
-        "w why  / filter  b next BLOCK  ? help  q quit  B prev BLOCK  "
-        "a next AUTH  y copy id  r reload"
-    )
     async with app.run_test(size=(120, 40)) as pilot:
         await _wait_loaded(pilot, app)
-        text = await _wait_for_footer_text(pilot, app, lambda t: t == expected)
-        assert text == expected
+        text = await _wait_for_footer_text(pilot, app, lambda t: t == _EXPECTED_FOOTER)
+        assert text == _EXPECTED_FOOTER
 
 
 # --- contrast: BLOCK/AUTH chip meets the WCAG floor -----------------------
@@ -1643,13 +1797,15 @@ async def test_footer_at_80_columns_fits_and_esc_clear_shows_while_filter_focuse
             )
 
         assert await _wait_for(pilot, _all_keys_fit, lambda ok: ok)
-        # The least-important bindings are gone from the footer entirely
-        # below 100 columns (see the next test: they still WORK).
+        # `B`/`a`/`y` are gone from the footer entirely, at ANY width (round
+        # 7 design critique item 4 - see the next test: they still WORK).
+        # `r`/"reload" stays shown at every width now.
         footer_text = await _wait_for_footer_text(
             pilot, app, lambda t: "prev BLOCK" not in t and "copy id" not in t
         )
-        for label in ("prev BLOCK", "next AUTH", "copy id", "reload"):
+        for label in ("prev BLOCK", "next AUTH", "copy id"):
             assert label not in footer_text, label
+        assert "reload" in footer_text
 
         await pilot.press("/")
         footer_text = await _wait_for_footer_text(pilot, app, lambda t: "clear" in t)
@@ -1657,21 +1813,33 @@ async def test_footer_at_80_columns_fits_and_esc_clear_shows_while_filter_focuse
         assert await _wait_for(pilot, _all_keys_fit, lambda ok: ok)
 
 
-async def test_low_priority_bindings_still_work_when_hidden_at_80_columns(tmp_path):
-    # round 5 design critique item 2: hidden from the footer != disabled.
+async def test_help_only_bindings_still_work_even_though_never_in_the_footer(tmp_path, monkeypatch):
+    # round 5 design critique item 2 (mechanism) / round 7 item 4 (which keys
+    # this now applies to): `B`/`a`/`y` are permanently hidden from the
+    # footer at every width - hidden from the footer != disabled, they stay
+    # fully live via the keyboard and documented in `?`.
     root = str(tmp_path)
-    await _seed_block(root)
+    await _seed(root, action_id="act-1", verdict=Verdict.BLOCK)
+    await _seed(
+        root, action_id="act-2", verdict=Verdict.AUTH, reason_codes=[ReasonCode.unknown_tool]
+    )
     app = DecisionExplainerApp(root)
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with app.run_test(size=(120, 24)) as pilot:
         await _wait_loaded(pilot, app)
-        footer_text = await _wait_for_footer_text(pilot, app, lambda t: "reload" not in t)
-        assert "reload" not in footer_text
-        await _seed_block(root, action_id="act-tui-2")
-        await pilot.press("r")  # "reload" - hidden from the footer, still bound
+        footer_text = _visible_footer_text(app)
+        assert "prev BLOCK" not in footer_text
+        assert "copy id" not in footer_text
+        table = app.query_one("#decisions")
+        table.move_cursor(row=1)  # the BLOCK row
         await pilot.pause()
-        await app.wait_loaded()
+        await pilot.press("B")  # "prev BLOCK" - hidden from the footer, still bound
         await pilot.pause()
-        assert app.query_one("#decisions").row_count == 2
+        assert table.get_row_at(table.cursor_row)[1].plain == "X BLOCK"
+        copied = {}
+        monkeypatch.setattr(app, "copy_to_clipboard", lambda text: copied.setdefault("text", text))
+        await pilot.press("y")  # "copy id" - hidden from the footer, still bound
+        await pilot.pause()
+        assert copied["text"]
 
 
 # --- round 5: help is a real modal (item 4) -----------------------------------
@@ -2024,12 +2192,15 @@ async def test_date_bar_legend_uses_normal_color_only_the_date_is_muted(tmp_path
         content = app.query_one("#date-bar").content
         assert isinstance(content, Text)
         plain = content.plain
-        match = re.match(r"(\d{4}-\d{2}-\d{2})  (X BLOCK  ! AUTH  \. PASS)", plain)
+        match = re.match(r"(\d{4}-\d{2}-\d{2} \(local\))  (X BLOCK  ! AUTH  \. PASS)", plain)
         assert match, plain
+        # round 7 design critique item 2: "(local)" is part of the muted
+        # date label now, not just the bare date.
         date_len = len(match.group(1))
-        # Every styled span stays within the date - the legend carries no
-        # style at all (round 6 design critique item 8: it renders at the
-        # widget's plain `$text` color, only the date is dimmed).
+        # Every styled span stays within the date(+"(local)") label - the
+        # legend carries no style at all (round 6 design critique item 8: it
+        # renders at the widget's plain `$text` color, only the date label
+        # is dimmed).
         assert content.spans, content.spans
         for span in content.spans:
             assert span.end <= date_len, (span, plain)
@@ -2063,3 +2234,137 @@ async def test_footer_hides_slash_filter_and_offers_enter_keep_while_filter_focu
         footer_text = await _wait_for_footer_text(pilot, app, lambda t: "/ filter" in t)
         assert "/ filter" in footer_text
         assert "enter keep" not in footer_text
+
+
+# --- round 7: overflow cue on the docked panel and the why modal (item 3) ---
+
+
+async def _seed_long_explanation(root: str, action_id: str = "act-long") -> None:
+    """A BLOCK row with enough reason codes that its rendered explanation
+    overflows a short docked panel / why screen - the precondition for the
+    round 7 design critique item 3 scroll-cue tests below."""
+    await _seed(
+        root,
+        action_id=action_id,
+        verdict=Verdict.BLOCK,
+        reason_codes=[
+            ReasonCode.destructive_command,
+            ReasonCode.bulk_operation,
+            ReasonCode.sensitive_path_access,
+            ReasonCode.lethal_trifecta,
+            ReasonCode.irreversible_high_blast,
+        ],
+    )
+
+
+async def test_docked_why_panel_earns_its_scroll_cue_only_when_it_overflows(tmp_path):
+    root = str(tmp_path)
+    await _seed_long_explanation(root)
+
+    short_app = DecisionExplainerApp(root)
+    async with short_app.run_test(size=(76, 16)) as pilot:
+        await _wait_loaded(pilot, short_app)
+        panel_text = _static_text(short_app.query_one("#explanation"))
+        assert panel_text.startswith("(scroll for more)")
+
+    tall_app = DecisionExplainerApp(root)
+    async with tall_app.run_test(size=(76, 60)) as pilot:
+        await _wait_loaded(pilot, tall_app)
+        panel_text = _static_text(tall_app.query_one("#explanation"))
+        assert "(scroll for more)" not in panel_text
+
+
+async def test_docked_why_panel_scroll_cue_clears_once_the_row_no_longer_overflows(tmp_path):
+    # The cue is re-derived on every selection (round 7 item 3), never
+    # stacked from a previous row's longer explanation - and never based on
+    # a stale/lagging measurement of the container's virtual size (see
+    # `DecisionExplainerApp._refresh_why_panel_scroll_cue`'s docstring).
+    # 76x30 (not the 76x16 floor): at 16 the docked panel is so short that
+    # even a reason-code-free PASS row's template explanation overflows it -
+    # this test needs a height where the SHORT row genuinely fits so the
+    # transition (cued -> uncued) is real, not just "cued at both".
+    root = str(tmp_path)
+    await _seed_long_explanation(root, action_id="act-long")
+    await _seed(root, action_id="act-short", verdict=Verdict.PASS, reason_codes=[])
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(76, 30)) as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        # DESC id order: row0=act-short, row1=act-long.
+        table.move_cursor(row=1)
+        await _wait_for(
+            pilot,
+            lambda: _static_text(app.query_one("#explanation")),
+            lambda t: t.startswith("(scroll for more)"),
+        )
+        table.move_cursor(row=0)
+        text = await _wait_for(
+            pilot,
+            lambda: _static_text(app.query_one("#explanation")),
+            lambda t: "(scroll for more)" not in t,
+        )
+        assert "(scroll for more)" not in text
+
+
+async def test_why_screen_earns_its_scroll_cue_only_when_it_overflows(tmp_path):
+    root = str(tmp_path)
+    await _seed_long_explanation(root)
+
+    short_app = DecisionExplainerApp(root)
+    async with short_app.run_test(size=(76, 16)) as pilot:
+        await _wait_loaded(pilot, short_app)
+        await pilot.press("w")
+        await pilot.pause()
+        why_text = _static_text(short_app.screen.query_one("#why-text"))
+        assert why_text.startswith("(scroll for more)")
+
+    tall_app = DecisionExplainerApp(root)
+    async with tall_app.run_test(size=(76, 60)) as pilot:
+        await _wait_loaded(pilot, tall_app)
+        await pilot.press("w")
+        await pilot.pause()
+        why_text = _static_text(tall_app.screen.query_one("#why-text"))
+        assert "(scroll for more)" not in why_text
+
+
+# --- round 7: `?` works from inside the why screen (item 5) -----------------
+
+
+async def test_help_opens_from_inside_the_why_screen_and_escape_returns_to_it(tmp_path):
+    from doberman.tui import HelpScreen
+
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        await pilot.press("w")
+        await pilot.pause()
+        assert isinstance(app.screen, WhyScreen)
+        why_screen = app.screen
+        await pilot.press("?")
+        await pilot.pause()
+        assert isinstance(app.screen, HelpScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is why_screen  # back to the SAME why screen, not the table
+
+
+# --- round 7: footer never exceeds 6 entries, at any width (item 4) ---------
+
+
+async def test_too_small_screen_footer_shows_only_quit(tmp_path):
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(50, 10)) as pilot:
+        await _wait_loaded(pilot, app)
+        footer_text = await _wait_for_footer_text(pilot, app, lambda t: t == "q quit")
+        assert footer_text == "q quit"
+        # Every OTHER key still works though - hidden from the footer, not
+        # disabled (same "hidden != disabled" rule as the help-only keys).
+        await pilot.press("?")
+        await pilot.pause()
+        from doberman.tui import HelpScreen
+
+        assert isinstance(app.screen, HelpScreen)

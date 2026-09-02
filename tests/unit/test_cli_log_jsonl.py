@@ -317,6 +317,37 @@ def test_log_why_on_a_block_row_includes_the_reason_description(tmp_path):
     assert "the command looked destructive" in normalized
 
 
+def test_log_why_with_no_block_or_auth_rows_prints_the_nothing_to_explain_line(tmp_path):
+    # round 7 design critique item 6: `--why` over a window with no BLOCK/AUTH
+    # row must say so explicitly, not just silently print the same rows a
+    # plain `doberman log` would.
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return [{**_ROWS[1], "final_verdict": "ALLOW"}]  # neither BLOCK nor AUTH
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path), "--why"])
+    assert result.exit_code == 0
+    lines = result.stdout.splitlines()
+    assert lines[-1] == "(no BLOCK or AUTH rows in this window - nothing to explain)"
+    assert "Doberman decided" not in result.stdout
+
+
+def test_log_without_why_never_prints_the_nothing_to_explain_line(tmp_path):
+    # The message is `--why`-only - a plain `doberman log` over the same
+    # all-ALLOW window must not print it.
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return [{**_ROWS[1], "final_verdict": "ALLOW"}]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "nothing to explain" not in result.stdout
+
+
 def test_log_without_why_never_prints_the_extra_lines(tmp_path):
     import doberman.cli.main as main_mod
 
