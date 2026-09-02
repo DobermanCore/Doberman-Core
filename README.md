@@ -118,7 +118,7 @@ After installing, run `doberman --install-completion` to enable shell tab comple
 **Fastest path (Claude Code):**
 
 ```bash
-doberman setup      # pick a strictness mode, tune guardrails, wire the hooks
+doberman setup      # asks which agents to guard, then picks a strictness mode, tunes guardrails, wires them
 ```
 
 Anonymous usage counts are on by default (command names and daily totals, never paths, prompts, or

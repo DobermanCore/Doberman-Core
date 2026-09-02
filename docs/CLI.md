@@ -33,7 +33,7 @@ Day-to-day posture, status, and review commands.
 | `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
 | `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
-| `doberman setup` | First-run wizard: pick a security posture and wire Claude Code hooks. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--path`/`-p` |
+| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable), `--path`/`-p` |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
 | `doberman telemetry off` | Opt out after one final best-effort disabled event. | none |
 | `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches. | none |

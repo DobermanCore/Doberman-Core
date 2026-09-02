@@ -66,17 +66,26 @@ def configure_setup_consent(non_interactive: bool) -> None:
         telemetry.disable()
 
 
-def capture_setup_completed(mode: str, scope: str, non_interactive: bool) -> None:
-    """Emit the allowlisted setup outcome after hooks are installed."""
+def capture_setup_completed(
+    mode: str, hosts: list[str], claude_scope: str, non_interactive: bool
+) -> None:
+    """Emit the allowlisted setup outcome after the chosen hosts are wired.
+
+    ``hosts`` is the ordered list of host keys the wizard wired (claude / codex /
+    mcp / openclaw). ``claude_scope`` is the Claude settings scope ("project" /
+    "global") when "claude" was one of them, else the literal string "none".
+    Reuses the existing allowlisted ``setup_completed`` properties (``host``,
+    ``global_install``) rather than adding new ones.
+    """
     from doberman import telemetry
 
     telemetry.capture(
         "setup_completed",
         {
             "mode": mode,
-            "host": "claude",
-            "hooks_installed": True,
-            "global_install": scope == "global",
+            "host": ",".join(hosts),
+            "hooks_installed": any(h in ("claude", "codex") for h in hosts),
+            "global_install": claude_scope == "global",
             "source": "yes" if non_interactive else "wizard",
         },
     )
