@@ -869,6 +869,30 @@ def _press(widget, sequence):
     widget.tk.call(funcid, *(["0"] * 19))
 
 
+def _record_focus_requests(monkeypatch):
+    """Record every widget that ASKS for input focus (``focus_force``/``focus_set``),
+    still calling through. A headless/CI runner may never GRANT focus (observed
+    as ``root.focus_get() is None`` on the Windows leg), so the assertable fact
+    is which widget the module requested, not what the window manager did.
+    """
+    import tkinter
+
+    requested = []
+    orig_force, orig_set = tkinter.Misc.focus_force, tkinter.Misc.focus_set
+
+    def _force(self):
+        requested.append(self)
+        return orig_force(self)
+
+    def _set(self):
+        requested.append(self)
+        return orig_set(self)
+
+    monkeypatch.setattr(tkinter.Misc, "focus_force", _force)
+    monkeypatch.setattr(tkinter.Misc, "focus_set", _set)
+    return requested
+
+
 @pytest.fixture
 def real_root():
     """A real, mapped (not withdrawn) Tk root -- focus tracking needs a mapped
@@ -1367,19 +1391,20 @@ def test_more_time_label_pure_formatting():
     assert gui_prompter._more_time_label(0) == "More time (+2:00, 0 left)"
 
 
-def test_more_time_button_is_never_the_default_focus(real_root):
+def test_more_time_button_is_never_the_default_focus(real_root, monkeypatch):
     """More time exists but must not steal the initial focus away from Deny
     (the safe default) -- _wire_keyboard still wins."""
     import tkinter.ttk as ttk
 
     root = real_root
+    requested = _record_focus_requests(monkeypatch)
     answer: dict = {}
     gui_prompter._configure_window(root)
     gui_prompter._populate_confirm(root, "Approve?", answer, 120.0)
     root.update()
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
-    assert root.focus_get() is buttons["Deny"]
+    assert requested and requested[-1] is buttons["Deny"]
 
 
 def test_code_entry_rejects_non_digit_input(real_root):
@@ -2804,8 +2829,9 @@ def test_help_affordance_collapsed_by_default_and_expands(real_root):
     assert link.cget("text") == gui_prompter._HELP_LABEL
 
 
-def test_help_affordance_is_never_the_default_focus(real_root):
+def test_help_affordance_is_never_the_default_focus(real_root, monkeypatch):
     root = real_root
+    requested = _record_focus_requests(monkeypatch)
     answer: dict = {}
     gui_prompter._configure_window(root)
     gui_prompter._populate_confirm_parts(root, _SAMPLE_PARTS, answer, 120.0)
@@ -2814,7 +2840,7 @@ def test_help_affordance_is_never_the_default_focus(real_root):
     import tkinter.ttk as ttk
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
-    assert root.focus_get() is buttons["Deny"]
+    assert requested and requested[-1] is buttons["Deny"]
 
 
 # --- item 11: technical tone prints HIGH once (headline OR chip) ---------------------
