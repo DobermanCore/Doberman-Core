@@ -47,8 +47,10 @@ command), see the [PATH appendix](#appendix-a-stale-doberman-on-path). Maintaine
 
 ## 2. Run `doberman setup`
 
-On Claude Code, one command does the whole job. An interactive wizard picks your alertness mode,
-tunes your guardrails, and wires the hooks:
+One command does the whole job on any host. An interactive wizard detects which agents you have
+installed (Claude Code, Codex CLI, an MCP client, OpenClaw), asks which ones to guard, then picks
+your alertness mode, tunes your guardrails, and wires each chosen host — finishing with a doctor
+pass:
 
 ```bash
 doberman setup
@@ -58,9 +60,11 @@ doberman setup
 doberman setup --yes
 ```
 
-`--yes` accepts the defaults (balanced mode) with no prompts, useful for CI or scripting. Either
-way, basic protection works immediately. When the wizard finishes, [set a possession
-factor](#4-set-a-password-and-2fa), then verify with [`doberman doctor`](#5-check-its-health).
+`--yes` accepts the defaults (detected hosts, or Claude Code if nothing is detected; balanced mode)
+with no prompts, useful for CI or scripting. Pass `--host` (repeatable) to pick hosts explicitly,
+e.g. `doberman setup --yes --host claude --host codex`. Either way, basic protection works
+immediately. When the wizard finishes, [set a possession factor](#4-set-a-password-and-2fa) — it's
+the first line of `doberman setup`'s own next steps.
 
 On a different host, or want to see exactly what gets wired? The next section covers each path by
 hand.
@@ -70,9 +74,9 @@ hand.
 | Your host | How Doberman attaches | Where |
 |---|---|---|
 | Claude Code | Hooks: gate every built-in and MCP tool call (recommended) | [`doberman setup`](#2-run-doberman-setup) or [Claude Code hooks](#claude-code-hooks) |
-| Codex CLI | Hooks | `doberman install-hooks --host codex`, see [Claude Code hooks](#claude-code-hooks) |
-| Claude Desktop, Cursor, any MCP client | MCP proxy: wrap your tool server | [MCP proxy](#mcp-proxy) |
-| OpenClaw | Native plugin adapter | [OpenClaw](#openclaw) |
+| Codex CLI | Hooks | `doberman setup --host codex` or `doberman install-hooks --host codex`, see [Claude Code hooks](#claude-code-hooks) |
+| Claude Desktop, Cursor, any MCP client | MCP proxy: wrap your tool server | `doberman setup` prints the config; see [MCP proxy](#mcp-proxy) |
+| OpenClaw | Native plugin adapter | `doberman setup` prints the pointer; see [OpenClaw](#openclaw) |
 
 ### Claude Code hooks
 

@@ -21,6 +21,22 @@ app = cli_module.app
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _isolated_host_detection_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point host detection at a throwaway home so this dev machine's real
+    ``~/.claude`` / ``~/.codex`` never leaks into a test's default host choice.
+
+    Nothing is detected unless a test creates a marker under the returned dir,
+    so every existing interactive input sequence below can accept the "Hosts"
+    prompt's default (``claude`` only) with a leading blank line.
+    """
+    from doberman.hosthooks import setup as setup_helpers
+
+    home = tmp_path / "home"
+    monkeypatch.setattr(setup_helpers, "_home", lambda: home)
+    return home
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -138,14 +154,16 @@ def test_interactive_balanced_project_scope(tmp_path: Path) -> None:
     """Interactive run: balanced mode, keep preset prefs, project scope.
 
     Input sequence (newlines terminate each prompt):
+    - hosts: "" (default: claude only, nothing detected)
     - mode choice: "balanced"
+    - telemetry consent: "n"
     - tune prefs: "n"
     - global install: "n"
     """
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="balanced\nn\nn\nn\n",
+        input="\nbalanced\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     assert "Agent profile" not in result.output
@@ -162,7 +180,7 @@ def test_interactive_numeric_mode_choice(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="3\nn\nn\nn\n",
+        input="\n3\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     assert load_mode(str(tmp_path)) == "strict"
@@ -175,7 +193,7 @@ def test_interactive_tune_prefs(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input=f"balanced\nn\ny\n{weight_inputs}\nn\n",
+        input=f"\nbalanced\nn\ny\n{weight_inputs}\nn\n",
     )
     assert result.exit_code == 0, result.output
     prefs = load_preferences(str(tmp_path))
@@ -187,7 +205,7 @@ def test_setup_reprompts_on_bad_mode(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="blanced\nbalanced\nn\nn\nn\n",
+        input="\nblanced\nbalanced\nn\nn\nn\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -216,7 +234,7 @@ def test_setup_explains_each_tuned_dimension(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input=f"balanced\nn\ny\n{weight_inputs}\nn\n",
+        input=f"\nbalanced\nn\ny\n{weight_inputs}\nn\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -267,7 +285,7 @@ def test_interactive_telemetry_yes_persists_and_emits_setup_event(
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="balanced\ny\nn\nn\n",
+        input="\nbalanced\ny\nn\nn\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -293,7 +311,7 @@ def test_interactive_telemetry_default_yes_records_the_choice(tmp_path: Path) ->
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="balanced\n\nn\nn\n",
+        input="\nbalanced\n\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     state = telemetry.status()
@@ -307,7 +325,7 @@ def test_interactive_telemetry_no_persists_disabled(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="balanced\nn\nn\nn\n",
+        input="\nbalanced\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     assert telemetry.status().enabled is False
@@ -322,6 +340,120 @@ def test_yes_does_not_prompt_and_keeps_the_default(tmp_path: Path) -> None:
     state = telemetry.status()
     assert state.enabled is True
     assert state.consent_at is None  # default kept, nothing recorded as a choice
+
+
+# ---------------------------------------------------------------------------
+# Host selection (HK.5)
+# ---------------------------------------------------------------------------
+
+
+def _codex_hooks(tmp: Path) -> dict:
+    p = tmp / ".codex" / "hooks.json"
+    assert p.exists(), f"hooks.json not found at {p}"
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def test_yes_host_codex_writes_hooks_and_no_claude_dir(tmp_path: Path) -> None:
+    """``--yes --host codex`` wires only the Codex hook — no ``.claude`` at all."""
+    result = runner.invoke(app, ["setup", "--yes", "--host", "codex", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    hooks = _codex_hooks(tmp_path)
+    commands = [h["command"] for g in hooks["hooks"]["PreToolUse"] for h in g["hooks"]]
+    assert "doberman hook codex-pre" in commands
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_yes_host_claude_and_codex_writes_both(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["setup", "--yes", "--host", "claude", "--host", "codex", "--path", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    s = _settings(tmp_path)
+    assert PRE_COMMAND in _doberman_commands(s, "PreToolUse")
+    hooks = _codex_hooks(tmp_path)
+    commands = [h["command"] for g in hooks["hooks"]["PreToolUse"] for h in g["hooks"]]
+    assert "doberman hook codex-pre" in commands
+
+
+def test_yes_detects_codex_and_wires_codex_only(
+    tmp_path: Path, _isolated_host_detection_home: Path
+) -> None:
+    """No explicit ``--host``: a detected ``~/.codex`` (with no Claude marker) drives
+    the ``--yes`` default, so only Codex is wired."""
+    (_isolated_host_detection_home / ".codex").mkdir(parents=True)
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".claude").exists()
+    hooks = _codex_hooks(tmp_path)
+    commands = [h["command"] for g in hooks["hooks"]["PreToolUse"] for h in g["hooks"]]
+    assert "doberman hook codex-pre" in commands
+
+
+def test_interactive_hosts_1_2_wires_both(tmp_path: Path) -> None:
+    """Choosing "1,2" at the hosts prompt wires both Claude and Codex."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="1,2\nbalanced\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    s = _settings(tmp_path)
+    assert PRE_COMMAND in _doberman_commands(s, "PreToolUse")
+    hooks = _codex_hooks(tmp_path)
+    commands = [h["command"] for g in hooks["hooks"]["PreToolUse"] for h in g["hooks"]]
+    assert "doberman hook codex-pre" in commands
+
+
+def test_yes_host_mcp_prints_serve_block_and_writes_no_hook_file(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "doberman serve --" in result.output
+    assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / ".codex").exists()
+
+
+def test_yes_host_openclaw_prints_pointer(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--host", "openclaw", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "adapters/openclaw/README.md" in result.output
+    assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / ".codex").exists()
+
+
+def test_invalid_host_exits_2_naming_valid_hosts(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--host", "cursor", "--path", str(tmp_path)])
+    assert result.exit_code == 2
+    assert "claude" in result.output
+    assert "codex" in result.output
+    assert "mcp" in result.output
+    assert "openclaw" in result.output
+
+
+def test_output_contains_doctor_pass(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Doctor:" in result.output
+    # First-run warnings (no decision DB / fingerprint key yet, no TUI extra)
+    # are counted, never listed as failures. (Whether a *critical* check such
+    # as "Hook command" warns depends on the test runner's PATH, so only the
+    # non-critical names are pinned here.)
+    for first_run_warning in ("Decision DB", "Fingerprint key", "TUI extra"):
+        assert f"  - {first_run_warning}" not in result.output
+    assert "warning(s)" in result.output
+
+
+def test_output_contains_restart_activation_hint(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "activates when you restart" in result.output
+
+
+def test_password_set_is_the_first_next_step(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    idx = result.output.index("Next step:")
+    assert "password set" in result.output[idx : idx + 60]
 
 
 # ---------------------------------------------------------------------------

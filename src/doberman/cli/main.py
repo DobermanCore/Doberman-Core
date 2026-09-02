@@ -2147,20 +2147,15 @@ def install_hooks(
         typer.echo("This project is no longer excluded from global hooks.")
 
 
-def _install_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> None:
-    """`install-hooks --host codex`: wire ``doberman hook codex-pre`` into a
-    Codex hooks.json. ``--global`` -> ``~/.codex/hooks.json`` (user), else
-    ``<repo>/.codex/hooks.json`` (repo). ``--local`` has no Codex equivalent."""
-    if local:
-        typer.echo(
-            "error: --local has no Codex equivalent; use --global (user) or the default (repo).",
-            err=True,
-        )
-        raise typer.Exit(2)
+def _write_codex_hook(scope: str, path: str) -> Path:
+    """Write Doberman's Codex hook for *scope* and print the TRUST notice.
+
+    Shared by ``install-hooks --host codex`` (:func:`_install_codex`) and the
+    ``setup`` wizard's per-host wiring, so the write + notice text lives once.
+    """
     from doberman.hosthooks.install import load_settings, write_settings
     from doberman.hosthooks.install_codex import merge_codex_hooks, resolve_codex_hooks_path
 
-    scope = "user" if global_ else "repo"
     hooks_path = resolve_codex_hooks_path(scope, path)
 
     try:
@@ -2170,13 +2165,6 @@ def _install_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> N
         raise typer.Exit(2) from exc
 
     merged = merge_codex_hooks(current)
-
-    if dry_run:
-        typer.echo(f"[dry-run] target: {hooks_path}")
-        typer.echo("[dry-run] would add:")
-        typer.echo("  PreToolUse -> doberman hook codex-pre")
-        return
-
     write_settings(hooks_path, merged)
     typer.echo(f"wrote {hooks_path}")
     typer.echo("Doberman will now gate Codex's tool calls in this scope.")
@@ -2187,6 +2175,32 @@ def _install_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> N
     typer.echo("  run a Codex command and approve the hook when prompted, or launch with")
     typer.echo("  --dangerously-bypass-hook-trust only if you already vet the hook source.")
     typer.echo("Verify it's live: ask Codex to `cat .env` and confirm it is blocked.")
+    return hooks_path
+
+
+def _install_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> None:
+    """`install-hooks --host codex`: wire ``doberman hook codex-pre`` into a
+    Codex hooks.json. ``--global`` -> ``~/.codex/hooks.json`` (user), else
+    ``<repo>/.codex/hooks.json`` (repo). ``--local`` has no Codex equivalent."""
+    if local:
+        typer.echo(
+            "error: --local has no Codex equivalent; use --global (user) or the default (repo).",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    scope = "user" if global_ else "repo"
+
+    if dry_run:
+        from doberman.hosthooks.install_codex import resolve_codex_hooks_path
+
+        hooks_path = resolve_codex_hooks_path(scope, path)
+        typer.echo(f"[dry-run] target: {hooks_path}")
+        typer.echo("[dry-run] would add:")
+        typer.echo("  PreToolUse -> doberman hook codex-pre")
+        return
+
+    _write_codex_hook(scope, path)
 
 
 def _uninstall_codex(*, global_: bool, local: bool, path: str, dry_run: bool) -> None:
@@ -2716,15 +2730,26 @@ def setup(
     global_: bool = typer.Option(
         False, "--global", "-g", help="Install hooks into ~/.claude/settings.json."
     ),
+    hosts: list[str] = typer.Option(  # noqa: B008 — Typer's Option() factory, not a mutable default
+        None,
+        "--host",
+        help=(
+            "Host to wire (repeatable): claude | codex | mcp | openclaw. "
+            "Default: detected hosts, else claude."
+        ),
+    ),
     path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
 ) -> None:
-    """Friendly first-run wizard: choose your security posture and wire Claude Code hooks.
+    """Friendly first-run wizard: pick your hosts and security posture, then wire them.
 
-    Walks through alertness mode, preference tuning, and automatic hook installation.
+    Detects which agents you have installed (Claude Code, Codex CLI, an MCP client,
+    OpenClaw), asks which ones to guard, then walks through alertness mode,
+    preference tuning, and per-host wiring, finishing with a doctor pass.
     Later lowerings require a possession factor — a 2FA code if enrolled,
     otherwise your Doberman password (set via ``doberman password set``).
     Pass ``--yes`` for a fully non-interactive run (useful for CI or scripting).
     """
+    from doberman.hosthooks import setup as hosthooks_setup
     from doberman.hosthooks.install import (
         load_settings,
         merge_doberman_hooks,
@@ -2733,7 +2758,12 @@ def setup(
     )
     from doberman.hosthooks.setup import (
         DIMENSION_DESCRIPTIONS,
+        HOSTS,
+        default_hosts,
+        detect_hosts,
+        host_menu_lines,
         mode_menu_lines,
+        parse_host_choice,
         parse_mode_choice,
     )
     from doberman.policy.preferences import vector_for
@@ -2750,7 +2780,44 @@ def setup(
     typer.echo("")
 
     # ------------------------------------------------------------------
-    # b. Alertness / mode
+    # b. Hosts
+    # ------------------------------------------------------------------
+    valid_host_keys = [h.key for h in HOSTS]
+    detected = detect_hosts(path, hosthooks_setup._home())
+
+    if hosts:
+        invalid = sorted(set(hosts) - set(valid_host_keys))
+        if invalid:
+            typer.echo(
+                f"error: unknown host(s) {', '.join(invalid)}; valid: "
+                + ", ".join(valid_host_keys),
+                err=True,
+            )
+            raise typer.Exit(2)
+        chosen_hosts = [k for k in valid_host_keys if k in set(hosts)]
+    elif yes:
+        chosen_hosts = default_hosts(detected)
+    else:
+        typer.echo("-- Hosts -------------------------------------------------")
+        for line in host_menu_lines(detected):
+            typer.echo(line)
+        typer.echo("")
+        default_nums = ",".join(
+            str(i) for i, h in enumerate(HOSTS, start=1) if h.key in default_hosts(detected)
+        )
+        while True:
+            raw = typer.prompt(
+                "Which hosts should Doberman guard? (numbers or names, comma-separated)",
+                default=default_nums,
+            )
+            try:
+                chosen_hosts = parse_host_choice(raw, detected)
+                break
+            except ValueError as exc:
+                typer.echo(f"  {exc} - try again")
+
+    # ------------------------------------------------------------------
+    # c. Alertness / mode
     # ------------------------------------------------------------------
     if mode_name is not None:
         # Caller pre-selected a mode; validate it immediately.
@@ -2764,9 +2831,11 @@ def setup(
 
         chosen_mode = SecurityMode.balanced
     else:
+        typer.echo("")
         typer.echo("-- Security mode ---------------------------------------")
         for line in mode_menu_lines():
             typer.echo(line)
+        typer.echo("Not sure? `doberman demo --mode strict` shows what each mode blocks.")
         typer.echo("")
         while True:
             raw = typer.prompt("Choose a mode (name or number)", default="balanced")
@@ -2796,7 +2865,7 @@ def setup(
         raise typer.Exit(2) from exc
 
     # ------------------------------------------------------------------
-    # c. Guardrails / preferences
+    # d. Guardrails / preferences
     # ------------------------------------------------------------------
     preset_vector = vector_for(chosen_mode)
     tune_prefs = False
@@ -2827,39 +2896,115 @@ def setup(
         save_preferences(preset_vector, path)
 
     # ------------------------------------------------------------------
-    # d. Hook installation scope
+    # e. Per-host wiring
     # ------------------------------------------------------------------
-    if global_:
-        scope = "global"
-    elif yes:
-        scope = "project"
-    else:
+    wired: list[tuple[str, str | None]] = []
+    claude_scope = "none"
+
+    if "claude" in chosen_hosts:
+        if global_:
+            claude_scope = "global"
+        elif yes:
+            claude_scope = "project"
+        else:
+            typer.echo("")
+            typer.echo("-- Hook installation (Claude Code) ----------------------")
+            use_global = typer.confirm(
+                "Install hooks globally (~/.claude/settings.json)?",
+                default=False,
+            )
+            claude_scope = "global" if use_global else "project"
+
+        settings_path = resolve_settings_path(claude_scope, path)
+        try:
+            current = load_settings(settings_path)
+        except ValueError as exc:
+            typer.echo(f"error: could not read existing settings: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        merged = merge_doberman_hooks(current)
+        try:
+            write_settings(settings_path, merged)
+        except OSError as exc:
+            typer.echo(f"error: could not write {settings_path}: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        wired.append(("claude", str(settings_path)))
+
+    if "codex" in chosen_hosts:
+        if global_:
+            codex_scope = "user"
+        elif yes:
+            codex_scope = "repo"
+        else:
+            typer.echo("")
+            typer.echo("-- Hook installation (Codex CLI) -------------------------")
+            use_user = typer.confirm(
+                "Install the Codex hook user-wide (~/.codex/hooks.json)?",
+                default=False,
+            )
+            codex_scope = "user" if use_user else "repo"
+        codex_hooks_path = _write_codex_hook(codex_scope, path)
+        wired.append(("codex", str(codex_hooks_path)))
+
+    if "mcp" in chosen_hosts:
         typer.echo("")
-        typer.echo("-- Hook installation -----------------------------------")
-        use_global = typer.confirm(
-            "Install hooks globally (~/.claude/settings.json)?",
-            default=False,
+        typer.echo("-- MCP proxy (Cursor / Claude Desktop / other MCP client) ---")
+        typer.echo(
+            "Doberman can't edit this host's MCP config for you; paste this into it, "
+            "replacing <your-mcp-server-command> with your existing tool server command:"
         )
-        scope = "global" if use_global else "project"
+        typer.echo("")
+        typer.echo("  doberman serve -- <your-mcp-server-command>")
+        typer.echo("")
+        typer.echo("Or, in a Claude-Desktop-style mcpServers config file:")
+        typer.echo("{")
+        typer.echo('  "mcpServers": {')
+        typer.echo('    "doberman": {')
+        typer.echo('      "command": "doberman",')
+        typer.echo('      "args": ["serve", "--", "<your-mcp-server-command>"]')
+        typer.echo("    }")
+        typer.echo("  }")
+        typer.echo("}")
+        wired.append(("mcp", None))
 
-    settings_path = resolve_settings_path(scope, path)
-
-    try:
-        current = load_settings(settings_path)
-    except ValueError as exc:
-        typer.echo(f"error: could not read existing settings: {exc}", err=True)
-        raise typer.Exit(2) from exc
-
-    merged = merge_doberman_hooks(current)
-
-    try:
-        write_settings(settings_path, merged)
-    except OSError as exc:
-        typer.echo(f"error: could not write {settings_path}: {exc}", err=True)
-        raise typer.Exit(1) from exc
+    if "openclaw" in chosen_hosts:
+        typer.echo("")
+        typer.echo("-- OpenClaw -------------------------------------------------")
+        typer.echo(
+            "OpenClaw agents route through Doberman via a small local plugin, not a hook-pack."
+        )
+        typer.echo(
+            "See adapters/openclaw/README.md for install steps and the mandatory canary check."
+        )
+        wired.append(("openclaw", None))
 
     # ------------------------------------------------------------------
-    # e. Summary
+    # f. Doctor pass
+    # ------------------------------------------------------------------
+    typer.echo("")
+    typer.echo("-- Doctor -------------------------------------------------")
+    try:
+        from doberman.cli.doctor import CheckStatus, critical_failures, run_checks
+
+        results = run_checks(path)
+        critical = critical_failures(results)
+        # Non-critical warnings (no decision DB or fingerprint key yet, no TUI
+        # extra) are normal right after a fresh setup — count them, don't list
+        # them as failures; `doberman doctor` has the detail.
+        warnings = [r for r in results if r.status is not CheckStatus.OK and r not in critical]
+        passed = len(results) - len(critical) - len(warnings)
+        line = f"Doctor: {passed} passed"
+        if warnings:
+            line += f", {len(warnings)} warning(s) (`doberman doctor` shows them)"
+        if critical:
+            line += f", {len(critical)} critical - needs attention:"
+        typer.echo(line)
+        for r in critical:
+            typer.echo(f"  - {r.name}")
+    except Exception as exc:  # noqa: BLE001 — a diagnostic pass must never crash setup
+        typer.echo(f"Doctor: could not run ({type(exc).__name__})")
+
+    # ------------------------------------------------------------------
+    # g. Summary
     # ------------------------------------------------------------------
     typer.echo("")
     typer.echo("-- Setup complete ------------------------------------------")
@@ -2867,15 +3012,33 @@ def setup(
     typer.echo(
         f"Prefs:      {'custom (tuned)' if tune_prefs else 'preset defaults for ' + chosen_mode.value}"
     )
-    typer.echo(f"Hooks:      written to {settings_path}")
+    typer.echo("Hosts:")
+    for host_key, target in wired:
+        if host_key == "claude":
+            typer.echo(f"  claude   hooks written to {target}")
+        elif host_key == "codex":
+            typer.echo(f"  codex    hook written to {target}")
+        elif host_key == "mcp":
+            typer.echo("  mcp      config printed above (paste into your client)")
+        elif host_key == "openclaw":
+            typer.echo("  openclaw instructions printed above")
     typer.echo("")
-    typer.echo("Doberman is now active.")
-    typer.echo("Restart your Claude Code session to pick up the hooks.")
-    telemetry_cmd.capture_setup_completed(chosen_mode.value, scope, yes)
-    typer.echo(
-        "Next steps: `doberman password set`  |  `doberman 2fa setup` (optional)  |  "
-        "`doberman status`  |  `doberman uninstall-hooks` (exit)"
+
+    hooks_kind_wired = [h for h in wired if next(x for x in HOSTS if x.key == h[0]).kind == "hooks"]
+    if hooks_kind_wired:
+        typer.echo("Hooks written. Doberman activates when you restart your session.")
+        for host_key, _ in hooks_kind_wired:
+            host = next(x for x in HOSTS if x.key == host_key)
+            typer.echo(host.restart_hint)
+
+    telemetry_cmd.capture_setup_completed(
+        chosen_mode.value, [h for h, _ in wired], claude_scope, yes
     )
+    typer.echo(
+        "Next step: `doberman password set` - later lowerings need a possession factor "
+        "(a 2FA code if enrolled, otherwise this password)."
+    )
+    typer.echo("Also: `doberman 2fa setup` (optional)  |  `doberman status`  |  `doberman doctor`")
 
 
 @app.command("session-summary")
