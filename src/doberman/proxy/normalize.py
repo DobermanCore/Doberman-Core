@@ -202,6 +202,13 @@ _SUSPECTED_EGRESS_VERB = re.compile(
 
 def _map_action_type(tool_name: str) -> ActionType:
     name = tool_name.lower()
+    # Host-namespaced MCP tools (``mcp__<server>__<tool>``, the shape Claude Code
+    # passes through verbatim) are classified by the tool part: the server
+    # prefix is routing, not a category, and must not hide a file/shell tool.
+    if name.startswith("mcp__"):
+        _server, _sep, tool_part = name[5:].partition("__")
+        if tool_part:
+            name = tool_part
     if "install" in name:
         return ActionType.package_install
     for prefixes, action_type in _TOOL_PREFIX_MAP:
