@@ -152,9 +152,10 @@ def verify(secret: str) -> bool:
     """Verify ``secret`` against the stored hash without ever raising.
 
     Fails closed: not enrolled, malformed input/storage, KDF errors, or a
-    rate-limit lockout all return ``False``. A successful verification clears
-    the persisted lockout state; each failed comparison or verification error
-    saves an incremented failure count (see :mod:`doberman.auth.lockout`).
+    rate-limit lockout all return ``False``. Every attempt is counted on disk
+    before the KDF runs and a successful verification clears the persisted
+    lockout state; an attempt that cannot be recorded is denied
+    (see :mod:`doberman.auth.lockout`).
 
     Lockout semantics mirror :func:`doberman.auth.totp.verify`: once
     ``_MAX_CONSECUTIVE_FAILURES`` consecutive failures accrue, further
@@ -180,6 +181,14 @@ def verify(secret: str) -> bool:
             return False  # still locked: deny without touching state or the KDF
         failures = 0  # cooldown elapsed: this attempt starts a fresh window
 
+    # Count the attempt BEFORE the (slow) KDF runs, so concurrent guesses cannot
+    # all read the same pre-attempt count and overwrite each other after it; an
+    # attempt that cannot be recorded is denied rather than run unaccounted.
+    # ponytail: read-modify-write, not a CAS — the window is now one file
+    # write instead of one KDF; an O_EXCL lock file is the upgrade path.
+    if not _save_lockout(lockout_path, failures + 1, now):
+        return False
+
     try:
         if not isinstance(secret, str):
             raise TypeError("password must be text")
@@ -196,6 +205,4 @@ def verify(secret: str) -> bool:
 
     if ok:
         _clear_lockout(secret_path)
-    else:
-        _save_lockout(lockout_path, failures + 1, now)
-    return ok
+    return ok  # a failure was already counted above

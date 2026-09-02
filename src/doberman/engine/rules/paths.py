@@ -90,6 +90,7 @@ CONTROL_PLANE_GLOBS: tuple[str, ...] = (
     "**/doberman/totp.secret",
     "**/doberman/totp.secret.*",
     "**/doberman/password.hash",
+    "**/doberman/password.hash.*",
     # ...and the containing state dir, so a recursive delete of the whole directory
     # is caught too. Deliberately NOT a bare ``**/doberman`` — that would match any
     # checkout of this project (the repo itself is named ``doberman``) and block
