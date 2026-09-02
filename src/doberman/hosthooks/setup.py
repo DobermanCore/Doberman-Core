@@ -7,11 +7,13 @@ prompt, echo, or write files — the command layer does that.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from doberman.policy.modes import SecurityMode
+from doberman.render import wrap_detail
 
 #: One-line description for each mode shown during the setup wizard.
 MODE_DESCRIPTIONS: dict[SecurityMode, str] = {
@@ -20,19 +22,36 @@ MODE_DESCRIPTIONS: dict[SecurityMode, str] = {
         "Moderate step-ups for risky actions (default). Balances security and flow."
     ),
     SecurityMode.strict: (
-        "Frequent step-ups; trifecta actions become hard blocks. Good for shared repos."
+        "Frequent step-ups; trifecta actions (sensitive data + untrusted content + external "
+        "destination, together) become hard blocks. Good for shared repos."
     ),
     SecurityMode.paranoid: ("Maximum step-ups; very low thresholds. For high-risk environments."),
 }
 
 #: Plain-English meaning of each preference dimension shown during tuning.
+#: Each carries a one-line 0/1 anchor (item 9) so a bare number has a concrete
+#: meaning instead of just "strongly" - accurate to the dimension docstrings in
+#: ``doberman.policy.preferences`` (each weight modulates step-up propensity;
+#: ``interruption_tolerance`` alone scales the ask-threshold rather than the
+#: care term, hence its distinct "never ask" / "ask on every risky action"
+#: framing versus the other three's "never/always escalate").
 DIMENSION_DESCRIPTIONS: dict[str, str] = {
-    "confidentiality": "How strongly to step up for sensitive data or external destinations.",
-    "reversibility": "How strongly to step up for actions that are difficult to undo.",
-    "interruption_tolerance": (
-        "How willing you are to be asked before risky actions; higher means more prompts."
+    "confidentiality": (
+        "How strongly to step up for sensitive data or external destinations "
+        "(0 = never escalate, 1 = always escalate)."
     ),
-    "blast_radius": "How strongly to step up for actions that affect many targets.",
+    "reversibility": (
+        "How strongly to step up for actions that are difficult to undo "
+        "(0 = never escalate, 1 = always escalate)."
+    ),
+    "interruption_tolerance": (
+        "How willing you are to be asked before risky actions "
+        "(0 = never ask, 1 = ask on every risky action)."
+    ),
+    "blast_radius": (
+        "How strongly to step up for actions that affect many targets "
+        "(0 = never escalate, 1 = always escalate)."
+    ),
 }
 
 
@@ -43,22 +62,21 @@ class Host:
     key: str  # "claude" | "codex" | "mcp" | "openclaw"
     label: str
     kind: str  # "hooks" | "mcp" | "plugin"
-    restart_hint: str  # printed in the summary for "hooks"-kind hosts only
 
 
-#: Hosts the wizard offers, in menu/wiring order. ``restart_hint`` is only ever
-#: shown for "hooks"-kind hosts (claude, codex); mcp/openclaw print their own
-#: one-line pointers during per-host wiring instead.
+#: Hosts the wizard offers, in menu/wiring order. The generic "Hooks written.
+#: Doberman activates when you restart your session." summary line covers the
+#: restart instruction for every "hooks"-kind host; mcp/openclaw print their
+#: own one-line pointers during per-host wiring instead.
 HOSTS: tuple[Host, ...] = (
-    Host("claude", "Claude Code (hooks)", "hooks", "Restart your Claude Code session."),
-    Host("codex", "Codex CLI (hooks)", "hooks", "Restart your Codex CLI session."),
+    Host("claude", "Claude Code (hooks)", "hooks"),
+    Host("codex", "Codex CLI (hooks)", "hooks"),
     Host(
         "mcp",
         "Cursor / Claude Desktop / other MCP agent (proxy: doberman serve)",
         "mcp",
-        "",
     ),
-    Host("openclaw", "OpenClaw (plugin hook)", "plugin", ""),
+    Host("openclaw", "OpenClaw (plugin hook)", "plugin"),
 )
 
 
@@ -83,13 +101,18 @@ def detect_hosts(project_root: str, home: Path) -> set[str]:
     """Best-effort detection of which hosts are already set up on this machine.
 
     ``openclaw`` has no reliable marker, so it is never auto-detected — the
-    wizard always offers it, never preselects it.
+    wizard always offers it, never preselects it. Codex detection (round 6
+    item 5) uses the same probe `doctor`'s own "Codex CLI" check does
+    (``shutil.which("codex")``) IN ADDITION TO the existing ``~/.codex``
+    config-dir check — an npm-installed Codex CLI that has never been run yet
+    (so no ``~/.codex`` exists) still reads as present, instead of silently
+    under-detecting it relative to what `doctor` would report.
     """
     root = Path(project_root)
     detected: set[str] = set()
     if (home / ".claude").exists() or (root / ".claude").exists():
         detected.add("claude")
-    if (home / ".codex").exists() or (root / ".codex").exists():
+    if (home / ".codex").exists() or (root / ".codex").exists() or shutil.which("codex"):
         detected.add("codex")
     if (
         (root / ".cursor").exists()
@@ -103,14 +126,21 @@ def detect_hosts(project_root: str, home: Path) -> set[str]:
 def host_menu_lines(detected: set[str]) -> list[str]:
     """Return formatted menu lines for the four hosts, marking detected ones.
 
-    Labels are padded to the widest one so every ``<- detected`` tag lines up
-    in a column, regardless of which host it's marking.
+    Round 6 item 7: this used to pad every label to the widest one (mcp's,
+    65 columns) so every ``<- detected`` tag lined up in a column - but that
+    padding pushed even the SHORT labels' lines past 78 columns (mcp's own
+    unpadded line already runs to 85), and once :func:`wrap_detail` had to
+    wrap them, the padding-driven width forced the short entries to wrap too
+    (splitting "<-" onto its own line ahead of "detected"). Dropping the
+    column alignment - a single ``"  <- detected"`` right after the label,
+    same as any other host - fixes both: short entries stay one line, and
+    only mcp's genuinely-too-long one wraps.
     """
-    width = max(len(host.label) for host in HOSTS)
     lines: list[str] = []
     for i, host in enumerate(HOSTS, start=1):
-        tag = "   <- detected" if host.key in detected else ""
-        lines.append(f"  [{i}] {host.label:<{width}}{tag}")
+        tag = "  <- detected" if host.key in detected else ""
+        raw = f"  [{i}] {host.label}{tag}"
+        lines.extend(wrap_detail(raw, indent=0, hang=6))
     return lines
 
 
@@ -151,10 +181,20 @@ def parse_host_choice(raw: str, detected: set[str]) -> list[str]:
 
 
 def mode_menu_lines() -> list[str]:
-    """Return formatted menu lines for the four security modes."""
+    """Return formatted menu lines for the four security modes.
+
+    Uses the same ``[N]`` numbering style as :func:`host_menu_lines` (item 9)
+    so the two wizard menus read consistently. A description too long for the
+    terminal (the ``strict`` one routinely is) wraps with a hanging indent, so
+    continuation lines land under the description column rather than at the
+    left margin.
+    """
     lines: list[str] = []
     for i, mode in enumerate(SecurityMode, start=1):
-        lines.append(f"  {i}) {mode.value:<10} {MODE_DESCRIPTIONS[mode]}")
+        prefix = f"  [{i}] {mode.value:<10} "
+        wrapped = wrap_detail(MODE_DESCRIPTIONS[mode], indent=len(prefix))
+        lines.append(prefix + wrapped[0][len(prefix) :])
+        lines.extend(wrapped[1:])
     return lines
 
 

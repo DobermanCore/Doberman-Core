@@ -284,36 +284,77 @@ async def _record_change(
         logger.warning("policy-change ledger write failed; continuing")
 
 
-async def apply_change(
+async def _run_gate_if_weaken(
+    before: dict,
+    after: dict,
+    reason: str,
+    classification: Classification,
+    prompter: Prompter | None,
+) -> tuple[bool, str]:
+    """A weaken clears the interactive gate; anything else applies automatically.
+
+    Round 6 item 9: with NEITHER factor enrolled, a weakening can never
+    succeed no matter how the confirm prompt is answered - checking that
+    FIRST, before ever rendering the WEAKENING diff and asking for
+    confirmation, means a caller with nothing enrolled is denied right away
+    instead of reviewing a scary diff and confirming it only to be denied
+    anyway for a reason the confirm step could never have changed. Every
+    caller through this chokepoint (``doberman mode``, ``doberman prefs``,
+    the setup wizard's own deferred mode/prefs gates) gets this for free.
+    """
+    if classification is Classification.weaken:
+        if not (totp.is_enrolled() or password.is_enrolled()):
+            return False, "no_factor_enrolled"
+        from doberman.auth.provider import CliPrompter
+
+        return _run_weaken_gate(before, after, reason, prompter or CliPrompter())
+    return True, "auto"
+
+
+async def decide_change(
     before: dict,
     after: dict,
     reason: str,
     *,
-    repo_root: str,
     prompter: Prompter | None = None,
+) -> tuple[Classification, bool, str]:
+    """Classify a policy change and, for a weaken, run the interactive gate —
+    WITHOUT recording anything.
+
+    The decision half of :func:`apply_change`, split out for a caller whose
+    eventual persistence is not yet certain at decision time (e.g. `doberman
+    setup`, which defers `save_mode`/`save_preferences` until per-host wiring
+    has also succeeded). Recording an "approved" ledger row any earlier would
+    leave a fictional entry behind if the wizard then aborts before ever
+    writing the change to disk. Pair with :func:`record_change`: a DENIED
+    outcome is already a complete, real event (the mode/prefs file is never
+    touched by it either way) and should be recorded right away, same as every
+    direct :func:`apply_change` caller gets.
+    """
+    reason = _redact_reason(reason)
+    classification = classify_change(before, after)
+    approved, method = await _run_gate_if_weaken(before, after, reason, classification, prompter)
+    return classification, approved, method
+
+
+async def record_change(
+    before: dict,
+    after: dict,
+    classification: Classification,
+    reason: str,
+    *,
+    repo_root: str,
+    approved: bool,
+    method: str,
     now: datetime | None = None,
 ) -> ChangeOutcome:
-    """The single chokepoint for a policy change. Returns the outcome.
+    """Write an already-decided change to the ledger and fan it out to observers.
 
-    A **weaken** is gated behind confirmation of a rendered diff plus a possession
-    factor (TOTP if enrolled, else password), and is approved only on success; a
-    **strengthen**/**neutral** applies automatically.
-    Every attempt (incl. denials) is written to the append-only ledger and fanned
-    out to registered drift observers. The caller persists the new policy **only
-    when** ``outcome.approved`` is True — this function decides, records, and
-    notifies; it never weakens silently.
+    The recording half of :func:`apply_change`/:func:`decide_change` — performs
+    no gating of its own; the caller has already decided ``approved``/``method``.
     """
     reason = _redact_reason(reason)
     when = now or datetime.now(timezone.utc)
-    classification = classify_change(before, after)
-
-    if classification is Classification.weaken:
-        from doberman.auth.provider import CliPrompter
-
-        approved, method = _run_weaken_gate(before, after, reason, prompter or CliPrompter())
-    else:
-        approved, method = True, "auto"
-
     await _record_change(
         repo_root,
         before,
@@ -336,6 +377,40 @@ async def apply_change(
     )
     return ChangeOutcome(
         classification=classification, approved=approved, method=method, ts=when.isoformat()
+    )
+
+
+async def apply_change(
+    before: dict,
+    after: dict,
+    reason: str,
+    *,
+    repo_root: str,
+    prompter: Prompter | None = None,
+    now: datetime | None = None,
+) -> ChangeOutcome:
+    """The single chokepoint for a policy change. Returns the outcome.
+
+    A **weaken** is gated behind confirmation of a rendered diff plus a possession
+    factor (TOTP if enrolled, else password), and is approved only on success; a
+    **strengthen**/**neutral** applies automatically.
+    Every attempt (incl. denials) is written to the append-only ledger and fanned
+    out to registered drift observers. The caller persists the new policy **only
+    when** ``outcome.approved`` is True — this function decides, records, and
+    notifies; it never weakens silently. (Decide and record happen together
+    here — a caller that must delay persistence past the decision point uses
+    :func:`decide_change` + :func:`record_change` instead.)
+    """
+    classification, approved, method = await decide_change(before, after, reason, prompter=prompter)
+    return await record_change(
+        before,
+        after,
+        classification,
+        reason,
+        repo_root=repo_root,
+        approved=approved,
+        method=method,
+        now=now,
     )
 
 
@@ -561,6 +636,27 @@ def _prefs_classify(before: dict, after: dict) -> Classification:
     return Classification.neutral
 
 
+async def decide_preferences_change(
+    before: dict,
+    after: dict,
+    reason: str,
+    *,
+    prompter: Prompter | None = None,
+) -> tuple[Classification, bool, str]:
+    """Classify a preference-vector change and, for a weaken, run the
+    interactive gate — WITHOUT recording anything.
+
+    The decision half of :func:`apply_preferences_change`; see
+    :func:`decide_change` (its structural sibling for policy-rule changes) for
+    why a caller would split decision from recording. Pair with
+    :func:`record_change`.
+    """
+    reason = _redact_reason(reason)
+    classification = _prefs_classify(before, after)
+    approved, method = await _run_gate_if_weaken(before, after, reason, classification, prompter)
+    return classification, approved, method
+
+
 async def apply_preferences_change(
     before: dict,
     after: dict,
@@ -582,41 +678,23 @@ async def apply_preferences_change(
     anywhere in the weaken path. Raising a weight is a strengthen and applies automatically — raise-only is
     preserved, and the prompter is never invoked on that path. Every attempt
     (incl. denials) is recorded to the append-only ledger and fanned out to
-    observers; the caller persists only when ``outcome.approved``.
+    observers; the caller persists only when ``outcome.approved``. (Decide and
+    record happen together here — a caller that must delay persistence past
+    the decision point uses :func:`decide_preferences_change` +
+    :func:`record_change` instead.)
     """
-    reason = _redact_reason(reason)
-    when = now or datetime.now(timezone.utc)
-    classification = _prefs_classify(before, after)
-
-    if classification is Classification.weaken:
-        from doberman.auth.provider import CliPrompter
-
-        approved, method = _run_weaken_gate(before, after, reason, prompter or CliPrompter())
-    else:
-        approved, method = True, "auto"
-
-    await _record_change(
-        repo_root,
+    classification, approved, method = await decide_preferences_change(
+        before, after, reason, prompter=prompter
+    )
+    return await record_change(
         before,
         after,
         classification,
         reason,
+        repo_root=repo_root,
         approved=approved,
         method=method,
-        now=when,
-    )
-    notify_observers(
-        {
-            "ts": when.isoformat(),
-            "classification": classification.value,
-            "changed_rules": _changed_keys(before, after),
-            "reason": reason,
-            "approved": approved,
-            "method": method,
-        }
-    )
-    return ChangeOutcome(
-        classification=classification, approved=approved, method=method, ts=when.isoformat()
+        now=now,
     )
 
 

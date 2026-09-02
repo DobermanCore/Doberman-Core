@@ -96,10 +96,17 @@ jobs:
       # `pytestmark`) because their module-scoped eval fixture lands on one item.
       # --durations: every run reports its slowest tests, so a creeping suite is
       # visible in the log before it becomes a timeout.
+      # The GUI auth dialog is real Tk widgets; without a display its tests skip
+      # and ~800 lines never execute. A virtual X server lets the Linux legs run
+      # them for real (Windows has a desktop already).
+      - name: Virtual display for the Tk dialog tests (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
       - name: Test suite
         env:
           DOBERMAN_TEST_FAST_HST_GATES: ${{ matrix.fast_gates && '1' || '' }}
         run: >
+          ${{ runner.os == 'Linux' && 'xvfb-run -a -s "-screen 0 1280x800x24"' || '' }}
           pytest -n auto --dist loadgroup --timeout=300 --durations=25 --durations-min=2.0
           ${{ matrix.coverage && '--cov=doberman --cov-report=term-missing --cov-fail-under=90' || '' }}
   package-smoke-test:

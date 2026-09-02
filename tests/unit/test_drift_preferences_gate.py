@@ -65,6 +65,11 @@ async def test_lowering_a_weight_with_valid_2fa_is_approved(tmp_path):
 
 
 async def test_lowering_a_weight_denied_when_confirmation_declined(tmp_path):
+    # Round 6 item 9: with no factor enrolled the precondition now denies
+    # before the confirm step is even reached (`method` would read
+    # "no_factor_enrolled" instead) - enroll one so this test still exercises
+    # an explicitly DECLINED confirm specifically.
+    password.enroll(_PASSWORD)
     outcome = await apply_preferences_change(
         {"confidentiality": 0.7},
         {"confidentiality": 0.3},
@@ -92,6 +97,10 @@ async def test_lowering_a_weight_denied_when_read_code_raises(tmp_path):
 
 
 async def test_denial_is_still_recorded_in_the_ledger(tmp_path):
+    # Round 6 item 9: see the comment in the previous test - enroll a factor
+    # so a DECLINED confirm (not the no-factor-enrolled precondition) is what
+    # this test exercises.
+    password.enroll(_PASSWORD)
     outcome = await apply_preferences_change(
         {"confidentiality": 0.7},
         {"confidentiality": 0.3},

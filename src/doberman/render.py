@@ -103,7 +103,20 @@ _PENDING_AUTH_LABEL = "pending - not yet answered"
 _PENDING_AUTH_SHORT_LABEL = "pending"
 
 _MIN_WRAP_WIDTH = 60
-_MAX_WRAP_WIDTH = 120
+#: Matches ``_section``'s own rule-width cap (``cli/main.py``) so wrapped body
+#: text never runs wider than the ``-- title ----`` rule above it.
+_MAX_WRAP_WIDTH = 78
+
+
+def _deadline_phrase(span: str) -> str:
+    """The one wording template every channel's deadline note shares -
+    :func:`deadline_note` and :func:`deadline_note_mmss` differ only in how
+    coarsely ``span`` is rendered, never in the surrounding words, so the GUI
+    dialog's live minute:second tick and the CLI's static note can never
+    silently drift into two different phrasings for the same fact.
+    """
+    return f"auto-denies in {span} if unanswered"
+
 
 #: A quoted `'doberman <command...>'` token reads worse split across a line
 #: break than an ordinary word of the same length would (a CI run once wrapped
@@ -180,7 +193,17 @@ def deadline_note(seconds: float) -> str:
     """'auto-denies in 2m if unanswered' - human-scale, ASCII-only."""
     mins = int(seconds // 60)
     span = f"{mins}m" if mins else f"{int(seconds)}s"
-    return f"auto-denies in {span} if unanswered"
+    return _deadline_phrase(span)
+
+
+def deadline_note_mmss(seconds: float) -> str:
+    """'auto-denies in 1:59 if unanswered' - minute:second resolution, for a
+    channel with a live ticking countdown (the GUI dialog) rather than a
+    single static note. Same template as :func:`deadline_note`, just finer
+    grained; never negative.
+    """
+    total = max(0, int(seconds))
+    return _deadline_phrase(f"{total // 60}:{total % 60:02d}")
 
 
 def supports_color() -> bool:
@@ -196,11 +219,13 @@ def supports_color() -> bool:
     return sys.stdout.isatty()  # pragma: no cover - only if click lacks the helper
 
 
-def style_text(text: str, fg: str, *, bold: bool = False) -> str:
+def style_text(text: str, fg: str | None = None, *, bold: bool = False) -> str:
     """Color ``text`` with ``fg`` (+ ``bold``) when the terminal supports it, else plain.
 
     Generic sibling of :func:`verdict_label` for one-off status lines (e.g. the
-    setup wizard's mode/doctor lines) that aren't a :class:`Verdict`.
+    setup wizard's mode/doctor lines) that aren't a :class:`Verdict`. ``fg`` is
+    optional so a caller can ask for bold-only styling (e.g. the setup
+    wizard's "wrote <path>" / "Next: ..." lines) with no color tint.
     """
     if not supports_color():
         return text
@@ -295,18 +320,41 @@ def humanize_auth_result(
     return _AUTH_RESULT_LABELS.get(auth_result, auth_result.replace("_", " "))
 
 
-def wrap_detail(text: str, indent: int = 4, width: int | None = None) -> list[str]:
+def wrap_detail(
+    text: str, indent: int = 4, width: int | None = None, *, hang: int = 0
+) -> list[str]:
     """Wrap ``text`` to a sane terminal width, indented ``indent`` spaces.
 
     ``width`` defaults to the real terminal width (``shutil.get_terminal_size``),
-    clamped to ``[60, 120]`` columns either way — this is what keeps a long
+    clamped to ``[60, 78]`` columns either way — this is what keeps a long
     explanation from ever repeating the old 242-char unwrapped line.
+
+    ``hang`` adds extra indent to every line *after* the first (a hanging
+    indent), for callers that prefix the first line with a marker such as
+    ``"- name: "`` and want continuation lines to land under the text rather
+    than under the marker.
+
+    A ``\\S+`` token containing ``\\`` or ``/`` (a Windows path, a POSIX path,
+    a URL) is never split mid-token, even if that makes a line run past
+    ``width`` — a garbled path is worse than a long line. ponytail: this
+    disables long-word breaking for every token, not just path-shaped ones;
+    upgrade to a token-aware wrapper if a non-path overlong word ever needs
+    force-breaking.
     """
     if width is None:
         width, _ = shutil.get_terminal_size(fallback=(100, 24))
     width = max(_MIN_WRAP_WIDTH, min(_MAX_WRAP_WIDTH, width))
-    prefix = " " * indent
-    wrap_width = max(1, width - indent)
+    initial_indent = " " * indent
+    subsequent_indent = " " * (indent + hang)
+    # A quoted command must land whole on one line (the TUI/`log --why` show
+    # them verbatim): hide its spaces from the wrapper, restore them after.
     protected = _UNBREAKABLE_COMMAND_RE.sub(lambda m: m.group(0).replace(" ", "\x00"), text)
-    wrapped = textwrap.wrap(protected, width=wrap_width) or [""]
-    return [prefix + line.replace("\x00", " ") for line in wrapped]
+    wrapped = textwrap.wrap(
+        protected,
+        width=width,
+        initial_indent=initial_indent,
+        subsequent_indent=subsequent_indent,
+        break_long_words=False,
+        break_on_hyphens=False,
+    ) or [initial_indent]
+    return [line.replace("\x00", " ") for line in wrapped]
