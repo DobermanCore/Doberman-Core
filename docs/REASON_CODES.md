@@ -1,6 +1,6 @@
 # Reason codes
 
-Every non-`PASS` Doberman decision carries one or more `ReasonCode` values plus a human explanation. This page catalogues every member of `ReasonCode` in `src/doberman/models.py`, the module where it is actually attached to a decision, and what it means in plain language. The enum currently defines 57 codes. `doberman log` and `doberman tune --json` (see [CLI reference](CLI.md)) both surface these values directly, so matching on the name here is the stable way to script against a decision.
+Every non-`PASS` Doberman decision carries one or more `ReasonCode` values plus a human explanation. This page catalogues every member of `ReasonCode` in `src/doberman/models.py`, the module where it is actually attached to a decision, and what it means in plain language. The enum currently defines 59 codes. `doberman log` and `doberman tune --json` (see [CLI reference](CLI.md)) both surface these values directly, so matching on the name here is the stable way to script against a decision.
 
 | Code | Group | Raised in | Meaning |
 |------|-------|-----------|---------|
@@ -62,6 +62,7 @@ Every non-`PASS` Doberman decision carries one or more `ReasonCode` values plus 
 | `artifact_digest_mismatch` | Artifact digest verification | `proxy/executor.py` | A pinned expected sha256 digest exists for a previously fetched identity, and the freshly returned tool-result content's digest disagrees with it. The result is withheld from the agent post-fetch. |
 | `correlated_trifecta` | Session correlator | `engine/correlator.py` | This session's recent decision history shows an untrusted-provenance ingress and a sensitive or secret read as separate earlier calls, and the current action is an external egress: a lethal trifecta assembled across calls rather than within one. |
 | `correlated_destructive_flow` | Session correlator | `engine/correlator.py` | This session's recent decision history shows a broad read or enumeration and a shell command as separate earlier calls, and the current action is an external egress: a possible archive-then-exfiltrate flow. |
+| `raw_socket_channel` | Objective guardrail | `engine/rules/commands.py` | A shell or git command opens a raw network channel outside the normal HTTP/tool egress path: a `/dev/tcp`/`/dev/udp` redirection target, netcat/ncat/socat used in its exec-on-connect (reverse/bind-shell) form, an `openssl s_client -connect` TLS handshake, or an inline Python/Node payload that opens a socket directly. Detection reasons about command shape only, is deliberately narrow to keep the false-positive rate at zero, and only ever raises to `AUTH`, never `BLOCK`. |
 
 ## Notes
 
