@@ -390,10 +390,12 @@ fresh, single-use token for that run; open the printed URL to connect, since eve
 authenticated with that token. `--path` selects the repo to report on (default: the current
 directory).
 
-It shows a summary stats line, grouped into `decisions` (total + a freshness timestamp, `updated
-HH:MM:SS (local)`), `verdicts` (the three badges, plus a recent-window breakdown when it differs
-from the all-time counts), and `top reasons` - and a live decision feed that backfills recent
-decisions, then streams new ones. Both are read-only and serve only already-redacted fields, never
+It shows a summary stats line, led by one focal number (the pending count while something needs a
+human, else the recent-window BLOCK count), then `decisions` (total + a freshness timestamp, `updated
+HH:MM:SS (local)`), `verdicts (all time)` (the three badges, plus a recent-window breakdown when it
+differs from the all-time counts), and `top reasons (all time)` - every count explicitly labeled with
+its window so none can be confused with another - and a live decision feed that backfills recent
+decisions, then streams new ones, newest first. Both are read-only and serve only already-redacted fields, never
 a raw target, argument, or secret. Each feed row's timestamp is a client-computed relative age
 (`3m ago`, `2h ago`, `yesterday 11:00`, refreshed every 30s) rather than a bare UTC clock, with the
 absolute local time and the explicitly-labeled UTC value in a hover `title`. Verdict filter chips
@@ -408,8 +410,8 @@ refresh is always shown in the UI (never silently), with a retry control.
 
 An `AUTH` challenge can be answered from the dashboard instead of the terminal: it lists pending
 approvals and resolves one at a time, a single-use transition, so two concurrent resolves of the
-same row can never both win. Each pending card states up front what it deliberately does not show
-(`Doberman never shows the raw command here - see doberman log for the redacted record`) and shows
+same row can never both win. Each pending card points at the channel that can actually answer
+(`The raw command stays in your terminal. Let this fall through (or press d) to review it there.`) and shows
 a live countdown to the dashboard's own 90s answer window (`answerable here for M:SS, then it moves
 to your terminal`) - at 0 the challenge has genuinely moved to the terminal/GUI channel (not been
 denied), independent of the approval row's own longer DB TTL. Both Approve and Deny need the same
@@ -467,6 +469,17 @@ plain rectangular tag (a dot inside it) rather than a second pill, so it no long
 of the guard pill. The topbar stays pinned to the top of the page while scrolling (with a hairline/shadow
 that appears once actually scrolled), so the connection/posture controls and the mode-change trigger stay
 reachable against a long feed.
+
+The feed itself renders newest-first (a fresh dashboard opens on the latest activity, not the oldest
+backfilled row); at <=640px it drops its own inner scroller in favor of page scroll so there's no nested
+scroll trap on a touch device. Escape from a no-match filter (and `Clear filters`/`Show all`) return focus
+to the first visible row, or the feed container itself if the filter still leaves nothing visible. The
+`Needs attention` chip carries a `title` defining it (`BLOCK + AUTH - what Doberman stopped or escalated`),
+repeated in the `?` shortcuts panel for anyone who can't hover it; the no-match empty state says "these
+filters" once both the verdict filter and the text query are narrowing the list together. `r` (and the
+Refresh button) announce `Refreshed - N decisions, M pending`. A manual light/dark choice now also sets
+`color-scheme` explicitly, so native form controls and scrollbars match it rather than following the OS
+preference alone.
 
 ### Run the demo
 

@@ -162,6 +162,7 @@ _HTML_SHELL = """<!doctype html>
      an explicit choice always wins over the OS preference in both
      directions. No attribute at all (the default) leaves the OS in charge. */
   :root[data-theme="light"] {
+    color-scheme: light;
     --ink-0: #eaecee; --ink-1: #ffffff; --ink-2: #dfe2e5; --ink-3: #d2d6da;
     --rule: #707478; --rule-2: #7c8084;
     --fg: #15181d; --fg-2: #2f353c; --fg-3: #48515b;
@@ -173,6 +174,7 @@ _HTML_SHELL = """<!doctype html>
     --shadow-card: 0 6px 20px -10px oklch(0% 0 0 / 18%);
   }
   :root[data-theme="dark"] {
+    color-scheme: dark;
     --ink-0: oklch(13% 0.008 55); --ink-1: oklch(22% 0.011 55);
     --ink-2: oklch(27% 0.012 55); --ink-3: oklch(33% 0.013 55);
     --rule: oklch(56% 0.016 55); --rule-2: oklch(52% 0.016 55);
@@ -199,8 +201,11 @@ _HTML_SHELL = """<!doctype html>
   :focus-visible {
     outline: 2px solid var(--tan-hi); outline-offset: 2px; border-radius: var(--r-sm);
   }
+  /* --fs-3 (16px), not --fs-1 (12px) - a heading must outrank the badges
+     sitting next to it (round 8), not read smaller than the metadata it
+     titles. */
   h2 {
-    font-family: var(--mono); font-size: var(--fs-1); font-weight: 600;
+    font-family: var(--mono); font-size: var(--fs-3); font-weight: 600;
     letter-spacing: .08em; text-transform: uppercase; color: var(--fg-3);
     margin: 1.75rem 0 .6rem;
   }
@@ -342,6 +347,14 @@ _HTML_SHELL = """<!doctype html>
   .stat-label {
     font-family: var(--mono); font-size: var(--fs-1); font-weight: 600;
     letter-spacing: .06em; text-transform: uppercase; color: var(--fg-3);
+  }
+  /* The one number on the card that earns a second look (round 8) - pending
+     count while something needs a human, else the recent BLOCK count (see
+     renderStats' focalGroup) - --fs-4 (20px) is otherwise unused, so this is
+     the single biggest number on the page, full contrast, ahead of every
+     badge/count that's merely --fs-2/body colour. */
+  .focal-number {
+    font-family: var(--mono); font-size: var(--fs-4); font-weight: 700; color: var(--fg);
   }
   #stats .count { color: var(--fg); }
   #stats .retry-link { min-height: auto; padding: 0; }
@@ -728,6 +741,10 @@ _HTML_SHELL = """<!doctype html>
   #shortcuts-panel dl { display: grid; grid-template-columns: auto 1fr; gap: .3rem .8rem; margin: .5rem 0 .8rem; }
   #shortcuts-panel dt { font-family: var(--mono); color: var(--tan-hi); }
   #shortcuts-panel dd { color: var(--fg-2); }
+  /* Same definition as the "Needs attention" chip's own `title` (round 8) -
+     the panel is the one place that definition reaches a keyboard/touch user
+     who never hovers the chip. */
+  #shortcuts-panel .panel-note { color: var(--fg-2); margin: 0 0 .8rem; }
   .panel-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
   @media (max-width: 640px) {
     .topbar { flex-direction: column; align-items: flex-start; }
@@ -801,6 +818,11 @@ _HTML_SHELL = """<!doctype html>
     #pending-empty {
       padding: .4rem 0; border: none; text-align: left; font-size: var(--fs-1);
     }
+    /* Round 8: an inner `overflow-y: auto` scroller nested inside the page's
+       own scroll is a trap at this width (two independent scroll gestures
+       fighting for the same swipe) - the page already scrolls, so let the
+       feed flow with it instead of capping its own height. */
+    #feed { max-height: none; overflow-y: visible; }
   }
 </style>
 </head>
@@ -846,7 +868,7 @@ _HTML_SHELL = """<!doctype html>
       </div>
       <div class="feed-toolbar">
         <div class="filter-chip-group" role="group" aria-label="Filter by verdict">
-          <button type="button" class="filter-chip" data-verdict="needs_attention" aria-pressed="true">Needs attention</button>
+          <button type="button" class="filter-chip" data-verdict="needs_attention" aria-pressed="true" title="BLOCK + AUTH - what Doberman stopped or escalated">Needs attention</button>
           <button type="button" class="filter-chip" data-verdict="" aria-pressed="false">All</button>
           <button type="button" class="filter-chip" data-verdict="BLOCK" aria-pressed="false">BLOCK</button>
           <button type="button" class="filter-chip" data-verdict="AUTH" aria-pressed="false">AUTH</button>
@@ -906,6 +928,7 @@ _HTML_SHELL = """<!doctype html>
       <dt class="gated">?</dt><dd class="gated">Toggle this panel</dd>
       <dt>Esc</dt><dd>Clear the decisions filter, or close this panel or the mode form</dd>
     </dl>
+    <p class="panel-note">"Needs attention" = BLOCK + AUTH - what Doberman stopped or escalated.</p>
     <div class="panel-actions">
       <button type="button" id="panel-theme-toggle-btn">Switch to light theme</button>
       <button type="button" id="shortcuts-toggle-btn" aria-pressed="true">Shortcuts: on</button>
@@ -1116,6 +1139,10 @@ _HTML_SHELL = """<!doctype html>
       var faviconDefaultHref = favicon.href;
       var faviconAlertHref = null;
       var lastPendingCountForFavicon = 0;
+      // Last total-decisions count seen from /api/stats - read back by
+      // manualRefresh's "Refreshed - N decisions, M pending" announcement
+      // (round 8); null until the first successful stats response.
+      var lastTotalDecisions = null;
       (function buildAlertFavicon() {
         try {
           var img = new Image();
@@ -1235,7 +1262,39 @@ _HTML_SHELL = """<!doctype html>
         // to statsEl, outside any group, so the mobile fold below can hide
         // the decisions/top-reasons groups while still keeping it visible.
         statsEl.textContent = "";
+        // Keep the caller's own count fresh for `manualRefresh`'s "Refreshed -
+        // N decisions, M pending" announcement (round 8) - the only other
+        // place that number lives is this closure.
+        lastTotalDecisions = s.total_decisions;
 
+        // The one number that earns a second look (round 8): the pending
+        // count while something needs a human, else the recent-window BLOCK
+        // count - --fs-4, ahead of every other badge/count on the card (see
+        // .focal-number). `lastPendingCountForFavicon` is the same pending
+        // count the guard pill/favicon already track, reused rather than
+        // threading a new value through from renderPending.
+        var focalGroup = document.createElement("div");
+        focalGroup.className = "stat-group";
+        focalGroup.id = "stats-focal";
+        var focalLabel = document.createElement("span");
+        focalLabel.className = "stat-label";
+        var focalNumber = document.createElement("span");
+        focalNumber.className = "focal-number";
+        if (lastPendingCountForFavicon > 0) {
+          focalLabel.textContent = "pending";
+          focalNumber.textContent = String(lastPendingCountForFavicon);
+        } else {
+          var recentBlockCount = (s.recent_verdict_counts && s.recent_verdict_counts.BLOCK) || 0;
+          focalLabel.textContent = "recent BLOCK";
+          focalNumber.textContent = String(recentBlockCount);
+        }
+        focalGroup.appendChild(focalLabel);
+        focalGroup.appendChild(focalNumber);
+        statsEl.appendChild(focalGroup);
+
+        // Every count below is all-time (build_stats has no window over the
+        // whole log except `recent_verdict_counts`) - labeled explicitly so
+        // no two numbers on the card can be confused for one another.
         var decisionsGroup = makeStatGroup("stats-decisions", "decisions");
         var totalCount = document.createElement("span");
         totalCount.className = "count";
@@ -1243,11 +1302,11 @@ _HTML_SHELL = """<!doctype html>
         decisionsGroup.appendChild(totalCount);
         var taint = document.createElement("span");
         taint.className = "detail";
-        taint.textContent = (s.secret_taint_events || 0) + " secret/taint events";
+        taint.textContent = (s.secret_taint_events || 0) + " secret/taint events (all time)";
         decisionsGroup.appendChild(taint);
         statsEl.appendChild(decisionsGroup);
 
-        var verdictsGroup = makeStatGroup("stats-verdicts", "verdicts");
+        var verdictsGroup = makeStatGroup("stats-verdicts", "verdicts (all time)");
         ["PASS", "AUTH", "BLOCK"].forEach(function (verdict) {
           var n = (s.verdict_counts && s.verdict_counts[verdict]) || 0;
           var b = document.createElement("span");
@@ -1272,7 +1331,7 @@ _HTML_SHELL = """<!doctype html>
         // Top reason codes - build_stats already computes this, this was the
         // only piece that never reached the page.
         if (s.top_reason_codes && s.top_reason_codes.length) {
-          var reasonsGroup = makeStatGroup("stats-reasons", "top reasons");
+          var reasonsGroup = makeStatGroup("stats-reasons", "top reasons (all time)");
           var reasonsList = document.createElement("span");
           reasonsList.className = "detail";
           reasonsList.textContent = s.top_reason_codes.map(function (pair) {
@@ -1316,7 +1375,7 @@ _HTML_SHELL = """<!doctype html>
       // counters freeze at their load-time values while the live feed fills.
       var STATS_REFRESH_MS = 5000;
       function refreshStats() {
-        fetch("/api/stats", { headers: { "Authorization": "Bearer " + token } })
+        return fetch("/api/stats", { headers: { "Authorization": "Bearer " + token } })
           .then(function (res) {
             if (!res.ok) { throw new Error("status " + res.status); }
             return res.json();
@@ -1415,18 +1474,28 @@ _HTML_SHELL = """<!doctype html>
         return modeArmed || computeModeDirection() !== "none";
       }
 
-      function modeHintText() {
+      // Split out of modeHintText() (round 8) so a blocked-dismiss hint (see
+      // attemptCloseModeForm) can APPEND its own wording after this
+      // consequence sentence instead of replacing it outright - a blocked
+      // Escape used to wipe out the very "needs your 2FA code" / per-mode
+      // consequence text the user still needed to see.
+      function modeConsequenceText() {
         var direction = computeModeDirection();
-        var text = "";
         if (direction === "raise") {
-          text = "Raise: applies immediately.";
-        } else if (direction === "lower") {
+          return "Raise: applies immediately.";
+        }
+        if (direction === "lower") {
           var consequence = MODE_DOWNGRADE_CONSEQUENCE[modeSelect.value];
-          text = "Lower: needs your 2FA code or password. " +
+          return "Lower: needs your 2FA code or password. " +
             (consequence || "This weakens the guard's step-up thresholds.") +
             " - hard blocks (secrets, destructive commands, protected paths) " +
             "stay in force regardless of mode.";
         }
+        return "";
+      }
+
+      function modeHintText() {
+        var text = modeConsequenceText();
         if (pendingModeChange()) {
           text += (text ? " " : "") + "Unsaved change - Save or Cancel.";
         }
@@ -1559,7 +1628,13 @@ _HTML_SHELL = """<!doctype html>
       function attemptCloseModeForm() {
         if (pendingModeChange()) {
           modeDismissBlocked = true;
-          modeHintEl.textContent = MODE_FORM_BLOCKED_DISMISS_HINT;
+          // Appends after the consequence sentence (round 8) - a blocked
+          // dismiss must not silently erase the "needs your 2FA code" / raise
+          // wording the user still needs, the same way a background stats
+          // poll must not (see refreshModeHint's own modeDismissBlocked guard).
+          var consequence = modeConsequenceText();
+          modeHintEl.textContent = (consequence ? consequence + " " : "") +
+            MODE_FORM_BLOCKED_DISMISS_HINT + ".";
           modeHintEl.classList.toggle("lowering", computeModeDirection() === "lower");
           nudgeModeForm();
           return false;
@@ -1888,7 +1963,7 @@ _HTML_SHELL = """<!doctype html>
           var privacyNote = document.createElement("div");
           privacyNote.className = "privacy-note";
           privacyNote.textContent =
-            "Doberman never shows the raw command here - see doberman log for the redacted record.";
+            "The raw command stays in your terminal. Let this fall through (or press d) to review it there.";
           li.appendChild(privacyNote);
 
           var totpInput = null;
@@ -2051,7 +2126,7 @@ _HTML_SHELL = """<!doctype html>
       }
 
       function refreshPending() {
-        fetch("/api/pending", { headers: { "Authorization": "Bearer " + token } })
+        return fetch("/api/pending", { headers: { "Authorization": "Bearer " + token } })
           .then(function (res) {
             if (!res.ok) { throw new Error("status " + res.status); }
             return res.json();
@@ -2079,8 +2154,16 @@ _HTML_SHELL = """<!doctype html>
       function manualRefresh() {
         refreshBtn.disabled = true;
         refreshBtn.textContent = "Refreshing...";
-        refreshStats();
-        refreshPending();
+        // Both requests settle (success or failure swallowed by their own
+        // .catch) before announcing, so the counts read are whatever's
+        // actually current - lastTotalDecisions/lastPendingCountForFavicon,
+        // the same values renderStats/renderPending just wrote.
+        Promise.all([refreshStats(), refreshPending()]).then(function () {
+          announce(
+            "Refreshed - " + (lastTotalDecisions != null ? lastTotalDecisions : 0) +
+            " decisions, " + lastPendingCountForFavicon + " pending"
+          );
+        });
         setTimeout(function () {
           refreshBtn.disabled = false;
           refreshBtn.textContent = "Refresh";
@@ -2166,7 +2249,13 @@ _HTML_SHELL = """<!doctype html>
         var noMatch = filtering && feedEntries.length > 0 && shown === 0;
         feedNoMatchEl.hidden = !noMatch;
         if (noMatch) {
-          feedNoMatchTextEl.textContent = defaultActive ? ATTENTION_EMPTY_TEXT : "No decisions match this filter.";
+          // Plural copy once BOTH a verdict filter and the text query are
+          // narrowing the list (round 8) - "this filter" undersold it when
+          // two were actually stacked against the empty result.
+          var twoFiltersActive = Boolean(activeVerdict) && Boolean(activeQuery);
+          feedNoMatchTextEl.textContent = defaultActive
+            ? ATTENTION_EMPTY_TEXT
+            : (twoFiltersActive ? "No decisions match these filters." : "No decisions match this filter.");
           feedClearFiltersBtn.textContent = defaultActive ? "Show all" : "Clear filters";
         }
         // The roving-focus row must never point at a row the filter just hid.
@@ -2311,8 +2400,14 @@ _HTML_SHELL = """<!doctype html>
       // as focus actually lands on it). Enter/Space expands the active row's
       // explanation - see the shortcuts panel for the full key list. ---
 
+      // Reversed (round 8): `feedEntries` is still pushed oldest-to-newest
+      // (append order, unchanged), but the DOM itself now renders newest at
+      // the top (see the "decision" SSE handler's insertBefore below) -
+      // reversing here is what keeps Up/Down/Home/End and Escape's
+      // first-visible-row recovery walking in the same order the rows are
+      // actually laid out on screen.
       function visibleFeedEntries() {
-        return feedEntries.filter(function (entry) { return !entry.li.hidden; });
+        return feedEntries.filter(function (entry) { return !entry.li.hidden; }).reverse();
       }
 
       function setActiveFeedEntry(entry) {
@@ -2470,14 +2565,22 @@ _HTML_SHELL = """<!doctype html>
           if (!modeForm.hidden) { attemptCloseModeForm(); return; }
           if (!shortcutsPanel.hidden) { closeShortcuts(); return; }
           // The filter is not a trap: clear it and hand focus back to the
-          // feed's NEWEST row (the one being watched), rather than leaving
-          // the user stuck in the input or dropped on the oldest backfilled
-          // row.
+          // first VISIBLE row (the feed's newest, now that newest renders at
+          // the top - see visibleFeedEntries) rather than leaving the user
+          // stuck in the input or dropped on the last row. Clearing the text
+          // query can still leave the verdict filter with nothing to show
+          // (e.g. BLOCK with no BLOCK rows) - with no visible rows left,
+          // there's nothing to jump to, so focus the feed container itself.
           if (document.activeElement === feedFilterInput) {
             feedFilterInput.value = "";
             activeQuery = "";
             applyFeedFilter();
-            jumpActiveFeedEntry(true);
+            if (visibleFeedEntries().length) {
+              jumpActiveFeedEntry(false);
+            } else {
+              setActiveFeedEntry(null);
+              feedEl.focus();
+            }
           }
           return;
         }
@@ -2704,12 +2807,12 @@ _HTML_SHELL = """<!doctype html>
             (row.explanation || accessibleReasons)
           );
 
-          // Rows are appended oldest-first, so the newest decision is always
-          // the last child - keep the scrollable list pinned to that end
-          // (unless the user has scrolled up to read older rows) so a
-          // freshly loaded dashboard shows the latest activity, not the
-          // oldest backfilled row.
-          var nearBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 4;
+          // Rows render newest-first (round 8): each arrival is PREPENDED, so
+          // the newest decision is always the first child - keep the
+          // scrollable list pinned to that end (unless the user has scrolled
+          // down to read older rows) so a freshly loaded dashboard opens on
+          // the latest activity, not the oldest backfilled row.
+          var nearTop = feedEl.scrollTop < 4;
 
           // Search must find the text a human can actually read on the row -
           // the explanation sentence and the glossed reason-code words, not
@@ -2747,11 +2850,15 @@ _HTML_SHELL = """<!doctype html>
           }
 
           // The empty state is CSS-only (`#feed:not(:empty) ~ #feed-empty`) -
-          // appending the first row is enough to reveal the real list.
-          feedEl.appendChild(li);
+          // inserting the first row is enough to reveal the real list.
+          // Prepend, not append: newest-first (round 8).
+          feedEl.insertBefore(li, feedEl.firstChild);
           while (feedEl.children.length > MAX_FEED_ROWS) {
+            // The oldest entry is still feedEntries[0] (push order never
+            // changed) and, now that the DOM is newest-first, the oldest row
+            // is correspondingly the LAST child, not the first.
             var removedEntry = feedEntries.shift();
-            feedEl.removeChild(feedEl.firstChild);
+            feedEl.removeChild(feedEl.lastChild);
             if (activeFeedEntry === removedEntry) { setActiveFeedEntry(null); }
             feedRowsEverTruncated = true;
             feedRowsDroppedCount += 1;
@@ -2765,8 +2872,8 @@ _HTML_SHELL = """<!doctype html>
             feedTruncatedEl.textContent =
               "older rows not shown (" + feedRowsDroppedCount + ") - see doberman log";
           }
-          if (nearBottom) {
-            feedEl.scrollTop = feedEl.scrollHeight;
+          if (nearTop) {
+            feedEl.scrollTop = 0;
           }
           syncStatsSoon();
           queueFeedArrivalAnnouncement(row.verdict);

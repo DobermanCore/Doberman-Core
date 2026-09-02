@@ -133,7 +133,13 @@ def test_blocked_dismiss_nudges_and_states_a_distinct_hint(tmp_path):
     start = html.index("function attemptCloseModeForm() {")
     end = html.index("\n      }", start)
     block = html[start:end]
-    assert "modeHintEl.textContent = MODE_FORM_BLOCKED_DISMISS_HINT;" in block
+    # Round 8: appends after the consequence sentence instead of replacing it
+    # outright - a blocked dismiss must not erase the "needs your 2FA code"/
+    # raise wording the user still needs (see test_dash_round8.py).
+    assert (
+        'modeHintEl.textContent = (consequence ? consequence + " " : "") +\n'
+        '            MODE_FORM_BLOCKED_DISMISS_HINT + ".";'
+    ) in block
     assert "nudgeModeForm();" in block
     assert "#mode-form.nudge { animation: mode-form-nudge .3s ease-in-out; }" in html
     assert (

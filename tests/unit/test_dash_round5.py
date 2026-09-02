@@ -259,8 +259,10 @@ def test_downgrade_consequence_is_derived_per_mode(tmp_path):
 
 def test_pending_card_states_what_it_cannot_show(tmp_path):
     html = _index_html(tmp_path)
+    # Round 8: points at the channel that can actually answer (the terminal),
+    # not just at what the dashboard withholds.
     assert (
-        "Doberman never shows the raw command here - see doberman log for the redacted record."
+        "The raw command stays in your terminal. Let this fall through (or press d) to review it there."
     ) in html
     assert 'privacyNote.className = "privacy-note";' in html
 
@@ -298,8 +300,11 @@ def test_totp_field_gets_a_visible_six_digit_label(tmp_path):
 def test_stats_render_as_three_labeled_groups(tmp_path):
     html = _index_html(tmp_path)
     assert 'makeStatGroup("stats-decisions", "decisions")' in html
-    assert 'makeStatGroup("stats-verdicts", "verdicts")' in html
-    assert 'makeStatGroup("stats-reasons", "top reasons")' in html
+    # Round 8: explicitly labeled "(all time)" - build_stats has no window
+    # over these two, and the recent-window verdict detail sits right next to
+    # the all-time badges, so the two must never read as the same number.
+    assert 'makeStatGroup("stats-verdicts", "verdicts (all time)")' in html
+    assert 'makeStatGroup("stats-reasons", "top reasons (all time)")' in html
     assert ".stat-label {" in html
 
 
@@ -347,11 +352,18 @@ def test_clear_filters_returns_focus_to_the_feed(tmp_path):
 
 
 def test_escape_from_filter_focuses_the_newest_row(tmp_path):
+    """Round 8: the feed itself now renders newest-first, so the newest row
+    is the first VISIBLE one (visibleFeedEntries() is reversed to match) -
+    jumpActiveFeedEntry(false) reaches it, not (true). With no visible rows
+    left (clearing the text query can still leave the verdict filter with
+    nothing to show), focus falls back to the feed container itself rather
+    than jumping nowhere."""
     html = _index_html(tmp_path)
     start = html.index("if (document.activeElement === feedFilterInput) {")
-    end = html.index("}", html.index("applyFeedFilter();", start))
+    end = html.index("return;", start)
     block = html[start:end]
-    assert "jumpActiveFeedEntry(true);" in block
+    assert "jumpActiveFeedEntry(false);" in block
+    assert "feedEl.focus();" in block
 
 
 def test_copy_details_confirms_inline_and_announces_or_reports_failure(tmp_path):

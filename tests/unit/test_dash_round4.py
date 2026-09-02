@@ -130,7 +130,10 @@ def test_mode_downgrade_requires_arm_then_confirm(tmp_path):
     # factual consequence, see test_dash_round5.py), not a single literal
     # assignment - just check the gate still branches only on "lower".
     assert 'if (computeModeDirection() === "lower" && !modeArmed) {' in html
-    assert 'text = "Raise: applies immediately.";' in html
+    # Round 8: the raise/lower consequence text moved into its own
+    # modeConsequenceText() (see test_dash_round8.py) - still a plain return,
+    # not an assignment.
+    assert 'return "Raise: applies immediately.";' in html
 
 
 # --------------------------------------------------------------------------
