@@ -33,7 +33,7 @@ Day-to-day posture, status, and review commands.
 | `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
 | `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
-| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable), `--path`/`-p` |
+| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host. Exits non-zero if the closing doctor pass finds a critical. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable), `--path`/`-p`, `--dry-run` |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
 | `doberman telemetry off` | Opt out after one final best-effort disabled event. | none |
 | `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches. | none |
@@ -178,6 +178,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `egress-velocity` | `2` | Unknown knob, missing value, or a non-positive value. |
 | `egress-velocity` | `1` | Threshold change denied by the gate. |
 | `doctor` | `1` | One or more critical checks failed. |
+| `setup` | `1` | The closing doctor pass found a critical (e.g. hooks call `doberman`, which is not on PATH) — printed as `-- Setup incomplete --`, never `complete`. |
 | `password set` | `1` | Passwords did not match, or enrollment failed. |
 | `2fa setup` | `1` | TOTP enrollment failed. |
 | `2fa remove` | `1` | Not enrolled, confirmation declined, or unenroll failed. |
@@ -198,11 +199,11 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `decision-log-prune` | `1` | The DB prune operation failed. |
 | `uninstall` | `1` | No possession factor enrolled, confirmation declined, name mismatch, gate denied, or some items were not removed. |
 
-Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `setup`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.
+Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.
 
 ### Collision audit
 
-`grep -n "typer.Exit(code=" src/doberman/cli/main.py` returns 45 call sites: 6 use `code=2` (all input-validation rejections, checked before any gate runs) and 39 use `code=1`. No command uses both codes for the same logical condition, and no two commands use the same code for contradictory meanings. This section documents the count; it changes no exit-code value.
+`grep -n "typer.Exit(code=" src/doberman/cli/main.py` returns 64 call sites: 11 use `code=2` (all input-validation rejections, checked before any gate runs) and 53 use `code=1`, including `setup`'s new honest-end exit when the closing doctor pass finds a critical. No command uses both codes for the same logical condition, and no two commands use the same code for contradictory meanings. This section documents the count; it changes no exit-code value.
 
 ## Examples
 

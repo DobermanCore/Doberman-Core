@@ -49,7 +49,7 @@ command), see the [PATH appendix](#appendix-a-stale-doberman-on-path). Maintaine
 
 One command does the whole job on any host. An interactive wizard detects which agents you have
 installed (Claude Code, Codex CLI, an MCP client, OpenClaw), asks which ones to guard, picks your
-alertness mode, asks whether to send anonymous usage stats, tunes your guardrails, and wires each
+security mode, asks whether to send anonymous usage stats, tunes your guardrails, and wires each
 chosen host — finishing with a doctor pass and, if you wired a hooks-based host (Claude Code or
 Codex), an offer to run a scripted attack through the real engine right there so you can watch it
 work:
@@ -64,9 +64,15 @@ doberman setup --yes
 
 `--yes` accepts the defaults (detected hosts, or Claude Code if nothing is detected; balanced mode)
 with no prompts, useful for CI or scripting. Pass `--host` (repeatable) to pick hosts explicitly,
-e.g. `doberman setup --yes --host claude --host codex`. Either way, basic protection works
-immediately. When the wizard finishes, [set a possession factor](#4-set-a-password-and-2fa) — it's
-the first line of `doberman setup`'s own next steps.
+e.g. `doberman setup --yes --host claude --host codex`. Pass `--dry-run` to preview the mode, the
+preference weights, and every file it would write, with nothing persisted (mirrors `install-hooks
+--dry-run`); `--global` writes your real home directory, so without `--yes` it asks to confirm
+first, and with `--yes` it prints the exact path before writing. Either way, basic protection works
+immediately. The closing doctor pass is not cosmetic: if it finds a critical (most commonly the
+`doberman` command not being on PATH yet), the wizard prints `-- Setup incomplete --` and exits `1`
+instead of claiming success — re-run `doberman doctor` for the fix, then `doberman setup` again.
+When the wizard finishes, [set a possession factor](#4-set-a-password-and-2fa) — it's the first
+line of `doberman setup`'s own next steps.
 
 On a different host, or want to see exactly what gets wired? The next section covers each path by
 hand.
@@ -104,9 +110,12 @@ doberman install-hooks --host codex
 
 `install-hooks` writes `.claude/settings.json` for this project by default, `--global` writes
 `~/.claude/settings.json` for every project, and `--host codex` wires `doberman hook codex-pre`
-into a Codex CLI `hooks.json` instead. Add `--dry-run` to see what would change without writing
-anything. Remove hooks with `doberman uninstall-hooks` (same `--global` / `--host` flags); it
-strips only Doberman's entries and leaves your other hooks untouched.
+into a Codex CLI `hooks.json` instead. `--host` here is `claude` or `codex` only, since mcp and
+openclaw don't write a hook file — `doberman setup --host mcp`/`--host openclaw` prints the pointer
+for those instead. Add `--dry-run` to see what would change without writing anything; a re-run
+whose merged hooks are unchanged prints `already wired: <path>` rather than `wrote <path>`. Remove
+hooks with `doberman uninstall-hooks` (same `--global` / `--host` flags); it strips only Doberman's
+entries and leaves your other hooks untouched.
 
 `install-hooks` is idempotent, safe to re-run, and backs up an existing `settings.json` before
 writing. `doberman setup` runs it for you.
