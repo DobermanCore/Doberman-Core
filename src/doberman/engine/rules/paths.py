@@ -24,6 +24,7 @@ rejected at construction so a misconfiguration can never make everything match
 """
 
 import fnmatch
+import re
 from collections.abc import Iterable, Sequence
 
 from doberman.canonical import canonicalize
@@ -241,6 +242,40 @@ def _matches_any(relposix: str, globs: Sequence[str]) -> bool:
 
 _CONTROL_PLANE = _sanitize_globs(CONTROL_PLANE_GLOBS)
 
+#: Test files/dirs across the common Python/JS/TS conventions. Deleting or
+#: renaming one is a distinct signal from writing to one — the branch below
+#: gates on ACTION TYPE, not this glob table, deliberately: adding these as a
+#: sensitive glob would AUTH every ordinary test edit (constant traffic, would
+#: blow the corpus FPR gate). No file-content reads: this catches a delete/
+#: rename of a file that matches by name/path only — it cannot see a
+#: pytest.mark.skip marker inserted into a KEPT test (see README).
+TEST_FILE_GLOBS: tuple[str, ...] = (
+    "test_*.py",
+    "**/test_*.py",
+    "*_test.py",
+    "**/*_test.py",
+    "tests/**",
+    "**/tests/**",
+    "**/*.test.[jt]s",
+    "**/*.spec.[jt]s",
+)
+
+_TEST_FILE_PATTERNS = _sanitize_globs(TEST_FILE_GLOBS)
+
+#: Heuristic for "this tool call is a rename/move". ActionType has no dedicated
+#: rename member (normalize.py has no rename-verb -> ActionType mapping, and
+#: subjective/infer.py's own Capability classifier already buckets
+#: rename/move under the same "mutate" verb group as an ordinary write), so a
+#: rename is recognized here by TOOL NAME instead. Known ceiling (documented in
+#: README): a `git mv`/shell `mv` routes through DestructiveCommandRule, not
+#: this path-target rule, and is invisible here; a rename tool that doesn't
+#: name itself rename/move is also invisible here.
+_RENAME_TOOL_HINT = re.compile(r"(?i)rename|move")
+
+
+def _is_delete_or_rename(action_type: ActionType, tool_name: str) -> bool:
+    return action_type is ActionType.file_delete or bool(_RENAME_TOOL_HINT.search(tool_name or ""))
+
 
 def names_control_plane(raw_path: str, root: str = _DEFAULT_ROOT) -> bool:
     """True if a raw path token lands on Doberman's control plane.
@@ -372,14 +407,23 @@ class ProtectedPathRule:
         is_mutation = action.action_type in self.MUTATION_ACTION_TYPES
         worst = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
         for raw_path in paths:
-            result = self._evaluate_one(raw_path, root, is_mutation)
+            result = self._evaluate_one(
+                raw_path, root, action.action_type, action.tool_name, is_mutation
+            )
             if _is_more_severe(result, worst):
                 worst = result
             if worst.verdict is Verdict.BLOCK:
                 break  # cannot get worse than a hard block
         return worst
 
-    def _evaluate_one(self, raw_path: str, root: str, is_mutation: bool) -> GuardrailResult:
+    def _evaluate_one(
+        self,
+        raw_path: str,
+        root: str,
+        action_type: ActionType,
+        tool_name: str,
+        is_mutation: bool,
+    ) -> GuardrailResult:
         canonical = canonicalize(raw_path, root=root)
 
         # A path that resolves outside the repo root is out of scope and unsafe
@@ -401,6 +445,19 @@ class ProtectedPathRule:
                 risk=Risk.high,
                 reason_codes=[ReasonCode.protected_path_blocked],
                 explanation="Target is a protected path; blocked by policy.",
+            )
+
+        if _is_delete_or_rename(action_type, tool_name) and _matches_any(
+            canonical.relposix, _TEST_FILE_PATTERNS
+        ):
+            return GuardrailResult(
+                verdict=Verdict.AUTH,
+                risk=Risk.medium,
+                reason_codes=[ReasonCode.test_file_removal],
+                explanation=(
+                    "Target is a test file being deleted or renamed; "
+                    "authentication required before proceeding."
+                ),
             )
 
         if _matches_any(canonical.relposix, self._sensitive):

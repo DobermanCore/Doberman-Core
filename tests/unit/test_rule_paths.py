@@ -31,13 +31,13 @@ from doberman.models import (
 RULE = ProtectedPathRule()
 
 
-def _action(target=None, *, action_type=ActionType.file_write, metadata=None):
+def _action(target=None, *, action_type=ActionType.file_write, tool_name="t", metadata=None):
     return SecurityObject(
         id="path-1",
         ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
         agent_role="unknown",
         action_type=action_type,
-        tool_name="t",
+        tool_name=tool_name,
         target=target,
         metadata=metadata or {},
     )
@@ -364,3 +364,56 @@ def test_interior_dot_or_space_in_benign_path_still_passes(tmp_path):
     # part of a benign filename.
     assert RULE.evaluate(_action("docs/my notes.md"), _ctx(tmp_path)).verdict is Verdict.PASS
     assert RULE.evaluate(_action("src/a.b.c.ts"), _ctx(tmp_path)).verdict is Verdict.PASS
+
+
+# --- test_file_removal: deleting/renaming a test file steps up to AUTH -------
+
+
+@pytest.mark.parametrize(
+    "test_path",
+    [
+        "test_auth.py",
+        "tests/unit/test_auth.py",
+        "auth_test.py",
+        "src/auth_test.py",
+        "tests/fixtures/data.json",
+        "src/App.test.js",
+        "src/App.spec.ts",
+    ],
+)
+def test_test_file_delete_requires_auth(tmp_path, test_path):
+    action = _action(test_path, action_type=ActionType.file_delete)
+    result = RULE.evaluate(action, _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.test_file_removal in result.reason_codes
+
+
+def test_test_file_rename_by_tool_name_requires_auth(tmp_path):
+    action = _action(
+        "tests/unit/test_auth.py", action_type=ActionType.file_write, tool_name="rename_file"
+    )
+    result = RULE.evaluate(action, _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.test_file_removal in result.reason_codes
+
+
+def test_test_file_write_is_not_flagged(tmp_path):
+    # Action-type-scoped: an ordinary edit stays PASS — only delete/rename
+    # steps up. A glob-table entry here would AUTH constant traffic.
+    action = _action("tests/unit/test_auth.py", action_type=ActionType.file_write)
+    result = RULE.evaluate(action, _ctx(tmp_path))
+    assert result.verdict is Verdict.PASS
+
+
+def test_non_test_file_delete_is_not_flagged_by_this_branch(tmp_path):
+    action = _action("src/app/main.py", action_type=ActionType.file_delete)
+    result = RULE.evaluate(action, _ctx(tmp_path))
+    assert result.verdict is Verdict.PASS
+
+
+def test_verification_and_test_file_globs_never_overlap_control_plane():
+    from doberman.engine.rules.paths import TEST_FILE_GLOBS, VERIFICATION_CONFIG_GLOBS
+
+    control = set(_sanitize_globs(CICD_CONFIG_GLOBS)) | set(_sanitize_globs(DEFAULT_BLOCKED_GLOBS))
+    assert control.isdisjoint(_sanitize_globs(VERIFICATION_CONFIG_GLOBS))
+    assert control.isdisjoint(_sanitize_globs(TEST_FILE_GLOBS))
