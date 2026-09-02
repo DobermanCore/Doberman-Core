@@ -513,3 +513,33 @@ def test_raw_socket_channel_explanation_is_redacted():
     assert "10.0.0.1" not in result.explanation
     assert "4444" not in result.explanation
     assert "/bin/sh" not in result.explanation
+
+
+# --- HK.5.6 — inline interpreter payload opens a socket directly -------------
+# `python -c`/`node -e` with a socket/connect/fetch call in the payload body:
+# no destructive filesystem op (so _DESTRUCTIVE_INTERPRETER_OP doesn't fire)
+# and not one of _opaque_shell_payload's shells, so it parsed as benign PASS.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"import socket;s=socket.socket();s.connect(('10.0.0.1',4444))\"",
+        "node -e \"require('net').connect(4444,'10.0.0.1')\"",
+    ],
+)
+def test_inline_interpreter_socket_payload_requires_auth(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
+
+
+def test_inline_interpreter_non_socket_payload_passes():
+    assert _cmd('python -c "print(1+1)"').verdict is Verdict.PASS
+
+
+def test_inline_interpreter_socket_payload_explanation_is_redacted():
+    result = _cmd("python -c \"import socket;s=socket.socket();s.connect(('10.0.0.1',4444))\"")
+    assert "10.0.0.1" not in result.explanation
+    assert "4444" not in result.explanation
+    assert "socket.socket" not in result.explanation

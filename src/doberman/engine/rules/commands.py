@@ -153,6 +153,17 @@ _NC_EXEC_FLAGS = {"-e", "--exec", "-c", "--sh-exec"}
 # socat's EXEC:/SYSTEM: address types spawn a subprocess wired to the socket
 # (socat's equivalent of `nc -e`) — not socat's routine port-forwarding use.
 _SOCAT_EXEC_ADDRESS_RE = re.compile(r"(?i)\b(?:exec|system):")
+# Best-effort shape match over an inline interpreter payload's source text
+# (paired with _INTERPRETERS/_INLINE_CODE_FLAGS above): a socket/network-
+# client call assembled directly in a `python -c`/`node -e` one-liner. Layered
+# on top of the existing opaque-payload AUTH, not static analysis — misses an
+# obfuscated variant (string concatenation, getattr, a base64-decoded module
+# name); see the README known-limitations entry for `raw_socket_channel`.
+_INLINE_SOCKET_OP = re.compile(
+    r"\bsocket\.|\bconnect\(|\bhttp\.client\b|\brequests\.|\burllib\b|"
+    r"\bnet\.Socket\b|\bfetch\(",
+    re.IGNORECASE,
+)
 
 # Shared work bound for every static command walk. Exhaustion is ambiguity,
 # never silent success.
@@ -603,6 +614,11 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
             )
     if any(_DESTRUCTIVE_INTERPRETER_OP.search(payload) for payload in payloads):
         return _block("Interpreter inline payload contains a destructive filesystem operation.")
+    if any(_INLINE_SOCKET_OP.search(payload) for payload in payloads):
+        return _auth(
+            ReasonCode.opaque_command,
+            "Interpreter inline payload opens a network socket directly; authentication required.",
+        )
     return None
 
 
