@@ -111,6 +111,7 @@ markers = [
     "real_hst: build the production-size half-space trees (25 × height 15) instead of the fast test default",
     "timeout(seconds): per-item ceiling honoured by pytest-timeout (CI passes --timeout); registered here so --strict-markers accepts it without the plugin",
     "xdist_group(name): pytest-xdist scheduling group (CI passes --dist loadgroup); registered here so --strict-markers accepts it without the plugin",
+    "real_display: needs a real Tk display (auto-applied by the GUI prompter tests' real_root fixture); deselect with -m 'not real_display' to approximate a headless Linux CI runner locally",
 ]
 
 [tool.coverage.run]

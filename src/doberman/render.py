@@ -39,11 +39,31 @@ _MIN_WRAP_WIDTH = 60
 _MAX_WRAP_WIDTH = 120
 
 
+def _deadline_phrase(span: str) -> str:
+    """The one wording template every channel's deadline note shares -
+    :func:`deadline_note` and :func:`deadline_note_mmss` differ only in how
+    coarsely ``span`` is rendered, never in the surrounding words, so the GUI
+    dialog's live minute:second tick and the CLI's static note can never
+    silently drift into two different phrasings for the same fact.
+    """
+    return f"auto-denies in {span} if unanswered"
+
+
 def deadline_note(seconds: float) -> str:
     """'auto-denies in 2m if unanswered' - human-scale, ASCII-only."""
     mins = int(seconds // 60)
     span = f"{mins}m" if mins else f"{int(seconds)}s"
-    return f"auto-denies in {span} if unanswered"
+    return _deadline_phrase(span)
+
+
+def deadline_note_mmss(seconds: float) -> str:
+    """'auto-denies in 1:59 if unanswered' - minute:second resolution, for a
+    channel with a live ticking countdown (the GUI dialog) rather than a
+    single static note. Same template as :func:`deadline_note`, just finer
+    grained; never negative.
+    """
+    total = max(0, int(seconds))
+    return _deadline_phrase(f"{total // 60}:{total % 60:02d}")
 
 
 def supports_color() -> bool:

@@ -383,9 +383,16 @@ def timeout_root(monkeypatch):
     return root
 
 
-def test_dialog_schedules_its_timeout_and_an_unanswered_dialog_denies(timeout_root):
+def test_an_unanswered_dialog_denies_and_releases_its_root(timeout_root):
+    """``_populate_confirm`` is stubbed to a no-op here (the fake root isn't a real
+    Tk widget, so the real widget-building populate can't run against it) — the
+    countdown scheduling itself now lives inside ``_build_countdown``, called
+    from the real populate, and is covered directly (with a real Tk root) by
+    ``test_countdown_ticks_then_denies_on_expiry`` in test_gui_prompter.py. What
+    this test still pins: with nothing ever resolving ``answer``, ``_run_dialog``
+    returns the fail-closed default and always releases the Tk root, never leaks it.
+    """
     assert gui_prompter._confirm_dialog("Approve?", timeout_s=1.5) is False
-    assert timeout_root.scheduled == [1500]
     assert timeout_root.destroyed is True  # the Tk root is released, not leaked
 
 
