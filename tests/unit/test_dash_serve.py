@@ -150,12 +150,21 @@ def test_dash_disables_uvicorn_access_log(monkeypatch, tmp_path):
     assert captured.get("access_log") is False
 
 
-def test_shell_pending_list_is_polite_live_region():
-    assert 'id="pending-list" aria-live="polite"' in app_module._HTML_SHELL
+def test_shell_pending_arrivals_are_announced_once():
+    """Arrivals reach a screen reader through ONE polite live region - the
+    shared #announcer (updateGuardStatus announces "ALERT: N pending") - not a
+    second aria-live on the list itself, which read every card twice."""
+    shell = app_module._HTML_SHELL
+    assert 'id="announcer" class="sr-only" aria-live="polite"' in shell
+    assert '<ul id="pending-list"></ul>' in shell
+    assert 'id="pending-list" aria-live' not in shell
 
 
-def test_shell_totp_input_has_aria_label():
-    assert 'totpInput.setAttribute("aria-label", "TOTP code")' in app_module._HTML_SHELL
+def test_shell_totp_input_has_a_label():
+    # Round 5: a real VISIBLE <label> ("6-digit code"), not an aria-label on
+    # top of an sr-only one - see test_dash_round5.py for the full coverage.
+    assert 'totpLabel.textContent = "6-digit code";' in app_module._HTML_SHELL
+    assert 'totpLabel.setAttribute("for", totpId);' in app_module._HTML_SHELL
 
 
 def test_shell_approve_requires_arm_then_confirm():

@@ -144,12 +144,19 @@ def test_stats_refresh_on_an_interval_not_just_at_load(tmp_path):
     assert "setInterval(refreshStats, STATS_REFRESH_MS)" in html
 
 
-def test_feed_timestamp_renders_compact_not_full_iso(tmp_path):
+def test_feed_timestamp_renders_relative_age_not_raw_iso(tmp_path):
+    """Round 7: a bare `.slice(11, 19)` HH:MM:SS with no timezone label read as
+    an unlabeled UTC clock. The row now shows a client-computed relative age
+    (`formatRelativeAge`), with the absolute local time (+ the raw UTC value,
+    explicitly labeled) in `title` - never an unlabeled clock either way."""
     html = _index_html(tmp_path)
-    # HH:MM:SS sliced from the ISO string; the full timestamp stays available
-    # in `doberman log` / the TUI.
-    assert ".slice(11, 19)" in html
+    assert ".slice(11, 19)" not in html
     assert '" @ " + row.ts;' not in html
+    assert "function formatRelativeAge(tsIso) {" in html
+    assert "function absoluteTimeTitle(tsIso) {" in html
+    assert "timeEl.title = absoluteTimeTitle(row.ts);" in html
+    assert '" local";' in html
+    assert '" UTC)";' in html
 
 
 def test_pending_list_is_not_rebuilt_when_the_queue_is_unchanged(tmp_path):
@@ -174,21 +181,35 @@ def test_the_totp_field_is_masked(tmp_path):
 
 def test_feed_row_renders_a_risk_badge(tmp_path):
     """A PASS row with no path class and no reason codes (e.g. shell_exec)
-    used to render as bare noise ("PASS shell_exec — — @ ..."); the risk
-    badge is the signal that always shows, even at "low"."""
+    used to render as bare noise ("PASS shell_exec — — @ ..."); now that the
+    detail line always names something concrete ("no target"/"no auth"
+    instead of a bare "-"), a low-risk badge is redundant on the common case
+    and is only rendered for medium+ risk - but the badge-building lines
+    themselves are unchanged, just conditional."""
     html = _index_html(tmp_path)
     assert "riskBadge.className = RISK_BADGE_CLASS[row.risk]" in html
     assert 'riskBadge.textContent = (row.risk || "-").toUpperCase();' in html
+    assert 'row.risk && row.risk !== "low"' in html
 
 
-def test_feed_row_renders_source_context(tmp_path):
+def test_feed_row_renders_source_context_only_when_known(tmp_path):
+    """ "unknown" is a real SourceContext value, not an absent one - a row must
+    not render "from:unknown" as if it were signal; the origin is shown only
+    when it names something concrete."""
     html = _index_html(tmp_path)
-    assert '" from:" + (row.source_context || "-") +' in html
+    assert 'row.source_context && row.source_context !== "unknown"' in html
+    assert '"from:" + row.source_context' in html
+    # The old unconditional form (always prints "from:X", "-" for anything
+    # falsy) must be gone, not merely supplemented.
+    assert '" from:" + (row.source_context || "-") +' not in html
 
 
 def test_recent_decisions_header_has_a_refresh_button(tmp_path):
     html = _index_html(tmp_path)
     assert '<button type="button" id="refresh-btn">Refresh</button>' in html
-    assert 'document.getElementById("refresh-btn").addEventListener' in html
+    # The click and the `r` shortcut share one handler that shows "Refreshing..."
+    # while the two fetches run - a silent refresh reads as a dead button.
+    assert 'refreshBtn.addEventListener("click", manualRefresh)' in html
+    assert 'refreshBtn.textContent = "Refreshing..."' in html
     assert "refreshStats();" in html
     assert "refreshPending();" in html
