@@ -101,6 +101,7 @@ _HTML_SHELL = """<!doctype html>
 <meta charset="utf-8">
 <title>%%DASH_PAGE_TITLE%%</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" id="favicon" type="image/png" href="data:image/png;base64,%%DASH_MARK_PNG_B64%%">
 <style>
   :root {
     color-scheme: dark light;
@@ -129,6 +130,14 @@ _HTML_SHELL = """<!doctype html>
     --r: 10px;
     --r-lg: 12px;
     --d: 140ms ease-out;
+    --shadow-card: 0 6px 20px -10px oklch(0% 0 0 / 55%);
+    /* Four-step type scale (12/14/16/20px against the 16px root default) -
+       every adjacent step is >=1.14x the one below it, so nothing reads as
+       an arbitrary in-between size. */
+    --fs-1: .75rem;
+    --fs-2: .875rem;
+    --fs-3: 1rem;
+    --fs-4: 1.25rem;
   }
   @media (prefers-color-scheme: light) {
     :root {
@@ -140,7 +149,35 @@ _HTML_SHELL = """<!doctype html>
       --auth: #7d5200;  --auth-bg: rgba(125, 82, 0, .12);
       --block: #a40e26; --block-bg: rgba(164, 14, 38, .12);
       --neutral: #424a53; --neutral-bg: rgba(66, 74, 83, .12);
+      --shadow-card: 0 6px 20px -10px oklch(0% 0 0 / 18%);
     }
+  }
+  /* Manual theme toggle (#theme-toggle-btn below): an attribute selector on
+     :root beats a bare :root inside @media regardless of source order, so
+     an explicit choice always wins over the OS preference in both
+     directions. No attribute at all (the default) leaves the OS in charge. */
+  :root[data-theme="light"] {
+    --ink-0: #f7f7f8; --ink-1: #ffffff; --ink-2: #eef0f2; --ink-3: #e2e5e9;
+    --rule: #c7ccd2; --rule-2: #dde1e6;
+    --fg: #15181d; --fg-2: #3a4048; --fg-3: #5b6572;
+    --tan: #6b4a1f; --tan-hi: #52380f;
+    --pass: #116329;  --pass-bg: rgba(17, 99, 41, .12);
+    --auth: #7d5200;  --auth-bg: rgba(125, 82, 0, .12);
+    --block: #a40e26; --block-bg: rgba(164, 14, 38, .12);
+    --neutral: #424a53; --neutral-bg: rgba(66, 74, 83, .12);
+    --shadow-card: 0 6px 20px -10px oklch(0% 0 0 / 18%);
+  }
+  :root[data-theme="dark"] {
+    --ink-0: oklch(13% 0.008 55); --ink-1: oklch(16% 0.009 55);
+    --ink-2: oklch(19.5% 0.010 55); --ink-3: oklch(25% 0.012 55);
+    --rule: oklch(34% 0.012 55); --rule-2: oklch(28% 0.011 55);
+    --fg: oklch(96% 0 0); --fg-2: oklch(82% 0.004 55); --fg-3: oklch(64% 0.006 55);
+    --tan: oklch(74% 0.140 58); --tan-hi: oklch(84% 0.150 64);
+    --pass: oklch(76% 0.16 152); --pass-bg: oklch(76% 0.16 152 / 14%);
+    --auth: oklch(82% 0.155 78); --auth-bg: oklch(82% 0.155 78 / 14%);
+    --block: oklch(66% 0.205 26); --block-bg: oklch(66% 0.205 26 / 14%);
+    --neutral: var(--fg-3); --neutral-bg: oklch(64% 0.006 55 / 14%);
+    --shadow-card: 0 6px 20px -10px oklch(0% 0 0 / 55%);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   .sr-only {
@@ -153,11 +190,26 @@ _HTML_SHELL = """<!doctype html>
     background: var(--ink-0); color: var(--fg);
     -webkit-font-smoothing: antialiased;
   }
+  ::selection { background: var(--auth); color: var(--ink-0); }
+  :focus-visible {
+    outline: 2px solid var(--tan-hi); outline-offset: 2px; border-radius: var(--r-sm);
+  }
   h2 {
-    font-family: var(--mono); font-size: .72rem; font-weight: 600;
+    font-family: var(--mono); font-size: var(--fs-1); font-weight: 600;
     letter-spacing: .08em; text-transform: uppercase; color: var(--fg-3);
     margin: 1.75rem 0 .6rem;
   }
+  button, input, select {
+    font: inherit;
+  }
+  button {
+    cursor: pointer; min-height: 44px; min-width: 44px; padding: .5rem .9rem;
+    display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
+    border-radius: var(--r-sm); border: 1px solid transparent; background: none; color: inherit;
+    transition: background-color var(--d), border-color var(--d), color var(--d), filter var(--d);
+  }
+  button:disabled { opacity: .55; cursor: default; }
+  input, select { min-height: 44px; }
   .topbar {
     display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
     gap: .6rem 1rem;
@@ -166,18 +218,18 @@ _HTML_SHELL = """<!doctype html>
   .brand { display: inline-flex; align-items: center; gap: .6rem; }
   .brand img { height: 28px; width: auto; flex: none; display: block; }
   .brand .word {
-    font-family: var(--mono); font-weight: 700; font-size: .95rem;
+    font-family: var(--mono); font-weight: 700; font-size: var(--fs-3);
     letter-spacing: .06em; color: var(--tan);
   }
   .brand .project {
-    font-family: var(--mono); font-weight: 600; font-size: .95rem;
+    font-family: var(--mono); font-weight: 600; font-size: var(--fs-3);
     color: var(--fg-2); padding-left: .6rem; margin-left: .6rem;
     border-left: 1px solid var(--rule);
   }
   .topbar-right { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
   .chip {
     display: inline-flex; align-items: center; gap: .4rem;
-    font-family: var(--mono); font-size: .72rem; letter-spacing: .02em;
+    font-family: var(--mono); font-size: var(--fs-1); letter-spacing: .02em;
     padding: .32rem .6rem; border: 1px solid var(--rule); border-radius: 999px;
     background: var(--ink-2); color: var(--fg-3); white-space: nowrap;
   }
@@ -186,19 +238,26 @@ _HTML_SHELL = """<!doctype html>
   .dot.err { background: var(--block); }
   .status-pill {
     display: inline-flex; align-items: center; gap: .45rem;
-    font-family: var(--mono); font-size: .76rem; font-weight: 600; letter-spacing: .03em;
+    font-family: var(--mono); font-size: var(--fs-1); font-weight: 600; letter-spacing: .03em;
     padding: .4rem .75rem; border-radius: 999px; border: 1px solid var(--rule);
     color: var(--fg-3); white-space: nowrap;
   }
-  .status-pill .pip { font-size: .7em; }
+  .status-pill .pip { font-size: var(--fs-1); }
   .status-pill.ok .pip { color: var(--tan); }
   .status-pill.alert { color: var(--auth); border-color: var(--auth); background: var(--auth-bg); }
   .status-pill.alert .pip { animation: pulse 1.6s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) { .status-pill.alert .pip { animation: none; } }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  #theme-toggle-btn, #shortcuts-btn, #shortcuts-close-btn {
+    font-family: var(--font); font-size: var(--fs-1); font-weight: 600; padding: .35rem .8rem;
+    border: 1px solid var(--rule); background: transparent; color: var(--fg-2);
+  }
+  #theme-toggle-btn:hover, #shortcuts-btn:hover, #shortcuts-close-btn:hover {
+    border-color: var(--tan-hi); color: var(--tan-hi);
+  }
   .badge {
     display: inline-flex; align-items: center; font-family: var(--mono);
-    font-size: .72rem; font-weight: 700; letter-spacing: .02em;
+    font-size: var(--fs-1); font-weight: 700; letter-spacing: .02em;
     padding: .24rem .5rem; border-radius: 5px; line-height: 1.4;
   }
   .badge-pass { color: var(--pass); background: var(--pass-bg); }
@@ -209,27 +268,28 @@ _HTML_SHELL = """<!doctype html>
   .badge-risk-medium { color: var(--auth); background: var(--auth-bg); }
   .badge-risk-high, .badge-risk-critical { color: var(--block); background: var(--block-bg); }
   #stats {
-    margin: 0 0 1.75rem; font-family: var(--mono); font-size: .82rem; color: var(--fg-3);
+    margin: 0 0 1.75rem; font-family: var(--mono); font-size: var(--fs-2); color: var(--fg-3);
     display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center;
     padding: .85rem 1.1rem; border: 1px solid var(--rule-2); border-radius: var(--r);
     background: var(--ink-1);
   }
   #stats .count { color: var(--fg); }
+  #stats .retry-link { min-height: auto; padding: 0; }
   .empty-state {
     padding: 2rem 1.5rem; border: 1px dashed var(--rule); border-radius: var(--r);
-    color: var(--fg-3); font-size: .85rem; text-align: center;
+    color: var(--fg-3); font-size: var(--fs-2); text-align: center;
   }
   #feed, #pending-list { list-style: none; margin: .5rem 0 0; }
   #feed:not(:empty) ~ #feed-empty { display: none; }
   #pending-list:not(:empty) ~ #pending-empty { display: none; }
-  #pending-list .badge { font-size: .76rem; padding: .25rem .55rem; }
   #pending-list li {
     padding: 1.4rem 1.5rem 1.5rem; margin-bottom: .9rem;
     border: 1px solid var(--auth); border-radius: var(--r-lg); background: var(--ink-1);
-    font-size: .85rem;
-    box-shadow: 0 6px 20px -10px oklch(0% 0 0 / 55%);
+    font-size: var(--fs-2);
+    box-shadow: var(--shadow-card);
     animation: pending-arrive .28s ease-out both;
   }
+  #pending-list li.stale { opacity: .7; border-style: dashed; }
   @keyframes pending-arrive {
     from { opacity: 0; transform: translateY(-6px); }
     to { opacity: 1; transform: none; }
@@ -237,36 +297,55 @@ _HTML_SHELL = """<!doctype html>
   @media (prefers-reduced-motion: reduce) {
     #pending-list li { animation: none; }
   }
-  #pending-list .row-header { display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap; }
-  #pending-list .row-header .detail { color: var(--fg); font-family: var(--mono); font-size: .82rem; }
-  #pending-list > li > .detail {
-    color: var(--auth); font-family: var(--mono); font-size: .84rem; font-weight: 600;
+  #pending-list .row-header {
+    display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap;
+  }
+  #pending-list .row-header .detail { color: var(--fg); font-family: var(--mono); font-size: var(--fs-2); }
+  #pending-list .countdown {
+    font-family: var(--mono); font-size: var(--fs-3); font-weight: 700; color: var(--auth);
+    margin-left: auto;
   }
   #pending-list .row-explanation { margin: .5rem 0 1rem; color: var(--fg-2); line-height: 1.6; max-width: 62ch; }
   #pending-list input {
-    font-family: var(--mono); font-size: .95rem; padding: .45rem .6rem; margin-right: .5rem;
+    font-family: var(--mono); font-size: var(--fs-3); padding: .45rem .6rem; margin: 0 .5rem .5rem 0;
     letter-spacing: .12em; width: 9rem;
     background: var(--ink-0); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px;
   }
-  #pending-list button {
-    font-family: var(--font); font-size: .86rem; font-weight: 600; padding: .55rem 1.15rem; margin-right: .5rem;
-    border-radius: var(--r-sm); cursor: pointer;
-    transition: background-color var(--d), border-color var(--d), color var(--d);
-  }
-  #pending-list button.deny { background: transparent; border: 1px solid var(--rule); color: var(--block); }
-  #pending-list button.deny:hover { border-color: var(--block); background: var(--block-bg); }
-  #pending-list button.approve { background: var(--auth); border: 1px solid var(--auth); color: var(--ink-0); }
-  #pending-list button.approve:hover { background: var(--tan-hi); border-color: var(--tan-hi); }
+  #pending-list button { margin: 0 .5rem .5rem 0; }
+  #pending-list button.deny { background: var(--block); border: 1px solid var(--block); color: var(--ink-0); }
+  #pending-list button.deny:hover { filter: brightness(1.15); }
+  #pending-list button.approve { background: transparent; border: 1px solid var(--auth); color: var(--auth); }
+  #pending-list button.approve:hover { background: var(--auth-bg); }
   #pending-list button.btn-copy { background: transparent; border: 1px solid var(--rule); color: var(--fg-2); }
   #pending-list button.btn-copy:hover { border-color: var(--auth); color: var(--fg); }
+  #pending-list .row-error { color: var(--block); font-family: var(--mono); font-size: var(--fs-1); margin-top: .4rem; }
+  #pending-list .row-error:empty { display: none; }
+  #pending-list .stale-note { color: var(--fg-3); font-size: var(--fs-1); margin-top: .4rem; }
+  #pending-list .stale-note .retry-link { min-height: auto; padding: 0; margin: 0; }
+  .retry-link {
+    background: none; border: none; color: var(--tan-hi); text-decoration: underline;
+    padding: 0; min-height: auto; min-width: auto;
+  }
   .section-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: 1.4rem; }
   #refresh-btn {
-    font-family: var(--font); font-size: .86rem; font-weight: 600; padding: .35rem 1rem;
-    border-radius: var(--r-sm); cursor: pointer;
+    font-family: var(--font); font-size: var(--fs-2); font-weight: 600;
     background: transparent; border: 1px solid var(--rule); color: var(--fg);
-    transition: background-color var(--d), border-color var(--d);
   }
   #refresh-btn:hover { border-color: var(--tan-hi); color: var(--tan-hi); }
+  .feed-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin: .7rem 0 .8rem; }
+  .filter-chip-group { display: flex; gap: .4rem; flex-wrap: wrap; }
+  .filter-chip {
+    font-family: var(--mono); font-size: var(--fs-1); padding: .4rem .9rem;
+    border: 1px solid var(--rule); border-radius: 999px; background: var(--ink-2); color: var(--fg-3);
+  }
+  .filter-chip[aria-pressed="true"] {
+    background: var(--auth-bg); border-color: var(--auth); color: var(--auth);
+  }
+  #feed-filter {
+    font-family: var(--font); font-size: var(--fs-2); padding: .5rem .8rem;
+    border: 1px solid var(--rule); border-radius: var(--r-sm); background: var(--ink-2); color: var(--fg);
+    flex: 1 1 12rem;
+  }
   #feed {
     max-height: 60vh; overflow-y: auto;
     border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--ink-1);
@@ -274,42 +353,72 @@ _HTML_SHELL = """<!doctype html>
   #feed li {
     display: flex; align-items: baseline; gap: .5rem;
     padding: .6rem 1.1rem; border-bottom: 1px solid var(--rule-2);
-    font-size: .8rem; font-family: var(--mono);
+    font-size: var(--fs-2); font-family: var(--mono);
     transition: background-color var(--d);
   }
   #feed li:last-child { border-bottom: none; }
   #feed li:hover { background: var(--ink-2); }
   #feed li .detail { color: var(--fg-3); overflow-wrap: anywhere; }
+  .feed-note {
+    padding: .6rem 1.1rem; color: var(--fg-3); font-family: var(--mono); font-size: var(--fs-1);
+    border-top: 1px solid var(--rule-2);
+  }
   #mode-edit-btn {
-    font: inherit; font-size: .7rem; font-weight: 600; padding: .2rem .5rem;
+    font-size: var(--fs-1); font-weight: 600; padding: .35rem .7rem;
     border: 1px solid var(--rule); border-radius: 4px; background: transparent;
-    color: var(--fg-3); cursor: pointer;
+    color: var(--fg-3);
   }
   #mode-edit-btn:hover { background: var(--neutral-bg); color: var(--fg); }
-  #mode-form {
+  #mode-form:not([hidden]) {
     display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
-    margin: -.2rem 0 1.2rem; font-size: .82rem;
+    margin: -.2rem 0 1.2rem; font-size: var(--fs-2);
+  }
+  #mode-form .mode-form-note {
+    flex-basis: 100%; margin: 0 0 .2rem; color: var(--fg-3); font-size: var(--fs-1);
   }
   #mode-form select, #mode-form input {
-    font: inherit; font-size: .82rem; padding: .35rem .55rem;
+    font-size: var(--fs-2); padding: .35rem .55rem;
     background: var(--ink-2); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px;
   }
   #mode-form input { width: 16rem; letter-spacing: .04em; }
+  .mode-form-actions { display: flex; gap: .5rem; align-items: center; }
   #mode-form button {
-    font: inherit; font-size: .8rem; font-weight: 600; padding: .35rem .85rem;
+    font-size: var(--fs-2); font-weight: 600; padding: .35rem .85rem;
     border: 1px solid var(--rule); border-radius: 4px; background: transparent;
-    color: inherit; cursor: pointer;
+    color: inherit; min-height: auto;
   }
   #mode-save-btn { border-color: var(--pass); color: var(--pass); }
   #mode-save-btn:hover { background: var(--pass-bg); }
-  #mode-save-btn:disabled { opacity: .55; cursor: default; }
   #mode-cancel-btn:hover { background: var(--neutral-bg); }
-  #mode-error { color: var(--block); font-family: var(--mono); font-size: .78rem; }
+  #mode-success { color: var(--pass); font-family: var(--mono); font-size: var(--fs-1); }
+  #mode-error { color: var(--block); font-family: var(--mono); font-size: var(--fs-1); }
+  #shortcuts-panel {
+    position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 20; max-width: 20rem;
+    padding: 1rem 1.25rem; border: 1px solid var(--rule); border-radius: var(--r-lg);
+    background: var(--ink-1); box-shadow: var(--shadow-card); font-size: var(--fs-2);
+  }
+  #shortcuts-panel h2 { margin-top: 0; }
+  #shortcuts-panel dl { display: grid; grid-template-columns: auto 1fr; gap: .3rem .8rem; margin: .5rem 0 .8rem; }
+  #shortcuts-panel dt { font-family: var(--mono); color: var(--tan-hi); }
+  #shortcuts-panel dd { color: var(--fg-2); }
+  @media (max-width: 640px) {
+    .topbar { flex-direction: column; align-items: flex-start; }
+    .topbar-right { width: 100%; }
+    #mode-form:not([hidden]) { flex-direction: column; align-items: stretch; }
+    #mode-form select, #mode-form input { width: 100%; }
+    .mode-form-actions { width: 100%; }
+    .mode-form-actions button { flex: 1 1 0; }
+    #feed li { flex-wrap: wrap; }
+    #feed li .detail { flex-basis: 100%; }
+    #pending-list .countdown { margin-left: 0; flex-basis: 100%; }
+    .feed-toolbar { flex-direction: column; align-items: stretch; }
+    #feed-filter { width: 100%; }
+  }
 </style>
 </head>
 <body>
-  <h1 class="sr-only">Doberman local dashboard</h1>
-  <div class="topbar">
+  <div id="announcer" class="sr-only" aria-live="polite"></div>
+  <header class="topbar">
     <div class="brand">
       <img src="data:image/png;base64,%%DASH_MARK_PNG_B64%%" alt="" aria-hidden="true" />
       <span class="word">DOBERMAN</span>
@@ -321,26 +430,61 @@ _HTML_SHELL = """<!doctype html>
       <button type="button" id="mode-edit-btn">change</button>
       <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
       <span class="status-pill ok" id="guard-status"><span class="pip" id="guard-pip" aria-hidden="true">●</span><span id="guard-label">ON GUARD</span></span>
+      <button type="button" id="theme-toggle-btn">Switch to light theme</button>
+      <button type="button" id="shortcuts-btn" aria-haspopup="true" aria-expanded="false">Shortcuts (?)</button>
     </div>
+  </header>
+  <main>
+    <div id="mode-form" hidden>
+      <p class="mode-form-note">Raising is immediate; lowering needs your code.</p>
+      <select id="mode-select" aria-label="Security mode"></select>
+      <input id="mode-code" type="password" autocomplete="off"
+        placeholder="2FA code or password (only needed to lower strictness)">
+      <div class="mode-form-actions">
+        <button type="button" id="mode-save-btn">Save</button>
+        <button type="button" id="mode-cancel-btn">Cancel</button>
+      </div>
+      <span id="mode-success"></span>
+      <span id="mode-error"></span>
+    </div>
+    <div id="stats">stats loading...</div>
+    <section aria-labelledby="pending-heading">
+      <h2 id="pending-heading">Pending approvals</h2>
+      <ul id="pending-list" aria-live="polite"></ul>
+      <div id="pending-empty" class="empty-state">Nothing pending. Doberman's watching.</div>
+    </section>
+    <section aria-labelledby="feed-heading">
+      <div class="section-head">
+        <h2 id="feed-heading">Recent decisions</h2>
+        <button type="button" id="refresh-btn">Refresh</button>
+      </div>
+      <div class="feed-toolbar">
+        <div class="filter-chip-group" role="group" aria-label="Filter by verdict">
+          <button type="button" class="filter-chip" data-verdict="" aria-pressed="true">All</button>
+          <button type="button" class="filter-chip" data-verdict="BLOCK" aria-pressed="false">BLOCK</button>
+          <button type="button" class="filter-chip" data-verdict="AUTH" aria-pressed="false">AUTH</button>
+          <button type="button" class="filter-chip" data-verdict="PASS" aria-pressed="false">PASS</button>
+        </div>
+        <label class="sr-only" for="feed-filter">Filter recent decisions by text</label>
+        <input type="search" id="feed-filter" placeholder="Filter (press / to focus)">
+      </div>
+      <ul id="feed" role="log" tabindex="0" aria-label="Recent decisions"></ul>
+      <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
+      <div id="feed-truncated" class="feed-note" hidden>older rows not shown - see doberman log</div>
+    </section>
+  </main>
+  <div id="shortcuts-panel" hidden role="region" aria-label="Keyboard shortcuts">
+    <h2>Shortcuts</h2>
+    <dl>
+      <dt>/</dt><dd>Focus the decisions filter</dd>
+      <dt>r</dt><dd>Refresh stats + pending</dd>
+      <dt>a</dt><dd>Approve the first pending item (press twice to confirm)</dd>
+      <dt>d</dt><dd>Deny the first pending item</dd>
+      <dt>?</dt><dd>Toggle this panel</dd>
+      <dt>Esc</dt><dd>Close this panel or the mode form</dd>
+    </dl>
+    <button type="button" id="shortcuts-close-btn">Close</button>
   </div>
-  <div id="mode-form" hidden>
-    <select id="mode-select" aria-label="Security mode"></select>
-    <input id="mode-code" type="password" autocomplete="off"
-      placeholder="2FA code or password (only needed to lower strictness)">
-    <button type="button" id="mode-save-btn">Save</button>
-    <button type="button" id="mode-cancel-btn">Cancel</button>
-    <span id="mode-error"></span>
-  </div>
-  <div id="stats">stats loading...</div>
-  <h2>Pending approvals</h2>
-  <ul id="pending-list" aria-live="polite"></ul>
-  <div id="pending-empty" class="empty-state">Nothing pending. Doberman's watching.</div>
-  <div class="section-head">
-    <h2>Recent decisions</h2>
-    <button type="button" id="refresh-btn">Refresh</button>
-  </div>
-  <ul id="feed"></ul>
-  <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
   <script>
     (function () {
       // Rendered server-side per `create_app(repo_root=...)` call - this is
@@ -367,6 +511,17 @@ _HTML_SHELL = """<!doctype html>
         off: "badge badge-block"
       };
 
+      var announcer = document.getElementById("announcer");
+      var lastAnnounced = "";
+      // A single aria-live=polite region for every status change (health,
+      // feed connection, the guard pill) - one shared debounce so the same
+      // message landing again on the next poll doesn't re-announce.
+      function announce(message) {
+        if (message === lastAnnounced) { return; }
+        lastAnnounced = message;
+        announcer.textContent = message;
+      }
+
       var TOKEN_KEY = "doberman-dash-token";
       var params = new URLSearchParams(window.location.search);
       var token = params.get("token") || "";
@@ -391,8 +546,47 @@ _HTML_SHELL = """<!doctype html>
         + (params.toString() ? "?" + params.toString() : "");
       window.history.replaceState({}, document.title, clean);
 
+      // Manual theme toggle: persisted separately from the token above (a
+      // different key, in localStorage - a per-viewer display preference has
+      // no reason to die with the tab the way an auth secret must). Defaults
+      // to whatever the OS prefers until the user overrides it explicitly.
+      var THEME_KEY = "doberman-dash-theme";
+      var themeToggleBtn = document.getElementById("theme-toggle-btn");
+      var mediaDark = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+      function readStoredTheme() {
+        try {
+          return window.localStorage.getItem(THEME_KEY);
+        } catch (e) {
+          return null;
+        }
+      }
+      function writeStoredTheme(value) {
+        try { window.localStorage.setItem(THEME_KEY, value); } catch (e) { /* privacy mode: just won't persist */ }
+      }
+      function effectiveTheme(explicit) {
+        if (explicit === "light" || explicit === "dark") { return explicit; }
+        return (mediaDark && !mediaDark.matches) ? "light" : "dark";
+      }
+      function applyTheme(explicit) {
+        if (explicit === "light" || explicit === "dark") {
+          document.documentElement.setAttribute("data-theme", explicit);
+        } else {
+          document.documentElement.removeAttribute("data-theme");
+        }
+        var eff = effectiveTheme(explicit);
+        themeToggleBtn.textContent = eff === "dark" ? "Switch to light theme" : "Switch to dark theme";
+      }
+      applyTheme(readStoredTheme());
+      themeToggleBtn.addEventListener("click", function () {
+        var next = effectiveTheme(readStoredTheme()) === "dark" ? "light" : "dark";
+        writeStoredTheme(next);
+        applyTheme(next);
+      });
+
       var dot = document.getElementById("dot");
       var label = document.getElementById("label");
+      var favicon = document.getElementById("favicon");
       var statsEl = document.getElementById("stats");
       var modeBadge = document.getElementById("mode-badge");
       var enforcementBadge = document.getElementById("enforcement-badge");
@@ -402,10 +596,42 @@ _HTML_SHELL = """<!doctype html>
       var modeCodeInput = document.getElementById("mode-code");
       var modeSaveBtn = document.getElementById("mode-save-btn");
       var modeCancelBtn = document.getElementById("mode-cancel-btn");
+      var modeSuccessEl = document.getElementById("mode-success");
       var modeErrorEl = document.getElementById("mode-error");
       var modeEditing = false;
       var feedEl = document.getElementById("feed");
+      var feedTruncatedEl = document.getElementById("feed-truncated");
       var MAX_FEED_ROWS = 200;
+
+      // Recolor the mark amber on canvas once (offline, no network request)
+      // so the browser tab itself signals a waiting approval, same as the
+      // "(N)" title prefix and the ALERT pill below.
+      var faviconDefaultHref = favicon.href;
+      var faviconAlertHref = null;
+      var lastPendingCountForFavicon = 0;
+      (function buildAlertFavicon() {
+        try {
+          var img = new Image();
+          img.onload = function () {
+            var canvas = document.createElement("canvas");
+            canvas.width = img.naturalWidth || img.width;
+            canvas.height = img.naturalHeight || img.height;
+            var ctx = canvas.getContext("2d");
+            if (!ctx) { return; }
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            ctx.globalCompositeOperation = "source-atop";
+            ctx.fillStyle = "rgba(217, 143, 33, 0.6)";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            faviconAlertHref = canvas.toDataURL("image/png");
+            if (lastPendingCountForFavicon > 0) { favicon.href = faviconAlertHref; }
+          };
+          img.src = faviconDefaultHref;
+        } catch (e) { /* canvas unavailable: favicon just stays the default mark */ }
+      })();
+      function updateFavicon(pendingCount) {
+        lastPendingCountForFavicon = pendingCount;
+        favicon.href = (pendingCount > 0 && faviconAlertHref) ? faviconAlertHref : faviconDefaultHref;
+      }
 
       var guardStatus = document.getElementById("guard-status");
       var guardPip = document.getElementById("guard-pip");
@@ -418,34 +644,47 @@ _HTML_SHELL = """<!doctype html>
         guardStatus.className = "status-pill" + (alertMode ? " alert" : " ok");
         guardPip.textContent = alertMode ? "⚠" : "●";
         guardLabel.textContent = alertMode ? "ALERT" : "ON GUARD";
+        updateFavicon(pendingCount);
+        announce(alertMode ? "ALERT: " + pendingCount + " pending approval(s)." : "ON GUARD. Nothing pending.");
       }
 
-      fetch("/api/health", { headers: { "Authorization": "Bearer " + token } })
-        .then(function (res) {
-          if (!res.ok) {
-            var httpError = new Error("status " + res.status);
-            httpError.status = res.status;
-            throw httpError;
-          }
-          return res.json();
-        })
-        .then(function () {
-          dot.className = "dot ok";
-          label.textContent = "connected";
-        })
-        .catch(function (err) {
-          dot.className = "dot err";
-          // A rejected token is the one failure a human can actually fix, and
-          // only by reopening the link THIS run printed - so say that instead
-          // of a dead-end "not connected", and drop the stale token so the next
-          // load doesn't silently retry it.
-          if (err && err.status === 401) {
-            try { window.sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
-            label.textContent = "not authorized - reopen the link printed by doberman dash";
-          } else {
-            label.textContent = "not connected";
-          }
-        });
+      function checkHealth() {
+        fetch("/api/health", { headers: { "Authorization": "Bearer " + token } })
+          .then(function (res) {
+            if (!res.ok) {
+              var httpError = new Error("status " + res.status);
+              httpError.status = res.status;
+              throw httpError;
+            }
+            return res.json();
+          })
+          .then(function () {
+            dot.className = "dot ok";
+            label.textContent = "connected";
+            announce("Dashboard connected.");
+          })
+          .catch(function (err) {
+            dot.className = "dot err";
+            // A rejected token is the one failure a human can actually fix, and
+            // only by reopening the link THIS run printed - so say that instead
+            // of a dead-end "not connected", and drop the stale token so the next
+            // load doesn't silently retry it.
+            if (err && err.status === 401) {
+              try { window.sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+              label.textContent = "not authorized - reopen the link printed by doberman dash";
+              announce("Dashboard not authorized - reopen the link printed by doberman dash.");
+            } else {
+              label.textContent = "not connected";
+              announce("Dashboard not connected.");
+            }
+          });
+      }
+      checkHealth();
+      // Health is also polled on an interval (not just at load) so a server
+      // that goes away mid-session is reflected in the status chip instead
+      // of it freezing on a stale "connected".
+      var HEALTH_POLL_MS = 10000;
+      setInterval(checkHealth, HEALTH_POLL_MS);
 
       function renderStats(s) {
         // Every piece is built via textContent, never innerHTML — mirrors
@@ -476,6 +715,27 @@ _HTML_SHELL = """<!doctype html>
         taint.appendChild(taintCount);
         statsEl.appendChild(taint);
 
+        // Top reason codes + a recent-window verdict breakdown, rendered in
+        // the same compact strip - build_stats already computes both, this
+        // was the only piece that never reached the page.
+        if (s.top_reason_codes && s.top_reason_codes.length) {
+          var topReasons = document.createElement("span");
+          topReasons.className = "detail";
+          topReasons.textContent = "top reasons: " + s.top_reason_codes.map(function (pair) {
+            return pair[0] + " (" + pair[1] + ")";
+          }).join(", ");
+          statsEl.appendChild(topReasons);
+        }
+        if (s.recent_verdict_counts) {
+          var recent = document.createElement("span");
+          recent.className = "detail";
+          var recentParts = ["PASS", "AUTH", "BLOCK"].map(function (verdict) {
+            return verdict + " " + (s.recent_verdict_counts[verdict] || 0);
+          });
+          recent.textContent = "recent " + s.recent_window + ": " + recentParts.join(" / ");
+          statsEl.appendChild(recent);
+        }
+
         modeBadge.textContent = "mode: " + s.mode;
         enforcementBadge.textContent = "enforcement: " + s.enforcement;
         enforcementBadge.className = ENFORCEMENT_BADGE_CLASS[s.enforcement] || "badge badge-neutral";
@@ -498,7 +758,16 @@ _HTML_SHELL = """<!doctype html>
           })
           .then(renderStats)
           .catch(function () {
-            statsEl.textContent = "stats unavailable";
+            statsEl.textContent = "";
+            var msg = document.createElement("span");
+            msg.textContent = "stats unavailable - ";
+            statsEl.appendChild(msg);
+            var retryBtn = document.createElement("button");
+            retryBtn.type = "button";
+            retryBtn.className = "retry-link";
+            retryBtn.textContent = "retry";
+            retryBtn.addEventListener("click", refreshStats);
+            statsEl.appendChild(retryBtn);
           });
       }
       refreshStats();
@@ -542,6 +811,7 @@ _HTML_SHELL = """<!doctype html>
       function openModeForm() {
         modeEditing = true;
         modeErrorEl.textContent = "";
+        modeSuccessEl.textContent = "";
         modeCodeInput.value = "";
         modeForm.hidden = false;
       }
@@ -551,6 +821,7 @@ _HTML_SHELL = """<!doctype html>
         modeForm.hidden = true;
         modeCodeInput.value = "";
         modeErrorEl.textContent = "";
+        modeSuccessEl.textContent = "";
       }
 
       modeEditBtn.addEventListener("click", function () {
@@ -564,6 +835,7 @@ _HTML_SHELL = """<!doctype html>
         var body = { mode: chosen };
         if (modeCodeInput.value) { body.code = modeCodeInput.value; }
         modeErrorEl.textContent = "";
+        modeSuccessEl.textContent = "";
         modeSaveBtn.disabled = true;
         fetch("/api/mode", {
           method: "POST",
@@ -580,8 +852,12 @@ _HTML_SHELL = """<!doctype html>
           modeSaveBtn.disabled = false;
           if (result.ok) {
             modeBadge.textContent = "mode: " + result.data.mode;
-            closeModeForm();
             refreshStats();
+            // Confirm inline before closing, so a raise (frictionless, no
+            // code) still gets the same visible acknowledgment as a gated
+            // lower does - the save wasn't silently swallowed either way.
+            modeSuccessEl.textContent = "Mode: " + result.data.mode + " - saved";
+            setTimeout(closeModeForm, 900);
           } else {
             // textContent only - never render a server error string as markup.
             modeErrorEl.textContent = (result.data && result.data.error) || "mode change failed";
@@ -595,8 +871,38 @@ _HTML_SHELL = """<!doctype html>
 
       var pendingList = document.getElementById("pending-list");
       var PENDING_POLL_MS = 2000;
+      // Live countdown to the DASHBOARD's own 90s authority horizon
+      // (DashboardPrompter.DEFAULT_TIMEOUT_S) - NOT row.expires_at, which is
+      // a separate, longer 120s DB TTL: the row itself still expires against
+      // that TTL even after the dashboard has stopped waiting and fallen
+      // through to the terminal/GUI channel instead.
+      var DASHBOARD_AUTHORITY_S = 90;
 
-      function resolveApproval(id, decision, totpCode, card) {
+      function pendingDeadlineMs(row) {
+        var created = Date.parse(row.created_at);
+        return isNaN(created) ? null : created + DASHBOARD_AUTHORITY_S * 1000;
+      }
+
+      function formatCountdown(msRemaining) {
+        var totalSeconds = Math.max(0, Math.round(msRemaining / 1000));
+        var m = Math.floor(totalSeconds / 60);
+        var s = totalSeconds % 60;
+        return "auto-denies in " + m + ":" + (s < 10 ? "0" : "") + s + " if unanswered";
+      }
+
+      function tickCountdowns() {
+        var now = Date.now();
+        pendingList.querySelectorAll(".countdown[data-deadline]").forEach(function (node) {
+          var remaining = Number(node.dataset.deadline) - now;
+          node.textContent = remaining > 0 ? formatCountdown(remaining) : "auto-denies any moment now";
+        });
+      }
+      setInterval(tickCountdowns, 1000);
+
+      function resolveApproval(id, decision, totpCode, card, buttons) {
+        buttons.forEach(function (b) { b.disabled = true; });
+        var errorEl = card.querySelector(".row-error");
+        if (errorEl) { errorEl.textContent = ""; }
         var body = { decision: decision };
         if (totpCode) { body.totp_code = totpCode; }
         fetch("/api/resolve/" + encodeURIComponent(id), {
@@ -609,12 +915,21 @@ _HTML_SHELL = """<!doctype html>
         }).then(function (res) {
           if (res.ok) {
             card.remove();
-          } else {
-            // Already resolved/expired elsewhere, or a bad request — refresh
-            // the list from the server rather than trust local state.
-            refreshPending();
+            return null;
           }
-        }).catch(function () { /* network hiccup — next poll retries */ });
+          return res.json().catch(function () { return {}; }).then(function (data) {
+            throw new Error((data && data.error) || ("request failed (status " + res.status + ")"));
+          });
+        }).catch(function (err) {
+          // Already resolved/expired elsewhere, a validation error, or a
+          // network hiccup - all of these must leave the card usable again,
+          // not just fail silently (the old empty catch here).
+          buttons.forEach(function (b) { b.disabled = false; });
+          if (errorEl) {
+            errorEl.textContent = (err && err.message) || "couldn't resolve - try again";
+          }
+          refreshPending();
+        });
       }
 
       var lastPendingKey = null;
@@ -650,18 +965,25 @@ _HTML_SHELL = """<!doctype html>
           // textContent only — every field is row-derived and must render
           // literally, never as markup (mirrors the feed's discipline).
           summary.textContent = row.action_type +
-            " " + (row.target_path_class || "-") + " (tier: " + row.tier + ")";
+            " " + (row.target_path_class || "no target") + " (tier: " + row.tier + ")";
           header.appendChild(summary);
 
-          var expiry = document.createElement("span");
-          expiry.className = "detail";
-          expiry.textContent = "expires " + (String(row.expires_at || "").slice(11, 19) || "-") + " UTC";
-          header.appendChild(expiry);
+          // Promoted out of the grey detail style below (see .countdown) -
+          // this is the moment the card exists to communicate.
+          var countdown = document.createElement("span");
+          countdown.className = "countdown";
+          var deadlineMs = pendingDeadlineMs(row);
+          if (deadlineMs !== null) {
+            countdown.dataset.deadline = String(deadlineMs);
+          } else {
+            countdown.textContent = "auto-denies if unanswered";
+          }
+          header.appendChild(countdown);
           li.appendChild(header);
 
           var reasons = document.createElement("div");
           reasons.className = "detail";
-          reasons.textContent = (row.reason_codes || []).join(", ") || "-";
+          reasons.textContent = (row.reason_codes || []).join(", ") || "no auth";
           li.appendChild(reasons);
 
           var explanation = document.createElement("div");
@@ -671,7 +993,15 @@ _HTML_SHELL = """<!doctype html>
 
           var totpInput = null;
           if (row.needs_totp) {
+            var totpId = "totp-" + row.id;
+            var totpLabel = document.createElement("label");
+            totpLabel.className = "sr-only";
+            totpLabel.setAttribute("for", totpId);
+            totpLabel.textContent = "TOTP code";
+            li.appendChild(totpLabel);
+
             totpInput = document.createElement("input");
+            totpInput.id = totpId;
             // A masked field: this is a live second factor, and the dashboard is
             // exactly the screen that gets screen-shared and recorded.
             totpInput.type = "password";
@@ -689,16 +1019,26 @@ _HTML_SHELL = """<!doctype html>
           var armTimer = null;
           approveBtn.addEventListener("click", function () {
             if (approveBtn.dataset.armed === "1") {
-              clearTimeout(armTimer);
-              resolveApproval(row.id, "approved", totpInput ? totpInput.value : null, li);
+              clearInterval(armTimer);
+              approveBtn.dataset.armed = "";
+              approveBtn.textContent = "Approve";
+              resolveApproval(row.id, "approved", totpInput ? totpInput.value : null, li,
+                [approveBtn, denyBtn]);
               return;
             }
             approveBtn.dataset.armed = "1";
-            approveBtn.textContent = "Confirm approve";
-            armTimer = setTimeout(function () {
-              approveBtn.dataset.armed = "";
-              approveBtn.textContent = "Approve";
-            }, 3000);
+            var remaining = 3;
+            approveBtn.textContent = "Confirm approve (" + remaining + ")";
+            armTimer = setInterval(function () {
+              remaining -= 1;
+              if (remaining <= 0) {
+                clearInterval(armTimer);
+                approveBtn.dataset.armed = "";
+                approveBtn.textContent = "Approve";
+                return;
+              }
+              approveBtn.textContent = "Confirm approve (" + remaining + ")";
+            }, 1000);
           });
           li.appendChild(approveBtn);
 
@@ -707,7 +1047,8 @@ _HTML_SHELL = """<!doctype html>
           denyBtn.className = "deny";
           denyBtn.textContent = "Deny";
           denyBtn.addEventListener("click", function () {
-            resolveApproval(row.id, "denied", totpInput ? totpInput.value : null, li);
+            resolveApproval(row.id, "denied", totpInput ? totpInput.value : null, li,
+              [approveBtn, denyBtn]);
           });
           li.appendChild(denyBtn);
 
@@ -729,10 +1070,47 @@ _HTML_SHELL = """<!doctype html>
           });
           li.appendChild(copyBtn);
 
+          var errorEl = document.createElement("div");
+          errorEl.className = "row-error";
+          errorEl.setAttribute("role", "alert");
+          li.appendChild(errorEl);
+
           pendingList.appendChild(li);
         });
         document.title = (rows.length ? "(" + rows.length + ") " : "") + DASH_BASE_TITLE;
         updateGuardStatus(rows.length);
+        tickCountdowns();
+      }
+
+      function markPendingStale() {
+        Array.prototype.forEach.call(pendingList.children, function (li) {
+          if (li.classList.contains("stale")) { return; }
+          li.classList.add("stale");
+          li.querySelectorAll("button.approve, button.deny, button.btn-copy").forEach(function (b) {
+            b.disabled = true;
+          });
+          var note = document.createElement("div");
+          note.className = "stale-note";
+          note.textContent = "couldn't refresh - ";
+          var retryBtn = document.createElement("button");
+          retryBtn.type = "button";
+          retryBtn.className = "retry-link";
+          retryBtn.textContent = "retry";
+          retryBtn.addEventListener("click", refreshPending);
+          note.appendChild(retryBtn);
+          li.appendChild(note);
+        });
+      }
+
+      function clearPendingStale() {
+        Array.prototype.forEach.call(pendingList.children, function (li) {
+          li.classList.remove("stale");
+          li.querySelectorAll("button.approve, button.deny, button.btn-copy").forEach(function (b) {
+            b.disabled = false;
+          });
+          var note = li.querySelector(".stale-note");
+          if (note) { note.remove(); }
+        });
       }
 
       function refreshPending() {
@@ -741,8 +1119,11 @@ _HTML_SHELL = """<!doctype html>
             if (!res.ok) { throw new Error("status " + res.status); }
             return res.json();
           })
-          .then(renderPending)
-          .catch(function () { /* leave the last known list showing */ });
+          .then(function (rows) {
+            clearPendingStale();
+            renderPending(rows);
+          })
+          .catch(markPendingStale);
       }
 
       refreshPending();
@@ -755,10 +1136,100 @@ _HTML_SHELL = """<!doctype html>
         refreshPending();
       });
 
+      // Find a BLOCK: verdict chips + a text filter over what's already on
+      // screen (no new endpoint - the feed is already fully client-side).
+      var feedEntries = [];
+      var activeVerdict = "";
+      var activeQuery = "";
+
+      function matchesFilter(entry) {
+        if (activeVerdict && entry.verdict !== activeVerdict) { return false; }
+        if (activeQuery && entry.searchText.indexOf(activeQuery) === -1) { return false; }
+        return true;
+      }
+      function applyFeedFilter() {
+        feedEntries.forEach(function (entry) { entry.li.hidden = !matchesFilter(entry); });
+      }
+
+      var filterChips = document.querySelectorAll(".filter-chip");
+      filterChips.forEach(function (chip) {
+        chip.addEventListener("click", function () {
+          filterChips.forEach(function (c) {
+            c.setAttribute("aria-pressed", c === chip ? "true" : "false");
+          });
+          activeVerdict = chip.dataset.verdict || "";
+          applyFeedFilter();
+        });
+      });
+
+      var feedFilterInput = document.getElementById("feed-filter");
+      feedFilterInput.addEventListener("input", function () {
+        activeQuery = feedFilterInput.value.trim().toLowerCase();
+        applyFeedFilter();
+      });
+
+      // A small non-modal shortcuts panel (see the keydown handler below for
+      // the bindings it documents) - discoverable via the topbar button too,
+      // not just the "?" key.
+      var shortcutsBtn = document.getElementById("shortcuts-btn");
+      var shortcutsPanel = document.getElementById("shortcuts-panel");
+      var shortcutsCloseBtn = document.getElementById("shortcuts-close-btn");
+
+      function openShortcuts() {
+        shortcutsPanel.hidden = false;
+        shortcutsBtn.setAttribute("aria-expanded", "true");
+      }
+      function closeShortcuts() {
+        shortcutsPanel.hidden = true;
+        shortcutsBtn.setAttribute("aria-expanded", "false");
+      }
+      shortcutsBtn.addEventListener("click", function () {
+        if (shortcutsPanel.hidden) { openShortcuts(); } else { closeShortcuts(); }
+      });
+      shortcutsCloseBtn.addEventListener("click", closeShortcuts);
+
+      // Keyboard: / focuses the filter, r refreshes, ? toggles the shortcuts
+      // panel, a/d act on the first pending card (arm step preserved for
+      // approve), Escape closes whatever panel is open. Ignored while
+      // already typing in a field, except Escape which always works.
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") {
+          if (!modeForm.hidden) { closeModeForm(); }
+          if (!shortcutsPanel.hidden) { closeShortcuts(); }
+          return;
+        }
+        var tag = (document.activeElement && document.activeElement.tagName) || "";
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") { return; }
+        if (e.key === "/") {
+          e.preventDefault();
+          feedFilterInput.focus();
+        } else if (e.key === "r") {
+          refreshStats();
+          refreshPending();
+        } else if (e.key === "?") {
+          if (shortcutsPanel.hidden) { openShortcuts(); } else { closeShortcuts(); }
+        } else if (e.key === "a" || e.key === "d") {
+          var firstCard = pendingList.querySelector("li");
+          if (!firstCard) { return; }
+          var actionBtn = firstCard.querySelector(e.key === "a" ? "button.approve" : "button.deny");
+          if (actionBtn) { actionBtn.click(); }
+        }
+      });
+
       // EventSource cannot set request headers, so the token travels as a
       // query param here only (see doberman.dash.app._feed_token_matches).
       try {
         var source = new EventSource("/api/feed?token=" + encodeURIComponent(token));
+        source.addEventListener("open", function () {
+          dot.className = "dot ok";
+          label.textContent = "connected";
+          announce("Live feed connected.");
+        });
+        source.addEventListener("error", function () {
+          dot.className = "dot err";
+          label.textContent = "feed dropped - reconnecting";
+          announce("Live feed dropped. Reconnecting.");
+        });
         source.addEventListener("decision", function (evt) {
           var row;
           try {
@@ -773,14 +1244,16 @@ _HTML_SHELL = """<!doctype html>
           badge.textContent = row.verdict;
           li.appendChild(badge);
 
-          // A PASS on a non-path action (e.g. shell_exec) has no
-          // target_path_class and usually no reason codes either - without
-          // the risk badge that row would render as bare noise ("PASS
-          // shell_exec — — @ ..."), so it always shows even at "low".
-          var riskBadge = document.createElement("span");
-          riskBadge.className = RISK_BADGE_CLASS[row.risk] || "badge badge-neutral";
-          riskBadge.textContent = (row.risk || "-").toUpperCase();
-          li.appendChild(riskBadge);
+          // The detail line always names something concrete now (a target
+          // class or "no target", reason codes or "no auth"), so a low-risk
+          // PASS is no longer bare noise without its own badge - reserve the
+          // risk badge for medium+ instead of doubling up on every row.
+          if (row.risk && row.risk !== "low") {
+            var riskBadge = document.createElement("span");
+            riskBadge.className = RISK_BADGE_CLASS[row.risk] || "badge badge-neutral";
+            riskBadge.textContent = (row.risk || "-").toUpperCase();
+            li.appendChild(riskBadge);
+          }
 
           var detail = document.createElement("span");
           detail.className = "detail";
@@ -789,9 +1262,9 @@ _HTML_SHELL = """<!doctype html>
           // Compact HH:MM:SS (UTC) - the full ISO timestamp is noise at a glance
           // and stays available in `doberman log` / the TUI.
           detail.textContent = row.action_type +
-            " " + (row.target_path_class || "-") +
+            " " + (row.target_path_class || "no target") +
             " from:" + (row.source_context || "-") +
-            " " + (row.reason_codes && row.reason_codes.length ? row.reason_codes.join(",") : "-") +
+            " " + (row.reason_codes && row.reason_codes.length ? row.reason_codes.join(",") : "no auth") +
             " @ " + (String(row.ts || "").slice(11, 19) || "-");
           li.appendChild(detail);
 
@@ -802,11 +1275,24 @@ _HTML_SHELL = """<!doctype html>
           // oldest backfilled row.
           var nearBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 4;
 
+          var entry = {
+            li: li,
+            verdict: row.verdict,
+            searchText: (
+              row.action_type + " " + (row.target_path_class || "") + " " +
+              (row.source_context || "") + " " + (row.reason_codes || []).join(" ")
+            ).toLowerCase()
+          };
+          feedEntries.push(entry);
+          li.hidden = !matchesFilter(entry);
+
           // The empty state is CSS-only (`#feed:not(:empty) ~ #feed-empty`) -
           // appending the first row is enough to reveal the real list.
           feedEl.appendChild(li);
           while (feedEl.children.length > MAX_FEED_ROWS) {
             feedEl.removeChild(feedEl.firstChild);
+            feedEntries.shift();
+            feedTruncatedEl.hidden = false;
           }
           if (nearBottom) {
             feedEl.scrollTop = feedEl.scrollHeight;
