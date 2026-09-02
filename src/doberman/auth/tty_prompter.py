@@ -38,7 +38,22 @@ def _open_tty() -> tuple[TextIO, TextIO]:
 
 
 class TtyPrompter:
-    """Collect a challenge response from the controlling terminal (see module docstring)."""
+    """Collect a challenge response from the controlling terminal (see module docstring).
+
+    ``timeout_s`` is this channel's OWN real enforced ceiling — symmetric with
+    :class:`~doberman.auth.gui_prompter.GuiPrompter`'s ``timeout_s`` — and is
+    what the printed deadline note actually reflects: unlike the GUI dialog,
+    the terminal has no shorter internal watchdog of its own, so its real
+    ceiling IS the overall challenge deadline
+    (:data:`~doberman.auth.challenge.DEFAULT_CHALLENGE_TIMEOUT_S` by default).
+    Defaulting to that same constant keeps every existing caller's behavior
+    unchanged; a caller that passes a different challenge timeout can pass
+    the same value here so the note never drifts from what's actually
+    enforced.
+    """
+
+    def __init__(self, *, timeout_s: float = DEFAULT_CHALLENGE_TIMEOUT_S) -> None:
+        self._timeout_s = timeout_s
 
     def confirm(self, message: str) -> bool:
         """Ask a yes/no question on the terminal.
@@ -62,14 +77,13 @@ class TtyPrompter:
             raise EOFError("no code entered on the controlling terminal")
         return code
 
-    @staticmethod
-    def _ask(prompt: str, *, timeout_s: float = DEFAULT_CHALLENGE_TIMEOUT_S) -> str:
+    def _ask(self, prompt: str) -> str:
         # Open a fresh handle per prompt (don't cache): a terminal that was unavailable or
         # closed earlier may be usable now, and per-call opens keep concurrent challenges
         # independent. AUTH challenges are effectively serialized by the human anyway.
         read_handle, write_handle = _open_tty()
         try:
-            write_handle.write(f"{prompt.rstrip()} [{deadline_note(timeout_s)}] ")
+            write_handle.write(f"{prompt.rstrip()} [{deadline_note(self._timeout_s)}] ")
             write_handle.flush()
             line = read_handle.readline()
         finally:

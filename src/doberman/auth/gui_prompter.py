@@ -60,8 +60,8 @@ from doberman.auth.challenge import Prompter
 
 logger = logging.getLogger("doberman.auth.gui_prompter")
 
-#: Window title for every challenge dialog.
-_TITLE = "Doberman — authorization required"
+#: Window title for every challenge dialog. ASCII-only (cp1252-safe legacy consoles).
+_TITLE = "Doberman - authorization required"
 
 # --- palette: dark warm-black coat, tan brand, amber (AUTH) approve ------------------
 # Hex mirrors the canonical brand tokens shared with the landing page and the
@@ -79,26 +79,43 @@ _BRAND_ACTIVE = "#f2a564"  # tan hover/active
 _BRAND_FG = "#271700"  # dark ink on the tan Deny button
 _APPROVE = "#fbb636"  # amber — Approve's outline + text (= --auth), never filled
 _APPROVE_ACTIVE = "#ffca5e"  # amber hover/active (link-style hover only)
-#: Keyboard focus ring. NOT the foreground white any more (WCAG 1.4.11 non-text
-#: contrast needs >= 3:1 against whatever the indicator sits adjacent to): a
-#: light ring measured only ~2.14:1 against the Deny fill (_BRAND) and ~1.58:1
-#: against Approve's amber (_APPROVE) — and the ceiling for ANY light ring
-#: against the tan Deny fill is ~2.4:1 (pure white), so no light color could
-#: ever clear 3:1 there. Reuses the existing hairline-border token (_RULE):
-#: measured >= 3:1 against BOTH (6.08:1 vs _BRAND, 8.22:1 vs _APPROVE), and
-#: it's still a hue distinct from both tan and amber.
-_RING = _RULE
+#: Keyboard focus ring — TWO-TONE by construction, because no single flat
+#: color can clear WCAG 1.4.11's >= 3:1 non-text-contrast bar against every
+#: surface it sits next to. Deny's fill (_BRAND) sits at mid-luminance: a
+#: ring dark enough to read against it (<=~0.096 relative luminance) is too
+#: dark to also read against the near-black window background (_BG needs
+#: >=~0.112) — those two ranges don't overlap, so a single ring color for
+#: Deny is mathematically impossible, not just untuned (round-2's fix reused
+#: _RULE, which cleared _BRAND at 6.08:1 but only 1.25:1 against Approve's
+#: actual fill _PANEL — the round-3 finding). The fix is a ring with two
+#: lines per button: an INNER line touching the button's own face, and an
+#: OUTER line (a wrapping frame's highlight — see _build_buttons) touching
+#: the window background.
+#:   - Deny:    inner = _RING_DENY (_BG, dark)   -> 8.13:1 vs _BRAND
+#:              outer = _RING_OUTER (_FG, light) -> 17.38:1 vs _BG
+#:   - Approve: inner = _RING_APPROVE (_FG)      -> 16.32:1 vs _PANEL
+#:              outer = _RING_OUTER (_FG)        -> 17.38:1 vs _BG
+#: (Approve's fill is itself near-black, so its inner/outer tones coincide —
+#: it reads as one plain light ring; only Deny needs genuine two-tone.)
+_RING_DENY = _BG
+_RING_APPROVE = _FG
+_RING_OUTER = _FG
 #: BLOCK-red — dark-theme match for the dashboard's --block token
 #: (oklch(66% 0.205 26)), used only for the critical/high severity ramp below.
 _SEV_CRITICAL = "#f5524a"
 
-_BRAND_FONT = ("Segoe UI Semibold", 15, "bold")
+_BRAND_FONT = (
+    "Segoe UI Semibold",
+    12,
+    "bold",
+)  # sized to sit near the 16-20px mark, not tower over it
 _SUB_FONT = ("Segoe UI", 9)
 _BODY_FONT = ("Segoe UI", 10)
 _TARGET_FONT = ("Consolas", 12, "bold")
 _SMALL_FONT = ("Segoe UI", 9)
 _DEADLINE_FONT = ("Segoe UI", 9)  # >= 9pt floor (was 8pt / 10.7px, too small)
 _BUTTON_FONT = ("Segoe UI Semibold", 10)
+_CHIP_FONT = ("Segoe UI Semibold", 9, "bold")  # >= 9pt floor (was 8pt, below the file's own floor)
 
 # --- layout constants (pixels; approximate — pack() auto-sizes the window) ----------
 _DIALOG_W = 480
@@ -106,9 +123,9 @@ _PADX = 22
 _TARGET_CHARS = 54  # Text widget width in characters (monospace target font)
 _TARGET_MAX_LINES = 6  # collapsed cap: the question/risk/countdown stay below this
 _TARGET_EXPANDED_MAX_LINES = 16  # fallback ceiling when no monitor rect is available
-_TARGET_PREVIEW_HEAD = 220  # collapsed middle-ellipsis: chars kept from the start
-_TARGET_PREVIEW_TAIL = 90  # collapsed middle-ellipsis: chars kept from the end
+_TARGET_PREVIEW_HEAD_LINES = 4  # collapsed preview: whole LOGICAL lines kept from the start
 _ELLIPSIS = " ... "
+_TOGGLE_EXPAND_LABEL = "Show the full command"
 
 _SUBTITLE = "Doberman guards your agent's tool calls"
 _REASSURANCE = "Denying stops only this action; your agent keeps running."
@@ -118,6 +135,11 @@ _CODE_PROMPT = "Enter the 6-digit code from your authenticator app to approve:"
 _CODE_LABEL = "6-digit code from your authenticator"
 _CODE_ERROR_DIGITS = "Only digits, please."
 _CODE_ERROR_COUNT = "Codes are 6 digits - you entered {n}."
+_STEP_TWO = "Step 2 of 2 - enter your code"
+
+#: WCAG 2.2.1: a human actually present can ask for one extension.
+_EXTENSION_SECONDS = 120
+_MORE_TIME_LABEL = "More time (+2:00)"
 
 #: How long one dialog waits for the human before it gives up and denies.
 #:
@@ -155,15 +177,21 @@ def _enable_dpi_awareness() -> None:
     try:  # pragma: no cover — needs a real Windows user32
         import ctypes
 
+        windll = getattr(ctypes, "windll", None)  # absent on every non-Windows ctypes build
+        if windll is None:
+            return
         per_monitor_v2 = ctypes.c_void_p(-4)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-        if ctypes.windll.user32.SetProcessDpiAwarenessContext(per_monitor_v2):
+        if windll.user32.SetProcessDpiAwarenessContext(per_monitor_v2):
             return
     except Exception:  # noqa: S110 — older Windows lacks this call; fall back below
         pass
     try:  # pragma: no cover — needs a real Windows shell DLL
         import ctypes
 
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return
+        windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
     except Exception:  # noqa: S110 — cosmetic only
         pass
 
@@ -264,26 +292,26 @@ def _apply_ttk_style(root: Any) -> None:
         background=_BRAND,
         foreground=_BRAND_FG,
         bordercolor=_BRAND,
-        focuscolor=_RING,
+        focuscolor=_RING_DENY,
         **common,
     )
     style.map(
         "Doberman.Deny.TButton",
         background=[("active", _BRAND_ACTIVE), ("pressed", _BRAND_ACTIVE)],
-        bordercolor=[("focus", _RING), ("!focus", _BRAND)],
+        bordercolor=[("focus", _RING_DENY), ("!focus", _BRAND)],
     )
     style.configure(
         "Doberman.Approve.TButton",
         background=_PANEL,
         foreground=_APPROVE,
         bordercolor=_APPROVE,
-        focuscolor=_RING,
+        focuscolor=_RING_APPROVE,
         **common,
     )
     style.map(
         "Doberman.Approve.TButton",
         background=[("active", _RULE), ("pressed", _RULE)],
-        bordercolor=[("focus", _RING), ("!focus", _APPROVE)],
+        bordercolor=[("focus", _RING_APPROVE), ("!focus", _APPROVE)],
     )
     style.configure(
         "Doberman.Link.TButton",
@@ -294,12 +322,12 @@ def _apply_ttk_style(root: Any) -> None:
         bordercolor=_BG,
         relief="flat",
         padding=(4, 4),
-        focuscolor=_RING,
+        focuscolor=_RING_OUTER,
     )
     style.map(
         "Doberman.Link.TButton",
         foreground=[("active", _APPROVE_ACTIVE)],
-        bordercolor=[("focus", _RING), ("!focus", _BG)],
+        bordercolor=[("focus", _RING_OUTER), ("!focus", _BG)],
     )
 
 
@@ -426,15 +454,16 @@ def _load_logo() -> Any:
     """Load the bundled brand mark via stdlib ``PhotoImage`` — never PIL/Pillow.
 
     The asset ships pre-sized (65x68px) at ``doberman/auth/_assets/doberman-mark.png``
-    and is shown at ~34px tall via ``.subsample(2)``. Returns ``None`` on any failure
-    (missing asset, a Tk build without PNG support, ...); the caller then falls back
-    to a text-only "DOBERMAN" wordmark — never an emoji substitute.
+    and is shown at ~16px tall via ``.subsample(4)`` — the brand block yields most of
+    its footprint to the decision below it (see :func:`_build_brand`). Returns ``None``
+    on any failure (missing asset, a Tk build without PNG support, ...); the caller then
+    falls back to a text-only "DOBERMAN" wordmark — never an emoji substitute.
     """
     try:
         import tkinter as tk
 
         with _ir.as_file(_ir.files("doberman.auth").joinpath("_assets/doberman-mark.png")) as p:
-            return tk.PhotoImage(file=str(p)).subsample(2)
+            return tk.PhotoImage(file=str(p)).subsample(4)
     except Exception:
         return None
 
@@ -457,22 +486,39 @@ def _content_frame(root: Any) -> Any:
 
 
 def _build_brand(frame: Any) -> None:
+    """A compact mark+wordmark row with the subtitle right under it (9pt) —
+    the whole block stays under ~48px tall so the space it used to take
+    (a bigger mark, a 12px bottom pad) goes to the "decide" group instead
+    (see :func:`_build_group_divider`), not to the brand itself.
+    """
     import tkinter as tk
 
     row = tk.Frame(frame, bg=_BG)
-    row.pack(fill="x", pady=(0, 6))
+    row.pack(fill="x", pady=(0, 1))
     logo = _load_logo()
     row._logo_ref = logo  # tkinter drops unreferenced images -- keep it alive
     if logo is not None:
         tk.Label(row, image=logo, bg=_BG).pack(side="left")
         tk.Label(row, text="DOBERMAN", fg=_BRAND, bg=_BG, font=_BRAND_FONT).pack(
-            side="left", padx=(10, 0)
+            side="left", padx=(8, 0)
         )
     else:
         tk.Label(row, text="DOBERMAN", fg=_BRAND, bg=_BG, font=_BRAND_FONT).pack(side="left")
     tk.Label(
         frame, text=_SUBTITLE, fg=_MUTED, bg=_BG, font=_SUB_FONT, anchor="w", justify="left"
-    ).pack(fill="x", pady=(0, 12))
+    ).pack(fill="x", pady=(0, 4))
+
+
+def _build_group_divider(frame: Any) -> None:
+    """A thin hairline separating the "what" group (target/question/why/risk)
+    from the "decide" group (countdown/buttons) — the vertical space freed by
+    shrinking the brand block (:func:`_build_brand`) goes here, so the two
+    groups read as visually distinct instead of one long undifferentiated
+    stack of lines.
+    """
+    import tkinter as tk
+
+    tk.Frame(frame, bg=_RULE, height=1).pack(fill="x", pady=(4, 10))
 
 
 def _wrap_px(widget: Any) -> int:
@@ -562,13 +608,20 @@ def _build_target_panel(root: Any, frame: Any, target: str) -> None:
     Sized from the REAL widget (``count("1.0","end","displaylines")``) after the
     text is actually inserted — never a predicted/estimated line count — so an
     over-wide unbroken "word" (Tk's own word-wrap already char-breaks one that
-    doesn't fit) can never be undercounted and clipped. Past the cap, a
-    middle-ellipsis preview shows (the ``" ... "`` itself rendered in the muted
-    color, tagged so it can never be mistaken for real target text) with a
-    "Show all N characters" toggle that expands into a scrollable region (capped
-    at 70% of the monitor's work area — :func:`_expanded_line_cap`); the
-    question/risk/countdown this function's caller draws afterward are never
-    inside this panel, so they can never be pushed out of view by a long target.
+    doesn't fit) can never be undercounted and clipped. Past the cap, a target
+    with MULTIPLE logical lines collapses by WHOLE lines only — the first
+    :data:`_TARGET_PREVIEW_HEAD_LINES` lines, a muted ``" ... "`` marker (its
+    own line, tagged so it can never be mistaken for real target text), then
+    the last line — never a character-offset cut, which could slice through
+    the middle of a single token/line and hide part of it with no indication
+    (the previous design's failure mode). A target that is only ONE logical
+    line (however long) is never sliced at all — it renders in full and the
+    height cap simply clips the overflow visually, same as any wrapped text
+    box; a "Show the full command" toggle expands into a scrollable region
+    (capped at 70% of the monitor's work area — :func:`_expanded_line_cap`).
+    The question/risk/countdown this function's caller draws afterward are
+    never inside this panel, so they can never be pushed out of view by a
+    long target.
 
     The widget stays ``state="normal"`` throughout (never "disabled") so it
     stays in the keyboard tab order and reachable by assistive tech —
@@ -612,8 +665,13 @@ def _build_target_panel(root: Any, frame: Any, target: str) -> None:
         text.configure(height=max(lines, 1))
         return lines
 
-    head, tail = _TARGET_PREVIEW_HEAD, _TARGET_PREVIEW_TAIL
-    needs_preview = len(target) > head + tail + 20
+    lines = target.split("\n")
+    # Only ever drop WHOLE middle lines -- never cut inside one. With
+    # _TARGET_PREVIEW_HEAD_LINES (4) kept from the start plus 1 kept from the
+    # end, a preview only makes sense (actually hides something) once there
+    # are MORE than that many lines total; a single unbroken line, or a
+    # handful of short lines, is never sliced at all.
+    needs_preview = len(lines) > _TARGET_PREVIEW_HEAD_LINES + 1
     total = _paint([(target, None)], 10**6)  # measure the real, unbounded line count first
     if total <= _TARGET_MAX_LINES:
         return
@@ -627,8 +685,14 @@ def _build_target_panel(root: Any, frame: Any, target: str) -> None:
         scrollbar_holder.clear()
         text.configure(yscrollcommand="")
         if needs_preview:
+            head = "\n".join(lines[:_TARGET_PREVIEW_HEAD_LINES])
+            tail = lines[-1]
             _paint(
-                [(target[:head], None), (_ELLIPSIS, "muted"), (target[-tail:], None)],
+                [
+                    (head, None),
+                    ("\n" + _ELLIPSIS.strip() + "\n", "muted"),
+                    (tail, None),
+                ],
                 _TARGET_MAX_LINES,
             )
         else:
@@ -646,16 +710,14 @@ def _build_target_panel(root: Any, frame: Any, target: str) -> None:
     def _toggle() -> None:
         state["expanded"] = not state["expanded"]
         (_expand if state["expanded"] else _collapse)()
-        toggle_btn.configure(
-            text="Show less" if state["expanded"] else f"Show all {len(target)} characters"
-        )
+        toggle_btn.configure(text="Show less" if state["expanded"] else _TOGGLE_EXPAND_LABEL)
         root.update_idletasks()
         _center_on_screen(root)
 
     _collapse()
     toggle_btn = ttk.Button(
         frame,
-        text=f"Show all {len(target)} characters",
+        text=_TOGGLE_EXPAND_LABEL,
         command=_toggle,
         style="Doberman.Link.TButton",
     )
@@ -720,7 +782,7 @@ def _build_risk_line(frame: Any, risk_text: str, risk_word: str | None) -> None:
         text=f" {(risk_word or 'low').upper()} ",
         bg=color,
         fg=_BG,
-        font=("Segoe UI Semibold", 8, "bold"),
+        font=_CHIP_FONT,
     ).pack(side="left", padx=(0, 8), pady=1, anchor="n")
     tk.Label(
         row,
@@ -734,25 +796,38 @@ def _build_risk_line(frame: Any, risk_text: str, risk_word: str | None) -> None:
     ).pack(side="left", fill="x", expand=True)
 
 
-def _build_countdown(root: Any, frame: Any, timeout_s: float, on_expire: Any) -> Any:
-    """A ticking "auto-denies in M:SS" label. The label adopts the same
-    severity ramp risk uses as time runs low — amber under 30s, bold
-    BLOCK-red under 10s — so an urgent countdown reads as urgent the same
-    way an urgent risk does; at zero, a brief "Denied" flash, then close.
+def _build_countdown(
+    root: Any, frame: Any, timeout_s: float, on_expire: Any, *, action_id: str = "unknown"
+) -> Any:
+    """A ticking "auto-denies in M:SS" label, plus a one-shot "More time"
+    control (WCAG 2.2.1 — a human actually present must be able to ask for
+    more time). The label adopts the same severity ramp risk uses as time
+    runs low — amber under 30s, bold BLOCK-red under 10s — so an urgent
+    countdown reads as urgent the same way an urgent risk does; at zero, a
+    brief "Denied" flash, then close.
 
     At zero, ``on_expire`` runs FIRST and SYNCHRONOUSLY, before this function
     ever shows the flash or schedules the window's close: it must resolve the
     shared answer to a denial (through the same "first answer wins" door every
     ``_decide`` in the populate functions resolves through) and disable every
     interactive widget, so a click or Return landing during the 1.5s flash can
-    never still change the outcome.
+    never still change the outcome. The "More time" button is disabled the
+    same instant, alongside Deny/Approve/the code entry.
+
+    "More time" is usable exactly ONCE per dialog (a real, focusable, but
+    never the *default*-focused control — :func:`_wire_keyboard` always moves
+    initial focus to Deny after this function returns) and extends the
+    countdown by :data:`_EXTENSION_SECONDS`; each use is logged (the action id
+    only, never the target).
     """
     import tkinter as tk
+    import tkinter.ttk as ttk
 
     label = tk.Label(frame, fg=_MUTED, bg=_BG, font=_DEADLINE_FONT, anchor="w")
-    label.pack(fill="x", pady=(2, 10))
+    label.pack(fill="x", pady=(2, 4))
     total = max(1, int(timeout_s))
     remaining = {"s": total}
+    extended = {"used": False}
 
     def _paint(secs: int) -> None:
         if secs < 10:
@@ -764,10 +839,27 @@ def _build_countdown(root: Any, frame: Any, timeout_s: float, on_expire: Any) ->
         font = (_DEADLINE_FONT[0], _DEADLINE_FONT[1], "bold") if bold else _DEADLINE_FONT
         label.configure(text=f"auto-denies in {_mmss(secs)} if unanswered", fg=color, font=font)
 
+    def _extend() -> None:
+        if extended["used"]:
+            return
+        extended["used"] = True
+        more_time_btn.state(["disabled"])
+        remaining["s"] += _EXTENSION_SECONDS
+        logger.info(
+            "auth dialog countdown extended by %ss (action %s)", _EXTENSION_SECONDS, action_id
+        )
+        _paint(remaining["s"])
+
+    more_time_btn = ttk.Button(
+        frame, text=_MORE_TIME_LABEL, command=_extend, style="Doberman.Link.TButton"
+    )
+    more_time_btn.pack(anchor="w", pady=(0, 6))
+
     def _tick() -> None:
         remaining["s"] -= 1
         if remaining["s"] <= 0:
             on_expire()
+            more_time_btn.state(["disabled"])
             label.configure(
                 text=f"Denied - no answer in {_mmss(total)}", fg=_FG, font=_DEADLINE_FONT
             )
@@ -785,8 +877,14 @@ def _build_buttons(frame: Any, specs: list[tuple[str, Any, str]]) -> tuple[Any, 
     """Real ``ttk.Button``s, right-aligned, in ``specs`` order (index 0 = Deny).
 
     Accessible by construction: a real name/role/state, native focus, >=44px
-    tall (see :func:`_apply_ttk_style`'s padding). Keyboard safety is wired
-    separately by :func:`_wire_keyboard` — this only creates and places them.
+    tall (see :func:`_apply_ttk_style`'s padding). Each button is wrapped in a
+    small ``Frame`` whose ``highlightbackground`` becomes :data:`_RING_OUTER`
+    on focus — the OUTER line of the two-tone focus ring (the ttk style's own
+    per-button ``bordercolor``, set in :func:`_apply_ttk_style`, is the INNER
+    line). Neither line alone can clear WCAG 1.4.11 against every surface a
+    ring touches (see the module-level comment above ``_RING_DENY``); together
+    they do. Keyboard safety is wired separately by :func:`_wire_keyboard` —
+    this only creates and places them.
     """
     import tkinter as tk
     import tkinter.ttk as ttk
@@ -797,8 +895,14 @@ def _build_buttons(frame: Any, specs: list[tuple[str, Any, str]]) -> tuple[Any, 
     inner.pack(side="right")
     buttons = []
     for i, (label, command, style_name) in enumerate(specs):
-        button = ttk.Button(inner, text=label, command=command, style=style_name)
-        button.pack(side="left", padx=(10 if i else 0, 0))
+        wrapper = tk.Frame(
+            inner, bg=_BG, highlightthickness=2, highlightbackground=_BG, highlightcolor=_BG
+        )
+        wrapper.pack(side="left", padx=(10 if i else 0, 0))
+        button = ttk.Button(wrapper, text=label, command=command, style=style_name)
+        button.pack()
+        button.bind("<FocusIn>", lambda _e, w=wrapper: w.configure(highlightbackground=_RING_OUTER))
+        button.bind("<FocusOut>", lambda _e, w=wrapper: w.configure(highlightbackground=_BG))
         buttons.append(button)
     return tuple(buttons)
 
@@ -894,6 +998,7 @@ def _populate_confirm(root: Any, message: str, answer: dict, timeout_s: float) -
     frame = _content_frame(root)
     _build_brand(frame)
     _build_line(frame, message, pady=(0, 10))
+    _build_group_divider(frame)
 
     widgets: dict[str, Any] = {}
 
@@ -926,10 +1031,12 @@ def _populate_confirm_parts(root: Any, parts: dict, answer: dict, timeout_s: flo
     can never forge itself into looking like the risk line or the question.
 
     The "technical" tone already embeds its risk badge and role in the
-    headline (``"[RISK: HIGH]  Doberman authentication required [...]"``), so
-    the severity chip is shown only for "human" tone — never a duplicated risk
-    line — and a compact ``"Action: <verb>"`` line takes its place so the verb
-    (missing from the structured technical rendering before) is still visible.
+    headline (``"[RISK: HIGH]  Doberman authentication required [...]"``);
+    the severity chip is drawn regardless — severity is a visual signal (color
+    AND word), not merely restating the headline's text, and every tone
+    deserves the same at-a-glance signal — alongside a compact
+    ``"Action: <verb>"`` line so the verb (missing from the structured
+    technical rendering before) is still visible.
     """
 
     def _resolve(value: bool, reason: str) -> bool:
@@ -958,9 +1065,10 @@ def _populate_confirm_parts(root: Any, parts: dict, answer: dict, timeout_s: flo
     _build_line(frame, _QUESTION, font=_BODY_FONT, fg=_FG, pady=(2, 8))
     if parts.get("why"):
         _build_line(frame, parts["why"], font=_SMALL_FONT, fg=_MUTED)
-    if parts.get("risk") and parts.get("tone") != "technical":
+    if parts.get("risk"):
         _build_risk_line(frame, parts["risk"], _severity_from_risk_text(parts["risk"]))
     _build_line(frame, _REASSURANCE, font=_SMALL_FONT, fg=_MUTED, pady=(2, 8))
+    _build_group_divider(frame)
 
     widgets: dict[str, Any] = {}
 
@@ -971,7 +1079,9 @@ def _populate_confirm_parts(root: Any, parts: dict, answer: dict, timeout_s: flo
         _resolve(False, "expired")
         _disable_on_expiry(root, widgets)
 
-    _build_countdown(root, frame, timeout_s, on_expire=_lock_out)
+    _build_countdown(
+        root, frame, timeout_s, on_expire=_lock_out, action_id=parts.get("action_id", "unknown")
+    )
     deny_btn, approve_btn = _build_buttons(
         frame,
         [
@@ -1086,8 +1196,9 @@ def _populate_code(root: Any, message: str, answer: dict, timeout_s: float) -> N
     _build_line(frame, _CODE_LABEL, font=_SMALL_FONT, fg=_MUTED, pady=(0, 2))
     entry = _make_code_entry(frame)
     error_label = tk.Label(frame, fg=_APPROVE, bg=_BG, font=_SMALL_FONT, anchor="w")
-    error_label.pack(fill="x", pady=(0, 8))
+    error_label.pack(fill="x", pady=(0, 4))
     submit = _wire_code_submit(root, entry, error_label, lambda code: _decide(code, "approved"))
+    _build_group_divider(frame)
 
     widgets: dict[str, Any] = {"entry": entry}
 
@@ -1114,7 +1225,15 @@ def _populate_code(root: Any, message: str, answer: dict, timeout_s: float) -> N
 
 
 def _populate_code_parts(root: Any, parts: dict, answer: dict, timeout_s: float) -> None:
-    """Structured body — see :func:`_populate_confirm_parts`'s docstring."""
+    """Structured body — see :func:`_populate_confirm_parts`'s docstring.
+
+    This is the SECOND of a two-step flow (confirm, then code) and must
+    explain itself just as much as the first dialog does: a "Step 2 of 2"
+    line, the same ``why``/risk/reassurance facts, not just the code prompt
+    and the target repeated — a human landing on this dialog cold (it can
+    outlive the first one, or a channel could be re-entered) should never
+    have to guess why they're being asked.
+    """
     import tkinter as tk
 
     def _resolve(value: Any, reason: str) -> bool:
@@ -1135,16 +1254,21 @@ def _populate_code_parts(root: Any, parts: dict, answer: dict, timeout_s: float)
     identity = _agent_identity_line(parts)
     if identity:
         _build_line(frame, identity, font=_SMALL_FONT, fg=_MUTED)
+    _build_line(frame, _STEP_TWO, font=_SMALL_FONT, fg=_MUTED)
     _build_line(frame, _CODE_PROMPT)
     _build_target_panel(root, frame, parts["target"])
     _build_line(frame, _QUESTION, font=_BODY_FONT, fg=_FG, pady=(2, 8))
-    if parts.get("risk") and parts.get("tone") != "technical":
+    if parts.get("why"):
+        _build_line(frame, parts["why"], font=_SMALL_FONT, fg=_MUTED)
+    if parts.get("risk"):
         _build_risk_line(frame, parts["risk"], _severity_from_risk_text(parts["risk"]))
+    _build_line(frame, _REASSURANCE, font=_SMALL_FONT, fg=_MUTED, pady=(2, 8))
     _build_line(frame, _CODE_LABEL, font=_SMALL_FONT, fg=_MUTED, pady=(0, 2))
     entry = _make_code_entry(frame)
     error_label = tk.Label(frame, fg=_APPROVE, bg=_BG, font=_SMALL_FONT, anchor="w")
-    error_label.pack(fill="x", pady=(0, 8))
+    error_label.pack(fill="x", pady=(0, 4))
     submit = _wire_code_submit(root, entry, error_label, lambda code: _decide(code, "approved"))
+    _build_group_divider(frame)
 
     widgets: dict[str, Any] = {"entry": entry}
 
@@ -1155,7 +1279,9 @@ def _populate_code_parts(root: Any, parts: dict, answer: dict, timeout_s: float)
         _resolve(None, "expired")
         _disable_on_expiry(root, widgets)
 
-    _build_countdown(root, frame, timeout_s, on_expire=_lock_out)
+    _build_countdown(
+        root, frame, timeout_s, on_expire=_lock_out, action_id=parts.get("action_id", "unknown")
+    )
     deny_btn, approve_btn = _build_buttons(
         frame,
         [
@@ -1205,6 +1331,60 @@ def _flash_and_bell(root: Any) -> None:
         ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
     except Exception:  # noqa: S110 — cosmetic only
         pass
+
+
+#: What :meth:`GuiPrompter.notify_outcome` shows for each outcome name.
+#: ASCII-only (cp1252-safe), like every other string in this module.
+_OUTCOME_TEXT = {
+    "approved": "Approved",
+    "denied": "Denied",
+    "code_rejected": "Code rejected - denied",
+    "expired": "Denied - no answer in time",
+}
+#: How long the outcome notice stays up before closing itself.
+_OUTCOME_DISPLAY_MS = 1200
+
+
+def _populate_outcome_notice(root: Any, text: str) -> None:
+    import tkinter as tk
+
+    tk.Label(root, text=text, fg=_FG, bg=_PANEL, font=_BODY_FONT, padx=20, pady=14).pack()
+
+
+def _show_outcome_window(text: str) -> None:
+    """A small, topmost, non-focus-stealing notice: shows ``text`` for
+    :data:`_OUTCOME_DISPLAY_MS` then closes itself — no answer required, and
+    it must never block longer than that or raise into the caller (a
+    post-decision notice is purely cosmetic, never a decision path).
+
+    ``overrideredirect`` drops window-manager chrome (title bar, taskbar
+    entry) — the same trick used for any transient "toast" notice — so it
+    never grabs keyboard focus away from whatever the human was doing.
+    Reuses :func:`_open_root` (and so the macOS main-thread guard, and the
+    no-display case) rather than calling ``tkinter.Tk()`` directly.
+    """
+    try:
+        root = _open_root()
+    except PrompterUnavailableError:
+        return
+    try:
+        root.title(_TITLE)
+        root.configure(bg=_BG)
+        root.resizable(False, False)
+        root.attributes("-topmost", True)
+        try:
+            root.overrideredirect(True)  # no chrome; never requests window-manager focus
+        except Exception:  # noqa: S110 — cosmetic only
+            pass
+        _populate_outcome_notice(root, text)
+        root.update_idletasks()
+        _center_on_screen(root)
+        root.after(_OUTCOME_DISPLAY_MS, root.quit)
+        root.mainloop()
+    except Exception:  # noqa: S110 — cosmetic only, must never affect the decided outcome
+        pass
+    finally:
+        root.destroy()
 
 
 def _run_dialog(
@@ -1328,6 +1508,18 @@ class GuiPrompter:
         code = _code_dialog_parts(parts, timeout_s=self._timeout_s)
         return self._require_code(code)
 
+    def notify_outcome(self, parts: dict, outcome: str) -> None:  # noqa: ARG002 — parts unused here
+        """Post-decision notice (item 4): a small topmost window shows
+        approved/denied/code_rejected/expired for ~1.2s then closes — a
+        wrong-but-well-formed code (or any other non-approval) no longer just
+        silently closes the window. Never raises; purely cosmetic.
+        """
+        text = _OUTCOME_TEXT.get(outcome, outcome.replace("_", " ").strip().capitalize() or outcome)
+        try:
+            _show_outcome_window(text)
+        except Exception:  # noqa: S110 — cosmetic only, must never affect the decided outcome
+            pass
+
     @staticmethod
     def _require_code(code: str | None) -> str:
         if code is None or not code.strip():
@@ -1346,6 +1538,10 @@ class FallbackPrompter:
 
     def __init__(self, prompters: Iterable[Prompter]) -> None:
         self._prompters: tuple[Prompter, ...] = tuple(prompters)
+        #: Whichever prompter last actually answered (not merely unavailable) —
+        #: used only so :meth:`notify_outcome` can forward to the SAME channel
+        #: the human actually saw, never a channel that never opened.
+        self._last_answering: Prompter | None = None
 
     @property
     def prompters(self) -> tuple[Prompter, ...]:
@@ -1364,13 +1560,29 @@ class FallbackPrompter:
     def read_code_challenge(self, parts: dict) -> str:
         return self._first_open_channel_structured("read_code", parts)
 
+    def notify_outcome(self, parts: dict, outcome: str) -> None:
+        """Forward to whichever chained prompter actually answered, if it
+        implements ``notify_outcome`` — never raises, never picks a channel
+        that never opened.
+        """
+        notify = getattr(self._last_answering, "notify_outcome", None)
+        if notify is None:
+            return
+        try:
+            notify(parts, outcome)
+        except Exception:  # noqa: S110 — cosmetic only, must never affect the decided outcome
+            pass
+
     def _first_open_channel(self, method: str, message: str) -> Any:
         last: PrompterUnavailableError | None = None
         for prompter in self._prompters:
             try:
-                return getattr(prompter, method)(message)
+                result = getattr(prompter, method)(message)
             except PrompterUnavailableError as exc:
                 last = exc
+                continue
+            self._last_answering = prompter
+            return result
         raise PrompterUnavailableError("no auth prompter channel is available") from last
 
     def _first_open_channel_structured(self, method: str, parts: dict) -> Any:
@@ -1391,8 +1603,12 @@ class FallbackPrompter:
             try:
                 structured = getattr(prompter, f"{method}_challenge", None)
                 if structured is not None:
-                    return structured(parts)
-                return getattr(prompter, method)(fallback_message)
+                    result = structured(parts)
+                else:
+                    result = getattr(prompter, method)(fallback_message)
             except PrompterUnavailableError as exc:
                 last = exc
+                continue
+            self._last_answering = prompter
+            return result
         raise PrompterUnavailableError("no auth prompter channel is available") from last

@@ -290,6 +290,11 @@ class LocalAuthProvider:
         facts instead of the flattened ``message`` string; any other prompter
         (TTY, dashboard, a plugin, or ``parts=None``) falls back to
         ``confirm(message)``/``read_code(message)`` exactly as before.
+
+        Every branch reports its outcome through the prompter's OPTIONAL
+        ``notify_outcome(parts, outcome)`` (getattr-gated, never raises, never
+        called when ``parts`` is unavailable) — a wrong-but-well-formed code
+        must not just silently close the window (item 4).
         """
 
         def _confirm() -> bool:
@@ -304,8 +309,19 @@ class LocalAuthProvider:
                 return str(structured(parts))
             return str(prompter.read_code(fallback_message))
 
+        def _notify(outcome: str) -> None:
+            notify = getattr(prompter, "notify_outcome", None) if parts else None
+            if notify is None:
+                return
+            try:
+                notify(parts, outcome)
+            except Exception:  # noqa: S110 — cosmetic only, must never affect the auth outcome
+                pass
+
         if tier in (AuthTier.soft_confirm, AuthTier.local_auth):
-            return _confirm(), tier.value
+            approved = _confirm()
+            _notify("approved" if approved else "denied")
+            return approved, tier.value
 
         # two_factor and role_elevation require presence AND possession.
         elevation = tier is AuthTier.role_elevation
@@ -313,15 +329,20 @@ class LocalAuthProvider:
         if method is not None:
             outcome = request_approval(method, message, action_id=action_id)
             if outcome is ApprovalOutcome.approved:
+                _notify("approved")
                 return True, f"{method.name}+elevation" if elevation else method.name
             if outcome is ApprovalOutcome.denied:
+                _notify("denied")
                 return False, "denied"
             # ApprovalOutcome.unavailable -> fall through to the TOTP path below.
 
         if not _confirm():
+            _notify("denied")
             return False, "denied"
         code = _read_code("Enter your 2FA code")
-        return totp.verify(code), "totp+elevation" if elevation else "totp"
+        verified = totp.verify(code)
+        _notify("approved" if verified else "code_rejected")
+        return verified, "totp+elevation" if elevation else "totp"
 
 
 #: The single built-in provider, constructed once.

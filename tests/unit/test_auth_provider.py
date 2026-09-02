@@ -122,6 +122,50 @@ def test_two_factor_denied_when_presence_refused():
     assert result.approved is False
 
 
+class _NotifiablePrompter(FakePrompter):
+    """A FakePrompter that also implements notify_outcome, recording every
+    (parts, outcome) it was told about."""
+
+    def __init__(self, *, confirm=True, code="", raises=None):
+        super().__init__(confirm=confirm, code=code, raises=raises)
+        self.outcomes: list[tuple[dict, str]] = []
+
+    def notify_outcome(self, parts, outcome):
+        self.outcomes.append((parts, outcome))
+
+
+def test_notify_outcome_called_with_code_rejected_on_a_bad_totp_code():
+    """A wrong-but-well-formed code must not just silently close the window --
+    the provider tells the prompter's notify_outcome about the rejection."""
+    totp.enroll()
+    prompter = _NotifiablePrompter(confirm=True, code="000000")
+    result = LocalAuthProvider().authenticate(
+        _auth_decision(), _action(), AuthTier.two_factor, prompter=prompter
+    )
+    assert result.approved is False
+    assert prompter.outcomes and prompter.outcomes[-1][1] == "code_rejected"
+
+
+def test_notify_outcome_called_with_approved_on_a_good_totp_code():
+    totp.enroll()
+    secret = totp._read_secret()
+    code = pyotp.TOTP(secret).now()
+    prompter = _NotifiablePrompter(confirm=True, code=code)
+    result = LocalAuthProvider().authenticate(
+        _auth_decision(), _action(), AuthTier.two_factor, prompter=prompter
+    )
+    assert result.approved is True
+    assert prompter.outcomes and prompter.outcomes[-1][1] == "approved"
+
+
+def test_notify_outcome_never_called_when_prompter_lacks_it():
+    """getattr-gated: a prompter without notify_outcome is never even asked."""
+    result = LocalAuthProvider().authenticate(
+        _auth_decision(), _action(), AuthTier.soft_confirm, prompter=FakePrompter(confirm=True)
+    )
+    assert result.approved is True  # simply must not raise
+
+
 def test_prompter_failure_denies_fail_closed():
     result = LocalAuthProvider().authenticate(
         _auth_decision(),

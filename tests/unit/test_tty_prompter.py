@@ -117,6 +117,21 @@ def test_no_terminal_raises_so_auth_fails_closed(monkeypatch):
         TtyPrompter().read_code("Enter your 2FA code")
 
 
+def test_prompt_states_its_own_constructed_deadline(monkeypatch):
+    """TtyPrompter's own timeout_s (symmetric with GuiPrompter's) governs the
+    note it prints -- not a disconnected module constant nobody can override."""
+    captured = _fake_tty("y\n")
+    monkeypatch.setattr(tty_prompter, "_open_tty", lambda: captured)
+    TtyPrompter(timeout_s=90.0).confirm("Approve?")
+    assert "[auto-denies in 1m if unanswered]" in captured[1].text
+
+
+def test_default_timeout_is_the_default_challenge_timeout():
+    from doberman.auth.challenge import DEFAULT_CHALLENGE_TIMEOUT_S
+
+    assert TtyPrompter()._timeout_s == DEFAULT_CHALLENGE_TIMEOUT_S
+
+
 def test_never_touches_std_streams(monkeypatch):
     """A challenge must not read stdin or write stdout (that is the agent's MCP channel)."""
 

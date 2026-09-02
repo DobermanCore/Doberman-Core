@@ -141,6 +141,78 @@ def test_read_code_challenge_returns_stripped_code(monkeypatch):
     assert GuiPrompter().read_code_challenge(_SAMPLE_PARTS) == "123456"
 
 
+# --- GuiPrompter: outcome notice (item 4) -------------------------------------------
+
+
+def test_notify_outcome_never_raises_when_no_display(monkeypatch):
+    """Purely cosmetic -- a missing display must never surface as an error to
+    the caller (the auth decision is already final by the time this runs)."""
+
+    def _no_root():
+        raise PrompterUnavailableError("no display")
+
+    monkeypatch.setattr(gui_prompter, "_open_root", _no_root)
+    GuiPrompter().notify_outcome(_SAMPLE_PARTS, "code_rejected")  # must not raise
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_text"),
+    [
+        ("approved", "Approved"),
+        ("denied", "Denied"),
+        ("code_rejected", "Code rejected - denied"),
+        ("expired", "Denied - no answer in time"),
+    ],
+)
+def test_notify_outcome_renders_the_right_text(monkeypatch, outcome, expected_text):
+    seen = []
+    monkeypatch.setattr(gui_prompter, "_show_outcome_window", lambda text: seen.append(text))
+    GuiPrompter().notify_outcome(_SAMPLE_PARTS, outcome)
+    assert seen == [expected_text]
+
+
+def test_notify_outcome_window_is_topmost_and_shows_text(monkeypatch, fake_root):
+    """The outcome window itself: topmost, shows the given text, closes on a
+    schedule (never blocks waiting for an answer)."""
+    seen: list[str] = []
+    monkeypatch.setattr(
+        gui_prompter, "_populate_outcome_notice", lambda _root, text: seen.append(text)
+    )
+    gui_prompter._show_outcome_window("Code rejected - denied")
+    assert fake_root.attrs.get("-topmost") is True
+    assert fake_root.destroyed is True
+    assert seen == ["Code rejected - denied"]
+    assert any(delay == gui_prompter._OUTCOME_DISPLAY_MS for delay in fake_root.scheduled)
+
+
+def test_fallback_notify_outcome_forwards_to_the_channel_that_answered():
+    """FallbackPrompter forwards to whichever chained prompter actually
+    answered -- never a channel that never opened, and never the FIRST one
+    tried if it was unavailable and a later one is what actually answered."""
+
+    class _Notifiable:
+        def __init__(self):
+            self.notified = []
+
+        def confirm(self, message):
+            return True
+
+        def notify_outcome(self, parts, outcome):
+            self.notified.append(outcome)
+
+    unavailable = _Recorder(raises=PrompterUnavailableError("no display"))
+    answering = _Notifiable()
+    chain = FallbackPrompter([unavailable, answering])
+    assert chain.confirm("Approve?") is True
+    chain.notify_outcome(_SAMPLE_PARTS, "approved")
+    assert answering.notified == ["approved"]
+
+
+def test_fallback_notify_outcome_is_a_no_op_before_anything_answered():
+    chain = FallbackPrompter([_Recorder(confirm=True)])
+    chain.notify_outcome(_SAMPLE_PARTS, "approved")  # must not raise
+
+
 # --- GuiPrompter: unavailable channel ----------------------------------------------
 
 
@@ -425,6 +497,12 @@ def test_root_destroyed_even_when_the_widget_builder_raises(monkeypatch, fake_ro
     assert fake_root.destroyed is True
 
 
+def test_title_is_ascii():
+    """The window title is the last non-ASCII string the dialog rendered
+    (an em dash) -- ASCII/cp1252-safe like every other string in this module."""
+    assert gui_prompter._TITLE.isascii()
+
+
 def test_window_is_topmost_dark_and_fixed_size(monkeypatch, fake_root):
     """The dialog must pop OVER the agent terminal and use the dark theme base."""
     monkeypatch.setattr(gui_prompter, "_populate_confirm", lambda *_a: None)
@@ -476,19 +554,92 @@ def test_palette_is_dark_tan_and_amber():
     assert max(_rgb(gui_prompter._BRAND_FG)) < 60  # dark ink for contrast on the tan Deny button
 
 
+def test_brand_block_stays_under_48px_tall(real_root):
+    """The brand block (mark + wordmark + subtitle) yields most of its
+    footprint to the decision below it -- measured in isolation (nothing else
+    packed into the frame afterward) at a forced 1:1 scale, since the "48px"
+    budget is a logical-pixel design target, not a DPI-scaled one (an earlier
+    real Tk root in the same process can otherwise leave a higher `tk scaling`
+    factor active for whatever this root's screen resolves to)."""
+    root = real_root
+    root.tk.call("tk", "scaling", 1.0)
+    frame = gui_prompter._content_frame(root)
+    gui_prompter._build_brand(frame)
+    root.update()
+    assert frame.winfo_reqheight() <= 48
+
+
+def test_group_divider_separates_what_from_decide(real_root):
+    """The vertical space freed by the compact brand block goes to a hairline
+    between the "what" group and the "decide" group, not back to padding."""
+    root = real_root
+    answer: dict = {}
+    gui_prompter._populate_confirm_parts(root, _SAMPLE_PARTS, answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    dividers = [
+        w
+        for w in _walk_widgets(root)
+        if isinstance(w, tkinter.Frame)
+        and str(w.cget("height")) == "1"
+        and w.cget("bg") == gui_prompter._RULE
+    ]
+    assert dividers, "no hairline divider found between the what/decide groups"
+
+
 def test_focus_ring_reaches_wcag_non_text_contrast_against_both_buttons():
     """WCAG 1.4.11 (non-text contrast): a focus indicator needs >= 3:1 against
-    whatever it sits adjacent to. The OLD ring (== _FG, near-white) measured
-    only ~2.14:1 against the Deny fill (_BRAND) and ~1.58:1 against Approve's
-    amber (_APPROVE) -- and no light color can do better: even pure white
-    tops out at ~2.4:1 against the tan Deny fill, so the fix had to go dark,
-    not lighter. _RING now reuses the existing _RULE hairline-border token,
-    which clears 3:1 against both with real margin.
+    whatever it sits adjacent to -- measured against each button's ACTUAL
+    fill and the window background, never a text/border colour standing in
+    for the fill (the round-2 regression: the ring was measured against
+    _APPROVE, Approve's amber TEXT color, when Approve's real fill is
+    _PANEL -- against which the round-2 ring measured only 1.25:1).
+
+    A single flat ring color cannot clear 3:1 against BOTH the Deny fill
+    (_BRAND, mid-luminance) and the near-black window background (_BG) at
+    once -- the "dark enough for _BRAND" and "light enough for _BG" luminance
+    ranges don't overlap for any color, so the ring is two-tone: an inner
+    line per button (_RING_DENY against Deny's own fill, _RING_APPROVE
+    against Approve's own fill _PANEL) plus a shared outer line (_RING_OUTER)
+    against the window background, both buttons.
     """
-    assert _contrast_ratio(gui_prompter._RING, gui_prompter._BRAND) >= 3.0
-    assert _contrast_ratio(gui_prompter._RING, gui_prompter._APPROVE) >= 3.0
+    assert _contrast_ratio(gui_prompter._RING_DENY, gui_prompter._BRAND) >= 3.0
+    assert _contrast_ratio(gui_prompter._RING_APPROVE, gui_prompter._PANEL) >= 3.0
+    assert _contrast_ratio(gui_prompter._RING_OUTER, gui_prompter._BG) >= 3.0
+    # Approve's fill is itself near-black, so its inner line must ALSO clear
+    # the window background (it's the same physical ring line either way).
+    assert _contrast_ratio(gui_prompter._RING_APPROVE, gui_prompter._BG) >= 3.0
     # distinct hue from both accents, as the module's own comment still claims
-    assert gui_prompter._RING not in (gui_prompter._BRAND, gui_prompter._APPROVE)
+    assert gui_prompter._RING_DENY not in (gui_prompter._BRAND, gui_prompter._APPROVE)
+    assert gui_prompter._RING_APPROVE not in (gui_prompter._BRAND, gui_prompter._APPROVE)
+
+
+def test_focus_ring_wrapper_lights_up_on_both_buttons(real_root):
+    """The wrapping frame's highlight actually changes color on
+    <FocusIn>/<FocusOut> for BOTH Deny and Approve -- the round-2 ring was
+    tuned/verified against Deny only; this closes that gap for real, on the
+    real widget tree, not just the palette constants above.
+    """
+    import tkinter.ttk as ttk
+
+    root = real_root
+    answer: dict = {}
+    gui_prompter._configure_window(root)
+    gui_prompter._populate_confirm(root, "Approve?", answer, 120.0)
+    root.update()
+
+    buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
+    for label in ("Deny", "Approve"):
+        button = buttons[label]
+        wrapper = button.master
+        button.event_generate("<FocusIn>")
+        root.update()
+        assert wrapper.cget("highlightbackground") == gui_prompter._RING_OUTER
+        button.event_generate("<FocusOut>")
+        root.update()
+        assert wrapper.cget("highlightbackground") == gui_prompter._BG
 
 
 def test_confirm_dialog_default_keyboard_action_denies():
@@ -588,7 +739,9 @@ def test_deny_starts_focused_and_return_invokes_only_the_focused_button(real_roo
     root.update()
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
-    assert set(buttons) == {"Deny", "Approve"}
+    # Deny/Approve plus the "More time" control (item 5) -- not an exact set,
+    # since More time is a real button too, just not part of this L/R pair.
+    assert {"Deny", "Approve"} <= set(buttons)
     _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])  # starts on Deny
 
     root.event_generate("<Return>")
@@ -698,25 +851,25 @@ def test_target_panel_collapses_a_long_no_space_target_and_keeps_the_question_vi
     target_text = texts[0]
     assert int(target_text.cget("height")) <= gui_prompter._TARGET_MAX_LINES
 
-    expected_toggle = f"Show all {len(long_target)} characters"
     toggles = [
         w
         for w in _walk_widgets(frame)
-        if isinstance(w, ttk.Button) and w.cget("text") == expected_toggle
+        if isinstance(w, ttk.Button) and w.cget("text") == gui_prompter._TOGGLE_EXPAND_LABEL
     ]
-    assert toggles, "a target this long must offer a 'Show all N characters' toggle"
+    assert toggles, "a target this long must offer a 'Show the full command' toggle"
 
     labels = [w.cget("text") for w in _walk_widgets(frame) if isinstance(w, tkinter.Label)]
     assert gui_prompter._QUESTION in labels  # never clipped out of view
 
 
 def test_target_panel_ellipsis_is_muted_and_distinct_from_target_text(real_root):
-    """The middle-ellipsis marker itself must render in the muted colour so it
-    can never be mistaken for real target text (P0 confusability regression)."""
+    """The lines-based ellipsis marker (never a character-offset cut through
+    the middle of a line/token) must render in the muted colour so it can
+    never be mistaken for real target text (P0 confusability regression)."""
     import tkinter
 
     root = real_root
-    long_target = "https://api.example.com/upload?" + "a" * 370
+    long_target = "\n".join(f"line {i} of a multi-line command" for i in range(20))
     frame = gui_prompter._content_frame(root)
     gui_prompter._build_target_panel(root, frame, long_target)
     root.update()
@@ -727,6 +880,25 @@ def test_target_panel_ellipsis_is_muted_and_distinct_from_target_text(real_root)
     assert target_text.tag_cget("muted", "foreground") == gui_prompter._MUTED
     muted_text = target_text.get(ranges[0], ranges[1])
     assert muted_text.strip() == gui_prompter._ELLIPSIS.strip()
+
+
+def test_target_panel_single_unbroken_line_is_never_sliced_mid_token(real_root):
+    """A single logical line (no newlines at all -- e.g. a long URL) is never
+    truncated by character offset; it is painted in full and only visually
+    clipped by the height cap. This is what "never hides a token's tail"
+    means in practice: nothing about the text itself is cut, so no token can
+    be partially shown."""
+    import tkinter
+
+    root = real_root
+    long_target = "https://api.example.com/upload?" + "a" * 370
+    frame = gui_prompter._content_frame(root)
+    gui_prompter._build_target_panel(root, frame, long_target)
+    root.update()
+
+    target_text = next(w for w in _walk_widgets(frame) if isinstance(w, tkinter.Text))
+    assert target_text.get("1.0", "end").strip() == long_target
+    assert not target_text.tag_ranges("muted")  # nothing was cut, so nothing is marked as cut
 
 
 def test_target_panel_text_stays_normal_state_and_read_only(real_root):
@@ -762,7 +934,7 @@ def test_target_panel_toggle_expands_to_the_full_target(real_root):
     toggle = next(
         w
         for w in _walk_widgets(frame)
-        if isinstance(w, ttk.Button) and w.cget("text") == f"Show all {len(long_target)} characters"
+        if isinstance(w, ttk.Button) and w.cget("text") == gui_prompter._TOGGLE_EXPAND_LABEL
     )
     toggle.invoke()
     root.update()
@@ -810,6 +982,49 @@ def test_countdown_adopts_severity_ramp_as_time_runs_low(real_root):
     label = gui_prompter._build_countdown(root, root, 8.0, on_expire=lambda: None)
     assert label.cget("fg") == gui_prompter._SEV_CRITICAL  # under 10s from the very first paint
     assert "bold" in label.cget("font")
+
+
+def test_more_time_button_extends_the_countdown_once(real_root):
+    """WCAG 2.2.1: a real, focusable control lets a human actually present ask
+    for more time -- usable exactly once per dialog, and it must extend the
+    deadline for real (the countdown must not expire on schedule after use)."""
+    import tkinter.ttk as ttk
+
+    root = real_root
+    scheduled: list[object] = []
+    root.after = lambda _delay_ms, callback: scheduled.append(callback)  # type: ignore[method-assign]
+
+    expired = []
+    gui_prompter._build_countdown(root, root, 5.0, on_expire=lambda: expired.append(True))
+
+    more_time = next(
+        w
+        for w in _walk_widgets(root)
+        if isinstance(w, ttk.Button) and w.cget("text") == gui_prompter._MORE_TIME_LABEL
+    )
+    more_time.invoke()
+    root.update()
+    assert "disabled" in more_time.state()  # usable once
+
+    for _ in range(5):  # drive exactly the original 5s worth of ticks
+        if scheduled:
+            scheduled.pop(0)()
+    assert expired == []  # the +120s extension held it open past the original window
+
+
+def test_more_time_button_is_never_the_default_focus(real_root):
+    """More time exists but must not steal the initial focus away from Deny
+    (the safe default) -- _wire_keyboard still wins."""
+    import tkinter.ttk as ttk
+
+    root = real_root
+    answer: dict = {}
+    gui_prompter._configure_window(root)
+    gui_prompter._populate_confirm(root, "Approve?", answer, 120.0)
+    root.update()
+
+    buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
+    assert root.focus_get() is buttons["Deny"]
 
 
 def test_code_entry_rejects_non_digit_input(real_root):
@@ -902,6 +1117,38 @@ def test_code_entry_width_is_eight(real_root):
 
     entry = next(w for w in _walk_widgets(root) if isinstance(w, tkinter.Entry))
     assert int(entry.cget("width")) == 8
+
+
+def test_code_dialog_explains_as_much_as_the_confirm_dialog(real_root):
+    """The second (code-entry) dialog of a two_factor flow must not explain
+    LESS than the first: the reason (``why``), the reassurance line, and a
+    "Step 2 of 2" marker so a human landing here cold still knows what's
+    being decided and why -- not just the target and the code prompt.
+    """
+    root = real_root
+    answer: dict = {}
+    parts = dict(_SAMPLE_PARTS, why="The action touched a file recognized as holding secrets.")
+    gui_prompter._populate_code_parts(root, parts, answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    assert parts["why"] in labels
+    assert gui_prompter._REASSURANCE in labels
+    assert any("Step 2 of 2" in text for text in labels)
+
+
+def test_code_dialog_shows_the_severity_chip_too(real_root):
+    root = real_root
+    answer: dict = {}
+    gui_prompter._populate_code_parts(root, _SAMPLE_PARTS, answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    assert any(text.strip() == "HIGH" for text in labels)
 
 
 def test_control_return_in_entry_submits_a_valid_code(real_root):
@@ -1125,13 +1372,36 @@ def test_high_risk_confirm_dialog_shows_a_red_bold_chip(real_root):
     assert chip.cget("bg") == gui_prompter._SEV_CRITICAL
 
 
+def test_severity_chip_font_meets_the_files_own_9pt_floor(real_root):
+    """The file's own convention (see _DEADLINE_FONT's comment) is a >= 9pt
+    floor; the chip previously used 8pt, below its own stated bar."""
+    import tkinter.font as tkfont
+
+    root = real_root
+    frame = gui_prompter._content_frame(root)
+    gui_prompter._build_risk_line(frame, "Risk: high - this needs your code", "high")
+    root.update()
+
+    import tkinter
+
+    chip = next(
+        w
+        for w in _walk_widgets(frame)
+        if isinstance(w, tkinter.Label) and w.cget("text").strip() == "HIGH"
+    )
+    size = tkfont.Font(root=root, font=chip.cget("font")).actual()["size"]
+    assert abs(size) >= 9
+
+
 # --- Technical tone parity: no duplicated risk line, verb included --------------------
 
 
-def test_technical_tone_does_not_duplicate_the_risk_line(real_root):
-    """Technical tone's headline already embeds "[RISK: HIGH]" -- the separate
-    severity-chip risk line must not ALSO be drawn (that would be the same
-    fact shown twice)."""
+def test_technical_tone_also_shows_the_severity_chip(real_root):
+    """Technical tone's headline already embeds "[RISK: HIGH]" as TEXT, but the
+    severity CHIP (a colored, at-a-glance marker) is a different signal and
+    must render in every tone, not just "human" -- severity deserves the same
+    visual weight regardless of which tone rendered the surrounding words.
+    """
     root = real_root
     answer: dict = {}
     parts = dict(
@@ -1145,11 +1415,12 @@ def test_technical_tone_does_not_duplicate_the_risk_line(real_root):
 
     import tkinter
 
+    chips = [
+        w for w in _walk_widgets(root) if isinstance(w, tkinter.Label) and "HIGH" in w.cget("text")
+    ]
+    assert any(w.cget("bg") == gui_prompter._SEV_CRITICAL for w in chips)
     labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
-    risk_mentions = [text for text in labels if "RISK: HIGH" in text or "HIGH" in text]
-    # Only the headline itself should mention it -- no second, separate chip/line.
-    assert sum(1 for text in labels if text == "RISK: HIGH") == 0
-    assert any("[RISK: HIGH]" in text for text in risk_mentions)
+    assert any("[RISK: HIGH]" in text for text in labels)  # the headline still says it too
 
 
 def test_technical_tone_shows_the_verb(real_root):
@@ -1277,7 +1548,10 @@ def test_enable_dpi_awareness_prefers_per_monitor_v2(monkeypatch):
 
     import ctypes as real_ctypes
 
-    monkeypatch.setattr(real_ctypes, "windll", _FakeWindll())
+    # raising=False: non-Windows ctypes has no `windll` attribute at all, so a
+    # strict setattr would itself raise AttributeError before the test body
+    # ever runs (this was the CI-red repro on Linux).
+    monkeypatch.setattr(real_ctypes, "windll", _FakeWindll(), raising=False)
     gui_prompter._enable_dpi_awareness()
     assert calls == ["v2"]  # legacy fallback never called when v2 succeeds
 
@@ -1302,7 +1576,10 @@ def test_enable_dpi_awareness_falls_back_when_v2_unavailable(monkeypatch):
 
     import ctypes as real_ctypes
 
-    monkeypatch.setattr(real_ctypes, "windll", _FakeWindll())
+    # raising=False: non-Windows ctypes has no `windll` attribute at all, so a
+    # strict setattr would itself raise AttributeError before the test body
+    # ever runs (this was the CI-red repro on Linux).
+    monkeypatch.setattr(real_ctypes, "windll", _FakeWindll(), raising=False)
     gui_prompter._enable_dpi_awareness()
     assert calls == ["legacy"]
 
