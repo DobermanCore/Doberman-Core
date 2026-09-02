@@ -24,7 +24,7 @@ Day-to-day posture, status, and review commands.
 | `doberman policy-versions` | Every policy version that has been in force (newest first); `--show` prints one snapshot, `--verify` checks the catalogue. | `--show`, `--verify`, `--path`/`-p`, `--json` |
 | `doberman log` | Recent redacted decision log, newest first. | `--last`/`-n`, `--path`/`-p`, `--jsonl` |
 | `doberman decision-log-prune` | Delete resolved decisions by age and/or retained-row budget. Never touches pending AUTH rows or the policy-change ledger. | `--older-than-days`, `--max-rows`, `--path`/`-p` |
-| `doberman tui` | Interactive decision log with a plain-language "why" panel. Needs the `tui` extra. | `--path`/`-p`, `--last`/`-n` |
+| `doberman tui` | Interactive decision log with a plain-language "why" panel. Keys: `?` help (list every binding), `/` filter, `b`/`B`/`a` next/prev BLOCK or next AUTH, `w`/`enter` full-screen why, `tab` switch focus, `y` copy id, `home`/`end`, `r` reload, `q` quit. Needs the `tui` extra. | `--path`/`-p`, `--last`/`-n` |
 | `doberman dash` | Localhost-only dashboard: live decision feed, stats, and an AUTH approve/deny queue. Needs the `dash` extra. | `--port`, `--path`/`-p` |
 | `doberman demo` | Scripted attack reel through the real decision engine. Nothing runs against a real tool or downstream server. | `--path`/`-p`, `--mode`, `--fast`, `--quiet`/`-q` |
 | `doberman revoke ELEVATION_ID` | Revoke an active role elevation by id (see `doberman status`). | `--path`/`-p` |

@@ -346,7 +346,10 @@ never break a session start.
 
 `doberman log` prints the raw redacted rows; `doberman tui` browses the same rows interactively
 and adds a plain-language "why" for whichever row is highlighted, built only from that row's
-already-redacted verdict, layer, and reason codes. Arrow keys navigate, `r` reloads, `q` quits:
+already-redacted verdict, layer, and reason codes. Arrow keys navigate; press `?` first for the
+full keyboard reference (`/` filter, `b`/`B`/`a` jump to the next/previous BLOCK or next AUTH,
+`w`/`enter` full-screen why, `tab` switch focus, `y` copy the action id, `home`/`end`, `r` reload,
+`q` quit):
 
 ```bash
 pip install "doberman-core[tui]"

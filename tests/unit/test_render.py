@@ -140,7 +140,19 @@ def test_humanize_auth_result_known_values():
     assert render.humanize_auth_result("executed") == "ran"
     assert render.humanize_auth_result("blocked") == "blocked"
     assert render.humanize_auth_result("denied") == "denied"
-    assert render.humanize_auth_result("soft_confirm+memory") == "confirmed (memory)"
+    assert (
+        render.humanize_auth_result("soft_confirm+memory")
+        == "approved via 5-minute memory (soft_confirm)"
+    )
+
+
+def test_humanize_auth_result_short_form_for_narrow_columns():
+    # The `tui` browser's 9-wide auth column can't fit the full label - only
+    # entries with a distinct short form change; everything else (already
+    # short) is identical whether or not `short=True`.
+    assert render.humanize_auth_result("soft_confirm+memory", short=True) == "memory ok"
+    assert render.humanize_auth_result("executed", short=True) == "ran"
+    assert render.humanize_auth_result("blocked", short=True) == "blocked"
 
 
 def test_humanize_auth_result_none_or_empty_is_a_dash():

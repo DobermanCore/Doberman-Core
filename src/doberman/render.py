@@ -78,7 +78,15 @@ _AUTH_RESULT_LABELS: dict[str, str] = {
     "executed": "ran",
     "blocked": "blocked",
     "denied": "denied",
-    "soft_confirm+memory": "confirmed (memory)",
+    "soft_confirm+memory": "approved via 5-minute memory (soft_confirm)",
+}
+
+#: Short forms for the labels above, used only when `short=True` (the `tui`
+#: browser's 9-wide auth column, where the full label would never fit).
+#: Anything not listed here is already short enough - `short=True` falls back
+#: to the same full label `doberman log` and the why panel/full-screen why use.
+_AUTH_RESULT_SHORT_LABELS: dict[str, str] = {
+    "soft_confirm+memory": "memory ok",
 }
 
 _MIN_WRAP_WIDTH = 60
@@ -170,7 +178,7 @@ def risk_rich_style(risk: str) -> str:
     return _RISK_STYLES.get(risk, "")
 
 
-def humanize_auth_result(auth_result: str | None) -> str:
+def humanize_auth_result(auth_result: str | None, *, short: bool = False) -> str:
     """Plain-English label for a decision row's raw `auth_result` value.
 
     Shared by `doberman log` and the `tui` browser's auth column so the two
@@ -178,9 +186,19 @@ def humanize_auth_result(auth_result: str | None) -> str:
     as "-". An unrecognized/future value (a raw auth-tier/method name, or a
     corrupt row) falls back to the value itself with underscores turned to
     spaces — never raises, never invents a meaning it wasn't told.
+
+    ``short=True`` returns the narrower :data:`_AUTH_RESULT_SHORT_LABELS` form
+    where one exists (e.g. "memory ok" for "soft_confirm+memory") — for the
+    `tui` browser's 9-wide auth column, which can't fit the full label. Every
+    other caller (`doberman log`, the why panel/full-screen why) always gets
+    the full label.
     """
     if not auth_result:
         return "-"
+    if short:
+        short_label = _AUTH_RESULT_SHORT_LABELS.get(auth_result)
+        if short_label is not None:
+            return short_label
     return _AUTH_RESULT_LABELS.get(auth_result, auth_result.replace("_", " "))
 
 

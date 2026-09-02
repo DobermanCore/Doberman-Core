@@ -188,10 +188,11 @@ async def test_app_lists_seeded_rows_and_shows_explanation(tmp_path):
         assert "destructive" in text
 
 
-async def test_panel_next_step_present_for_block_and_auth_absent_for_pass(tmp_path):
-    # design critique item 12: a "Next" line naming a real command, on the
-    # docked panel too (not just the full-screen why view) - and none for
-    # PASS, since there's nothing to act on.
+async def test_next_line_present_for_block_and_auth_absent_for_pass(tmp_path):
+    # design critique item 12 (round 1) + round 3 item 3: a "Next" line naming
+    # a real command is docked in its OWN widget (`#next-line`), not the
+    # scrollable why panel body - and none for PASS, since there's nothing to
+    # act on.
     root = str(tmp_path)
     await _seed(root, action_id="act-block", verdict=Verdict.BLOCK)
     await _seed(
@@ -205,18 +206,18 @@ async def test_panel_next_step_present_for_block_and_auth_absent_for_pass(tmp_pa
         # DESC id order: row0=act-pass, row1=act-auth, row2=act-block.
         table.move_cursor(row=2)
         await pilot.pause()
-        text = _static_text(app.query_one("#explanation"))
-        assert "Next:" in text
-        assert "doberman mode" in text
+        next_text = _static_text(app.query_one("#next-line"))
+        assert "Next:" in next_text
+        assert "doberman mode" in next_text
+        assert "Next:" not in _static_text(app.query_one("#explanation"))
         table.move_cursor(row=1)
         await pilot.pause()
-        text = _static_text(app.query_one("#explanation"))
-        assert "Next:" in text
-        assert "doberman dash" in text
+        next_text = _static_text(app.query_one("#next-line"))
+        assert "Next:" in next_text
+        assert "doberman dash" in next_text
         table.move_cursor(row=0)
         await pilot.pause()
-        text = _static_text(app.query_one("#explanation"))
-        assert "Next:" not in text
+        assert _static_text(app.query_one("#next-line")) == ""
 
 
 async def test_columns_are_plain_words_in_the_documented_order():
@@ -225,7 +226,7 @@ async def test_columns_are_plain_words_in_the_documented_order():
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
         labels = [str(col.label) for col in table.columns.values()]
-        assert labels == ["verdict", "time", "risk", "auth", "action", "target", "why"]
+        assert labels == ["", "verdict", "time", "risk", "auth", "action", "target", "why"]
 
 
 async def test_verdict_cell_uses_ascii_glyph_and_the_shared_render_palette(tmp_path):
@@ -235,7 +236,7 @@ async def test_verdict_cell_uses_ascii_glyph_and_the_shared_render_palette(tmp_p
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
-        verdict_cell = table.get_row_at(0)[0]
+        verdict_cell = table.get_row_at(0)[1]
         assert verdict_cell.plain == "X BLOCK"
         assert verdict_cell.plain.isascii()
         assert verdict_cell.style == verdict_rich_style(Verdict.BLOCK, chip=True)
@@ -248,7 +249,7 @@ async def test_risk_cell_is_colored_by_severity(tmp_path):
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
-        risk_cell = table.get_row_at(0)[2]
+        risk_cell = table.get_row_at(0)[3]
         assert risk_cell.plain == "critical"
         assert risk_cell.style == render.risk_rich_style("critical")
 
@@ -266,7 +267,7 @@ async def test_auth_cell_is_humanized(tmp_path):
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
-        auth_cell = table.get_row_at(0)[3]
+        auth_cell = table.get_row_at(0)[4]
         assert auth_cell.plain == "ran"
 
 
@@ -280,8 +281,28 @@ async def test_time_column_shows_hhmmss_not_the_full_iso_timestamp(tmp_path):
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
-        time_cell = table.get_row_at(0)[1]
+        time_cell = table.get_row_at(0)[2]
         assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", time_cell.plain), time_cell.plain
+
+
+async def test_auth_cell_short_form_for_memory_approval(tmp_path):
+    # round 3 design critique item 10 (CI fix): `doberman log` needs the full
+    # "approved via 5-minute memory (soft_confirm)" phrase, but the tui's
+    # 9-wide auth column can't fit it - it asks for the short form.
+    root = str(tmp_path)
+    await _seed(
+        root,
+        action_id="act-1",
+        verdict=Verdict.PASS,
+        reason_codes=[],
+        auth_result="soft_confirm+memory",
+    )
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        auth_cell = table.get_row_at(0)[4]
+        assert auth_cell.plain == "memory ok"
 
 
 async def test_date_bar_shows_the_selected_rows_date_and_the_verdict_legend(tmp_path):
@@ -326,6 +347,10 @@ async def test_empty_but_existing_db_gets_a_different_honest_message(tmp_path):
         text = _static_text(app.query_one("#explanation")).lower()
         assert "hasn't decided anything yet" in text
         assert "no decision log at" not in text
+        # round 3 design critique item 9: the empty state isn't a dead end -
+        # it names two concrete ways forward.
+        assert "doberman demo --fast" in text
+        assert "press r" in text
 
 
 async def test_filtered_to_zero_matches_is_distinct_from_no_data(tmp_path):
@@ -371,7 +396,9 @@ async def test_last_bounds_how_many_rows_load(tmp_path):
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
         assert table.row_count == 2
-        assert app.sub_title == f"showing 2 of 2 - {root}"
+        # round 3 design critique item 5: "2 of 2" alone reads as "that's
+        # everything" when the load actually hit the `--last` cap.
+        assert app.sub_title == f"showing 2 of 2 (last 2; --last for more) - {root}"
 
 
 # --- filter --------------------------------------------------------------
@@ -395,7 +422,7 @@ async def test_slash_opens_filter_and_narrows_rows_by_substring(tmp_path):
             await pilot.press(ch)
         await pilot.pause()
         assert table.row_count == 1
-        assert table.get_row_at(0)[0].plain == "X BLOCK"
+        assert table.get_row_at(0)[1].plain == "X BLOCK"
 
 
 async def test_filter_placeholder_matches_what_it_actually_searches(tmp_path):
@@ -408,9 +435,11 @@ async def test_filter_placeholder_matches_what_it_actually_searches(tmp_path):
         assert placeholder == "filter (verdict / target / action / reason codes)"
 
 
-async def test_escape_clear_binding_only_shows_while_the_filter_has_focus(tmp_path):
-    # design critique item 1: escape/"clear" must never be a footer entry that
-    # does nothing - it's hidden (check_action) unless the filter is focused.
+async def test_escape_clear_binding_shows_while_filter_focused_or_active(tmp_path):
+    # design critique item 1 (round 1) + round 3: escape/"clear" must never be
+    # a footer entry that does nothing - it's shown while the filter input has
+    # focus, AND (round 3) while a filter is active from anywhere else, e.g.
+    # the table, so a reviewer doesn't have to tab back just to dismiss it.
     root = str(tmp_path)
     await _seed_block(root)
     app = DecisionExplainerApp(root)
@@ -420,6 +449,14 @@ async def test_escape_clear_binding_only_shows_while_the_filter_has_focus(tmp_pa
         await pilot.press("/")
         await pilot.pause()
         assert app.check_action("clear_filter", ()) is True
+        for ch in "block":
+            await pilot.press(ch)
+        await pilot.pause()
+        table = app.query_one("#decisions")
+        table.focus()
+        await pilot.pause()
+        assert app.focused is table
+        assert app.check_action("clear_filter", ()) is True  # filter still active
 
 
 async def test_escape_clears_the_filter(tmp_path):
@@ -441,6 +478,54 @@ async def test_escape_clears_the_filter(tmp_path):
         assert app.query_one("#filter").display is False
 
 
+async def test_escape_clears_an_active_filter_from_the_table_too(tmp_path):
+    # round 3 design critique item 1: escape must also clear the filter when
+    # the TABLE (not the filter box) has focus, as long as a filter is active.
+    root = str(tmp_path)
+    await _seed(root, action_id="act-block", verdict=Verdict.BLOCK)
+    await _seed(root, action_id="act-pass", verdict=Verdict.PASS, reason_codes=[])
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        await pilot.press("/")
+        for ch in "block":
+            await pilot.press(ch)
+        await pilot.pause()
+        assert table.row_count == 1
+        table.focus()
+        await pilot.pause()
+        assert app.focused is table
+        await pilot.press("escape")
+        await pilot.pause()
+        assert table.row_count == 2
+        assert app.query_one("#filter").display is False
+
+
+async def test_enter_in_filter_keeps_it_and_returns_focus_to_table(tmp_path):
+    # round 3 design critique item 1: Enter is a documented "exit" distinct
+    # from Escape's "clear" - it commits the (already live-applied) filter and
+    # returns focus to the table, rather than opening the why screen.
+    root = str(tmp_path)
+    await _seed(root, action_id="act-block", verdict=Verdict.BLOCK)
+    await _seed(root, action_id="act-pass", verdict=Verdict.PASS, reason_codes=[])
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        await pilot.press("/")
+        for ch in "block":
+            await pilot.press(ch)
+        await pilot.pause()
+        assert table.row_count == 1
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not isinstance(app.screen, WhyScreen)  # enter committed, didn't open "why"
+        assert app.focused is table
+        assert app.query_one("#filter").value == "block"
+        assert table.row_count == 1  # filter text stays applied
+
+
 # --- next/prev BLOCK, next AUTH -----------------------------------------------
 
 
@@ -458,12 +543,12 @@ async def test_b_jumps_to_next_block_and_shift_b_to_previous(tmp_path):
         await pilot.press("b")
         await pilot.pause()
         first_block_row = table.cursor_row
-        assert table.get_row_at(first_block_row)[0].plain == "X BLOCK"
+        assert table.get_row_at(first_block_row)[1].plain == "X BLOCK"
         await pilot.press("b")
         await pilot.pause()
         second_block_row = table.cursor_row
         assert second_block_row != first_block_row
-        assert table.get_row_at(second_block_row)[0].plain == "X BLOCK"
+        assert table.get_row_at(second_block_row)[1].plain == "X BLOCK"
         await pilot.press("B")
         await pilot.pause()
         assert table.cursor_row == first_block_row
@@ -482,7 +567,7 @@ async def test_a_jumps_to_next_auth(tmp_path):
         table.move_cursor(row=0)
         await pilot.press("a")
         await pilot.pause()
-        assert table.get_row_at(table.cursor_row)[0].plain == "! AUTH"
+        assert table.get_row_at(table.cursor_row)[1].plain == "! AUTH"
 
 
 async def test_jumps_notify_when_nothing_matches(tmp_path, monkeypatch):
@@ -633,6 +718,54 @@ async def test_enter_opens_full_screen_why_with_full_reason_codes_and_action_id(
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, WhyScreen)
+
+
+async def test_why_screen_shows_row_identity_header_and_bBa_in_its_footer(tmp_path, monkeypatch):
+    # round 3 design critique item 4: paging through rows with b/B/a inside
+    # the why screen must never lose track of which row is on screen - the
+    # first line names verdict, time, risk, action, target; the footer offers
+    # b/B/a directly, not just esc close.
+    # A hand-built row (like `test_row_derived_markup_renders_literally`):
+    # `_seed`'s helper always writes `action_type=shell_exec` (no path class)
+    # and `build_record` stamps `ts` with the real wall clock, not the `ts`
+    # passed in - neither is controllable through the real storage pipeline.
+    row = {
+        "ts": "2026-07-07T01:45:24+00:00",
+        "action_id": "act-header",
+        "agent_role": "cli",
+        "action_type": "file_read",
+        "target_path_class": "backend/secrets/*.env",
+        "risk": "high",
+        "source_context": "user",
+        "final_verdict": "BLOCK",
+        "decided_layer": "objective",
+        "reason_codes_json": json.dumps(["sensitive_path_access"]),
+    }
+
+    async def _fake_read(_root, *, limit=None):
+        return [row]
+
+    monkeypatch.setattr("doberman.tui.read_decisions", _fake_read)
+    root = str(tmp_path)
+    async with open_db(root):
+        pass  # `_load_rows` only calls read_decisions once the DB file exists
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        await pilot.press("w")
+        await pilot.pause()
+        assert isinstance(app.screen, WhyScreen)
+        full_text = _static_text(app.screen.query_one("#why-text"))
+        first_line = full_text.splitlines()[0]
+        assert first_line == "X BLOCK  01:45:24  high  file_read  backend/secrets/*.env"
+        # The modal's own Footer needs an extra tick to lay out its FooterKey
+        # children after the screen push.
+        await pilot.pause()
+        footer_text = _visible_footer_text(app.screen)
+        assert "next BLOCK" in footer_text
+        assert "prev BLOCK" in footer_text
+        assert "next AUTH" in footer_text
+        assert "close" in footer_text
 
 
 async def test_w_also_opens_the_full_screen_why(tmp_path):
@@ -856,6 +989,143 @@ async def test_explanation_panel_is_focusable_and_scrollable(tmp_path):
         await _wait_loaded(pilot, app)
         scroll = app.query_one("#explanation-scroll")
         assert scroll.can_focus
+
+
+# --- cursor gutter --------------------------------------------------------
+
+
+async def test_cursor_gutter_marks_exactly_one_row(tmp_path):
+    # round 3 design critique item 2: the dark cursor row alone measured
+    # 1.69:1 contrast - an ASCII ">" gutter cell makes the selection legible
+    # without relying on color at all.
+    root = str(tmp_path)
+    for i in range(4):
+        await _seed(root, action_id=f"act-{i}", verdict=Verdict.PASS, reason_codes=[])
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+
+        def _gutter_marks() -> list[int]:
+            return [i for i in range(table.row_count) if table.get_row_at(i)[0].plain == ">"]
+
+        assert _gutter_marks() == [0]
+        table.move_cursor(row=2)
+        await pilot.pause()
+        assert _gutter_marks() == [2]
+        table.move_cursor(row=3)
+        await pilot.pause()
+        assert _gutter_marks() == [3]
+
+
+# --- docked "Next" line ----------------------------------------------------
+
+
+async def test_next_line_is_docked_and_on_screen_at_80x24(tmp_path):
+    # round 3 design critique item 3: "Next:" must stay visible even when the
+    # why panel above it is small - checked here by asserting the widget's own
+    # laid-out region falls entirely inside the 80x24 screen.
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _wait_loaded(pilot, app)
+        next_line = app.query_one("#next-line")
+        text = _static_text(next_line)
+        assert text.startswith("Next:")
+        assert "doberman mode" in text
+        region = next_line.region
+        assert region.width > 0
+        assert region.height > 0
+        assert region.y >= 0
+        assert region.y + region.height <= app.size.height
+
+
+# --- multi-day logs ---------------------------------------------------------
+
+
+async def test_time_cell_shows_month_day_when_rows_span_multiple_days(tmp_path, monkeypatch):
+    # round 3 design critique item 6: a log spanning more than one calendar
+    # day trades HH:MM:SS for a date-qualified MM-DD HH:MM. Hand-built rows
+    # (like `test_row_derived_markup_renders_literally`): `build_record`
+    # stamps `ts` with the real wall clock, so `_seed`'s `ts` parameter can't
+    # actually control which calendar day a real row lands on.
+    def _row(action_id: str, ts: str) -> dict:
+        return {
+            "ts": ts,
+            "action_id": action_id,
+            "agent_role": "cli",
+            "action_type": "shell_exec",
+            "target_path_class": None,
+            "risk": "low",
+            "source_context": "user",
+            "final_verdict": "PASS",
+            "decided_layer": "objective",
+            "reason_codes_json": json.dumps([]),
+        }
+
+    rows = [
+        _row("act-day1", "2026-07-07T08:00:00+00:00"),
+        _row("act-day2", "2026-07-08T09:30:00+00:00"),
+    ]
+
+    async def _fake_read(_root, *, limit=None):
+        return rows
+
+    monkeypatch.setattr("doberman.tui.read_decisions", _fake_read)
+    root = str(tmp_path)
+    async with open_db(root):
+        pass
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        assert table.row_count == 2
+        for row_index in range(2):
+            time_cell = table.get_row_at(row_index)[2]
+            assert re.fullmatch(r"\d{2}-\d{2} \d{2}:\d{2}", time_cell.plain), time_cell.plain
+        assert table.get_row_at(0)[2].plain == "07-07 08:00"
+        assert table.get_row_at(1)[2].plain == "07-08 09:30"
+
+
+async def test_single_day_log_keeps_hhmmss_time_cell(tmp_path):
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        time_cell = table.get_row_at(0)[2]
+        assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", time_cell.plain), time_cell.plain
+
+
+# --- reason codes read as words in the why column ---------------------------
+
+
+async def test_why_column_shows_reason_codes_as_short_words_not_raw_codes(tmp_path):
+    # round 3 design critique item 7: the table's "why" column reads as words
+    # (a short label if one exists, else the code with underscores replaced by
+    # spaces) - the full raw codes still show in the why panel/full-screen why.
+    root = str(tmp_path)
+    await _seed(
+        root,
+        action_id="act-words",
+        verdict=Verdict.BLOCK,
+        reason_codes=[ReasonCode.secret_exfiltration, ReasonCode.destructive_command],
+    )
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(160, 30)) as pilot:  # wide: the why cell isn't truncated
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        why_cell = table.get_row_at(0)[7]
+        assert why_cell.plain == "secret sent outbound, destructive command"
+        assert "_" not in why_cell.plain
+        # The full-screen why keeps the raw codes verbatim.
+        await pilot.press("w")
+        await pilot.pause()
+        full_text = _static_text(app.screen.query_one("#why-text"))
+        assert "secret_exfiltration" in full_text
+        assert "destructive_command" in full_text
 
 
 # --- resize keeps the selection ------------------------------------------
