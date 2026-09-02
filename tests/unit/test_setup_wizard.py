@@ -22,6 +22,23 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
+def _doberman_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin `doberman` as resolvable so a healthy wired-hooks run reads as
+    complete regardless of the test runner's PATH (the honest-end tests below
+    override this explicitly to exercise the incomplete path)."""
+    import shutil
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: (
+            "/venv/bin/doberman" if name == "doberman" else real_which(name, *a, **k)
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolated_host_detection_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point host detection at a throwaway home so this dev machine's real
     ``~/.claude`` / ``~/.codex`` never leaks into a test's default host choice.
@@ -543,8 +560,11 @@ def test_doctor_remediation_detail_shown(tmp_path: Path, monkeypatch: pytest.Mon
 
     monkeypatch.setattr(doctor_mod, "run_checks", _fake_run_checks)
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     assert "  - Config: no policy saved - run `doberman setup`" in result.output
+    assert "-- Setup incomplete --" in result.output
+    assert "-- Setup complete --" not in result.output
+    assert "Hooks written. Doberman activates when you restart your session." not in result.output
 
 
 def test_doctor_crash_falls_back_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -578,6 +598,323 @@ def test_enrolled_password_replaces_next_step_with_possession_factor(tmp_path: P
     assert "Next step:" not in result.output
     assert "password set" not in result.output
     assert "Possession factor: set (password)." in result.output
+
+
+# ---------------------------------------------------------------------------
+# Honest end (P0): a critical from the in-wizard doctor pass must never be
+# reported as "complete" with exit 0.
+# ---------------------------------------------------------------------------
+
+
+def _no_doberman_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Undo the module's ``_doberman_on_path`` autouse shim for one test, so the
+    Hook command check genuinely fails closed like a real broken install."""
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: None)
+
+
+def test_yes_honest_incomplete_when_hook_command_critical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_doberman_on_path(monkeypatch)
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 1, result.output
+    assert "-- Setup incomplete --" in result.output
+    assert "-- Setup complete --" not in result.output
+    assert "Hooks written. Doberman activates when you restart your session." not in result.output
+    # Remediation and next steps still print.
+    assert "Hook command" in result.output
+    assert "Check health:" in result.output
+    assert "Change your mind:" in result.output
+
+
+def test_interactive_honest_incomplete_when_hook_command_critical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_doberman_on_path(monkeypatch)
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 1, result.output
+    assert "-- Setup incomplete --" in result.output
+
+
+def test_status_flags_hook_command_not_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`status` reuses doctor's cheap PATH check next to `[installed]`."""
+    _no_doberman_on_path(monkeypatch)
+    runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "(not on PATH)" in result.output
+
+
+def test_status_omits_not_on_path_hint_when_resolvable(tmp_path: Path) -> None:
+    runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "(not on PATH)" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Verification ritual + peak-end ordering (item 2)
+# ---------------------------------------------------------------------------
+
+
+def test_claude_host_gets_the_same_verify_line_as_codex_and_mcp(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--host", "claude", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert (
+        "Verify it's live: ask your agent to read .env and confirm it is blocked." in result.output
+    )
+
+
+def test_verify_line_and_demo_invite_are_the_last_two_content_lines(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    assert lines[-2] == "Verify it's live: ask your agent to read .env and confirm it is blocked."
+    assert lines[-1] == "See it work: `doberman demo --fast`"
+
+
+def test_uninstall_hooks_off_ramp_sits_directly_above_the_closing_pair(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    idx = lines.index("Change your mind:  doberman uninstall-hooks")
+    assert (
+        lines[idx + 1] == "Verify it's live: ask your agent to read .env and confirm it is blocked."
+    )
+    assert lines[idx + 2] == "See it work: `doberman demo --fast`"
+
+
+def test_rerun_with_unchanged_hooks_prints_already_wired(tmp_path: Path) -> None:
+    first = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+    second = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert second.exit_code == 0, second.output
+    settings_path = tmp_path / ".claude" / "settings.json"
+    assert f"already wired: {settings_path}" in second.output
+    assert f"wrote {settings_path}" not in second.output
+
+
+# ---------------------------------------------------------------------------
+# --dry-run (item 5)
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_yes_previews_and_writes_nothing(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--dry-run", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "[dry-run] would set mode: balanced" in result.output
+    settings_path = tmp_path / ".claude" / "settings.json"
+    assert f"[dry-run] would write: {settings_path}" in result.output
+    assert not settings_path.exists()
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_dry_run_mode_flag_previews_the_requested_mode(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app, ["setup", "--yes", "--dry-run", "--mode", "strict", "--path", str(tmp_path)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "[dry-run] would set mode: strict" in result.output
+
+
+def test_dry_run_mcp_host_has_no_file_to_write(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app, ["setup", "--yes", "--dry-run", "--host", "mcp", "--path", str(tmp_path)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "no file written" in result.output
+    assert not (tmp_path / ".claude").exists()
+
+
+# ---------------------------------------------------------------------------
+# --global confirmation gate (item 5)
+# ---------------------------------------------------------------------------
+
+
+def test_global_yes_prints_exact_path_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from doberman.hosthooks import install as install_mod
+
+    fake_home_settings = tmp_path / "fake-global" / ".claude" / "settings.json"
+    original = install_mod.resolve_settings_path
+
+    def _patched_resolve(scope: str, project_root: str):
+        if scope == "global":
+            return fake_home_settings
+        return original(scope, project_root)
+
+    monkeypatch.setattr(install_mod, "resolve_settings_path", _patched_resolve)
+
+    result = runner.invoke(
+        app, ["setup", "--yes", "--global", "--path", str(tmp_path)], catch_exceptions=False
+    )
+    assert result.exit_code == 0, result.output
+    assert f"Installing globally: {fake_home_settings}" in result.output
+    assert result.output.index(f"Installing globally: {fake_home_settings}") < result.output.index(
+        f"wrote {fake_home_settings}"
+    )
+    assert fake_home_settings.exists()
+
+
+def test_global_interactive_declined_falls_back_to_project_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from doberman.hosthooks import install as install_mod
+
+    fake_home_settings = tmp_path / "fake-global" / ".claude" / "settings.json"
+    original = install_mod.resolve_settings_path
+
+    def _patched_resolve(scope: str, project_root: str):
+        if scope == "global":
+            return fake_home_settings
+        return original(scope, project_root)
+
+    monkeypatch.setattr(install_mod, "resolve_settings_path", _patched_resolve)
+
+    result = runner.invoke(
+        app,
+        ["setup", "--global", "--path", str(tmp_path)],
+        # hosts default, mode=balanced, global-confirm=n, telemetry=n, tune=n, demo=n
+        input="\nbalanced\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Write to your real home directory now?" in result.output
+    assert not fake_home_settings.exists()
+    assert (tmp_path / ".claude" / "settings.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Telemetry recognition (item 6)
+# ---------------------------------------------------------------------------
+
+
+def test_yes_summary_always_shows_telemetry_on_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert (
+        "Telemetry: on - anonymous usage counts; `doberman telemetry off` to opt out"
+        in result.output
+    )
+
+
+def test_yes_summary_shows_telemetry_off_when_forced_off(tmp_path: Path) -> None:
+    # conftest's autouse fixture already sets DOBERMAN_TELEMETRY=0 for every test.
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Telemetry: off" in result.output
+
+
+def test_telemetry_summary_line_shows_even_after_help_already_marked_the_notice_seen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
+    from doberman import telemetry
+
+    telemetry.first_run_notice()  # simulate: a user who read `--help` first
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Telemetry: on" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Docs pointer + copy (item 7)
+# ---------------------------------------------------------------------------
+
+
+def test_summary_ends_with_a_docs_pointer(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Docs: docs/SETUP.md" in result.output
+
+
+def test_strict_mode_glosses_trifecta_actions(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\n3\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "sensitive data + untrusted content + external destination" in result.output
+
+
+def test_setup_help_has_no_raw_rst_double_backticks() -> None:
+    result = runner.invoke(app, ["setup", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "``" not in result.output
+
+
+def test_install_hooks_help_has_no_raw_rst_double_backticks() -> None:
+    result = runner.invoke(app, ["install-hooks", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "``" not in result.output
+
+
+def test_install_hooks_help_documents_the_host_scope_difference() -> None:
+    result = runner.invoke(app, ["install-hooks", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "mcp" in result.output and "openclaw" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Terminal-width wrapping and the section rule (item 3)
+# ---------------------------------------------------------------------------
+
+
+def test_columns_60_and_200_produce_different_wrapped_output(tmp_path: Path) -> None:
+    d1, d2 = tmp_path / "a", tmp_path / "b"
+    d1.mkdir()
+    d2.mkdir()
+    narrow = runner.invoke(app, ["setup", "--yes", "--path", str(d1)], env={"COLUMNS": "60"})
+    wide = runner.invoke(app, ["setup", "--yes", "--path", str(d2)], env={"COLUMNS": "200"})
+    assert narrow.exit_code == 0, narrow.output
+    assert wide.exit_code == 0, wide.output
+    assert narrow.output != wide.output
+    assert len(narrow.output.splitlines()) > len(wide.output.splitlines())
+
+
+def test_section_rule_is_never_empty_for_a_long_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    import doberman.cli.main as cli_module
+
+    monkeypatch.setattr(
+        cli_module.shutil, "get_terminal_size", lambda fallback=(100, 24): (100, 24)
+    )
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    line = cli_module._section("MCP proxy (Cursor / Claude Desktop / other MCP client)")
+    assert line.rstrip("-").rstrip() != line.rstrip()  # at least one trailing dash
+    assert line.count("-") > 5
+
+
+# ---------------------------------------------------------------------------
+# Color (item 4)
+# ---------------------------------------------------------------------------
+
+
+def test_mode_style_gradient_has_four_distinct_styles() -> None:
+    import doberman.cli.main as cli_module
+
+    styles = list(cli_module._MODE_STYLE.values())
+    assert len(set(styles)) == len(styles) == 4
+
+
+def test_setup_output_carries_zero_ansi_under_no_color(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "\x1b[" not in result.output
 
 
 # ---------------------------------------------------------------------------

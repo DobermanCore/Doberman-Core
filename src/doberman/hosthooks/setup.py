@@ -20,7 +20,8 @@ MODE_DESCRIPTIONS: dict[SecurityMode, str] = {
         "Moderate step-ups for risky actions (default). Balances security and flow."
     ),
     SecurityMode.strict: (
-        "Frequent step-ups; trifecta actions become hard blocks. Good for shared repos."
+        "Frequent step-ups; trifecta actions (sensitive data + untrusted content + external "
+        "destination, together) become hard blocks. Good for shared repos."
     ),
     SecurityMode.paranoid: ("Maximum step-ups; very low thresholds. For high-risk environments."),
 }
@@ -110,7 +111,7 @@ def host_menu_lines(detected: set[str]) -> list[str]:
     lines: list[str] = []
     for i, host in enumerate(HOSTS, start=1):
         tag = "   <- detected" if host.key in detected else ""
-        lines.append(f"  [{i}] {host.label:<{width}}{tag}")
+        lines.append(f"  [{i}] {host.label:<{width}}{tag}".rstrip())
     return lines
 
 

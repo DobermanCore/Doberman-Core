@@ -47,10 +47,34 @@ def test_install_hooks_dry_run_output_is_ascii_and_cp1252_safe(tmp_path):
     result.output.encode("cp1252")  # raises if any char is not cp1252-encodable
 
 
-def test_setup_yes_output_is_ascii_and_cp1252_safe(tmp_path):
+def test_setup_yes_output_is_ascii_and_cp1252_safe(tmp_path, monkeypatch):
     # The setup wizard prints section separators that used box-drawing rules.
+    # Pin `doberman` as resolvable so the honest-end doctor pass reads this
+    # wired-hooks run as complete (exit 0), same as test_cli_doctor.py's fixture.
+    import shutil
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: (
+            "/venv/bin/doberman" if name == "doberman" else real_which(name, *a, **k)
+        ),
+    )
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
+    assert result.output.isascii(), f"non-ASCII in setup output: {result.output!r}"
+    result.output.encode("cp1252")
+
+
+def test_setup_incomplete_output_is_ascii_and_cp1252_safe(tmp_path, monkeypatch):
+    # The honest-end "-- Setup incomplete --" path prints different body text
+    # (the doctor remediation, no activation claim); it must stay just as safe.
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: None)
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 1, result.output
     assert result.output.isascii(), f"non-ASCII in setup output: {result.output!r}"
     result.output.encode("cp1252")
 

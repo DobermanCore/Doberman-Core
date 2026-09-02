@@ -22,6 +22,23 @@ runner = CliRunner()
 _PASSWORD = "correct horse battery staple"  # noqa: S105 — synthetic test credential
 
 
+@pytest.fixture(autouse=True)
+def _doberman_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`setup`'s honest-end doctor pass fails closed on a `doberman` not on
+    PATH; pin it resolvable so this file's `setup` runs read as complete,
+    same as `test_cli_doctor.py`'s identically named fixture."""
+    import shutil
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: (
+            "/venv/bin/doberman" if name == "doberman" else real_which(name, *a, **k)
+        ),
+    )
+
+
 class _Decline:
     def confirm(self, message):
         return False

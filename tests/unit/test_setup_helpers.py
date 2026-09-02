@@ -180,6 +180,14 @@ def test_host_menu_lines_detected_tags_align() -> None:
     assert len(columns) == 1, f"tags not aligned: {lines}"
 
 
+def test_host_menu_lines_have_no_trailing_whitespace() -> None:
+    """A non-detected host's line must not carry the padding spaces its label
+    column left behind once no ``<- detected`` tag follows them."""
+    lines = host_menu_lines(set())
+    for line in lines:
+        assert line == line.rstrip(), f"trailing whitespace: {line!r}"
+
+
 # ---------------------------------------------------------------------------
 # parse_host_choice
 # ---------------------------------------------------------------------------
