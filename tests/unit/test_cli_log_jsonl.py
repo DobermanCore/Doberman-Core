@@ -246,10 +246,14 @@ def test_log_human_action_column_does_not_shift_for_long_types(tmp_path):
 
 
 def test_log_why_prints_plain_summary_and_next_step_for_block_and_auth_rows(tmp_path):
-    # round 4 design critique item 8: `doberman log --why` adds the same
-    # one-line plain-language summary and "Next" remedy the tui shows, under
-    # each BLOCK/AUTH row only - `_ROWS[1]`'s "ALLOW" is neither, so it gets
+    # round 4 design critique item 8: `doberman log --why` adds a
+    # plain-language block and "Next" remedy the tui shows, under each
+    # BLOCK/AUTH row only - `_ROWS[1]`'s "ALLOW" is neither, so it gets
     # nothing extra (an unrecognized/legacy verdict must never raise either).
+    # Round 6 design critique item 7: that block is now `why_body` (what was
+    # attempted + the reason description), not just the one-line
+    # `first_sentence` - the row above already shows the verdict and the raw
+    # reason code, so the old one-liner alone added nothing new.
     import doberman.cli.main as main_mod
 
     async def _rows(*_a, **_k):
@@ -263,12 +267,54 @@ def test_log_why_prints_plain_summary_and_next_step_for_block_and_auth_rows(tmp_
     # two physical lines even though it now renders as one unbreakable phrase.
     normalized = " ".join(result.stdout.split())
     assert "Doberman decided AUTH after checking the rules." in normalized
+    assert "backend attempted file_read on backend/secrets/*.env." in normalized
+    assert "Reasons: the action touched a file recognized as holding secrets." in normalized
+    # The trailing "(Checked by: ...)" aside is `template_explanation`'s, not
+    # `why_body`'s - it adds nothing `doberman log`'s own row didn't already
+    # say via the verdict/reason-code columns.
+    assert "Checked by" not in normalized
     assert "Next: re-running the action asks again" in normalized
     assert "doberman dash" in normalized
     # Nothing is printed under the trailing "ALLOW" row.
     lines = result.stdout.splitlines()
     allow_index = next(i for i, ln in enumerate(lines) if ln.startswith("2026-07-30T00:00:01Z"))
     assert allow_index == len(lines) - 1
+
+
+def test_log_why_on_a_block_row_includes_the_reason_description(tmp_path):
+    # round 6 design critique item 7: `--why` must ADD information beyond
+    # what `doberman log`'s own row already prints - specifically, the
+    # human-readable reason description, not just the raw reason code the row
+    # above already shows in brackets.
+    import doberman.cli.main as main_mod
+
+    block_row = {
+        "id": 3,
+        "ts": "2026-07-30T00:00:03Z",
+        "action_id": "act-3",
+        "agent_role": "cli",
+        "action_type": "shell_exec",
+        "target_path_class": None,
+        "risk": "critical",
+        "source_context": "user",
+        "final_verdict": "BLOCK",
+        "decided_layer": "objective",
+        "reason_codes_json": '["destructive_command"]',
+        "auth_required": 0,
+        "auth_result": "blocked",
+        "elevation_id": None,
+    }
+
+    async def _rows(*_a, **_k):
+        return [block_row]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path), "--why"])
+    assert result.exit_code == 0
+    normalized = " ".join(result.stdout.split())
+    assert "destructive_command" in normalized  # the row's own raw code, in brackets
+    # The plain-English reason DESCRIPTION only comes from `--why`'s added block.
+    assert "the command looked destructive" in normalized
 
 
 def test_log_without_why_never_prints_the_extra_lines(tmp_path):

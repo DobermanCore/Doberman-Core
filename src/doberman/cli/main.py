@@ -52,7 +52,7 @@ from doberman.egress.velocity import (
     _VOLUME_THRESHOLD_BYTES,
     VelocityThresholds,
 )
-from doberman.explain import first_sentence
+from doberman.explain import why_body
 from doberman.hosthooks.install import DASHBOARD_COMMAND
 from doberman.models import ActionType
 from doberman.policy.checklist import recommend_policy
@@ -1729,11 +1729,16 @@ def log(
             f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<{_ACTION_WIDTH}} "
             f"{target}  [{reasons}]{auth}"
         )
-        # --why (round 4 design critique item 8): a compact, indented
-        # plain-language line under each BLOCK/AUTH row - the same one-line
-        # summary and "Next" remedy the tui shows, so both surfaces agree.
+        # --why (round 4 design critique item 8, round 6 item 7): a compact,
+        # indented plain-language block under each BLOCK/AUTH row - the row
+        # above already shows the verdict and raw reason codes, so `why_body`
+        # (the "what was attempted" + "Reasons: ..." sentences, everything
+        # `template_explanation` says minus the trailing technical "(Checked
+        # by: ...)" aside) is what actually ADDS information, unlike the old
+        # one-line `first_sentence` alone. Same "Next" remedy the tui shows,
+        # so both surfaces agree.
         if why and row["final_verdict"] in ("BLOCK", "AUTH"):
-            for line in wrap_detail(first_sentence(row)):
+            for line in wrap_detail(why_body(row)):
                 typer.echo(line)
             next_line = next_step_line(row["final_verdict"], tui_hint=False)
             if next_line:

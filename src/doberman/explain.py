@@ -127,16 +127,22 @@ if _MISSING_REASON_DESCRIPTIONS:  # pragma: no cover — reminder, not a hard fa
     )
 
 # Plain-words phrasing for `decided_layer` (see storage/log.py's `_decided_layer`:
-# "objective" | "combined"). Anything unrecognized falls back to a humanized form
-# of the raw value, same defensive pattern as `_describe_reason`.
-_LAYER_DESCRIPTIONS: dict[str, str] = {
-    "objective": "the objective guardrail layer",
-    "combined": "the objective and subjective guardrail layers together",
+# "objective" | "combined") for the trailing "(Checked by: ...)" sentence
+# (round 6 design critique item 10 - was "(Decided by: the objective
+# guardrail layer.)"/"...the objective and subjective guardrail layers
+# together.)"; the technical layer-identity phrasing read as jargon next to
+# the rest of the plain-language body, so this now says what was checked, in
+# the same words `_layer_checked_clause` already uses for `first_sentence`).
+# Anything unrecognized falls back to a humanized form of the raw value, same
+# defensive pattern as `_describe_reason`.
+_LAYER_CHECKED_BY: dict[str, str] = {
+    "objective": "the rules",
+    "combined": "the rules and the behaviour baseline",
 }
 
 
-def _describe_layer(layer: str) -> str:
-    return _LAYER_DESCRIPTIONS.get(layer, layer.replace("_", " "))
+def _describe_checked_by(layer: str) -> str:
+    return _LAYER_CHECKED_BY.get(layer, layer.replace("_", " "))
 
 
 def build_explanation_payload(row: dict) -> dict:
@@ -187,13 +193,15 @@ def first_sentence(row: dict) -> str:
     return f"Doberman decided {verdict} after {_layer_checked_clause(layer)}."
 
 
-def template_explanation(row: dict) -> str:
-    """Deterministic, offline "why" for a decision row. Always available, never raises."""
+def _body_sentences(row: dict) -> list[str]:
+    """Every sentence of :func:`template_explanation` EXCEPT the trailing
+    "(Checked by: ...)" one - shared by :func:`template_explanation` (which
+    appends that sentence) and :func:`why_body` (which deliberately doesn't -
+    round 6 design critique item 7)."""
     role = row.get("agent_role") or "the agent"
     action_type = row.get("action_type") or "an action"
     target = row.get("target_path_class")
     verdict = row.get("final_verdict") or "UNKNOWN"
-    layer = row.get("decided_layer") or "objective"
     reason_codes = _parse_reason_codes(row.get("reason_codes_json"))
 
     what = f"{role} attempted {action_type}"
@@ -202,7 +210,8 @@ def template_explanation(row: dict) -> str:
 
     # Plain-language summary leads (round 4 design critique item 6) - the old
     # "<layer> decided <verdict>" technical phrasing moves to a trailing
-    # parenthetical below, via `_describe_layer`, rather than being deleted.
+    # parenthetical below, via `_describe_checked_by`, rather than being
+    # deleted.
     sentences = [first_sentence(row), f"{what}."]
 
     if reason_codes:
@@ -229,8 +238,26 @@ def template_explanation(row: dict) -> str:
             "change, not by re-authenticating."
         )
 
-    sentences.append(f"(Decided by: {_describe_layer(layer)}.)")
+    return sentences
+
+
+def template_explanation(row: dict) -> str:
+    """Deterministic, offline "why" for a decision row. Always available, never raises."""
+    layer = row.get("decided_layer") or "objective"
+    sentences = [*_body_sentences(row), f"(Checked by: {_describe_checked_by(layer)}.)"]
     return " ".join(sentences)
+
+
+def why_body(row: dict) -> str:
+    """`template_explanation` minus the trailing "(Checked by: ...)" sentence -
+    what `doberman log --why` prints under a BLOCK/AUTH row (round 6 design
+    critique item 7). `doberman log`'s own row already shows the raw reason
+    codes and the decided verdict, so the OLD one-line `first_sentence` alone
+    ("Doberman decided BLOCK after checking the rules.") added nothing beyond
+    what was already on screen; this adds the "what was attempted" and
+    "Reasons: ..." sentences too, so `--why` earns its name.
+    """
+    return " ".join(_body_sentences(row))
 
 
 def _llm_enrichment_enabled() -> bool:

@@ -247,12 +247,18 @@ async def test_next_line_present_for_block_and_auth_absent_for_pass(tmp_path):
         def _next_text() -> str:
             return _static_text(app.query_one("#next-line"))
 
-        # DESC id order: row0=act-pass, row1=act-auth, row2=act-block.
+        # DESC id order: row0=act-pass, row1=act-auth, row2=act-block. Round
+        # 6 design critique item 5: the initial load itself lands the cursor
+        # on row1 (the newest non-PASS row, act-auth) rather than row0, so
+        # the "Next:" line is already non-empty BEFORE `move_cursor(row=2)`
+        # below - the poll predicate must wait for the SPECIFIC BLOCK text,
+        # not just any "Next:", or it can race and pass on the stale AUTH
+        # text still on screen from that initial landing.
         table.move_cursor(row=2)
         # round 5 design critique item 11: poll rather than a single
         # `pilot.pause()` - `on_data_table_row_highlighted` -> `_show_explanation`
         # -> `_update_next_line` can legitimately land a tick late under load.
-        next_text = await _wait_for(pilot, _next_text, lambda t: "Next:" in t)
+        next_text = await _wait_for(pilot, _next_text, lambda t: "doberman mode" in t)
         assert "Next:" in next_text
         assert "doberman mode" in next_text
         assert "Next:" not in _static_text(app.query_one("#explanation"))
@@ -382,6 +388,10 @@ async def test_no_db_at_path_is_distinct_from_an_empty_db(tmp_path):
         assert _shorten_home(db_path(str(tmp_path))) in raw_text
         assert "doberman.db" in text
         assert "press q to quit, then rerun with --path" in text
+        # round 6 design critique item 11: names the real first step - a
+        # missing decision log almost always means Doberman was never set up
+        # here at all.
+        assert "doberman setup" in text
 
 
 async def test_empty_but_existing_db_gets_a_different_honest_message(tmp_path):
@@ -433,14 +443,17 @@ async def test_subtitle_reports_showing_n_of_m(tmp_path):
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
         # Count first (design critique item 9) - it must survive truncation
-        # at a narrow width; the path is the part that's safe to lose.
-        assert app.sub_title == f"showing 3 of 3 - {root}"
+        # at a narrow width; the path is the part that's safe to lose. The
+        # verdict breakdown (round 6 design critique item 4) is over the
+        # LOADED rows, not the filtered ones - all 3 PASS here.
+        assert app.sub_title == f"showing 3 of 3 - 0 BLOCK / 0 AUTH / 3 PASS - {root}"
         app.query_one("#filter").value = "block"
         # round 5 design critique item 11: poll - `on_input_changed` ->
         # `_apply_filter` -> `_update_subtitle` can legitimately land a tick
         # late under load, same race class as the two named tests.
-        await _wait_for(pilot, lambda: app.sub_title, lambda t: t == f"showing 0 of 3 - {root}")
-        assert app.sub_title == f"showing 0 of 3 - {root}"
+        expected_filtered = f"showing 0 of 3 - 0 BLOCK / 0 AUTH / 3 PASS - {root}"
+        await _wait_for(pilot, lambda: app.sub_title, lambda t: t == expected_filtered)
+        assert app.sub_title == expected_filtered
 
 
 async def test_last_bounds_how_many_rows_load(tmp_path):
@@ -453,8 +466,12 @@ async def test_last_bounds_how_many_rows_load(tmp_path):
         table = app.query_one("#decisions")
         assert table.row_count == 2
         # round 3 design critique item 5: "2 of 2" alone reads as "that's
-        # everything" when the load actually hit the `--last` cap.
-        assert app.sub_title == f"showing 2 of 2 (last 2; --last for more) - {root}"
+        # everything" when the load actually hit the `--last` cap. The
+        # verdict breakdown (round 6 item 4) counts only the 2 LOADED rows.
+        assert (
+            app.sub_title
+            == f"showing 2 of 2 (last 2; --last for more) - 0 BLOCK / 0 AUTH / 2 PASS - {root}"
+        )
 
 
 # --- filter --------------------------------------------------------------
@@ -1243,27 +1260,30 @@ async def test_single_day_log_keeps_hhmmss_time_cell(tmp_path):
 # --- column widths: `why` keeps a usable floor at 80 columns ----------------
 
 
-def test_widths_for_80_columns_keeps_why_at_least_14_wide_single_day():
+def test_widths_for_80_columns_keeps_why_at_least_13_wide_single_day():
     # round 4 design critique items 2 + 11: `why` measured only 5 columns at
     # 80 terminal columns even on a SINGLE-day log (80 columns left zero
     # spare to distribute) - the room must come from auth/action/target,
     # never from why. Round 5 item 3 raises the floor further: `target` is
-    # now a fixed 6 that never grows, so ALL spare width goes to `why`.
+    # now a fixed 6 that never grows, so ALL spare width goes to `why`. Round
+    # 6 item 1 reserves one more column for Textual's own vertical scrollbar
+    # (see `_BORDER_COLUMNS`), so the floor is 13, not 14 - a smaller cost
+    # than a spurious horizontal scrollbar.
     widths = _widths_for(80, multi_day=False)
     assert widths["target"] == 6
-    assert widths["why"] >= 14
+    assert widths["why"] >= 13
     total = sum(widths.values()) + 2 * len(widths)  # + cell padding
-    assert total + 2 + 1 <= 80  # + border columns + the 1-column buffer
+    assert total + 3 + 1 <= 80  # + border/scrollbar columns + the 1-column buffer
 
 
-def test_widths_for_80_columns_keeps_why_at_least_14_wide_multi_day():
+def test_widths_for_80_columns_keeps_why_at_least_13_wide_multi_day():
     # Same floor, but on a multi-day log where `time` also widens to fit
     # "MM-DD HH:MM" - that extra width must come from `target`, never `why`.
     widths = _widths_for(80, multi_day=True)
-    assert widths["why"] >= 14
+    assert widths["why"] >= 13
     assert widths["time"] == 11
     total = sum(widths.values()) + 2 * len(widths)
-    assert total + 2 + 1 <= 80
+    assert total + 3 + 1 <= 80
 
 
 def test_widths_for_hides_target_and_gives_its_reclaimed_width_to_why():
@@ -1276,7 +1296,7 @@ def test_widths_for_hides_target_and_gives_its_reclaimed_width_to_why():
     assert "target" not in hidden
     assert hidden["why"] > shown["why"]
     total = sum(hidden.values()) + 2 * len(hidden)
-    assert total + 2 + 1 <= 80
+    assert total + 3 + 1 <= 80
 
 
 def test_all_targets_missing_true_only_when_every_row_lacks_one():
@@ -1693,7 +1713,11 @@ async def test_help_screen_earns_its_scroll_cue_only_when_the_body_overflows(tmp
         await pilot.press("?")
         await pilot.pause()
         help_text = _static_text(short_app.screen.query_one("#help-text"))
-        assert help_text.endswith("(scroll for more)")
+        # round 6 design critique item 6: the cue must be seen BEFORE
+        # scrolling, not only after already scrolling to the bottom - it's
+        # the first line, not appended at the end.
+        assert help_text.startswith("(scroll for more)")
+        assert not help_text.endswith("(scroll for more)")
         for line in help_text.splitlines():
             assert len(line) <= 76, line
 
@@ -1836,7 +1860,7 @@ async def test_terminal_too_small_shows_one_line_notice_instead_of_the_browser(t
         assert app.query_one("#body").display is False
         assert (
             _static_text(app.query_one("#too-small"))
-            == "Terminal too small - resize to at least 76x12"
+            == "Terminal too small - resize to at least 76x16"
         )
 
 
@@ -1848,3 +1872,194 @@ async def test_normal_size_never_shows_the_too_small_notice(tmp_path):
         await _wait_loaded(pilot, app)
         assert app.query_one("#too-small").display is False
         assert app.query_one("#body").display is True
+
+
+# --- round 6: no spurious horizontal scrollbar at 80 columns (item 1) --------
+
+
+async def _seed_many(root: str, n: int) -> None:
+    """`n` rows alternating BLOCK/PASS - enough (45) at 80x24 that the table's
+    vertical scrollbar actually shows, the precondition for round 6 design
+    critique item 1's fix."""
+    for i in range(n):
+        verdict = Verdict.PASS if i % 2 else Verdict.BLOCK
+        reason_codes = [] if verdict == Verdict.PASS else [ReasonCode.destructive_command]
+        await _seed(root, action_id=f"act-{i}", verdict=verdict, reason_codes=reason_codes)
+
+
+async def test_no_horizontal_scrollbar_at_80x24_with_more_rows_than_fit(tmp_path):
+    # round 6 design critique item 1: the width budget used to ignore that
+    # Textual's own vertical scrollbar is 2 columns wide (not 1) - with more
+    # rows loaded than fit in the viewport (so the vertical scrollbar
+    # actually shows), the table's virtual width came out 1 column wider
+    # than its scrollable content region, triggering a spurious horizontal
+    # scrollbar.
+    root = str(tmp_path)
+    await _seed_many(root, 45)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        assert table.row_count == 45
+        assert table.show_vertical_scrollbar is True  # precondition: more rows than fit
+        assert table.virtual_size.width <= table.scrollable_content_region.width
+        assert table.show_horizontal_scrollbar is False
+
+
+# --- round 6: a jump keeps its target on screen (item 2) ----------------------
+
+
+async def test_jumps_and_home_end_keep_the_cursor_row_visible(tmp_path):
+    # round 6 design critique item 2: a jump this far from the current row
+    # must never land off-screen.
+    root = str(tmp_path)
+    await _seed_many(root, 45)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+
+        def _cursor_visible() -> bool:
+            content_h = table.scrollable_content_region.height
+            y_in_view = table.cursor_row - table.scroll_offset.y
+            return 0 <= y_in_view < content_h
+
+        for key in ("b", "b", "b", "end", "home", "B", "end"):
+            await pilot.press(key)
+            visible = await _wait_for(pilot, _cursor_visible, lambda ok: ok)
+            assert visible, (key, table.cursor_row, table.scroll_offset)
+
+
+# --- round 6: height floor keeps the why panel usable (item 3) ---------------
+
+
+async def test_why_panel_shows_at_least_three_lines_at_76x16(tmp_path):
+    root = str(tmp_path)
+    await _seed(
+        root,
+        action_id="act-block",
+        verdict=Verdict.BLOCK,
+        reason_codes=[
+            ReasonCode.destructive_command,
+            ReasonCode.bulk_operation,
+            ReasonCode.sensitive_path_access,
+        ],
+    )
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(76, 16)) as pilot:
+        await _wait_loaded(pilot, app)
+        # The browser must actually be showing (not the too-small notice) at
+        # the new floor.
+        assert app.query_one("#too-small").display is False
+        assert app.query_one("#body").display is True
+        expl_scroll = app.query_one("#explanation-scroll")
+        assert expl_scroll.size.height >= 3
+
+
+# --- round 6: verdict counts in the header (item 4) --------------------------
+
+
+async def test_subtitle_shows_verdict_breakdown_over_loaded_rows(tmp_path):
+    root = str(tmp_path)
+    for i in range(22):
+        await _seed(root, action_id=f"act-block-{i}", verdict=Verdict.BLOCK)
+    await _seed(
+        root, action_id="act-auth", verdict=Verdict.AUTH, reason_codes=[ReasonCode.unknown_tool]
+    )
+    for i in range(22):
+        await _seed(root, action_id=f"act-pass-{i}", verdict=Verdict.PASS, reason_codes=[])
+    app = DecisionExplainerApp(root, last=500)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        assert app.sub_title == f"showing 45 of 45 - 22 BLOCK / 1 AUTH / 22 PASS - {root}"
+        # The filter narrows N (how many are SHOWN); the verdict breakdown is
+        # always over the loaded window, never the filtered one.
+        app.query_one("#filter").value = "block"
+        expected = f"showing 22 of 45 - 22 BLOCK / 1 AUTH / 22 PASS - {root}"
+        await _wait_for(pilot, lambda: app.sub_title, lambda t: t == expected)
+        assert app.sub_title == expected
+
+
+# --- round 6: cursor lands on the newest non-PASS row on load (item 5) -------
+
+
+async def test_initial_cursor_lands_on_the_newest_non_pass_row(tmp_path):
+    root = str(tmp_path)
+    await _seed(root, action_id="act-1", verdict=Verdict.BLOCK)
+    await _seed(root, action_id="act-2", verdict=Verdict.PASS, reason_codes=[])
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        # DESC id order: row0=act-2 (PASS, newest), row1=act-1 (BLOCK).
+        assert table.get_row_at(0)[1].plain == ". PASS"
+        assert table.get_row_at(1)[1].plain == "X BLOCK"
+        assert table.cursor_row == 1
+        # `home` still always goes to row 0, regardless.
+        await pilot.press("home")
+        await pilot.pause()
+        assert table.cursor_row == 0
+
+
+async def test_initial_cursor_stays_at_row_zero_when_every_row_is_pass(tmp_path):
+    root = str(tmp_path)
+    for i in range(3):
+        await _seed(root, action_id=f"act-{i}", verdict=Verdict.PASS, reason_codes=[])
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        assert table.cursor_row == 0
+
+
+# --- round 6: date-bar legend readability (item 8) ---------------------------
+
+
+async def test_date_bar_legend_uses_normal_color_only_the_date_is_muted(tmp_path):
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        content = app.query_one("#date-bar").content
+        assert isinstance(content, Text)
+        plain = content.plain
+        match = re.match(r"(\d{4}-\d{2}-\d{2})  (X BLOCK  ! AUTH  \. PASS)", plain)
+        assert match, plain
+        date_len = len(match.group(1))
+        # Every styled span stays within the date - the legend carries no
+        # style at all (round 6 design critique item 8: it renders at the
+        # widget's plain `$text` color, only the date is dimmed).
+        assert content.spans, content.spans
+        for span in content.spans:
+            assert span.end <= date_len, (span, plain)
+            assert "dim" in str(span.style)
+
+
+# --- round 6: footer while the filter input has focus (item 9) --------------
+
+
+async def test_footer_hides_slash_filter_and_offers_enter_keep_while_filter_focused(tmp_path):
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await _wait_loaded(pilot, app)
+        # round 5 design critique item 11's race class: the footer only
+        # recomposes on its own signal, which can legitimately land a tick
+        # after the row load itself - poll rather than a single read.
+        footer_text = await _wait_for_footer_text(pilot, app, lambda t: "/ filter" in t)
+        assert "/ filter" in footer_text
+        await pilot.press("/")
+        footer_text = await _wait_for_footer_text(
+            pilot, app, lambda t: "/ filter" not in t and "enter keep" in t
+        )
+        assert "/ filter" not in footer_text  # would just type a literal "/"
+        assert "enter keep" in footer_text
+        assert "esc clear" in footer_text
+        # Submitting the filter returns focus to the table and restores the
+        # ordinary footer.
+        await pilot.press("enter")
+        footer_text = await _wait_for_footer_text(pilot, app, lambda t: "/ filter" in t)
+        assert "/ filter" in footer_text
+        assert "enter keep" not in footer_text

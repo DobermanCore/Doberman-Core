@@ -35,6 +35,7 @@ working with ``textual`` not installed. It must never import ``doberman.proxy``
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -102,9 +103,17 @@ _CELL_PADDING = 2
 
 #: Columns the table's own border consumes (one on each side) now that the
 #: table and the why panel each get a visible `:focus` border (design critique
-#: item 2) - subtracted from the width budget so 80 columns never triggers a
-#: horizontal scrollbar the way an un-bordered width calculation would.
-_BORDER_COLUMNS = 2
+#: item 2), PLUS one for Textual's own vertical scrollbar (round 6 design
+#: critique item 1: the scrollbar is 2 columns wide - `scrollbar-size-vertical`
+#: - and only ONE of those 2 was ever reserved here; measured with 45 rows
+#: loaded at 80 columns, the table's virtual width came out to 77 while its
+#: scrollable content region (after border + scrollbar) was only 76, a
+#: spurious 1-column horizontal scrollbar). `#decisions` also sets
+#: `overflow-x: hidden` (see CSS) as a second, unconditional guarantee that no
+#: horizontal scrollbar can ever appear even if this budget is ever wrong by a
+#: column - subtracted from the width budget so 80 columns never triggers one
+#: the way an un-bordered width calculation would.
+_BORDER_COLUMNS = 3
 
 
 def _widths_for(
@@ -119,7 +128,10 @@ def _widths_for(
 
     ``why`` must keep at least 8 columns at 80 terminal columns, single- or
     multi-day alike (round 4 design critique items 2/11); with ``target``
-    fixed at 6 it now measures 14 there (round 5 raised the floor further).
+    fixed at 6 it measured 14 there after round 5's floor raise, and now
+    measures 13 (round 6 design critique item 1 reserves one more column for
+    Textual's own vertical scrollbar - see ``_BORDER_COLUMNS`` - a smaller
+    cost than a spurious horizontal scrollbar).
 
     ``multi_day`` widens ``time`` to fit "MM-DD HH:MM" (see ``_time_cell``),
     borrowing the difference back from ``target`` (never ``why`` - the whole
@@ -264,11 +276,37 @@ def _date_str(row: dict) -> str:
     return ts.strftime("%Y-%m-%d") if ts else ""
 
 
-def _date_bar_text(row: dict | None) -> str:
+def _verdict_counts_text(rows: list[dict]) -> str:
+    """ "22 BLOCK / 1 AUTH / 22 PASS" - a verdict breakdown over ``rows`` (round
+    6 design critique item 4), always all three verdicts in this fixed order
+    even when a count is zero, so a reviewer can see at a glance how many of
+    the LOADED rows actually need attention without opening the filter."""
+    counts = Counter(str(row.get("final_verdict")) for row in rows)
+    return " / ".join(
+        f"{counts.get(v.value, 0)} {v.value}" for v in (Verdict.BLOCK, Verdict.AUTH, Verdict.PASS)
+    )
+
+
+def _date_bar_text(row: dict | None) -> Text:
     """The date bar's text: the selected row's date (if any) plus the verdict
-    glyph legend, always present so the glyphs are self-explanatory."""
+    glyph legend, always present so the glyphs are self-explanatory.
+
+    Round 6 design critique item 8: the legend is what a reader actually
+    needs to keep referring back to - muting it along with the date (the
+    old plain-string content, styled uniformly by `#date-bar`'s CSS `color:
+    $text-muted`) made the very thing meant to explain the glyphs the
+    hardest part of the bar to read. Only the date is muted (`dim`, the
+    same approximation of a muted tone `_panel_text` already uses); the
+    legend renders at the widget's normal (`$text`) color - see the CSS,
+    which no longer sets `color` on `#date-bar` itself.
+    """
     date = _date_str(row) if row else ""
-    return f"{date}  {_LEGEND}" if date else _LEGEND
+    if not date:
+        return Text(_LEGEND)
+    combined = f"{date}  {_LEGEND}"
+    text = Text(combined)
+    text.stylize("dim", 0, len(date))
+    return text
 
 
 def _shorten_home(path: Path) -> str:
@@ -344,6 +382,18 @@ def _reason_codes_words(row: dict) -> str:
 
 def _row_key(row: dict) -> str:
     return str(row.get("action_id") or id(row))
+
+
+def _initial_landing_index(rows: list[dict]) -> int:
+    """Where the cursor starts on a fresh load (round 6 design critique item
+    5): the index of the NEWEST row that isn't PASS - rows come back
+    newest-first (see ``read_decisions``), so this is just the first
+    non-PASS row scanning from the top. Falls back to row 0 (every row is
+    PASS, or there are no rows) - never raises on an empty list."""
+    for index, row in enumerate(rows):
+        if row.get("final_verdict") != Verdict.PASS.value:
+            return index
+    return 0
 
 
 def _verdict_cell(verdict_str: str) -> Text:
@@ -605,10 +655,14 @@ class HelpScreen(ModalScreen[None]):
     def _refresh_scroll_cue(self) -> None:
         # Only earns the cue when the body actually overflows the viewport -
         # a fixed line would be a lie at a tall enough terminal (round 5
-        # design critique item 5).
+        # design critique item 5). As the FIRST line, not appended at the end
+        # (round 6 design critique item 6): a cue only visible after already
+        # scrolling to the bottom never told anyone up front that there was
+        # more to see - the whole point of a scroll cue is to be seen BEFORE
+        # scrolling.
         scroll = self.query_one("#help-scroll", VerticalScroll)
         overflows = scroll.virtual_size.height > scroll.size.height
-        text = f"{self._TEXT}\n{_HELP_SCROLL_CUE}" if overflows else self._TEXT
+        text = f"{_HELP_SCROLL_CUE}\n\n{self._TEXT}" if overflows else self._TEXT
         self.query_one("#help-text", Static).update(text)
 
     def action_close(self) -> None:
@@ -628,20 +682,39 @@ _FOOTER_LOW_PRIORITY_ACTIONS = frozenset({"prev_block", "next_auth", "copy_actio
 
 class _AdaptiveFooter(Footer):
     """The main browser's `Footer`, minus `_FOOTER_LOW_PRIORITY_ACTIONS` below
-    `_NARROW_FOOTER_WIDTH` columns (round 5 design critique item 2).
+    `_NARROW_FOOTER_WIDTH` columns (round 5 design critique item 2), and
+    swapped while the filter `Input` has focus (round 6 design critique item
+    9): "/ filter" is hidden - `Input` consumes "/" itself as a character
+    keystroke, so showing "/ filter" while already inside the filter box
+    would suggest pressing it does something it does not (types a literal
+    "/" into the search text instead) - and a synthetic "enter keep" entry
+    takes its place, since `Input`'s OWN key handling submits the value on
+    Enter (`on_input_submitted`) with no App-level binding of its own to hang
+    a real footer entry off of. ("esc clear" needs no special-casing here -
+    `check_action("clear_filter", ...)` already returns `True` while the
+    filter has focus, see `DecisionExplainerApp.check_action`, so the real
+    `escape` `FooterKey` already appears via the normal path below.)
 
-    Deliberately does NOT lean on `check_action` to hide these: `check_action`
-    also gates whether the key itself dispatches (`App.run_action` re-checks
-    it), and `B`/`a`/`y`/`r` must keep WORKING at any width - only the footer
-    entry should disappear. Filtering the `FooterKey` widgets straight out of
-    `compose()` keeps the underlying bindings fully live while still
-    recomposing whenever the App calls `refresh_bindings()` (its `on_resize`
-    does, on every resize) via the `bindings_updated_signal` the base
-    `Footer` already listens for.
+    Deliberately does NOT lean on `check_action` to hide the narrow-width
+    ones: `check_action` also gates whether the key itself dispatches
+    (`App.run_action` re-checks it), and `B`/`a`/`y`/`r` must keep WORKING at
+    any width - only the footer entry should disappear. Filtering the
+    `FooterKey` widgets straight out of `compose()` keeps the underlying
+    bindings fully live while still recomposing whenever the App calls
+    `refresh_bindings()` - which Textual's own `Screen._watch_focused` already
+    does on every focus change, so the filter-focus swap above needs no extra
+    plumbing either.
     """
+
+    def _filter_focused(self) -> bool:
+        try:
+            return self.screen.focused is self.screen.query_one("#filter", Input)
+        except Exception:  # noqa: BLE001 — defensive: nothing focused/mounted yet
+            return False
 
     def compose(self) -> ComposeResult:
         narrow = self.app.size.width < _NARROW_FOOTER_WIDTH
+        filter_focused = self._filter_focused()
         for widget in super().compose():
             if (
                 narrow
@@ -649,16 +722,28 @@ class _AdaptiveFooter(Footer):
                 and widget.action in _FOOTER_LOW_PRIORITY_ACTIONS
             ):
                 continue
+            if filter_focused and isinstance(widget, FooterKey) and widget.action == "filter":
+                continue
             yield widget
+        if filter_focused:
+            # Synthetic - not a real bound action (see the class docstring).
+            # `key="enter"` still makes a click on it do the right thing:
+            # `FooterKey.on_mouse_down` simulates that literal key, not the
+            # (here empty) `action` string.
+            yield FooterKey("enter", "enter", "keep", "")
 
 
 #: Below this width/height, the app shows one honest line instead of a
 #: DataTable/panels that can't lay out at that size (round 5 design critique
 #: item 10). 76 = the sum of the column minimums (multi-day time) plus
 #: DataTable's cell padding - measured, not a round number: at 60 columns the
-#: table's virtual width is 68 and it scrolls sideways.
+#: table's virtual width is 68 and it scrolls sideways. 16 (round 6 design
+#: critique item 3, raised from 12) = the smallest height at which the docked
+#: why panel (`#explanation-scroll`, `min-height: 5` in CSS - 2 border rows +
+#: 3 content rows) still shows at least 3 lines alongside the docked Next
+#: line and a usable table - measured the same way, not a round number.
 _MIN_TERMINAL_WIDTH = 76
-_MIN_TERMINAL_HEIGHT = 12
+_MIN_TERMINAL_HEIGHT = 16
 _MSG_TOO_SMALL = (
     f"Terminal too small - resize to at least {_MIN_TERMINAL_WIDTH}x{_MIN_TERMINAL_HEIGHT}"
 )
@@ -707,7 +792,9 @@ class DecisionExplainerApp(App[None]):
     }
     #date-bar {
         height: 1;
-        color: $text-muted;
+        /* round 6 design critique item 8: no uniform `color` here - the
+           legend renders at the normal `$text` color, only the date itself
+           is dimmed (see `_date_bar_text`'s `Text.stylize("dim", ...)`). */
         padding: 0 1;
     }
     #loading {
@@ -716,6 +803,11 @@ class DecisionExplainerApp(App[None]):
     #decisions {
         height: 2fr;
         border: solid $panel;
+        /* round 6 design critique item 1: the width budget (see
+           `_BORDER_COLUMNS`) is sized to fit, but this is an unconditional
+           second guarantee - no horizontal scrollbar ever appears, no matter
+           what. */
+        overflow-x: hidden;
     }
     #decisions:focus {
         border: solid $accent;
@@ -725,6 +817,7 @@ class DecisionExplainerApp(App[None]):
     }
     #explanation-scroll {
         height: 1fr;
+        min-height: 5;
         border: solid $panel;
     }
     #explanation-scroll:focus {
@@ -764,7 +857,9 @@ class DecisionExplainerApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Static("", id="date-bar")
+        # markup=False: the date bar embeds the selected row's date - render
+        # it literally, same guarantee as every other row-derived Static.
+        yield Static("", id="date-bar", markup=False)
         yield LoadingIndicator(id="loading")
         # Shown INSTEAD of "#body" below `_MIN_TERMINAL_WIDTH`x`_MIN_TERMINAL_HEIGHT`
         # (round 5 design critique item 10) - toggled by `_apply_size_gate`.
@@ -865,7 +960,12 @@ class DecisionExplainerApp(App[None]):
                 self._hide_target = False
                 self._reset_to_empty(
                     f"No decision log at {_shorten_home(path)}. "
-                    "Press q to quit, then rerun with --path <repo>."
+                    "Press q to quit, then rerun with --path <repo>. "
+                    # round 6 design critique item 11: name the REAL first
+                    # step - a missing decision log almost always means
+                    # Doberman was never set up here at all, not just that
+                    # `--path` pointed somewhere else.
+                    "Run 'doberman setup' here to start guarding this repo."
                 )
                 return
             rows = await read_decisions(self._repo_root, limit=self._last)
@@ -1012,14 +1112,24 @@ class DecisionExplainerApp(App[None]):
             )
         # Restore the previously selected row by key rather than snapping to
         # row 0 - a resize (or a filter edit that still matches it) must not
-        # lose the reviewer's place (design critique item 10).
-        restore_index = 0
+        # lose the reviewer's place (design critique item 10). `previous_key`
+        # is only ever `None` before anything has EVER been selected in this
+        # app instance (see `_show_explanation`, which sets it) - i.e. this is
+        # the very first table build after a fresh load, never a later filter
+        # edit or resize - so that's the one moment `_initial_landing_index`
+        # (round 6 design critique item 5) gets to land somewhere other than
+        # row 0: on the newest BLOCK/AUTH row, so a reviewer opening the
+        # browser doesn't have to scroll past a wall of PASS rows to find what
+        # actually needs attention. `home` still goes to row 0 regardless
+        # (`action_goto_first`), and a `previous_key` that no longer matches
+        # any visible row (filtered out) still falls back to row 0, not this.
+        restore_index = _initial_landing_index(self._visible_rows) if previous_key is None else 0
         if previous_key is not None:
             for index, row in enumerate(self._visible_rows):
                 if _row_key(row) == previous_key:
                     restore_index = index
                     break
-        table.move_cursor(row=restore_index)
+        table.move_cursor(row=restore_index, scroll=True)
         self._show_explanation(restore_index)
 
     def _update_subtitle(self) -> None:
@@ -1030,7 +1140,15 @@ class DecisionExplainerApp(App[None]):
         # as "that's everything" when it may not be (round 3 design critique
         # item 5).
         suffix = f" (last {total}; --last for more)" if self._last and total == self._last else ""
-        self.sub_title = f"showing {len(self._visible_rows)} of {total}{suffix} - {self._repo_root}"
+        # Verdict breakdown (round 6 design critique item 4): over the LOADED
+        # rows (`self._rows`), never the filtered `self._visible_rows` - the
+        # filter narrows which rows are shown, not how many of each verdict
+        # actually exist in the loaded window. Omitted entirely when nothing
+        # is loaded - nothing to break down yet.
+        counts = f" - {_verdict_counts_text(self._rows)}" if self._rows else ""
+        self.sub_title = (
+            f"showing {len(self._visible_rows)} of {total}{suffix}{counts} - {self._repo_root}"
+        )
 
     # --- selection / why panel ------------------------------------------------
 
@@ -1199,7 +1317,11 @@ class DecisionExplainerApp(App[None]):
         """Move the table cursor to the next/previous row whose verdict is
         `verdict` (wrapping around). Returns whether it moved, so a caller
         (e.g. `WhyScreen`) knows whether to re-render; notifies the user when
-        nothing matches rather than silently doing nothing."""
+        nothing matches rather than silently doing nothing.
+
+        ``scroll=True`` (round 6 design critique item 2, explicit here even
+        though it's `move_cursor`'s own default): a jump this far from the
+        current row is exactly the case that must never land off-screen."""
         rows = self._visible_rows
         total = len(rows)
         if total:
@@ -1209,7 +1331,7 @@ class DecisionExplainerApp(App[None]):
             for offset in range(1, total + 1):
                 index = (start + offset * step) % total
                 if rows[index].get("final_verdict") == verdict:
-                    self.query_one("#decisions", _DecisionTable).move_cursor(row=index)
+                    self.query_one("#decisions", _DecisionTable).move_cursor(row=index, scroll=True)
                     return True
         self.notify(f"no {verdict} rows in view", markup=False)
         return False
@@ -1238,9 +1360,11 @@ class DecisionExplainerApp(App[None]):
             self._jump_cursor(table.row_count - 1)
 
     def _jump_cursor(self, index: int) -> None:
+        # scroll=True (round 6 design critique item 2, see `jump_to_verdict`):
+        # home/end must keep the first/last row on screen too.
         table = self.query_one("#decisions", _DecisionTable)
         if table.row_count:
-            table.move_cursor(row=index)
+            table.move_cursor(row=index, scroll=True)
 
     def action_copy_action_id(self) -> None:
         index = self._cursor_index()

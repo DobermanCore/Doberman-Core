@@ -31,6 +31,7 @@ from doberman.explain import (
     first_sentence,
     llm_enrichment_enabled,
     template_explanation,
+    why_body,
 )
 
 runner = CliRunner()
@@ -170,19 +171,26 @@ def test_template_explanation_is_ascii_only():
 def test_template_explanation_decided_layer_is_plain_words_not_raw_schema():
     # round 4 design critique item 6: the technical "<layer> decided
     # <verdict>" phrasing moved out of the headline sentence (now a plain
-    # "Doberman decided X after checking Y") but is kept - via `_describe_layer`
-    # - as a trailing technical detail, never deleted outright.
+    # "Doberman decided X after checking Y") but is kept - via
+    # `_describe_checked_by` - as a trailing detail, never deleted outright.
+    # Round 6 design critique item 10: that trailing detail itself moved from
+    # jargon ("the objective guardrail layer") to the same plain words as the
+    # headline ("the rules"), and "Decided by" became "Checked by" - Doberman
+    # doesn't "decide with a layer", it checks things.
     objective = template_explanation(_row(decided_layer="objective"))
-    assert "objective guardrail layer" in objective
+    assert "(Checked by: the rules.)" in objective
+    assert "objective guardrail layer" not in objective
     combined = template_explanation(_row(decided_layer="combined"))
-    assert "objective and subjective guardrail layers together" in combined
-    assert "combined guardrail layer" not in combined
+    assert "(Checked by: the rules and the behaviour baseline.)" in combined
+    assert "guardrail layer" not in combined
 
 
 def test_first_sentence_is_the_plain_layer_verdict_summary():
-    # round 4 design critique items 6 + 8: this is deliberately
-    # `template_explanation`'s FIRST sentence, and what `doberman log --why`
-    # prints under a BLOCK/AUTH row.
+    # round 4 design critique item 6: this is deliberately
+    # `template_explanation`'s FIRST sentence (round 6 item 7 moved
+    # `doberman log --why` off of this alone and onto `why_body`, below - the
+    # row `doberman log` prints already shows the verdict, so this one-liner
+    # by itself added nothing new).
     block = _row(final_verdict="BLOCK", decided_layer="objective")
     assert first_sentence(block) == "Doberman decided BLOCK after checking the rules."
     assert template_explanation(block).startswith(first_sentence(block))
@@ -193,6 +201,28 @@ def test_first_sentence_is_the_plain_layer_verdict_summary():
         == "Doberman decided AUTH after checking the rules and the behaviour baseline."
     )
     assert first_sentence(auth_combined).isascii()
+
+
+def test_why_body_adds_the_what_and_reasons_but_drops_the_checked_by_aside():
+    # round 6 design critique item 7: `doberman log --why` must ADD
+    # information beyond the row `doberman log` already prints (verdict, raw
+    # reason codes) - `why_body` is `template_explanation` minus its trailing
+    # "(Checked by: ...)" sentence, which is the one part that adds nothing a
+    # `--why` reader doesn't already know from context.
+    block = _row(
+        final_verdict="BLOCK",
+        decided_layer="objective",
+        reason_codes_json=json.dumps(["destructive_command"]),
+    )
+    body = why_body(block)
+    assert body.isascii()
+    assert body == template_explanation(block).removesuffix(" (Checked by: the rules.)")
+    assert body.startswith(first_sentence(block))
+    assert "cli attempted shell_exec on *.sh." in body
+    # The reason DESCRIPTION, not just the raw code - the raw code already
+    # appears in `doberman log`'s own row.
+    assert "the command looked destructive" in body
+    assert "Checked by" not in body
 
 
 def test_pass_row_with_no_reason_codes_says_what_was_checked():
