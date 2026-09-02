@@ -65,8 +65,11 @@ def _load_lockout(path: Path, *, now: float) -> tuple[int, float]:
         return (_MAX_CONSECUTIVE_FAILURES, now)
 
 
-def _save_lockout(path: Path, failures: int, last_failure_time: float) -> None:
+def _save_lockout(path: Path, failures: int, last_failure_time: float) -> bool:
     """Atomically persist lockout state; never raises into a caller.
+
+    Returns ``True`` when the state is on disk. A caller that must record an
+    attempt before it proceeds treats ``False`` as a denial (fail closed).
 
     Same write-then-``os.replace`` pattern as the secret file: a crash or
     concurrent read never observes a half-written state file.
@@ -90,7 +93,8 @@ def _save_lockout(path: Path, failures: int, last_failure_time: float) -> None:
                 pass
             raise
     except OSError:
-        pass  # best-effort: an unwritable lockout file must never crash verify()
+        return False  # an unwritable lockout file must never crash verify(); it reports
+    return True
 
 
 def _clear_lockout(secret_path: Path) -> None:

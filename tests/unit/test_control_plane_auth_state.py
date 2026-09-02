@@ -54,6 +54,8 @@ def _cmd(command, *, root="."):
         "rm ~/.config/doberman/totp.secret",
         "rm ~/.config/doberman/totp.secret.lockout",
         "rm ~/.config/doberman/password.hash",
+        "rm ~/.config/doberman/password.hash.lockout",
+        'rm "$LOCALAPPDATA/doberman/password.hash.lockout"',
         # Windows default location (%LOCALAPPDATA%)
         "rm ~/AppData/Local/doberman/totp.secret",
         "rm ~/AppData/Local/doberman/password.hash",
@@ -141,6 +143,7 @@ def test_explanation_does_not_echo_the_auth_state_path():
         "~/.config/doberman/totp.secret",
         "~/.config/doberman/totp.secret.lockout",
         "~/.config/doberman/password.hash",
+        "~/.config/doberman/password.hash.lockout",
         "C:/Users/dev/AppData/Local/doberman/totp.secret",
         "C:\\Users\\dev\\AppData\\Local\\doberman\\totp.secret",
         "%LOCALAPPDATA%\\doberman\\password.hash",

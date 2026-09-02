@@ -214,3 +214,23 @@ def test_password_hash_file_is_owner_only(isolated_password_hash):
 
     if os.name != "nt":
         assert stat.S_IMODE(isolated_password_hash.stat().st_mode) == 0o600
+
+
+def test_attempt_is_counted_before_the_kdf_runs(isolated_password_hash, monkeypatch):
+    password.enroll("correct-horse")
+    lockout = password._lockout_path(isolated_password_hash)
+
+    def kdf_explodes(*args, **kwargs):
+        raise RuntimeError("kdf crashed mid-verify")
+
+    monkeypatch.setattr(password.hashlib, "pbkdf2_hmac", kdf_explodes)
+    assert password.verify("correct-horse") is False
+    # The attempt landed on disk even though the KDF never finished.
+    assert password._load_lockout(lockout, now=password._now())[0] == 1
+
+
+def test_unrecordable_attempt_is_denied(isolated_password_hash, monkeypatch):
+    password.enroll("correct-horse")
+    monkeypatch.setattr(password, "_save_lockout", lambda *a, **k: False)
+    # Even the right password is refused when the attempt cannot be counted.
+    assert password.verify("correct-horse") is False

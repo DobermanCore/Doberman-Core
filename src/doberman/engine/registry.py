@@ -217,8 +217,10 @@ def discover_auth_providers(allowed: Collection[str]) -> list[object]:
     Opt-in only: an entry point is loaded (imported and constructed) only if its
     ``.name`` is in ``allowed`` — a package merely being installed is never
     enough to make it an authenticator. Non-allowed entry points are skipped
-    before any import/construction happens, so an unlisted package's code never
-    runs. Allowed candidates are still loaded defensively like rules/sources: an
+    before any import/construction happens, so THIS seam never imports an
+    unlisted package (the other entry-point groups still auto-load theirs, so
+    an installed package can still run code in-process — the allowlist is a
+    seam-level control, not a sandbox). Allowed candidates are still loaded defensively like rules/sources: an
     import/constructor failure, or an object that is not auth-provider-shaped
     (no callable ``authenticate``), is logged and skipped. ``allowed`` empty
     returns ``[]`` without iterating entry points at all — the auth layer then
