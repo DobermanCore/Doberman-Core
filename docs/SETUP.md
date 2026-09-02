@@ -390,40 +390,51 @@ fresh, single-use token for that run; open the printed URL to connect, since eve
 authenticated with that token. `--path` selects the repo to report on (default: the current
 directory).
 
-It shows a summary stats line (verdict counts, top reason codes, a recent-window verdict
-breakdown, current mode, effective enforcement) and a live decision feed that backfills recent
-decisions, then streams new ones. Both are read-only and serve only already-redacted fields, never
-a raw target, argument, or secret. Verdict filter chips (All/BLOCK/AUTH/PASS) plus a text filter
-sit above the feed to find a specific decision quickly; a dropped live connection or a failed
-refresh is always shown in the UI (never silently), with a retry control.
+It shows a summary stats line, grouped into `decisions` (total + a freshness timestamp),
+`verdicts` (the three badges, plus a recent-window breakdown when it differs from the all-time
+counts), and `top reasons` - and a live decision feed that backfills recent decisions, then streams
+new ones. Both are read-only and serve only already-redacted fields, never a raw target, argument,
+or secret. Verdict filter chips (All/BLOCK/AUTH/PASS) plus a text filter (matching the visible
+explanation and reason-code gloss text too, not just the raw codes) sit above the feed to find a
+specific decision quickly; a dropped live connection or a failed refresh is always shown in the UI
+(never silently), with a retry control.
 
 An `AUTH` challenge can be answered from the dashboard instead of the terminal: it lists pending
 approvals and resolves one at a time, a single-use transition, so two concurrent resolves of the
-same row can never both win. Each pending card shows a live countdown to the dashboard's own 90s
-answer window (`answerable here for M:SS, then it moves to your terminal`) — at 0 the challenge has
-genuinely moved to the terminal/GUI channel (not been denied), independent of the approval row's own
-longer DB TTL. The dashboard never verifies a TOTP code itself; it relays the human's decision (and,
-for tiers that need one, the code) to the same auth-challenge machinery already running in the
-decision path. This channel engages only while the dashboard's own heartbeat is fresh; a stale
-heartbeat or an unanswered approval falls back to the next channel (MCP elicitation, then GUI
-dialog, then terminal) with no added latency.
+same row can never both win. Each pending card states up front what it deliberately does not show
+(`Doberman never shows the raw command here - see doberman log for the redacted record`) and shows
+a live countdown to the dashboard's own 90s answer window (`answerable here for M:SS, then it moves
+to your terminal`) - at 0 the challenge has genuinely moved to the terminal/GUI channel (not been
+denied), independent of the approval row's own longer DB TTL. Both Approve and Deny need the same
+two-step arm-then-confirm gesture (a 5s countdown) before they submit. The dashboard never verifies
+a TOTP code itself; a tier that needs one gets a real, visible "6-digit code" label above the field,
+and the code rides opaquely to the same auth-challenge machinery already running in the decision
+path. This channel engages only while the dashboard's own heartbeat is fresh; a stale heartbeat or
+an unanswered approval falls back to the next channel (MCP elicitation, then GUI dialog, then
+terminal) with no added latency.
 
 Every `BLOCK`/`AUTH` row in the recent-decisions feed (and every pending card) leads with a one-line
-human explanation, with its reason codes glossed underneath — both a hover tooltip and a small `?`
-next to each code that toggles the same gloss as ordinary text, so keyboard and touch users get it
-too, not only a mouse hovering. A row's explanation expands by click or tap as well as Enter/Space.
+human explanation, with its reason codes glossed via a hover tooltip. Expanding a row (click, tap,
+or Enter/Space) reveals the same gloss text as a muted list, so keyboard and touch users reach it
+too, not only a mouse hovering - pending cards, which are never collapsed, just show that list
+always. A row's explanation itself expands by click or tap as well as Enter/Space.
 
 Keyboard shortcuts (`/` to filter, `Esc` to clear it or close whichever popover/panel is topmost,
 arrow keys/Home/End to move the active feed row, Enter/Space to expand its explanation, `r` to
-refresh, `a`/`d` to act on the first pending item, `?` for the full list) work from anywhere on the
-page; a manual light/dark toggle persists per browser regardless of the OS theme, and the browser
-tab's favicon tints amber while an approval is pending.
+refresh, `a`/`d` to arm-then-confirm Approve/Deny on the first pending item, `?` for the full list)
+work from anywhere on the page; a `Shortcuts: on/off` toggle in that same panel turns every
+single-character shortcut off (Escape and the on-screen buttons keep working regardless) and
+persists per browser. A manual light/dark toggle also persists per browser regardless of the OS
+theme, and the browser tab's favicon tints amber while an approval is pending.
 
 You can also switch Light/Balanced/Strict/Paranoid from the dashboard. It goes through the same
 gate as `doberman mode`: raising applies immediately with a single click; lowering restyles Save to
-a warning color and needs the same two-step arm-then-confirm gesture (a 5s countdown) as approving a
-pending action, plus the same possession factor; with neither enrolled it fails closed. Every attempt
-lands in the same append-only
+a warning color, states a factual one-line consequence of the mode you picked (derived from that
+mode's real step-up thresholds - the floor hard blocks never change), and needs the same two-step
+arm-then-confirm gesture (a 5s countdown) as approving a pending action, plus the same possession
+factor; with neither enrolled it fails closed. Dismissing the popover (Escape or an outside click)
+with a change still pending keeps it open instead of silently discarding it; Cancel always discards.
+Every attempt lands in the same append-only
 ledger (`doberman policy-history`).
 
 ### Run the demo

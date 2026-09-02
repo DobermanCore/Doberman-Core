@@ -2,12 +2,12 @@
 
 Two explanation modes, always with a safe default:
 
-* :func:`template_explanation` — deterministic, offline, always available. Built from
+* :func:`template_explanation` - deterministic, offline, always available. Built from
   the redacted row alone (verdict, decided layer, reason codes) using the shared
   :class:`~doberman.models.ReasonCode` constants.
-* :func:`_llm_explain` — an OPT-IN narrator (Claude Haiku) that rewords the same
+* :func:`_llm_explain` - an OPT-IN narrator (Claude Haiku) that rewords the same
   redacted metadata in plainer language. It never sees a raw path, argument, or
-  secret, and it never influences the verdict — it explains a decision that has
+  secret, and it never influences the verdict - it explains a decision that has
   already been made.
 
 Fail-safe by construction: LLM enrichment is only attempted when explicitly opted in
@@ -56,7 +56,7 @@ _LLM_TIMEOUT_S = 10.0
 
 _LLM_SYSTEM_PROMPT = (
     "You explain a security tool's ALREADY-MADE decision to a developer in plain "
-    "language. You are given only redacted metadata — do not invent specifics you "
+    "language. You are given only redacted metadata - do not invent specifics you "
     "were not given, and never ask for more data."
 )
 
@@ -174,10 +174,10 @@ REASON_DESCRIPTIONS: dict[str, str] = {
     ),
 }
 
-# Fail at import time if a ReasonCode is ever added without a description — a
+# Fail at import time if a ReasonCode is ever added without a description - a
 # silently-humanized fallback is fine at runtime, but we want a nudge in review.
 _MISSING_REASON_DESCRIPTIONS = {rc.value for rc in ReasonCode} - set(REASON_DESCRIPTIONS)
-if _MISSING_REASON_DESCRIPTIONS:  # pragma: no cover — reminder, not a hard failure
+if _MISSING_REASON_DESCRIPTIONS:  # pragma: no cover - reminder, not a hard failure
     logger.debug(
         "explain: no description for reason codes %s", sorted(_MISSING_REASON_DESCRIPTIONS)
     )
@@ -186,8 +186,8 @@ if _MISSING_REASON_DESCRIPTIONS:  # pragma: no cover — reminder, not a hard fa
 def build_explanation_payload(row: dict) -> dict:
     """Defensive allowlist projection of a decision row for the LLM.
 
-    Pulls values ONLY by iterating :data:`REDACTED_FIELDS` — never by copying the
-    row and stripping unwanted keys — so a stray/raw key on ``row`` (e.g. from a
+    Pulls values ONLY by iterating :data:`REDACTED_FIELDS` - never by copying the
+    row and stripping unwanted keys - so a stray/raw key on ``row`` (e.g. from a
     caller that merged in something it shouldn't have) can never leak through.
     """
     return {field: row[field] for field in REDACTED_FIELDS if field in row}
@@ -209,6 +209,20 @@ def _describe_reason(code: str) -> str:
     return REASON_DESCRIPTIONS.get(code, code.replace("_", " "))
 
 
+def _describe_layer(layer: str) -> str:
+    """Plain-words gloss of ``decided_layer`` for the primary sentence.
+
+    ``decided_layer`` is only ever ``"objective"`` or ``"combined"`` (see
+    ``doberman.storage.log._decided_layer``) - "combined" means the
+    subjective/behavioral-baseline guardrail also weighed in, never that it
+    ran alone. The raw technical value stays available elsewhere on the row
+    (and to any caller that wants it) - this is only the human-facing words.
+    """
+    if layer == "combined":
+        return "the rules and the behaviour baseline"
+    return "the rules"
+
+
 def template_explanation(row: dict) -> str:
     """Deterministic, offline "why" for a decision row. Always available, never raises."""
     role = row.get("agent_role") or "the agent"
@@ -221,7 +235,10 @@ def template_explanation(row: dict) -> str:
     what = f"{role} attempted {action_type}"
     if target:
         what += f" on {target}"
-    sentences = [f"{what}.", f"The {layer} guardrail layer decided {verdict}."]
+    sentences = [
+        f"{what}.",
+        f"Doberman decided {verdict} after checking {_describe_layer(layer)}.",
+    ]
 
     if reason_codes:
         reasons_text = "; ".join(_describe_reason(c) for c in reason_codes)
@@ -238,7 +255,7 @@ def template_explanation(row: dict) -> str:
             sentences.append("This action was approved via 5-minute memory (soft_confirm).")
     elif verdict == "BLOCK":
         sentences.append(
-            "This was a hard block — it will only be allowed after a policy or role "
+            "This was a hard block - it will only be allowed after a policy or role "
             "change, not by re-authenticating."
         )
 
@@ -255,7 +272,7 @@ def _llm_enrichment_enabled() -> bool:
 
 
 def _llm_explain(payload: dict) -> str:
-    """Ask Haiku to reword the redacted payload. Narrator only — never the verdict."""
+    """Ask Haiku to reword the redacted payload. Narrator only - never the verdict."""
     import anthropic  # lazy: only imported once the opt-in gate has already passed
 
     client = anthropic.Anthropic()
@@ -279,9 +296,9 @@ def explain_decision(row: dict, *, use_llm: bool | None = None) -> str:
 
     ``use_llm`` can only *restrict*: ``False`` forces the offline template even
     when the env gate is on; ``True``/``None`` still require the full opt-in gate
-    (:func:`_llm_enrichment_enabled` — dep installed AND key AND env flag), so a
+    (:func:`_llm_enrichment_enabled` - dep installed AND key AND env flag), so a
     caller can never bypass the user's env opt-in programmatically. Any failure
-    in the LLM path — missing dep, no key, network, timeout, bad response —
+    in the LLM path - missing dep, no key, network, timeout, bad response -
     falls back to :func:`template_explanation`; this function never raises.
     """
     enabled = use_llm is not False and _llm_enrichment_enabled()
@@ -290,6 +307,6 @@ def explain_decision(row: dict, *, use_llm: bool | None = None) -> str:
 
     try:
         return _llm_explain(build_explanation_payload(row))
-    except Exception:  # noqa: BLE001 — LLM enrichment is best-effort, never fatal
+    except Exception:  # noqa: BLE001 - LLM enrichment is best-effort, never fatal
         logger.debug("explain: LLM enrichment failed, falling back to template", exc_info=True)
         return template_explanation(row)

@@ -43,7 +43,9 @@ def _index_html(tmp_path) -> str:
 
 def test_feed_row_with_an_explanation_is_click_expandable(tmp_path):
     html = _index_html(tmp_path)
-    assert "#feed li.has-explanation { cursor: pointer; }" in html
+    # Direct-child combinator as of round 5 (see test_dash_round5.py) - a bare
+    # descendant selector also matched a feed row's nested .gloss-list <li>s.
+    assert "#feed > li.has-explanation { cursor: pointer; }" in html
     assert 'li.classList.add("has-explanation");' in html
     assert 'li.setAttribute("aria-expanded", "false");' in html
     assert 'li.addEventListener("click", function () {' in html
@@ -65,14 +67,16 @@ def test_feed_explanation_is_primary_reason_codes_are_secondary(tmp_path):
 
 
 def test_reason_codes_get_a_keyboard_and_touch_reachable_gloss_toggle(tmp_path):
-    """title="..." only ever shows on :hover - the "?" toggle is how keyboard
-    and touch users reach the identical gloss text."""
+    """title="..." only ever shows on :hover. Superseded in round 5 (see
+    test_dash_round5.py) - the per-code "?" button was itself a Tab-focusable
+    control inside a list that otherwise has none, so it's gone; a row with
+    an explanation reuses its OWN expand toggle to reveal the same text as a
+    muted list instead (buildGlossList), and pending cards just show it
+    always (they're never collapsed)."""
     html = _index_html(tmp_path)
-    assert 'toggle.className = "gloss-q";' in html
-    assert 'toggle.setAttribute("aria-label", "What does " + code + " mean?");' in html
-    assert 'glossText.className = "gloss-text";' in html
-    assert "glossText.hidden = true;" in html
-    assert "e.stopPropagation();" in html  # never also expands the row
+    assert 'toggle.className = "gloss-q";' not in html
+    assert 'glossText.className = "gloss-text";' not in html
+    assert "function buildGlossList(codes) {" in html
 
 
 def test_pending_card_sentence_first_codes_second(tmp_path):
@@ -122,13 +126,11 @@ def test_mode_downgrade_requires_arm_then_confirm(tmp_path):
         'modeSaveBtn.textContent = direction === "lower" ? ("Lower to " + modeSelect.value)' in html
     )
     assert 'modeSaveBtn.textContent = "Confirm lower (" + remaining + ")";' in html
-    assert (
-        'modeHintEl.textContent = "Lower: needs your 2FA code or password - '
-        'this weakens the guard";'
-    ) in html
-    # Raising is still unconditional - the gate branches only on "lower".
+    # Round 5: the hint text is now composed in modeHintText() (a per-mode
+    # factual consequence, see test_dash_round5.py), not a single literal
+    # assignment - just check the gate still branches only on "lower".
     assert 'if (computeModeDirection() === "lower" && !modeArmed) {' in html
-    assert 'modeHintEl.textContent = "Raise: applies immediately";' in html
+    assert 'text = "Raise: applies immediately.";' in html
 
 
 # --------------------------------------------------------------------------
@@ -194,14 +196,17 @@ def test_clear_filters_reaches_the_44px_floor(tmp_path):
 
 def test_mode_form_is_a_light_dismiss_dialog(tmp_path):
     html = _index_html(tmp_path)
+    # aria-modal="true" as of round 5 (test_dash_round5.py) - Tab is
+    # genuinely contained while the popover is open, see the keydown
+    # handler below.
     assert (
-        '<div id="mode-form" hidden role="dialog" aria-modal="false" '
+        '<div id="mode-form" hidden role="dialog" aria-modal="true" '
         'aria-labelledby="mode-form-title">'
     ) in html
     assert '<p id="mode-form-title" class="sr-only">Change security mode</p>' in html
     assert 'document.addEventListener("click", function (e) {' in html
     assert "if (modeForm.contains(e.target) || e.target === modeEditBtn) { return; }" in html
-    assert 'if (modeArmed || computeModeDirection() !== "none") {' in html
+    assert "attemptCloseModeForm();" in html
 
 
 def test_mode_form_traps_tab_focus_while_open(tmp_path):
@@ -213,7 +218,9 @@ def test_mode_form_traps_tab_focus_while_open(tmp_path):
 def test_escape_closes_only_the_topmost_thing(tmp_path):
     html = _index_html(tmp_path)
     order = [
-        "if (!modeForm.hidden) { closeModeForm(); return; }",
+        # Round 5: Escape now calls attemptCloseModeForm (same dismiss
+        # semantics as an outside click), not closeModeForm directly.
+        "if (!modeForm.hidden) { attemptCloseModeForm(); return; }",
         "if (!shortcutsPanel.hidden) { closeShortcuts(); return; }",
         "if (document.activeElement === feedFilterInput) {",
     ]

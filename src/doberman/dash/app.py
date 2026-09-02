@@ -254,7 +254,7 @@ _HTML_SHELL = """<!doctype html>
     color: var(--fg-3); white-space: nowrap;
   }
   .status-pill .pip { font-size: var(--fs-1); }
-  .status-pill.ok .pip { color: var(--tan); }
+  .status-pill.ok .pip { color: var(--pass); }
   .status-pill.alert { color: var(--auth); border-color: var(--auth); background: var(--auth-bg); }
   .status-pill.alert .pip { animation: pulse 1.6s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) { .status-pill.alert .pip { animation: none; } }
@@ -262,13 +262,15 @@ _HTML_SHELL = """<!doctype html>
   /* Ghost buttons: the theme and shortcuts toggles are conveniences, so they
      carry no border - the one control that changes the security posture
      (#mode-edit-btn) is the bordered one in the topbar. */
-  #theme-toggle-btn, #shortcuts-btn, #shortcuts-close-btn {
+  #theme-toggle-btn, #shortcuts-btn, #shortcuts-close-btn, #shortcuts-toggle-btn {
     font-family: var(--font); font-size: var(--fs-1); font-weight: 600; padding: .35rem .8rem;
     border: 1px solid transparent; background: transparent; color: var(--fg-3);
   }
-  #theme-toggle-btn:hover, #shortcuts-btn:hover, #shortcuts-close-btn:hover {
+  #theme-toggle-btn:hover, #shortcuts-btn:hover, #shortcuts-close-btn:hover,
+  #shortcuts-toggle-btn:hover {
     border-color: var(--tan-hi); color: var(--tan-hi);
   }
+  #shortcuts-toggle-btn[aria-pressed="false"] { color: var(--fg-3); font-style: italic; }
   .badge {
     display: inline-flex; align-items: center; font-family: var(--mono);
     font-size: var(--fs-1); font-weight: 700; letter-spacing: .02em;
@@ -283,12 +285,25 @@ _HTML_SHELL = """<!doctype html>
   .badge-risk-high, .badge-risk-critical { color: var(--block); background: var(--block-bg); }
   #stats {
     margin: 0 0 1.75rem; font-family: var(--mono); font-size: var(--fs-2); color: var(--fg-3);
-    display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center;
+    display: flex; flex-wrap: wrap; gap: .6rem 1.4rem; align-items: flex-start;
     padding: .85rem 1.1rem; border: 1px solid var(--rule-2); border-radius: var(--r);
     background: var(--ink-1);
   }
+  /* Three labeled groups (decisions / verdicts / top reasons) instead of one
+     run-on line of bare spans - each group wraps as its own unit. */
+  .stat-group { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+  .stat-label {
+    font-family: var(--mono); font-size: var(--fs-1); font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--fg-3);
+  }
   #stats .count { color: var(--fg); }
   #stats .retry-link { min-height: auto; padding: 0; }
+  /* Mobile fold: only the verdict badges + the freshness timestamp survive -
+     the decisions/top-reasons groups cost vertical room the first feed row
+     needs at 390px (see docs/SETUP.md's mobile note). */
+  @media (max-width: 640px) {
+    #stats-decisions, #stats-reasons { display: none; }
+  }
   .empty-state {
     padding: 2rem 1.5rem; border: 1px dashed var(--rule); border-radius: var(--r);
     color: var(--fg-3); font-size: var(--fs-2); text-align: center;
@@ -296,35 +311,52 @@ _HTML_SHELL = """<!doctype html>
   #feed, #pending-list { list-style: none; margin: .5rem 0 0; }
   #feed:not(:empty) ~ #feed-empty { display: none; }
   #pending-list:not(:empty) ~ #pending-empty { display: none; }
-  #pending-list li {
+  /* Direct-child combinator (round 5) - a pending card's own .gloss-list is
+     a <ul> of <li> nested INSIDE this <li>, and a bare descendant selector
+     matched those too (each gloss line rendered as its own bordered/
+     shadowed/animated card). Caught live in Chrome. */
+  #pending-list > li {
     padding: 1.4rem 1.5rem 1.5rem; margin-bottom: .9rem;
     border: 1px solid var(--auth); border-radius: var(--r-lg); background: var(--ink-1);
     font-size: var(--fs-2);
     box-shadow: var(--shadow-card);
     animation: pending-arrive .28s ease-out both;
   }
-  #pending-list li.stale { opacity: .7; border-style: dashed; }
+  #pending-list > li.stale { opacity: .7; border-style: dashed; }
   @keyframes pending-arrive {
     from { opacity: 0; transform: translateY(-6px); }
     to { opacity: 1; transform: none; }
   }
   @media (prefers-reduced-motion: reduce) {
-    #pending-list li { animation: none; }
+    #pending-list > li { animation: none; }
   }
   #pending-list .row-header {
     display: flex; align-items: center; gap: .5rem; margin-bottom: .6rem; flex-wrap: wrap;
   }
   #pending-list .row-header .detail { color: var(--fg); font-family: var(--mono); font-size: var(--fs-2); }
+  /* Downsized from --fs-3 (round 5) - the explanation sentence below is now
+     the card's largest element, not the countdown. */
   #pending-list .countdown {
-    font-family: var(--mono); font-size: var(--fs-3); font-weight: 700; color: var(--auth);
+    font-family: var(--mono); font-size: var(--fs-2); font-weight: 700; color: var(--auth);
     margin-left: auto;
   }
-  /* Sentence first (primary, full-contrast body text), codes second (see
-     .reason-line below) - same hierarchy as the feed's now-primary explanation. */
-  #pending-list .row-explanation { margin: .5rem 0 .5rem; color: var(--fg); line-height: 1.6; max-width: 62ch; }
+  /* Sentence first (primary, full-contrast body text, now the card's LARGEST
+     element - round 5), codes second (see .reason-line below) - same
+     hierarchy as the feed's now-primary explanation. */
+  #pending-list .row-explanation {
+    margin: .5rem 0 .5rem; color: var(--fg); line-height: 1.6; max-width: 62ch;
+    font-size: var(--fs-3); font-weight: 600;
+  }
   #pending-list .reason-line {
-    margin: 0 0 1rem; color: var(--fg-3); font-family: var(--mono); font-size: var(--fs-1);
+    margin: 0 0 .5rem; color: var(--fg-3); font-family: var(--mono); font-size: var(--fs-1);
     overflow-wrap: anywhere;
+  }
+  #pending-list .privacy-note {
+    margin: 0 0 1rem; color: var(--fg-3); font-family: var(--font); font-size: var(--fs-1);
+  }
+  #pending-list .totp-label {
+    display: block; color: var(--fg-3); font-family: var(--font); font-size: var(--fs-1);
+    margin: 0 0 .3rem;
   }
   #pending-list input {
     font-family: var(--mono); font-size: var(--fs-3); padding: .45rem .6rem; margin: 0 .5rem .5rem 0;
@@ -393,7 +425,12 @@ _HTML_SHELL = """<!doctype html>
     max-height: 60vh; overflow-y: auto;
     border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--ink-1);
   }
-  #feed li {
+  /* Direct-child combinator (round 5) - a feed row's own .gloss-list is a
+     <ul> of <li> nested INSIDE this <li>, and a bare descendant selector
+     matched those too (each gloss line inherited the row's padding/font/
+     hover/focus/active treatment). Caught live in Chrome alongside the
+     identical #pending-list bug above. */
+  #feed > li {
     padding: .6rem 1.1rem; border-bottom: 1px solid var(--rule-2);
     font-size: var(--fs-2); font-family: var(--mono);
     transition: background-color var(--d);
@@ -402,33 +439,39 @@ _HTML_SHELL = """<!doctype html>
   /* The filter hides rows with the `hidden` attribute; an author `display`
      on the same element outranks the UA's [hidden] rule, so restate it here
      (the mode form had exactly this bug). */
-  #feed li[hidden] { display: none; }
-  #feed li:last-child { border-bottom: none; }
-  #feed li:hover { background: var(--ink-2); }
+  #feed > li[hidden] { display: none; }
+  #feed > li:last-child { border-bottom: none; }
+  #feed > li:hover { background: var(--ink-2); }
   /* A row with an explanation is click/tap-expandable (see the feed's click
      handler below); a bare PASS row with no explanation carries nothing to
      expand, so it gets no pointer cursor. */
-  #feed li.has-explanation { cursor: pointer; }
+  #feed > li.has-explanation { cursor: pointer; }
   /* Real roving focus (Up/Down/Home/End move DOM focus here, see
      setActiveFeedEntry) - the outline is the single visual indicator for
      both focus and "active" state, so the native :focus-visible ring below
      is suppressed to avoid a double ring on the same row. */
-  #feed li.active { background: var(--ink-2); outline: 1px solid var(--tan-hi); outline-offset: -1px; }
-  #feed li:focus { outline: none; }
+  #feed > li.active { background: var(--ink-2); outline: 1px solid var(--tan-hi); outline-offset: -1px; }
+  #feed > li:focus { outline: none; }
   #feed li .detail { color: var(--fg-3); overflow-wrap: anywhere; }
   /* Shared with the pending card's own reason line below - not scoped to the
      feed, since both use the same glossed-span markup (appendReasonCodeSpans). */
   .reason-code[title] { text-decoration: underline dotted; text-underline-offset: 2px; }
-  /* The "?" toggle next to a glossed reason code: a small inline affordance,
-     not a full-size button, so it deliberately opts out of the 44px floor
-     (mirrors .retry-link) - it's a secondary disclosure, not a primary action. */
-  .gloss-q {
-    min-height: 1.2em; min-width: 1.2em; padding: 0 .15em; margin-left: .2em;
-    border: none; background: none; color: var(--fg-3); font-size: .9em;
-    text-decoration: underline; border-radius: 3px; line-height: 1;
+  /* No more per-code "?" buttons (round 5 - they were Tab-focusable inside a
+     list that otherwise deliberately has no per-row buttons). A row with
+     glossed codes is itself the toggle: a feed row with an explanation
+     already expands by click/tap/Enter/Space (see .has-explanation below);
+     expanding it reveals this same muted list. Pending cards are never
+     collapsed, so they just render it always-visible. */
+  .gloss-list {
+    list-style: none; margin: .5rem 0 0; padding: 0;
+    display: flex; flex-direction: column; gap: .2rem;
+    color: var(--fg-3); font-family: var(--font); font-size: var(--fs-1);
   }
-  .gloss-q:hover, .gloss-q[aria-expanded="true"] { color: var(--tan-hi); }
-  .gloss-text { margin-left: .35em; font-style: italic; }
+  /* An author `display` on the same element outranks the UA's [hidden] rule
+     (the mode form and the feed filter both had exactly this bug) - a
+     collapsed feed row's gloss list was rendering unconditionally without
+     this. Pending cards never set `hidden` at all, so this never hides them. */
+  .gloss-list[hidden] { display: none; }
   /* First line, body face, full contrast - the human "why" is the row's
      PRIMARY text; the verdict/action metadata below it is secondary. One
      line by default, click/tap or Enter/Space (roving focus) expands it
@@ -470,7 +513,10 @@ _HTML_SHELL = """<!doctype html>
       background: var(--ink-1); box-shadow: var(--shadow-card); z-index: 15;
     }
   }
-  #mode-hint { flex-basis: 100%; margin: -.15rem 0 .2rem; color: var(--fg-3); font-size: var(--fs-1); }
+  #mode-hint { flex-basis: 100%; margin: -.15rem 0 .2rem; color: var(--fg); font-size: var(--fs-2); }
+  /* A downgrade in progress restyles the hint to the BLOCK color - it's the
+     one form of this hint that actually weakens the guard. */
+  #mode-hint.lowering { color: var(--block); }
   #mode-hint:empty { display: none; }
   #mode-form select, #mode-form input {
     font-size: var(--fs-2); padding: .35rem .55rem;
@@ -495,14 +541,21 @@ _HTML_SHELL = """<!doctype html>
   #mode-success { color: var(--pass); font-family: var(--mono); font-size: var(--fs-1); }
   #mode-error { color: var(--block); font-family: var(--mono); font-size: var(--fs-1); }
   /* >=641px: anchored under the "?" trigger by JS (positionShortcutsPanel),
-     same technique as the mode-form popover - top/right set inline, no
-     default here. <=640px falls back to the fixed viewport corner below,
-     since a topbar button can itself have wrapped to an unpredictable
-     position at that width. */
+     same fixed-position technique as the mode-form popover (positionModeForm)
+     - JS sets top/right inline on open, clamped to stay inside the viewport.
+     This media query is only the pre-JS/no-JS fallback (round 5 - without
+     it, a `position: fixed` box with no inset at all falls back to its
+     static DOM position instead of anywhere near its trigger), so it still
+     reads as "near the button", never the opposite corner. <=640px falls
+     back to the fixed viewport corner below instead, since a topbar button
+     can itself have wrapped to an unpredictable position at that width. */
   #shortcuts-panel {
     position: fixed; z-index: 20; max-width: 20rem;
     padding: 1rem 1.25rem; border-radius: var(--r-lg);
     background: var(--ink-1); box-shadow: var(--shadow-card); font-size: var(--fs-2);
+  }
+  @media (min-width: 641px) {
+    #shortcuts-panel { top: 4.5rem; right: 1.25rem; }
   }
   @media (max-width: 640px) {
     #shortcuts-panel { right: 1.25rem; bottom: 1.25rem; }
@@ -520,6 +573,7 @@ _HTML_SHELL = """<!doctype html>
   #shortcuts-panel dl { display: grid; grid-template-columns: auto 1fr; gap: .3rem .8rem; margin: .5rem 0 .8rem; }
   #shortcuts-panel dt { font-family: var(--mono); color: var(--tan-hi); }
   #shortcuts-panel dd { color: var(--fg-2); }
+  .panel-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
   @media (max-width: 640px) {
     .topbar { flex-direction: column; align-items: flex-start; }
     .topbar-right { width: 100%; }
@@ -546,6 +600,13 @@ _HTML_SHELL = """<!doctype html>
          input GROW to fill the remaining vertical space instead of sizing to
          its own content - it measured 192px tall. `flex: none` opts back out. */
       flex: none;
+    }
+    /* A single-line note, not the big dashed empty-state box - this is the
+       FIRST thing on the page at this width, and the feed below it needs
+       the vertical room more than an empty queue does (round 5 - the first
+       feed row should start within the first 600px). */
+    #pending-empty {
+      padding: .4rem 0; border: none; text-align: left; font-size: var(--fs-1);
     }
   }
 </style>
@@ -576,7 +637,7 @@ _HTML_SHELL = """<!doctype html>
   </header>
   <main>
     <h1 class="sr-only">Doberman local dashboard</h1>
-    <div id="mode-form" hidden role="dialog" aria-modal="false" aria-labelledby="mode-form-title">
+    <div id="mode-form" hidden role="dialog" aria-modal="true" aria-labelledby="mode-form-title">
       <p id="mode-form-title" class="sr-only">Change security mode</p>
       <select id="mode-select" aria-label="Security mode"></select>
       <p id="mode-hint" aria-live="polite"></p>
@@ -630,11 +691,14 @@ _HTML_SHELL = """<!doctype html>
       <dt>Home / End</dt><dd>Jump to the first/last row in the feed</dd>
       <dt>r</dt><dd>Refresh stats + pending</dd>
       <dt>a</dt><dd>Arm Approve on the first pending item, then Enter to confirm</dd>
-      <dt>d</dt><dd>Deny the first pending item</dd>
+      <dt>d</dt><dd>Arm Deny on the first pending item, then Enter to confirm</dd>
       <dt>?</dt><dd>Toggle this panel</dd>
       <dt>Esc</dt><dd>Clear the decisions filter, or close this panel or the mode form</dd>
     </dl>
-    <button type="button" id="shortcuts-close-btn">Close</button>
+    <div class="panel-actions">
+      <button type="button" id="shortcuts-toggle-btn" aria-pressed="true">Shortcuts: on</button>
+      <button type="button" id="shortcuts-close-btn">Close</button>
+    </div>
   </div>
   <script>
     (function () {
@@ -675,6 +739,21 @@ _HTML_SHELL = """<!doctype html>
         balanced: "balanced - default",
         strict: "strict - more strict",
         paranoid: "paranoid - most strict"
+      };
+      // One factual sentence of consequence per doberman/policy/modes.py's
+      // MODES thresholds (paranoid is never a "lower" target - it's already
+      // the strictest - so it needs no entry). Update both together if those
+      // numbers change; the floor hard blocks (FLOOR_HARD_BLOCKS) never move
+      // with the mode regardless, which is why every sentence gets that same
+      // closing reassurance appended below rather than repeating it here.
+      var MODE_DOWNGRADE_CONSEQUENCE = {
+        light: "Light turns off the out-of-scope, unknown-destination, and " +
+          "unusual-behavior step-ups, and only flags bulk deletes at 100+ items",
+        balanced: "Balanced stops treating a merely-unknown destination as " +
+          "AUTH-worthy on its own, raises the bulk-delete threshold to 25 items, " +
+          "and raises the abnormality threshold to 0.7",
+        strict: "Strict raises the bulk-delete threshold to 10 items and the " +
+          "abnormality threshold to 0.5, and drops Paranoid's egress hard-block"
       };
 
       var announcer = document.getElementById("announcer");
@@ -880,46 +959,46 @@ _HTML_SHELL = """<!doctype html>
       var HEALTH_POLL_MS = 10000;
       setInterval(checkHealth, HEALTH_POLL_MS);
 
+      function makeStatGroup(id, labelText) {
+        var group = document.createElement("div");
+        group.className = "stat-group";
+        group.id = id;
+        var label = document.createElement("span");
+        label.className = "stat-label";
+        label.textContent = labelText;
+        group.appendChild(label);
+        return group;
+      }
+
       function renderStats(s) {
-        // Every piece is built via textContent, never innerHTML — mirrors
-        // the feed/pending-card discipline below.
+        // Every piece is built via textContent, never innerHTML - mirrors
+        // the feed/pending-card discipline below. Three labeled groups
+        // (round 5) instead of one run-on line of spans: decisions (total +
+        // taint events), verdicts (the three badges + a recent window when
+        // it says something new), top reasons. `asOf` is appended directly
+        // to statsEl, outside any group, so the mobile fold below can hide
+        // the decisions/top-reasons groups while still keeping it visible.
         statsEl.textContent = "";
 
-        var total = document.createElement("span");
-        total.textContent = "decisions: ";
+        var decisionsGroup = makeStatGroup("stats-decisions", "decisions");
         var totalCount = document.createElement("span");
         totalCount.className = "count";
         totalCount.textContent = String(s.total_decisions);
-        total.appendChild(totalCount);
-        statsEl.appendChild(total);
+        decisionsGroup.appendChild(totalCount);
+        var taint = document.createElement("span");
+        taint.className = "detail";
+        taint.textContent = (s.secret_taint_events || 0) + " secret/taint events";
+        decisionsGroup.appendChild(taint);
+        statsEl.appendChild(decisionsGroup);
 
+        var verdictsGroup = makeStatGroup("stats-verdicts", "verdicts");
         ["PASS", "AUTH", "BLOCK"].forEach(function (verdict) {
           var n = (s.verdict_counts && s.verdict_counts[verdict]) || 0;
           var b = document.createElement("span");
           b.className = VERDICT_BADGE_CLASS[verdict];
           b.textContent = verdict + ": " + n;
-          statsEl.appendChild(b);
+          verdictsGroup.appendChild(b);
         });
-
-        var taint = document.createElement("span");
-        taint.textContent = "secret/taint events: ";
-        var taintCount = document.createElement("span");
-        taintCount.className = "count";
-        taintCount.textContent = String(s.secret_taint_events);
-        taint.appendChild(taintCount);
-        statsEl.appendChild(taint);
-
-        // Top reason codes + a recent-window verdict breakdown, rendered in
-        // the same compact strip - build_stats already computes both, this
-        // was the only piece that never reached the page.
-        if (s.top_reason_codes && s.top_reason_codes.length) {
-          var topReasons = document.createElement("span");
-          topReasons.className = "detail";
-          topReasons.textContent = "top reasons: " + s.top_reason_codes.map(function (pair) {
-            return pair[0] + " (" + pair[1] + ")";
-          }).join(", ");
-          statsEl.appendChild(topReasons);
-        }
         var totalDecisions = s.total_decisions != null ? s.total_decisions : s.total;
         // The recent line only earns its place when it says something the
         // all-time badges above it don't (a window smaller than the log).
@@ -930,7 +1009,21 @@ _HTML_SHELL = """<!doctype html>
             return verdict + " " + (s.recent_verdict_counts[verdict] || 0);
           });
           recent.textContent = "recent " + s.recent_window + ": " + recentParts.join(" / ");
-          statsEl.appendChild(recent);
+          verdictsGroup.appendChild(recent);
+        }
+        statsEl.appendChild(verdictsGroup);
+
+        // Top reason codes - build_stats already computes this, this was the
+        // only piece that never reached the page.
+        if (s.top_reason_codes && s.top_reason_codes.length) {
+          var reasonsGroup = makeStatGroup("stats-reasons", "top reasons");
+          var reasonsList = document.createElement("span");
+          reasonsList.className = "detail";
+          reasonsList.textContent = s.top_reason_codes.map(function (pair) {
+            return pair[0] + " (" + pair[1] + ")";
+          }).join(", ");
+          reasonsGroup.appendChild(reasonsList);
+          statsEl.appendChild(reasonsGroup);
         }
 
         modeBadge.textContent = "mode: " + s.mode;
@@ -943,7 +1036,10 @@ _HTML_SHELL = """<!doctype html>
         if (!modeEditing && modeSelect.options.length) {
           modeSelect.value = s.mode;
         }
-        if (modeEditing) { updateModeHint(); }
+        // Text-only refresh - a background stats poll landing mid-edit must
+        // never reset an in-progress downgrade arm (updateModeHint's job),
+        // only keep the hint's own wording current.
+        if (modeEditing) { refreshModeHint(); }
 
         // A visible freshness signal: when THIS browser last successfully
         // refreshed, not a server timestamp - stats.py computes no such field.
@@ -1051,17 +1147,45 @@ _HTML_SHELL = """<!doctype html>
         modeSaveBtn.textContent = direction === "lower" ? ("Lower to " + modeSelect.value) : "Save";
       }
 
-      function updateModeHint() {
+      // True whenever the popover has something a Cancel would actually
+      // discard: a different mode picked (either direction), or a downgrade
+      // mid-arm. Escape and an outside click both consult this - see
+      // attemptCloseModeForm below.
+      function pendingModeChange() {
+        return modeArmed || computeModeDirection() !== "none";
+      }
+
+      function modeHintText() {
         var direction = computeModeDirection();
+        var text = "";
         if (direction === "raise") {
-          modeHintEl.textContent = "Raise: applies immediately";
+          text = "Raise: applies immediately.";
         } else if (direction === "lower") {
-          modeHintEl.textContent = "Lower: needs your 2FA code or password - this weakens the guard";
-        } else {
-          modeHintEl.textContent = "";
+          var consequence = MODE_DOWNGRADE_CONSEQUENCE[modeSelect.value];
+          text = "Lower: needs your 2FA code or password. " +
+            (consequence || "This weakens the guard's step-up thresholds.") +
+            " - hard blocks (secrets, destructive commands, protected paths) " +
+            "stay in force regardless of mode.";
         }
+        if (pendingModeChange()) {
+          text += (text ? " " : "") + "Unsaved change - Save or Cancel.";
+        }
+        return text;
+      }
+
+      // Only refreshes the hint's TEXT/color - never touches the arm timer,
+      // so a blocked Escape/outside-click dismiss (see attemptCloseModeForm)
+      // can surface the "Unsaved change" line without silently disarming an
+      // in-progress downgrade confirmation.
+      function refreshModeHint() {
+        modeHintEl.textContent = modeHintText();
+        modeHintEl.classList.toggle("lowering", computeModeDirection() === "lower");
+      }
+
+      function updateModeHint() {
         // A different selection invalidates any in-progress downgrade arm.
         syncModeSaveButton();
+        refreshModeHint();
       }
       modeSelect.addEventListener("change", updateModeHint);
 
@@ -1108,9 +1232,30 @@ _HTML_SHELL = """<!doctype html>
         modeErrorEl.textContent = "";
         modeSuccessEl.textContent = "";
         modeHintEl.textContent = "";
+        modeHintEl.classList.remove("lowering");
         cancelModeArm();
+        // Cancel (or any other path here) genuinely DISCARDS an unsaved pick -
+        // reopening the popover before the next stats poll must not still
+        // show the abandoned selection.
+        if (currentModeName && modeSelect.options.length) {
+          modeSelect.value = currentModeName;
+        }
         modeEditBtn.setAttribute("aria-expanded", "false");
         if (wasOpen) { modeEditBtn.focus(); }
+      }
+
+      // One dismiss semantics for the popover: Escape (see the shared keydown
+      // handler below) and an outside click both call this, and both get the
+      // same answer - if nothing is unsaved, close for real; otherwise stay
+      // open and surface the "Unsaved change" hint instead of silently
+      // discarding a pending mode change.
+      function attemptCloseModeForm() {
+        if (pendingModeChange()) {
+          refreshModeHint();
+          return false;
+        }
+        closeModeForm();
+        return true;
       }
 
       modeEditBtn.addEventListener("click", function () {
@@ -1118,18 +1263,13 @@ _HTML_SHELL = """<!doctype html>
       });
       modeCancelBtn.addEventListener("click", closeModeForm);
 
-      // Light dismiss: a click outside the open popover closes it - UNLESS a
-      // mode change is actually pending (a different mode picked, or a
-      // downgrade mid-arm), in which case an outside click must not silently
-      // discard it - keep the popover open and surface the hint instead.
+      // Light dismiss: a click outside the open popover attempts to close it,
+      // same as Escape (attemptCloseModeForm handles the "pending change"
+      // case identically either way).
       document.addEventListener("click", function (e) {
         if (modeForm.hidden) { return; }
         if (modeForm.contains(e.target) || e.target === modeEditBtn) { return; }
-        if (modeArmed || computeModeDirection() !== "none") {
-          updateModeHint();
-          return;
-        }
-        closeModeForm();
+        attemptCloseModeForm();
       });
 
       // Focus containment: Tab/Shift+Tab cycles within the popover's own
@@ -1306,10 +1446,10 @@ _HTML_SHELL = """<!doctype html>
       // each code is its own span (not one joined string) so it can carry a
       // title="..." gloss from REASON_DESCRIPTIONS - the same dict
       // doberman.explain.template_explanation uses server-side. A code
-      // missing from the dict just skips the title. Right after a glossed
-      // code, a small "?" toggle reveals the SAME gloss text as ordinary
-      // inline text - title="..." only ever shows on :hover, so keyboard and
-      // touch users would otherwise never see it at all.
+      // missing from the dict just skips the title. No per-code toggle
+      // button any more (round 5 - see buildGlossList below for how
+      // keyboard/touch users reach the same text, since title="..." only
+      // ever shows on :hover).
       function appendReasonCodeSpans(container, codes, separator) {
         codes.forEach(function (code, i) {
           if (i > 0) { container.appendChild(document.createTextNode(separator)); }
@@ -1317,32 +1457,31 @@ _HTML_SHELL = """<!doctype html>
           codeSpan.className = "reason-code";
           codeSpan.textContent = code;
           var gloss = REASON_DESCRIPTIONS[code];
-          if (!gloss) {
-            container.appendChild(codeSpan);
-            return;
-          }
-          codeSpan.title = gloss;
+          if (gloss) { codeSpan.title = gloss; }
           container.appendChild(codeSpan);
-          var toggle = document.createElement("button");
-          toggle.type = "button";
-          toggle.className = "gloss-q";
-          toggle.textContent = "?";
-          toggle.setAttribute("aria-expanded", "false");
-          toggle.setAttribute("aria-label", "What does " + code + " mean?");
-          var glossText = document.createElement("span");
-          glossText.className = "gloss-text";
-          glossText.textContent = gloss;
-          glossText.hidden = true;
-          toggle.addEventListener("click", function (e) {
-            // Never let this also trigger the row's own click-to-expand.
-            e.stopPropagation();
-            var open = toggle.getAttribute("aria-expanded") === "true";
-            toggle.setAttribute("aria-expanded", open ? "false" : "true");
-            glossText.hidden = open;
-          });
-          container.appendChild(toggle);
-          container.appendChild(glossText);
         });
+      }
+
+      // The keyboard/touch path to the same text a title="..." only ever
+      // shows on hover: one muted <ul>, "code - gloss" per line. A feed row
+      // with an explanation already expands by click/tap/Enter/Space (see
+      // toggleActiveFeedExplanation) - expanding it reveals this list, so
+      // that's the row's "one gloss toggle at most", not a separate button.
+      // Pending cards are never collapsed, so they just render it always.
+      // Returns null when no code in `codes` has a gloss (nothing to show).
+      function buildGlossList(codes) {
+        var withGloss = (codes || []).filter(function (code) {
+          return Boolean(REASON_DESCRIPTIONS[code]);
+        });
+        if (!withGloss.length) { return null; }
+        var list = document.createElement("ul");
+        list.className = "gloss-list";
+        withGloss.forEach(function (code) {
+          var item = document.createElement("li");
+          item.textContent = code + " - " + REASON_DESCRIPTIONS[code];
+          list.appendChild(item);
+        });
+        return list;
       }
 
       var lastPendingKey = null;
@@ -1375,7 +1514,7 @@ _HTML_SHELL = """<!doctype html>
 
           var summary = document.createElement("span");
           summary.className = "detail";
-          // textContent only — every field is row-derived and must render
+          // textContent only - every field is row-derived and must render
           // literally, never as markup (mirrors the feed's discipline).
           summary.textContent = row.action_type +
             " " + (row.target_path_class || "no target") + " (tier: " + row.tier + ")";
@@ -1410,13 +1549,31 @@ _HTML_SHELL = """<!doctype html>
           }
           li.appendChild(reasons);
 
+          // Pending cards are never collapsed, so the gloss list (see
+          // buildGlossList) just renders always-visible here - there's
+          // nothing to expand into.
+          var pendingGlossList = buildGlossList(row.reason_codes);
+          if (pendingGlossList) { li.appendChild(pendingGlossList); }
+
+          // The card says what it deliberately does NOT show: only a
+          // redacted class/summary ever reaches this screen, never the raw
+          // command.
+          var privacyNote = document.createElement("div");
+          privacyNote.className = "privacy-note";
+          privacyNote.textContent =
+            "Doberman never shows the raw command here - see doberman log for the redacted record.";
+          li.appendChild(privacyNote);
+
           var totpInput = null;
           if (row.needs_totp) {
             var totpId = "totp-" + row.id;
+            // A real VISIBLE label, not sr-only - a live second factor is
+            // worth a moment's care, and title-casing "6-digit code" as
+            // ordinary text costs nothing a screen reader user loses either.
             var totpLabel = document.createElement("label");
-            totpLabel.className = "sr-only";
+            totpLabel.className = "totp-label";
             totpLabel.setAttribute("for", totpId);
-            totpLabel.textContent = "TOTP code";
+            totpLabel.textContent = "6-digit code";
             li.appendChild(totpLabel);
 
             totpInput = document.createElement("input");
@@ -1425,9 +1582,8 @@ _HTML_SHELL = """<!doctype html>
             // exactly the screen that gets screen-shared and recorded.
             totpInput.type = "password";
             totpInput.inputMode = "numeric";
-            totpInput.placeholder = "TOTP code";
+            totpInput.placeholder = "000000";
             totpInput.autocomplete = "off";
-            totpInput.setAttribute("aria-label", "TOTP code");
             li.appendChild(totpInput);
           }
 
@@ -1465,16 +1621,44 @@ _HTML_SHELL = """<!doctype html>
           denyBtn.type = "button";
           denyBtn.className = "deny";
           denyBtn.textContent = "Deny";
+          // Deny now gets the exact same arm-then-confirm gesture as Approve
+          // (round 5) - a single click no longer denies outright.
+          var denyArmTimer = null;
           denyBtn.addEventListener("click", function () {
-            resolveApproval(row.id, "denied", totpInput ? totpInput.value : null, li,
-              [approveBtn, denyBtn]);
+            if (denyBtn.dataset.armed === "1") {
+              clearInterval(denyArmTimer);
+              denyBtn.dataset.armed = "";
+              denyBtn.textContent = "Deny";
+              resolveApproval(row.id, "denied", totpInput ? totpInput.value : null, li,
+                [approveBtn, denyBtn]);
+              return;
+            }
+            denyBtn.dataset.armed = "1";
+            var remaining = 5;
+            denyBtn.textContent = "Confirm deny (" + remaining + ")";
+            denyArmTimer = setInterval(function () {
+              remaining -= 1;
+              if (remaining <= 0) {
+                clearInterval(denyArmTimer);
+                denyBtn.dataset.armed = "";
+                denyBtn.textContent = "Deny";
+                return;
+              }
+              denyBtn.textContent = "Confirm deny (" + remaining + ")";
+            }, 1000);
           });
           li.appendChild(denyBtn);
+
+          var errorEl = document.createElement("div");
+          errorEl.className = "row-error";
+          errorEl.setAttribute("role", "alert");
 
           var copyBtn = document.createElement("button");
           copyBtn.type = "button";
           copyBtn.className = "btn btn-copy";
-          copyBtn.textContent = "Copy details";
+          var copyBtnDefaultText = "Copy details";
+          copyBtn.textContent = copyBtnDefaultText;
+          var copyResetTimer = null;
           copyBtn.addEventListener("click", async function () {
             try {
               await navigator.clipboard.writeText(JSON.stringify({
@@ -1485,13 +1669,20 @@ _HTML_SHELL = """<!doctype html>
                 reason_codes: row.reason_codes,
                 explanation: row.explanation
               }, null, 2));
-            } catch (e) { /* clipboard unavailable: keep the approval card usable */ }
+              clearTimeout(copyResetTimer);
+              copyBtn.textContent = "Copied";
+              announce("Copied approval details to the clipboard.");
+              copyResetTimer = setTimeout(function () {
+                copyBtn.textContent = copyBtnDefaultText;
+              }, 1200);
+            } catch (e) {
+              // Clipboard unavailable (permissions, insecure context, an
+              // iframe, ...) - the card stays usable, but say so instead of
+              // failing silently.
+              errorEl.textContent = "Couldn't copy - select the text instead";
+            }
           });
           li.appendChild(copyBtn);
-
-          var errorEl = document.createElement("div");
-          errorEl.className = "row-error";
-          errorEl.setAttribute("role", "alert");
           li.appendChild(errorEl);
 
           pendingList.appendChild(li);
@@ -1619,7 +1810,17 @@ _HTML_SHELL = """<!doctype html>
       });
 
       var feedClearFiltersBtn = document.getElementById("feed-clear-filters-btn");
-      feedClearFiltersBtn.addEventListener("click", resetFeedFilters);
+      feedClearFiltersBtn.addEventListener("click", function () {
+        resetFeedFilters();
+        // Clearing the filter is meaningless if focus stays on a button
+        // that's about to disappear (the no-match empty state hides right
+        // here) - hand it back to the feed itself. Deferred a tick (same
+        // pattern as openModeForm's modeSelect.focus()): this button's own
+        // container just went `hidden`, and a real click's native blur-to-
+        // body for a newly-unfocusable element can otherwise land AFTER this
+        // handler returns, overriding a same-tick .focus() call here.
+        setTimeout(function () { feedEl.focus(); }, 0);
+      });
 
       // --- Feed roving focus (Up/Down/Home/End move REAL DOM focus, not just
       // a CSS class + aria-activedescendant - a screen reader hears each row
@@ -1659,9 +1860,17 @@ _HTML_SHELL = """<!doctype html>
         if (!activeFeedEntry) { return; }
         var li = activeFeedEntry.li;
         var explanationEl = li.querySelector(".row-explanation");
-        if (!explanationEl) { return; }
-        var expanded = explanationEl.classList.toggle("expanded");
+        var glossListEl = li.querySelector(".gloss-list");
+        if (!explanationEl && !glossListEl) { return; }
+        // A row with an explanation toggles that (its own class carries the
+        // expanded/collapsed state); a row with only glossed reason codes
+        // (no explanation) has nothing to toggle but the gloss list itself,
+        // so the row's own aria-expanded is the source of truth there.
+        var expanded = explanationEl
+          ? explanationEl.classList.toggle("expanded")
+          : li.getAttribute("aria-expanded") !== "true";
         li.setAttribute("aria-expanded", expanded ? "true" : "false");
+        if (glossListEl) { glossListEl.hidden = !expanded; }
       }
 
       feedEl.addEventListener("keydown", function (e) {
@@ -1728,26 +1937,59 @@ _HTML_SHELL = """<!doctype html>
       });
       shortcutsCloseBtn.addEventListener("click", closeShortcuts);
 
+      // WCAG 2.1.4 (Character Key Shortcuts): every single-character,
+      // no-modifier binding below (/, r, ?, a, d) must be turnable off. This
+      // toggle is a real button (always reachable by click/Tab, gate-exempt
+      // itself) and persists per browser like the theme toggle. Escape is
+      // NOT gated - it's not a bare character key, and it's the only way to
+      // close this very panel if shortcuts were just turned off from it.
+      var SHORTCUTS_ENABLED_KEY = "doberman-dash-shortcuts-enabled";
+      function shortcutsEnabled() {
+        try {
+          return window.localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== "off";
+        } catch (e) {
+          return true;
+        }
+      }
+      function writeShortcutsEnabled(on) {
+        try { window.localStorage.setItem(SHORTCUTS_ENABLED_KEY, on ? "on" : "off"); } catch (e) {}
+      }
+      var shortcutsToggleBtn = document.getElementById("shortcuts-toggle-btn");
+      function renderShortcutsToggle() {
+        var on = shortcutsEnabled();
+        shortcutsToggleBtn.textContent = "Shortcuts: " + (on ? "on" : "off");
+        shortcutsToggleBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      }
+      renderShortcutsToggle();
+      shortcutsToggleBtn.addEventListener("click", function () {
+        writeShortcutsEnabled(!shortcutsEnabled());
+        renderShortcutsToggle();
+      });
+
       // Keyboard: / focuses the filter, r refreshes, ? toggles the shortcuts
-      // panel, a/d act on the first pending card (arm step preserved for
-      // approve), Escape closes ONE thing per press - whichever is topmost
-      // (the mode popover, then the shortcuts panel, then the filter) - never
-      // all of them at once. Ignored while already typing in a field, except
-      // Escape which always works.
+      // panel, a/d act on the first pending card (both arm-then-confirm),
+      // Escape closes ONE thing per press - whichever is topmost (the mode
+      // popover, then the shortcuts panel, then the filter) - never all of
+      // them at once, and always works regardless of the toggle above.
+      // Ignored while already typing in a field, except Escape which always
+      // works.
       document.addEventListener("keydown", function (e) {
         if (e.key === "Escape") {
-          if (!modeForm.hidden) { closeModeForm(); return; }
+          if (!modeForm.hidden) { attemptCloseModeForm(); return; }
           if (!shortcutsPanel.hidden) { closeShortcuts(); return; }
           // The filter is not a trap: clear it and hand focus back to the
-          // feed itself, rather than leaving the user stuck in the input.
+          // feed's NEWEST row (the one being watched), rather than leaving
+          // the user stuck in the input or dropped on the oldest backfilled
+          // row.
           if (document.activeElement === feedFilterInput) {
             feedFilterInput.value = "";
             activeQuery = "";
             applyFeedFilter();
-            feedEl.focus();
+            jumpActiveFeedEntry(true);
           }
           return;
         }
+        if (!shortcutsEnabled()) { return; }
         var tag = (document.activeElement && document.activeElement.tagName) || "";
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") { return; }
         if (e.key === "/") {
@@ -1762,10 +2004,11 @@ _HTML_SHELL = """<!doctype html>
           if (!firstCard) { return; }
           var actionBtn = firstCard.querySelector(e.key === "a" ? "button.approve" : "button.deny");
           if (!actionBtn) { return; }
-          // `a` only ARMS and focuses Approve: the confirming press must land on
-          // the button itself (Enter/Space/click), so a repeated `a` can never
-          // approve unseen - the two-step stays two distinct gestures.
-          if (e.key === "a" && actionBtn.dataset.armed === "1") { actionBtn.focus(); return; }
+          // Both only ARM and focus the button: the confirming press must
+          // land on the button itself (Enter/Space/click), so a repeated
+          // a/d can never approve or deny unseen - the two-step stays two
+          // distinct gestures either way.
+          if (actionBtn.dataset.armed === "1") { actionBtn.focus(); return; }
           actionBtn.click();
           actionBtn.focus();
         }
@@ -1857,7 +2100,19 @@ _HTML_SHELL = """<!doctype html>
           }
           li.appendChild(rowMain);
 
-          if (row.explanation) {
+          // The muted gloss list (see buildGlossList) is the row's expanded
+          // state for its reason codes - hidden until the row itself is
+          // expanded (a row with an explanation reuses that same toggle; a
+          // row with only glossed codes and no explanation gets this as its
+          // one gloss "toggle" - the row itself, not a separate button).
+          var glossListEl = buildGlossList(row.reason_codes);
+          if (glossListEl) {
+            glossListEl.hidden = true;
+            li.appendChild(glossListEl);
+          }
+
+          var expandable = Boolean(row.explanation) || Boolean(glossListEl);
+          if (expandable) {
             li.classList.add("has-explanation");
             li.setAttribute("aria-expanded", "false");
           }
@@ -1882,22 +2137,29 @@ _HTML_SHELL = """<!doctype html>
           // oldest backfilled row.
           var nearBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 4;
 
+          // Search must find the text a human can actually read on the row -
+          // the explanation sentence and the glossed reason-code words, not
+          // just the raw codes/action type (round 5).
+          var reasonGlosses = (row.reason_codes || []).map(function (code) {
+            return REASON_DESCRIPTIONS[code] || "";
+          }).join(" ");
           var entry = {
             li: li,
             verdict: row.verdict,
             searchText: (
               row.action_type + " " + (row.target_path_class || "") + " " +
-              (row.source_context || "") + " " + (row.reason_codes || []).join(" ")
+              (row.source_context || "") + " " + (row.reason_codes || []).join(" ") + " " +
+              reasonGlosses + " " + (row.explanation || "")
             ).toLowerCase()
           };
           feedEntries.push(entry);
           li.hidden = !matchesFilter(entry);
 
           // Rows expand by mouse and touch, not only by Enter: clicking/
-          // tapping a row with an explanation makes it the roving-focus
-          // active row (so subsequent arrow keys continue from here) and
-          // toggles the same .expanded state Enter/Space does.
-          if (row.explanation) {
+          // tapping an expandable row makes it the roving-focus active row
+          // (so subsequent arrow keys continue from here) and toggles the
+          // same .expanded state Enter/Space does.
+          if (expandable) {
             li.addEventListener("click", function () {
               setActiveFeedEntry(entry);
               toggleActiveFeedExplanation();
@@ -2004,7 +2266,7 @@ def _js_json_literal(value: object) -> str:
 
 def _render_shell(repo_root: str) -> str:
     project = _project_display_name(repo_root)
-    page_title = f"{project} — Doberman Dashboard"
+    page_title = f"{project} - Doberman Dashboard"
     return (
         _HTML_SHELL.replace("%%DASH_PAGE_TITLE%%", html.escape(page_title))
         .replace("%%DASH_PROJECT_NAME%%", html.escape(project))

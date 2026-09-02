@@ -160,8 +160,11 @@ def test_shell_pending_arrivals_are_announced_once():
     assert 'id="pending-list" aria-live' not in shell
 
 
-def test_shell_totp_input_has_aria_label():
-    assert 'totpInput.setAttribute("aria-label", "TOTP code")' in app_module._HTML_SHELL
+def test_shell_totp_input_has_a_label():
+    # Round 5: a real VISIBLE <label> ("6-digit code"), not an aria-label on
+    # top of an sr-only one - see test_dash_round5.py for the full coverage.
+    assert 'totpLabel.textContent = "6-digit code";' in app_module._HTML_SHELL
+    assert 'totpLabel.setAttribute("for", totpId);' in app_module._HTML_SHELL
 
 
 def test_shell_approve_requires_arm_then_confirm():

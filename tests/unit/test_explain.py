@@ -119,6 +119,28 @@ def test_template_explanation_for_block_row_mentions_policy_or_role_change():
     assert "policy" in text.lower() or "role" in text.lower()
 
 
+# --- round 5: the layer sentence is plain words, not jargon -------------------
+
+
+def test_layer_sentence_is_plain_words_for_objective_only():
+    row = _row(final_verdict="BLOCK", decided_layer="objective")
+    text = template_explanation(row)
+    assert "Doberman decided BLOCK after checking the rules." in text
+    assert "guardrail layer" not in text
+
+
+def test_layer_sentence_names_the_behaviour_baseline_when_combined():
+    row = _row(final_verdict="BLOCK", decided_layer="combined")
+    text = template_explanation(row)
+    assert "Doberman decided BLOCK after checking the rules and the behaviour baseline." in text
+
+
+def test_layer_sentence_defaults_to_objective_when_missing():
+    row = _row(final_verdict="AUTH", decided_layer=None)
+    text = template_explanation(row)
+    assert "Doberman decided AUTH after checking the rules." in text
+
+
 def test_template_explanation_for_auth_row_mentions_reauth_path():
     row = _row(final_verdict="AUTH", reason_codes_json=json.dumps(["secret_exfiltration"]))
     text = template_explanation(row)
