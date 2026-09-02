@@ -134,6 +134,26 @@ _DESTRUCTIVE_INTERPRETER_OP = re.compile(
     re.IGNORECASE,
 )
 
+# HK.5.6 — raw-socket / bare-TCP egress shapes the destructive-command walk
+# does not otherwise see: a shell redirection into /dev/tcp or /dev/udp
+# (bash's built-in TCP/UDP pseudo-device), netcat/ncat used in exec-on-connect
+# (reverse/bind-shell) form, socat's EXEC:/SYSTEM: address type (socat's
+# equivalent of `nc -e`), and openssl's TLS client mode. AUTH-only, never
+# BLOCK: a routine port probe (`nc -zv host port`) and DNS-label exfil
+# (`dig`/`nslookup`) must stay indistinguishable from ordinary DevOps without
+# an entropy/calibration signal this module doesn't have (out of scope for
+# this slice — see docs/REASON_CODES.md and the README known-limitations
+# entry for `raw_socket_channel`).
+_DEV_TCP_UDP_RE = re.compile(r"/dev/(?:tcp|udp)/")
+_NC_LIKE_COMMANDS = {"nc", "ncat", "netcat"}
+# The exec-on-connect flags that turn a network tool into a reverse/bind
+# shell: `-e`/`--exec` (classic netcat/ncat), ncat's `-c`/`--sh-exec` (runs
+# the command via /bin/sh -c). A bare port probe (`-zv`) never sets these.
+_NC_EXEC_FLAGS = {"-e", "--exec", "-c", "--sh-exec"}
+# socat's EXEC:/SYSTEM: address types spawn a subprocess wired to the socket
+# (socat's equivalent of `nc -e`) — not socat's routine port-forwarding use.
+_SOCAT_EXEC_ADDRESS_RE = re.compile(r"(?i)\b(?:exec|system):")
+
 # Shared work bound for every static command walk. Exhaustion is ambiguity,
 # never silent success.
 _MAX_COMMAND_SEGMENTS = 256
@@ -726,6 +746,13 @@ def _segment_verdict(
             ReasonCode.destructive_command,
             "Piping a downloaded payload into a shell; authentication required.",
         )
+    channel = _raw_socket_channel_explanation(tokens)
+    if channel is not None:
+        return _auth(
+            ReasonCode.raw_socket_channel,
+            f"Command opens a raw network channel outside the normal tool path ({channel}); "
+            "authentication required.",
+        )
     return None
 
 
@@ -756,6 +783,30 @@ def _is_pipe_to_shell(tokens: list[str]) -> bool:
     if tokens[0] not in {"curl", "wget"}:
         return False
     return any(part in _SHELLS for part in tokens[1:])
+
+
+def _raw_socket_channel_explanation(tokens: list[str]) -> str | None:
+    """Explanation fragment for a raw-socket/bare-TCP egress shape, or ``None``.
+
+    Shapes: a ``/dev/tcp``/``/dev/udp`` redirection target (checked across
+    every token, not just ``tokens[0]``, since bash writes it as a redirect
+    operand anywhere in the segment); ``nc``/``ncat``/``socat`` used in
+    exec-on-connect (reverse/bind-shell) form; or
+    ``openssl s_client -connect``. Deliberately narrow (HK.5.6) so a routine
+    port probe (``nc -zv host port``) or an unrelated ``openssl`` subcommand
+    stays ``PASS``. Returns a small fixed string, never the matched token, so
+    the caller's explanation never echoes a host/port/payload.
+    """
+    if any(_DEV_TCP_UDP_RE.search(token) for token in tokens):
+        return "bare-TCP/UDP device redirection"
+    cmd = tokens[0]
+    if cmd in _NC_LIKE_COMMANDS and any(token in _NC_EXEC_FLAGS for token in tokens[1:]):
+        return "an exec-on-connect listener"
+    if cmd == "socat" and any(_SOCAT_EXEC_ADDRESS_RE.search(t) for t in tokens[1:]):
+        return "an exec-on-connect listener"
+    if cmd == "openssl" and len(tokens) > 1 and tokens[1] == "s_client" and "-connect" in tokens:
+        return "a direct TLS client connection"
+    return None
 
 
 def _is_powershell_command_flag(token: str) -> bool:
