@@ -95,6 +95,33 @@ def isolated_executor_repo_root(tmp_path, monkeypatch):
     return repo_root
 
 
+@pytest.fixture
+def enable_plugins(tmp_path, monkeypatch):
+    """Factory: ``enable_plugins("name1", "name2")`` opts those names into the
+    process-snapshotted plugins allowlist (:mod:`doberman.engine.plugin_config`).
+
+    Points ``DOBERMAN_PLUGINS_FILE`` at a per-test temp file, writes the given
+    names, and calls ``reset_snapshot()`` so the new allowlist is picked up
+    immediately (production takes the snapshot once per process; tests need to
+    force a fresh read every time). Resets the snapshot again on teardown so a
+    later test that doesn't request this fixture never inherits an enabled
+    plugin from an earlier one.
+    """
+    from doberman.engine import plugin_config
+
+    plugins_path = tmp_path / "doberman-plugins.json"
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(plugins_path))
+
+    def _enable(*names: str) -> list[str]:
+        for name in names:
+            plugin_config.enable(name)
+        plugin_config.reset_snapshot()
+        return list(names)
+
+    yield _enable
+    plugin_config.reset_snapshot()
+
+
 @pytest.fixture(autouse=True)
 def _neutralize_hosthook_auth_prompter(monkeypatch):
     """Issues #65/#67: the PreToolUse hook now runs Doberman's own auth challenge on an

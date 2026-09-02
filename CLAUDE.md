@@ -31,7 +31,8 @@ Doberman is built to be **extensible**: it declares stable interfaces (`Rule` / 
 `AuditSink`) and a runtime registry that discovers implementations via **Python entry points**. Additional packages can
 register their own rules, detectors, auth providers, or audit sinks **without Doberman importing them by name** — the
 core never takes a static dependency on any plugin. With only `doberman` installed, it works (built-in protection);
-install a plugin package and its capabilities light up automatically.
+a plugin package is imported only after you name it with `doberman plugins enable <entry-point name>` — nothing
+loads because it is merely installed.
 
 ---
 

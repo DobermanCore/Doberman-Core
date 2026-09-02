@@ -24,6 +24,9 @@ _PIP_REDIRECTION_ENVIRONMENT_VARIABLES = (
 _DISCOVERY_CHECK = """
 from datetime import datetime, timezone
 
+from doberman.engine import plugin_config
+plugin_config.enable("example_rule")  # opt-in by name: discovery is opt-in now
+
 from doberman.engine.registry import discover_rules
 from doberman.models import ActionType, EvalContext, ReasonCode, SecurityObject, Verdict
 
@@ -102,6 +105,10 @@ def installed_plugin_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     venv.EnvBuilder(with_pip=True, system_site_packages=True).create(env_dir)
     python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     monkeypatch.setenv("PIP_TARGET", str(tmp_path / "redirected-install"))
+    # Discovery is opt-in by name now (plugin_config); point the subprocess at
+    # a throwaway plugins file so `_DISCOVERY_CHECK`'s `enable()` call never
+    # touches this machine's real per-user allowlist.
+    monkeypatch.setenv("DOBERMAN_PLUGINS_FILE", str(tmp_path / "plugins.json"))
     assert not _plugin_is_installed(python)
     try:
         _run(

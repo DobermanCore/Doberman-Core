@@ -164,3 +164,26 @@ def test_rotation_proof_inherits_the_persisted_lockout(monkeypatch):
 
     with pytest.raises(RuntimeError, match="current 2FA code"):
         totp.enroll(force=True, current_code=correct)
+
+
+def test_attempt_is_counted_even_if_pyotp_verify_raises(monkeypatch):
+    """The failure count must land on disk BEFORE pyotp runs, mirroring
+    doberman.auth.password.verify — so a crash mid-verify still counts."""
+    totp.enroll()
+    _freeze_now(monkeypatch, _T0)
+
+    def verify_explodes(*args, **kwargs):
+        raise RuntimeError("pyotp crashed mid-verify")
+
+    monkeypatch.setattr(pyotp.TOTP, "verify", verify_explodes)
+    assert totp.verify(_current_code(_T0), at=_T0) is False
+    # The attempt landed on disk even though pyotp never finished.
+    assert totp._load_lockout(_lockout_path(), now=totp._now())[0] == 1
+
+
+def test_unrecordable_attempt_is_denied(monkeypatch):
+    totp.enroll()
+    _freeze_now(monkeypatch, _T0)
+    monkeypatch.setattr(totp, "_save_lockout", lambda *a, **k: False)
+    # Even the right code is refused when the attempt cannot be counted.
+    assert totp.verify(_current_code(_T0), at=_T0) is False

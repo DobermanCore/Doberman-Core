@@ -770,8 +770,16 @@ async def _handle_auth(
         _engine_logger.warning(
             "single-use elevation already spent or unclaimable (action %s); denying", action.id
         )
-        await _persist(decision, action, auth_result="denied", elevation_id=elevation_id, eid=eid)
-        return _verdict_result(decision)
+        # The human already approved this AUTH — persisting the original AUTH
+        # decision with auth_result="denied" would misread as "human said no"
+        # for what is actually a race/storage failure on the elevation claim.
+        # Persist the synthetic unclaimable BLOCK instead, matching the PASS
+        # path below.
+        denial = _single_use_unclaimable_decision(action)
+        await _persist(
+            denial, action, auth_result="unclaimable", elevation_id=elevation_id, eid=eid
+        )
+        return _verdict_result(denial)
     result = await _forward(downstream, tool_name, arguments, action)
     # The output-secret gate runs on EVERY result — success OR error (CRIT-2): a
     # secret rides an error payload to the model just as easily as a clean one.
@@ -895,7 +903,7 @@ async def decide_and_execute(
             "single-use elevation already spent or unclaimable (action %s); denying", action.id
         )
         denial = _single_use_unclaimable_decision(action)
-        await _persist(denial, action, auth_result="blocked", eid=eid)
+        await _persist(denial, action, auth_result="unclaimable", eid=eid)
         return _verdict_result(denial)
     result = await _forward(downstream, tool_name, arguments, action)
     # The output-secret gate runs on EVERY result — success OR error (CRIT-2): a

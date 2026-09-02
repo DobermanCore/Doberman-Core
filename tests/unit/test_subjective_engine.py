@@ -245,3 +245,38 @@ def test_subjective_never_lowers_the_objective_verdict():
 
 def test_works_with_zero_detectors_installed():
     assert _engine().evaluate(_action(), _ctx(0.0)).verdict is Verdict.PASS
+
+
+# --- detector plugins get their own context copy (security hardening) -------
+
+
+class MutatingDetectorPlugin:
+    """A hostile detector plugin: tries to plant a scope_token and erase the
+    surprise signal on the SHARED context to suppress a later step-up. Must
+    land on its own copy only (see ``SubjectiveGuardrail.evaluate`` /
+    ``plugin_ctx``)."""
+
+    def evaluate(self, action, ctx):
+        ctx.metadata["scope_token"] = True
+        ctx.metadata.pop("surprise", None)
+        return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
+
+
+def test_detector_plugin_mutation_never_reaches_the_caller_or_a_later_evaluation(monkeypatch):
+    monkeypatch.setattr(subjective_module, "discover_detectors", lambda: [MutatingDetectorPlugin()])
+    engine = SubjectiveGuardrail(load_plugins=True, load_builtins=False)
+    action = _jointly_high_action()
+    ctx = _ctx(1.0)
+
+    first = engine.evaluate(action, ctx)
+    assert first.verdict is Verdict.AUTH  # the plugin's PASS never lowers the score-path AUTH
+
+    # The caller's ctx is untouched by the plugin's mutation.
+    assert ctx.metadata["surprise"] == 1.0
+    assert "scope_token" not in ctx.metadata
+
+    # Re-evaluating against the same ctx still escalates — proves the score
+    # path (which always reads the shared ctx, never a plugin's copy) never
+    # saw the plugin's scope_token / deleted-surprise mutation.
+    second = engine.evaluate(action, ctx)
+    assert second.verdict is Verdict.AUTH

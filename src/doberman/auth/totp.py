@@ -175,7 +175,10 @@ def verify(code: str, *, at: int | None = None) -> bool:
     validation is deterministic in tests; the lockout clock uses the separate
     :func:`_now` seam so tests can advance it independently (e.g. past the
     cooldown) without faking the TOTP time step. A successful verify clears
-    the persisted lockout state.
+    the persisted lockout state. Every attempt is counted on disk BEFORE
+    ``pyotp`` runs (mirrors :func:`doberman.auth.password.verify`), so
+    concurrent guesses cannot overwrite each other's count; an attempt that
+    cannot be recorded is denied.
 
     Lockout semantics (H5b): once ``_MAX_CONSECUTIVE_FAILURES`` consecutive
     failures accrue, further attempts are denied until
@@ -202,6 +205,13 @@ def verify(code: str, *, at: int | None = None) -> bool:
             return False  # still locked: deny without touching state or the code
         failures = 0  # cooldown elapsed: this attempt starts a fresh window
 
+    # Count the attempt BEFORE verify() runs, so concurrent guesses cannot all
+    # read the same pre-attempt count and overwrite each other after it; an
+    # attempt that cannot be recorded is denied rather than run unaccounted
+    # (mirrors doberman.auth.password.verify).
+    if not _save_lockout(lockout_path, failures + 1, now):
+        return False
+
     try:
         ok = pyotp.TOTP(secret).verify(str(code), valid_window=_VALID_WINDOW, for_time=at)
     except Exception:  # noqa: BLE001 — any verify error is a failed auth, never a pass
@@ -209,6 +219,4 @@ def verify(code: str, *, at: int | None = None) -> bool:
 
     if ok:
         _clear_lockout(secret_path)
-    else:
-        _save_lockout(lockout_path, failures + 1, now)
-    return ok
+    return ok  # a failure was already counted above

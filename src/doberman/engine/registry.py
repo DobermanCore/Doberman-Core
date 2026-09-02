@@ -20,14 +20,22 @@ SECURITY:
 * With nothing installed, discovery returns an empty list and behavior is
   identical to core-only. The standalone test asserts no enterprise plugin is
   present by default.
+* Every group is **opt-in by name** (:mod:`doberman.engine.plugin_config`):
+  an entry point is loaded only if its ``.name`` is listed in the per-user
+  plugins allowlist (``doberman plugins enable <name>``). Installing a
+  package is never enough on its own — this closes the gap where an
+  auto-loaded plugin could set env vars or otherwise influence discovery of
+  a seam before it runs. The allowlist is snapshotted once per process
+  before discovery starts, so nothing loaded later can widen it.
 """
 
 import logging
-from collections.abc import Collection, Iterator
+from collections.abc import Iterator
 from functools import lru_cache
 from importlib.metadata import EntryPoint, entry_points
 
 from doberman.engine.decision_engine import Guardrail
+from doberman.engine.plugin_config import allowed_plugin_names
 
 logger = logging.getLogger("doberman.engine.registry")
 
@@ -73,12 +81,32 @@ EGRESS_BROKER_GROUP = "doberman.egress_brokers"
 #: backend without importing core's synchronous prompter chain.
 ASYNC_CHALLENGE_BACKEND_GROUP = "doberman.async_challenge_backends"
 
+#: Every entry-point group Doberman discovers, for callers (the ``doberman
+#: plugins list`` CLI) that need to enumerate installed-but-maybe-not-enabled
+#: entry points across all of them without hand-maintaining a second list.
+ALL_GROUPS: tuple[str, ...] = (
+    RULE_GROUP,
+    DETECTOR_GROUP,
+    POLICY_SOURCE_GROUP,
+    AUTH_PROVIDER_GROUP,
+    AUDIT_SINK_GROUP,
+    APPROVAL_METHOD_GROUP,
+    DRIFT_OBSERVER_GROUP,
+    COST_OBSERVER_GROUP,
+    ALGEBRA_ADAPTER_GROUP,
+    ADJUDICATOR_GROUP,
+    EGRESS_BROKER_GROUP,
+    ASYNC_CHALLENGE_BACKEND_GROUP,
+)
+
 
 def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
     """Yield entry points for ``group`` across importlib.metadata versions.
 
     Wrapped so a failure in discovery itself (not just one plugin) is contained
-    — discovery problems must not crash the engine.
+    — discovery problems must not crash the engine. UNFILTERED — every
+    ``discover_*`` function goes through :func:`_iter_allowed_entry_points`
+    instead; this raw iterator exists so that gate has something to wrap.
     """
     try:
         eps = entry_points()
@@ -88,6 +116,24 @@ def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
         logger.warning("plugin discovery failed for group %s; continuing with built-ins", group)
         return
     yield from selected
+
+
+def _iter_allowed_entry_points(group: str) -> Iterator[EntryPoint]:
+    """Yield entry points for ``group`` whose ``.name`` is opted in by name.
+
+    Opt-in only (:mod:`doberman.engine.plugin_config`): an entry point is
+    loaded only if its ``.name`` is in the process's allowlist snapshot — a
+    package merely being installed is never enough to make it run in-process.
+    With an empty allowlist, ``entry_points()`` is never even called, so
+    nothing installed-but-unlisted is ever imported. Every ``discover_*``
+    below iterates through this, never :func:`_iter_entry_points` directly.
+    """
+    allowed = allowed_plugin_names()
+    if not allowed:
+        return
+    for entry_point in _iter_entry_points(group):
+        if getattr(entry_point, "name", None) in allowed:
+            yield entry_point
 
 
 def _load_and_construct(entry_point: EntryPoint) -> object | None:
@@ -146,7 +192,7 @@ def _discover_guardrails(groups: tuple[str, ...]) -> list[Guardrail]:
     plugins: list[Guardrail] = []
     seen: set[str] = set()
     for group in groups:
-        for entry_point in _iter_entry_points(group):
+        for entry_point in _iter_allowed_entry_points(group):
             key = f"{group}:{getattr(entry_point, 'name', id(entry_point))}"
             if key in seen:
                 continue
@@ -164,7 +210,9 @@ def discover_rules() -> list[Guardrail]:
     ``doberman.detectors`` is intentionally NOT loaded here — behavioral
     detectors are the **subjective** seam and are discovered by
     :func:`discover_detectors` (their single home, so they never double-run).
-    Returns ``[]`` with nothing installed.
+    Returns ``[]`` with nothing installed. Opt-in by name via
+    ``doberman plugins enable <name>``; an unlisted package is never imported
+    by this registry.
     """
     return _discover_guardrails((RULE_GROUP,))
 
@@ -175,7 +223,8 @@ def discover_detectors() -> list[Guardrail]:
     These run in the **subjective** guardrail (Feature 9) — the home for
     advanced/behavioral (UEBA-style) detection — bound by the same raise-only
     discipline (a detector can only add risk). Returns ``[]`` with nothing
-    installed.
+    installed. Opt-in by name via ``doberman plugins enable <name>``; an
+    unlisted package is never imported by this registry.
     """
     return _discover_guardrails((DETECTOR_GROUP,))
 
@@ -187,13 +236,15 @@ def discover_policy_sources() -> list[object]:
     that is not policy-source-shaped (no ``snapshot``/``authority``), is logged
     and skipped. Returns ``[]`` when nothing is installed. Core never imports a
     source by name — the policy resolver merges whatever is registered.
+    Opt-in by name via ``doberman plugins enable <name>``; an unlisted
+    package is never imported by this registry.
     """
     # Local import avoids an engine<->policy import cycle at module load.
     from doberman.policy.sources import _looks_like_policy_source
 
     sources: list[object] = []
     seen: set[str] = set()
-    for entry_point in _iter_entry_points(POLICY_SOURCE_GROUP):
+    for entry_point in _iter_allowed_entry_points(POLICY_SOURCE_GROUP):
         key = f"{POLICY_SOURCE_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
         if key in seen:
             continue
@@ -211,49 +262,41 @@ def discover_policy_sources() -> list[object]:
     return sources
 
 
-def discover_auth_providers(allowed: Collection[str]) -> list[object]:
+def discover_auth_providers() -> list[object]:
     """Discover OPTED-IN auth providers (Feature 7.6, group ``doberman.auth_providers``).
 
-    Opt-in only: an entry point is loaded (imported and constructed) only if its
-    ``.name`` is in ``allowed`` — a package merely being installed is never
-    enough to make it an authenticator. Non-allowed entry points are skipped
-    before any import/construction happens, so THIS seam never imports an
-    unlisted package (the other entry-point groups still auto-load theirs, so
-    an installed package can still run code in-process — the allowlist is a
-    seam-level control, not a sandbox). Allowed candidates are still loaded defensively like rules/sources: an
-    import/constructor failure, or an object that is not auth-provider-shaped
-    (no callable ``authenticate``), is logged and skipped. ``allowed`` empty
-    returns ``[]`` without iterating entry points at all — the auth layer then
-    falls back to the built-in local provider. Core never imports a provider by
+    Opt-in only, by name, via :mod:`doberman.engine.plugin_config` — the same
+    allowlist every other seam now uses; a package merely being installed is
+    never enough to make it an authenticator. With an empty allowlist,
+    ``entry_points()`` is never even called. Candidates are returned ordered
+    by their position in the allowlist (the first-listed provider wins when
+    :func:`doberman.auth.provider.active_provider` picks one), and are still
+    loaded defensively like every other seam: an import/constructor failure,
+    or an object that is not auth-provider-shaped (no callable
+    ``authenticate``), is logged and skipped. Core never imports a provider by
     name.
     """
-    if not allowed:
-        return []
-
     # Local import avoids an engine<->auth import cycle at module load.
     from doberman.auth.provider import _looks_like_auth_provider
 
-    providers: list[object] = []
-    seen: set[str] = set()
-    for entry_point in _iter_entry_points(AUTH_PROVIDER_GROUP):
+    allowed = allowed_plugin_names()
+    candidates: dict[str, object] = {}
+    for entry_point in _iter_allowed_entry_points(AUTH_PROVIDER_GROUP):
         name = getattr(entry_point, "name", None)
-        if name not in allowed:
+        if name is None or name in candidates:
             continue
-        key = f"{AUTH_PROVIDER_GROUP}:{name if name is not None else id(entry_point)}"
-        if key in seen:
-            continue
-        seen.add(key)
         candidate = _load_and_construct(entry_point)
         if candidate is None:
             continue
         if not _looks_like_auth_provider(candidate):
             logger.warning(
                 "skipping auth provider %r: not auth-provider-shaped",
-                getattr(entry_point, "name", "?"),
+                name,
             )
             continue
-        providers.append(candidate)
-    return providers
+        candidates[name] = candidate
+    # Preference order = allowlist order, not entry-point iteration order.
+    return [candidates[name] for name in allowed if name in candidates]
 
 
 def discover_approval_methods() -> list[object]:
@@ -264,7 +307,8 @@ def discover_approval_methods() -> list[object]:
     not approval-method-shaped (no callable ``is_available`` / ``request``), is
     logged and skipped. A plugin whose ``name`` shadows a built-in is skipped so a
     third party cannot silently replace a core factor. Core never imports a plugin
-    by name.
+    by name. Opt-in by name via ``doberman plugins enable <name>``; an
+    unlisted package is never imported by this registry (built-ins always run).
     """
     # Local imports avoid an engine<->auth import cycle at module load.
     from doberman.auth.approval import ApprovalMethod
@@ -272,7 +316,7 @@ def discover_approval_methods() -> list[object]:
 
     methods: list[object] = list(builtin_methods())
     seen_names: set[str | None] = {getattr(m, "name", None) for m in methods}
-    for entry_point in _iter_entry_points(APPROVAL_METHOD_GROUP):
+    for entry_point in _iter_allowed_entry_points(APPROVAL_METHOD_GROUP):
         candidate = _load_and_construct(entry_point)
         if candidate is None:
             continue
@@ -297,14 +341,16 @@ def discover_audit_sinks() -> list[object]:
     Loaded defensively like rules/providers: an import/constructor failure, or an
     object that is not sink-shaped (no callable ``emit``), is logged and skipped.
     Returns ``[]`` when nothing is installed — only the local decision log runs.
-    Core never imports a sink by name.
+    Core never imports a sink by name. Opt-in by name via
+    ``doberman plugins enable <name>``; an unlisted package is never imported
+    by this registry.
     """
     # Local import avoids an engine<->storage import cycle at module load.
     from doberman.storage.sinks import _looks_like_audit_sink
 
     sinks: list[object] = []
     seen: set[str] = set()
-    for entry_point in _iter_entry_points(AUDIT_SINK_GROUP):
+    for entry_point in _iter_allowed_entry_points(AUDIT_SINK_GROUP):
         key = f"{AUDIT_SINK_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
         if key in seen:
             continue
@@ -330,14 +376,16 @@ def discover_algebra_adapters() -> list[object]:
     skipped. Returns ``[]`` when nothing is installed — the generic inference
     layer (SL2) then stands alone, so coverage never depends on an adapter.
     Core never imports an adapter by name; the subjective layer clamps every
-    adapter's output raise-only.
+    adapter's output raise-only. Opt-in by name via
+    ``doberman plugins enable <name>``; an unlisted package is never imported
+    by this registry.
     """
     # Local import avoids an engine<->subjective import cycle at module load.
     from doberman.subjective.adapters import _looks_like_algebra_adapter
 
     adapters: list[object] = []
     seen: set[str] = set()
-    for entry_point in _iter_entry_points(ALGEBRA_ADAPTER_GROUP):
+    for entry_point in _iter_allowed_entry_points(ALGEBRA_ADAPTER_GROUP):
         key = f"{ALGEBRA_ADAPTER_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
         if key in seen:
             continue
@@ -363,14 +411,16 @@ def discover_adjudicators() -> list[object]:
     logged and skipped. Returns ``[]`` when nothing is installed — the engine
     then simply records no shadow annotation. Core never imports an adjudicator
     by name, and the seam is shadow-only: a discovered adjudicator can never
-    change the live verdict (:mod:`doberman.engine.adjudicator`).
+    change the live verdict (:mod:`doberman.engine.adjudicator`). Opt-in by
+    name via ``doberman plugins enable <name>``; an unlisted package is
+    never imported by this registry.
     """
     # Local import mirrors the other seams and keeps discovery self-contained.
     from doberman.engine.adjudicator import Adjudicator
 
     adjudicators: list[object] = []
     seen: set[str] = set()
-    for entry_point in _iter_entry_points(ADJUDICATOR_GROUP):
+    for entry_point in _iter_allowed_entry_points(ADJUDICATOR_GROUP):
         key = f"{ADJUDICATOR_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
         if key in seen:
             continue
@@ -406,14 +456,16 @@ def discover_egress_brokers() -> list[object]:
     process, however many ``ExternalDestinationRule(load_broker=True)``
     instances are built. Tests that monkeypatch ``entry_points`` must call
     ``discover_egress_brokers.cache_clear()`` first (see
-    ``tests/unit/test_egress_broker_seam.py``).
+    ``tests/unit/test_egress_broker_seam.py``). Opt-in by name via
+    ``doberman plugins enable <name>``; an unlisted package is never imported
+    by this registry.
     """
     # Local import mirrors the other seams and keeps discovery self-contained.
     from doberman.egress.broker import EgressBroker
 
     brokers: list[object] = []
     seen: set[str] = set()
-    for entry_point in _iter_entry_points(EGRESS_BROKER_GROUP):
+    for entry_point in _iter_allowed_entry_points(EGRESS_BROKER_GROUP):
         key = f"{EGRESS_BROKER_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
         if key in seen:
             continue
@@ -440,14 +492,16 @@ def discover_drift_observers() -> list[object]:
     Loaded defensively like rules/sinks: an import/constructor failure, or an
     object that is not observer-shaped (no callable ``on_change``), is logged and
     skipped. Returns ``[]`` when nothing is installed — the 2FA gate + local
-    ledger are unaffected. Core never imports an observer by name.
+    ledger are unaffected. Core never imports an observer by name. Opt-in by
+    name via ``doberman plugins enable <name>``; an unlisted package is
+    never imported by this registry.
     """
     # Local import avoids an engine<->policy import cycle at module load.
     from doberman.policy.drift import _looks_like_drift_observer
 
     observers: list[object] = []
     seen: set[str] = set()
-    for entry_point in _iter_entry_points(DRIFT_OBSERVER_GROUP):
+    for entry_point in _iter_allowed_entry_points(DRIFT_OBSERVER_GROUP):
         key = f"{DRIFT_OBSERVER_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
         if key in seen:
             continue
@@ -471,14 +525,16 @@ def discover_cost_observers() -> list[object]:
     Loaded defensively like every other seam: an import/constructor failure, or
     an object that is not observer-shaped (no callable ``on_cost``), is logged
     and skipped. Returns ``[]`` when nothing is installed — the local ledger
-    write is unaffected. Core never imports an observer by name.
+    write is unaffected. Core never imports an observer by name. Opt-in by
+    name via ``doberman plugins enable <name>``; an unlisted package is
+    never imported by this registry.
     """
     # Local import avoids an engine<->storage import cycle at module load.
     from doberman.storage.cost import _looks_like_cost_observer
 
     observers: list[object] = []
     seen: set[str] = set()
-    for entry_point in _iter_entry_points(COST_OBSERVER_GROUP):
+    for entry_point in _iter_allowed_entry_points(COST_OBSERVER_GROUP):
         key = f"{COST_OBSERVER_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
         if key in seen:
             continue

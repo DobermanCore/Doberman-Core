@@ -49,10 +49,14 @@ class _FakeEntryPoints:
 
 
 @pytest.fixture
-def patch_policy_sources(monkeypatch):
+def patch_policy_sources(monkeypatch, enable_plugins):
     def _install(*sources):
-        table = _FakeEntryPoints({registry.POLICY_SOURCE_GROUP: list(sources)})
+        sources = list(sources)
+        table = _FakeEntryPoints({registry.POLICY_SOURCE_GROUP: sources})
         monkeypatch.setattr(registry, "entry_points", lambda: table)
+        names = [s.name for s in sources]
+        if names:
+            enable_plugins(*names)
 
     return _install
 
@@ -163,3 +167,27 @@ def test_high_authority_source_outranks_role(tmp_path, patch_policy_sources):
     assert blocked.verdict is Verdict.BLOCK
     # A sibling the source does not constrain is unaffected by the seam.
     assert PolicySourceRule().evaluate(_action("app/main.py"), ctx).verdict is Verdict.PASS
+
+
+def test_other_typed_tool_with_path_argument_matches_file_write_verdict(tmp_path):
+    # A tool that doesn't normalize to a path action type (e.g. an
+    # unrecognized name) but whose raw arguments still carry a path-shaped
+    # value must be classified exactly like file_write — the tool NAME is
+    # caller-supplied, not a trust boundary (#519/#527).
+    rp = ResolvedPolicy(blocked_globs=("app/secret.txt",))
+    write_ctx = EvalContext(metadata={"repo_root": str(tmp_path), "resolved_policy": rp})
+    write_result = PolicySourceRule().evaluate(_action("app/secret.txt"), write_ctx)
+
+    other_action = _action("app/secret.txt", action_type=ActionType.other)
+    other_ctx = EvalContext(
+        metadata={
+            "repo_root": str(tmp_path),
+            "resolved_policy": rp,
+            "raw_arguments": {"path": "app/secret.txt"},
+        }
+    )
+    other_result = PolicySourceRule().evaluate(other_action, other_ctx)
+
+    assert write_result.verdict is other_result.verdict is Verdict.BLOCK
+    assert ReasonCode.policy_source_blocked in write_result.reason_codes
+    assert ReasonCode.policy_source_blocked in other_result.reason_codes

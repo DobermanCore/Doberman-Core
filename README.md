@@ -198,7 +198,8 @@ results (failure cases before wins): [Benchmarks](docs/BENCHMARKS.md).
 ## Write a guardrail plugin
 
 Third-party rules register through the `doberman.rules` entry-point group; core never imports your
-package by name. A five-minute worked example lives at
+package by name, and nothing is loaded until you opt in with `doberman plugins enable <name>`. A
+five-minute worked example lives at
 [`examples/plugin-guardrail/`](examples/plugin-guardrail/), and the same entry-point pattern
 (`doberman.audit_sinks`) forwards the redacted audit log to your own pipeline, for example a webhook.
 Full walkthrough: [Write a guardrail plugin](docs/PLUGINS.md).

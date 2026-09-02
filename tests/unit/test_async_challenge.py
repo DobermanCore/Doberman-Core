@@ -446,7 +446,7 @@ def test_default_backend_is_in_memory():
     assert active_async_backend() is IN_MEMORY_BACKEND
 
 
-def test_registered_backend_is_preferred(monkeypatch):
+def test_registered_backend_is_preferred(monkeypatch, enable_plugins):
     """A registered custom backend shadows the built-in."""
 
     class StubBackend:
@@ -463,6 +463,7 @@ def test_registered_backend_is_preferred(monkeypatch):
             return 0
 
     stub = StubBackend()
+    enable_plugins("fake")  # matches _FakeEntryPoint.name below
     monkeypatch.setattr(
         "doberman.engine.registry._iter_entry_points",
         lambda group: [_FakeEntryPoint(stub)],
@@ -472,8 +473,23 @@ def test_registered_backend_is_preferred(monkeypatch):
     assert ac.active_async_backend() is stub
 
 
-def test_non_backend_shaped_registration_is_skipped(monkeypatch):
+def test_non_backend_shaped_registration_is_skipped(monkeypatch, enable_plugins):
     """An object missing 'issue'/'resolve' must be skipped; fallback to built-in."""
+    enable_plugins("fake")
+    monkeypatch.setattr(
+        "doberman.engine.registry._iter_entry_points",
+        lambda group: [_FakeEntryPoint(object())],
+    )
+    from doberman.auth.async_challenge import IN_MEMORY_BACKEND
+
+    assert active_async_backend() is IN_MEMORY_BACKEND
+
+
+def test_unlisted_backend_is_never_loaded(monkeypatch):
+    """With nothing enabled, the real (unmocked) entry-point group is empty
+    anyway, but this pins the opt-in gate itself: a name not enabled is never
+    even reached by discovery, so a mocked ``_iter_entry_points`` that WOULD
+    return a candidate is filtered out before ``active_async_backend`` sees it."""
     monkeypatch.setattr(
         "doberman.engine.registry._iter_entry_points",
         lambda group: [_FakeEntryPoint(object())],

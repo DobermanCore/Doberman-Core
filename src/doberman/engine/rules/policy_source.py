@@ -20,6 +20,7 @@ but nothing can ever loosen a constraint a higher-authority source set.
 import fnmatch
 
 from doberman.canonical import canonicalize
+from doberman.engine.rules.paths import raw_path_candidates
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -59,10 +60,19 @@ class PolicySourceRule:
         policy = ctx.metadata.get("resolved_policy") if isinstance(ctx.metadata, dict) else None
         if not isinstance(policy, ResolvedPolicy) or policy.is_empty:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
-        if action.action_type not in _PATH_ACTION_TYPES:
-            return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
-        paths = _candidate_paths(action)
+        if action.action_type in _PATH_ACTION_TYPES:
+            paths = _candidate_paths(action)
+        else:
+            # A tool whose declared type isn't path-shaped can still carry a
+            # path-shaped raw argument (an unrecognized tool name, {"path":
+            # ...}) — the tool NAME is caller-supplied and not a trust
+            # boundary, so classify those candidates too rather than
+            # abstaining (mirrors RoleBoundaryRule).
+            raw_arguments = (
+                ctx.metadata.get("raw_arguments") if isinstance(ctx.metadata, dict) else None
+            )
+            paths = raw_path_candidates(raw_arguments) if isinstance(raw_arguments, dict) else []
         if not paths:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 

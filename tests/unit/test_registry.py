@@ -68,17 +68,25 @@ class _FakeEntryPoints:
 
 
 @pytest.fixture
-def patch_entry_points(monkeypatch):
-    """Install a fake entry-points table for the duration of a test."""
+def patch_entry_points(monkeypatch, enable_plugins):
+    """Install a fake entry-points table for the duration of a test, and opt
+    every fake entry point's name into the plugins allowlist — discovery is
+    now opt-in by name, so a fake entry point the test never enables would
+    silently vanish rather than exercise the behavior under test."""
 
     def _install(rule_group=(), detector_group=()):
+        rule_group = list(rule_group)
+        detector_group = list(detector_group)
         table = _FakeEntryPoints(
             {
-                registry.RULE_GROUP: list(rule_group),
-                registry.DETECTOR_GROUP: list(detector_group),
+                registry.RULE_GROUP: rule_group,
+                registry.DETECTOR_GROUP: detector_group,
             }
         )
         monkeypatch.setattr(registry, "entry_points", lambda: table)
+        names = [ep.name for ep in (*rule_group, *detector_group)]
+        if names:
+            enable_plugins(*names)
 
     return _install
 
@@ -192,10 +200,59 @@ def test_plugin_instance_entry_point_is_accepted(patch_entry_points):
     assert rules == [instance]
 
 
-def test_discovery_failure_does_not_crash(monkeypatch):
-    # If entry_points() itself raises, discovery returns [] (no crash).
+def test_discovery_failure_does_not_crash(monkeypatch, enable_plugins):
+    # If entry_points() itself raises, discovery returns [] (no crash). Needs
+    # a name enabled — with an empty allowlist entry_points() is never even
+    # called, so this wouldn't exercise the failure path at all.
     def _boom():
         raise RuntimeError("metadata broken")
 
+    enable_plugins("whatever")
     monkeypatch.setattr(registry, "entry_points", _boom)
     assert registry.discover_rules() == []
+
+
+def test_empty_allowlist_never_calls_entry_points(monkeypatch):
+    # The opt-in gate itself: with nothing enabled, entry_points() is never
+    # called — not just "returns nothing installed".
+    def _must_not_be_called():
+        raise AssertionError("entry_points() must not be called with an empty allowlist")
+
+    monkeypatch.setattr(registry, "entry_points", _must_not_be_called)
+    assert registry.discover_rules() == []
+
+
+def test_installed_but_unlisted_plugin_is_never_loaded(patch_entry_points, monkeypatch):
+    # An entry point can be present in the (fake) installed set without being
+    # enabled — patch the table directly (bypassing patch_entry_points' auto-
+    # enable) so the plugin stays unlisted, and prove its loader never runs.
+    def _must_not_load():
+        raise AssertionError("an unlisted entry point must never be loaded")
+
+    table = _FakeEntryPoints({registry.RULE_GROUP: [_FakeEntryPoint("unlisted", _must_not_load)]})
+    monkeypatch.setattr(registry, "entry_points", lambda: table)
+    assert registry.discover_rules() == []
+
+
+def test_enabling_after_first_discovery_needs_a_snapshot_reset(
+    monkeypatch, tmp_path, enable_plugins
+):
+    # allowed_plugin_names() is snapshotted once per process; enabling a name
+    # AFTER that snapshot was taken loads nothing until reset_snapshot().
+    # ``enable_plugins`` is only depended on for its teardown reset here — the
+    # test manages the snapshot by hand to prove the non-widening property.
+    from doberman.engine import plugin_config
+
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(tmp_path / "plugins.json"))
+    plugin_config.reset_snapshot()
+    table = _FakeEntryPoints({registry.RULE_GROUP: [_FakeEntryPoint("late", AlwaysAuthPlugin)]})
+    monkeypatch.setattr(registry, "entry_points", lambda: table)
+
+    assert registry.discover_rules() == []  # nothing enabled yet -> snapshot = ()
+
+    plugin_config.enable("late")  # enabled on disk, but the snapshot is already taken
+    assert registry.discover_rules() == []  # still nothing — the stale snapshot holds
+
+    plugin_config.reset_snapshot()
+    rules = registry.discover_rules()
+    assert len(rules) == 1 and isinstance(rules[0], AlwaysAuthPlugin)

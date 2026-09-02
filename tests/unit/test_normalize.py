@@ -75,6 +75,15 @@ def test_shell_command_plus_args_composes_full_command_line(tmp_path):
     assert split.action_fingerprint == combined.action_fingerprint
 
 
+def test_split_command_and_args_compose_full_target():
+    # {"command": "rm", "args": ["-rf", "/"]} must log the FULL composed
+    # target ("rm -rf /"), not just the "command" key's value ("rm") — a
+    # bare "rm" target let the command/destination rules and the logged
+    # target disagree (see the fingerprint test above; this is the target).
+    obj = normalize("shell_exec", {"command": "rm", "args": ["-rf", "/"]})
+    assert obj.target == "rm -rf /"
+
+
 def test_path_array_uses_representative_target_plus_count():
     obj = normalize("fs_delete", {"path": ["a.txt", "b.txt", "c.txt"]})
     assert obj.target == "a.txt"

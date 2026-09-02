@@ -7,7 +7,6 @@ import pyotp
 from doberman.auth import totp
 from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.auth.provider import (
-    AUTH_PROVIDER_ENV,
     LOCAL_PROVIDER,
     CoGatedProvider,
     LocalAuthProvider,
@@ -254,40 +253,38 @@ class _FakeAuthEntryPoints:
         return list(self._entries) if group == registry.AUTH_PROVIDER_GROUP else []
 
 
-def test_registered_provider_is_preferred(monkeypatch):
+def test_registered_provider_is_preferred(monkeypatch, enable_plugins):
     stub = _StubProvider()
-    monkeypatch.setattr("doberman.engine.registry.discover_auth_providers", lambda names: [stub])
-
-    # env var unset -> the registered provider is ignored entirely.
-    monkeypatch.delenv(AUTH_PROVIDER_ENV, raising=False)
+    monkeypatch.setattr("doberman.engine.registry.discover_auth_providers", lambda: [])
+    # nothing enabled -> the registered provider is ignored entirely.
     assert active_provider() is LOCAL_PROVIDER
 
     # opted in by name -> wrapped in CoGatedProvider, wrapping the discovered stub.
-    monkeypatch.setenv(AUTH_PROVIDER_ENV, "stub")
+    enable_plugins("stub")
+    monkeypatch.setattr("doberman.engine.registry.discover_auth_providers", lambda: [stub])
     provider = active_provider()
     assert isinstance(provider, CoGatedProvider)
     assert provider.inner is stub
 
 
-def test_non_provider_shaped_registration_is_skipped(monkeypatch):
-    monkeypatch.setenv(AUTH_PROVIDER_ENV, "bogus")
-    monkeypatch.setattr(
-        "doberman.engine.registry.discover_auth_providers", lambda names: [object()]
-    )
+def test_non_provider_shaped_registration_is_skipped(monkeypatch, enable_plugins):
+    enable_plugins("bogus")
+    monkeypatch.setattr("doberman.engine.registry.discover_auth_providers", lambda: [object()])
     assert isinstance(active_provider(), LocalAuthProvider)
 
 
-def test_disallowed_provider_entry_point_is_never_loaded(monkeypatch):
+def test_disallowed_provider_entry_point_is_never_loaded(monkeypatch, enable_plugins):
     def _must_not_load():
         raise AssertionError("a non-allowed entry point must never be loaded")
 
+    enable_plugins("allowed")
     allowed_ep = _FakeAuthEntryPoint("allowed", _StubProvider)
     disallowed_ep = _FakeAuthEntryPoint("not-allowed", _must_not_load)
     monkeypatch.setattr(
         registry, "entry_points", lambda: _FakeAuthEntryPoints([allowed_ep, disallowed_ep])
     )
 
-    result = registry.discover_auth_providers(["allowed"])
+    result = registry.discover_auth_providers()
     assert len(result) == 1
     assert isinstance(result[0], _StubProvider)
 
@@ -301,12 +298,7 @@ def test_empty_allowlist_returns_nothing_without_loading(monkeypatch):
         "entry_points",
         lambda: _FakeAuthEntryPoints([_FakeAuthEntryPoint("x", _must_not_load)]),
     )
-    assert registry.discover_auth_providers([]) == []
-
-
-def test_malformed_env_value_is_ignored(monkeypatch):
-    monkeypatch.setenv(AUTH_PROVIDER_ENV, "bad name;rm")
-    assert isinstance(active_provider(), LocalAuthProvider)
+    assert registry.discover_auth_providers() == []
 
 
 def test_role_elevation_requires_local_consent_too():
@@ -334,15 +326,43 @@ def test_role_elevation_requires_local_consent_too():
     assert approved.method == "sso+local"
 
 
-def test_two_factor_uses_the_plugin_result_alone():
+def test_two_factor_also_requires_local_consent_now():
+    """The co-gate now applies to EVERY tier, not just role_elevation — a
+    plugin's approval alone is never sufficient."""
     plugin = _StubProvider(approved=True, method="sso")
     gated = CoGatedProvider(plugin)
-    # A prompter that would deny locally must not even be consulted for two_factor.
-    result = gated.authenticate(
+
+    # plugin approves, local declines -> denied.
+    denied = gated.authenticate(
         _auth_decision(), _action(), AuthTier.two_factor, prompter=FakePrompter(confirm=False)
     )
-    assert result.approved is True
-    assert result.method == "sso"
+    assert denied.approved is False
+
+    # plugin approves, local also approves (confirm + valid TOTP) -> approved.
+    totp.enroll()
+    secret = totp._read_secret()
+    code = pyotp.TOTP(secret).now()
+    approved = gated.authenticate(
+        _auth_decision(),
+        _action(),
+        AuthTier.two_factor,
+        prompter=FakePrompter(confirm=True, code=code),
+    )
+    assert approved.approved is True
+    assert approved.method == "sso+local"
+
+
+def test_plugin_denial_never_consults_local():
+    """A plugin denial (or non-approval) short-circuits — the local human is
+    never bothered when the plugin has already said no."""
+    plugin = _StubProvider(approved=False, method="sso")
+    gated = CoGatedProvider(plugin)
+    prompter = FakePrompter(confirm=True)  # would approve if ever asked
+    result = gated.authenticate(
+        _auth_decision(), _action(), AuthTier.soft_confirm, prompter=prompter
+    )
+    assert result.approved is False
+    assert prompter.messages == []  # never consulted
 
 
 def test_plugin_raising_is_denied_with_error_method():
