@@ -193,6 +193,60 @@ def test_notify_outcome_window_is_topmost_and_shows_text(monkeypatch, fake_root)
     assert any(delay == gui_prompter._OUTCOME_DISPLAY_MS for delay in fake_root.scheduled)
 
 
+def test_outcome_display_ms_is_three_seconds():
+    """Round 6, item 3: raised from 1200ms so the notice can actually be read
+    (and, via the title change below, heard by a screen reader) rather than
+    merely glimpsed."""
+    assert gui_prompter._OUTCOME_DISPLAY_MS == 3000
+
+
+def test_outcome_window_title_names_the_outcome_for_screen_readers(monkeypatch, fake_root):
+    """Item 3: the title becomes "Doberman - <outcome text>" -- a title
+    change is what most screen readers actually announce, so a human who
+    isn't looking at the screen still hears the outcome."""
+    monkeypatch.setattr(gui_prompter, "_populate_outcome_notice", lambda *_a, **_kw: None)
+    gui_prompter._show_outcome_window("Approved", "approved")
+    assert fake_root.titles[-1] == "Doberman - Approved"
+
+
+def test_outcome_window_dismisses_early_on_escape_or_click(monkeypatch, fake_root):
+    """Item 3: a human who notices the notice can close it immediately
+    instead of waiting out the full display time."""
+    monkeypatch.setattr(gui_prompter, "_populate_outcome_notice", lambda *_a, **_kw: None)
+    quit_calls: list[bool] = []
+    fake_root.quit = lambda: quit_calls.append(True)
+    gui_prompter._show_outcome_window("Denied", "denied")
+    assert "<Escape>" in fake_root.bindings
+    assert "<Button-1>" in fake_root.bindings
+    fake_root.bindings["<Escape>"](None)
+    fake_root.bindings["<Button-1>"](None)
+    assert quit_calls == [True, True]
+
+
+def test_outcome_window_keeps_native_chrome_and_never_steals_focus():
+    """Item 3: normal window-manager chrome (never ``overrideredirect`` --
+    that drops the title bar, the one channel a screen reader actually
+    announces) and never ``focus_force`` (``-topmost`` alone is enough to pop
+    over the agent's terminal without stealing keyboard focus)."""
+    import inspect
+
+    source = inspect.getsource(gui_prompter._show_outcome_window) + inspect.getsource(
+        gui_prompter._populate_outcome_notice
+    )
+    assert ".overrideredirect(" not in source  # docstring may still name it in prose
+    assert ".focus_force(" not in source
+
+
+def test_expiry_flash_docstring_matches_its_own_constant():
+    """The countdown's own docstring used to say "1.5s flash" while
+    :data:`gui_prompter._EXPIRY_FLASH_MS` was actually 600ms (0.6s) -- a
+    comment/constant mismatch from an earlier round; item 3 (round 6) fixes
+    the words to match the number."""
+    assert gui_prompter._EXPIRY_FLASH_MS == 600
+    assert "0.6s" in gui_prompter._build_countdown.__doc__
+    assert "1.5s" not in gui_prompter._build_countdown.__doc__
+
+
 def test_fallback_notify_outcome_forwards_to_the_channel_that_answered():
     """FallbackPrompter forwards to whichever chained prompter actually
     answered -- never a channel that never opened, and never the FIRST one
@@ -546,8 +600,10 @@ def test_palette_is_dark_tan_and_amber():
     The hex must stay on the shared brand system (landing + explainer video): a tan
     brand accent and an amber (AUTH-verdict) Approve action, never the old off-brand
     orange. Both accents stay red/green-dominant with low blue (no purple, no neon).
-    Deny is now the SOLID button (tan fill, dark ink) and Approve is outlined on the
-    panel color — the fail-closed default reads as the visually dominant one.
+    Round 6 (item 5): Deny's own fill is now a NEUTRAL light chip -- never tan/amber,
+    which stay reserved for the wordmark/links and severity/countdown respectively --
+    with a dark ink; Deny stays the visually dominant button through solid weight and
+    ink contrast alone, and Approve stays outlined on the panel color.
     """
     for surface in (gui_prompter._BG, gui_prompter._PANEL):
         assert max(_rgb(surface)) < 48  # near-black surfaces
@@ -559,7 +615,10 @@ def test_palette_is_dark_tan_and_amber():
     assert ar > 200 and ag > 150 and ab < 100  # amber: red + green high, low blue
     assert ag > bg_  # amber is more yellow (greener) than the tan brand
 
-    assert max(_rgb(gui_prompter._BRAND_FG)) < 60  # dark ink for contrast on the tan Deny button
+    dr, dg, db = _rgb(gui_prompter._DENY_FILL)
+    assert min(dr, dg, db) > 200  # light, not a mid-tone brand accent
+    assert max(dr, dg, db) - min(dr, dg, db) <= 12  # low-saturation neutral, not tan/amber
+    assert _contrast_ratio(gui_prompter._DENY_FILL, gui_prompter._BG) >= 7.0  # ink vs fill
 
 
 def test_brand_block_stays_under_48px_tall(real_root):
@@ -605,15 +664,17 @@ def test_focus_ring_reaches_wcag_non_text_contrast_against_both_buttons():
     _APPROVE, Approve's amber TEXT color, when Approve's real fill is
     _PANEL -- against which the round-2 ring measured only 1.25:1).
 
-    A single flat ring color cannot clear 3:1 against BOTH the Deny fill
-    (_BRAND, mid-luminance) and the near-black window background (_BG) at
-    once -- the "dark enough for _BRAND" and "light enough for _BG" luminance
-    ranges don't overlap for any color, so the ring is two-tone: an inner
-    line per button (_RING_DENY against Deny's own fill, _RING_APPROVE
-    against Approve's own fill _PANEL) plus a shared outer line (_RING_OUTER)
-    against the window background, both buttons.
+    A single flat ring color cannot clear 3:1 against BOTH a button's own
+    fill and the near-black window background (_BG) at once when the two
+    buttons' fills sit at opposite ends of the luminance range -- Deny's
+    fill (_DENY_FILL, round 6: a neutral near-white, no longer the brand
+    tan) needs a DARK inner ring, Approve's fill (_PANEL, near-black) needs
+    a LIGHT one -- so the ring is two-tone: an inner line per button
+    (_RING_DENY against Deny's own fill, _RING_APPROVE against Approve's own
+    fill _PANEL) plus a shared outer line (_RING_OUTER) against the window
+    background, both buttons.
     """
-    assert _contrast_ratio(gui_prompter._RING_DENY, gui_prompter._BRAND) >= 3.0
+    assert _contrast_ratio(gui_prompter._RING_DENY, gui_prompter._DENY_FILL) >= 3.0
     assert _contrast_ratio(gui_prompter._RING_APPROVE, gui_prompter._PANEL) >= 3.0
     assert _contrast_ratio(gui_prompter._RING_OUTER, gui_prompter._BG) >= 3.0
     # Approve's fill is itself near-black, so its inner line must ALSO clear
@@ -1008,6 +1069,74 @@ def test_target_panel_toggle_expands_to_the_full_target(real_root):
     assert target_text.get("1.0", "end").strip() == long_target
 
 
+def test_expanding_a_tall_target_never_pushes_the_buttons_off_screen(monkeypatch, real_root):
+    """P1, item 1: the expanded-view cap is derived from the work area MINUS
+    every OTHER element the dialog already has on screen (brand, headline,
+    question, risk, countdown, buttons, hint, padding), never a blind
+    fraction of the raw monitor height -- a 20-line target previously
+    measured at 1549px tall on an 1128px work area, with Deny/Approve pushed
+    off the bottom. Expanding a 60-line target must still fit."""
+    import tkinter.ttk as ttk
+
+    root = real_root
+    work_w, work_h = 1280, 1128
+    monkeypatch.setattr(gui_prompter, "_monitor_rect_under_cursor", lambda: (0, 0, work_w, work_h))
+
+    gui_prompter._configure_window(root)
+    answer: dict = {}
+    long_target = "\n".join(f"line {i} of a very long target indeed" for i in range(60))
+    parts = dict(_SAMPLE_PARTS, target=long_target)
+    gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
+    root.update()
+
+    toggle = next(
+        w
+        for w in _walk_widgets(root)
+        if isinstance(w, ttk.Button) and w.cget("text") == gui_prompter._toggle_expand_label(parts)
+    )
+    toggle.invoke()  # _toggle() re-centers via _center_on_screen internally
+    root.update()
+
+    assert root.winfo_reqheight() <= work_h
+
+    deny = next(
+        w for w in _walk_widgets(root) if isinstance(w, ttk.Button) and w.cget("text") == "Deny"
+    )
+    assert deny.winfo_rooty() + deny.winfo_reqheight() <= work_h
+
+
+def test_expanded_scrollbar_spans_the_full_panel_height(monkeypatch, real_root):
+    """P1, item 2: the Scrollbar must be packed (side="right", fill="y")
+    BEFORE the Text (side="left", fill="both", expand=True) so both carve
+    the panel's cavity along the SAME axis and share its full height --
+    previously the Text was packed side="top" first and claimed the whole
+    cavity top-to-bottom before the Scrollbar existed, leaving it only the
+    thin leftover strip below (measured at a ~30px stub)."""
+    import tkinter
+    import tkinter.ttk as ttk
+
+    root = real_root
+    # A small work area forces the scrollbar branch (total lines > cap).
+    monkeypatch.setattr(gui_prompter, "_monitor_rect_under_cursor", lambda: (0, 0, 1280, 400))
+    frame = gui_prompter._content_frame(root)
+    long_target = "\n".join(f"line {i}" for i in range(60))
+    gui_prompter._build_target_panel(root, frame, long_target)
+    root.update()
+
+    toggle = next(
+        w
+        for w in _walk_widgets(frame)
+        if isinstance(w, ttk.Button) and w.cget("text") == gui_prompter._TOGGLE_EXPAND_LABEL
+    )
+    toggle.invoke()
+    root.update()
+
+    text = next(w for w in _walk_widgets(frame) if isinstance(w, tkinter.Text))
+    scrollbar = next(w for w in _walk_widgets(frame) if isinstance(w, ttk.Scrollbar))
+    assert scrollbar.winfo_height() > 0
+    assert abs(scrollbar.winfo_height() - text.winfo_height()) <= 2  # spans the full panel
+
+
 def test_countdown_ticks_then_denies_on_expiry(real_root):
     """The countdown label ticks every second and, at zero, shows a "Denied"
     message before closing -- an unanswered dialog is never a silent vanish.
@@ -1046,10 +1175,12 @@ def test_countdown_adopts_severity_ramp_as_time_runs_low(real_root):
     assert "bold" in label.cget("font")
 
 
-def test_more_time_button_extends_the_countdown_once(real_root):
+def test_more_time_button_extends_the_countdown_up_to_ten_times(real_root):
     """WCAG 2.2.1: a real, focusable control lets a human actually present ask
-    for more time -- usable exactly once per dialog, and it must extend the
-    deadline for real (the countdown must not expire on schedule after use)."""
+    for more time -- round 6 raises this from usable-once to usable up to
+    :data:`gui_prompter._MAX_EXTENSIONS` (10) times, each still extending the
+    deadline for real (the countdown must not expire on schedule after use),
+    with the remaining-uses count shown on the button itself."""
     import tkinter.ttk as ttk
 
     root = real_root
@@ -1062,16 +1193,32 @@ def test_more_time_button_extends_the_countdown_once(real_root):
     more_time = next(
         w
         for w in _walk_widgets(root)
-        if isinstance(w, ttk.Button) and w.cget("text") == gui_prompter._MORE_TIME_LABEL
+        if isinstance(w, ttk.Button) and w.cget("text").startswith("More time")
     )
-    more_time.invoke()
+    assert more_time.cget("text") == "More time (+2:00, 10 left)"
+
+    for used in range(1, gui_prompter._MAX_EXTENSIONS):
+        more_time.invoke()
+        root.update()
+        assert "disabled" not in more_time.state()  # still usable -- uses remain
+        left = gui_prompter._MAX_EXTENSIONS - used
+        assert more_time.cget("text") == f"More time (+2:00, {left} left)"
+
+    more_time.invoke()  # the 10th and final use
     root.update()
-    assert "disabled" in more_time.state()  # usable once
+    assert "disabled" in more_time.state()  # exhausted
+    assert more_time.cget("text") == "More time (+2:00, 0 left)"
 
     for _ in range(5):  # drive exactly the original 5s worth of ticks
         if scheduled:
             scheduled.pop(0)()
     assert expired == []  # the +120s extension held it open past the original window
+
+
+def test_more_time_label_pure_formatting():
+    assert gui_prompter._more_time_label(10) == "More time (+2:00, 10 left)"
+    assert gui_prompter._more_time_label(1) == "More time (+2:00, 1 left)"
+    assert gui_prompter._more_time_label(0) == "More time (+2:00, 0 left)"
 
 
 def test_more_time_button_is_never_the_default_focus(real_root):
@@ -2073,8 +2220,12 @@ def test_low_risk_chip_is_an_outline_not_the_brightest_element(real_root):
 
 
 def test_critical_approve_label_pure_formatting():
-    assert gui_prompter._critical_approve_label("Approve", 1.5) == "Approve (2)"
-    assert gui_prompter._critical_approve_label("Approve", 0.05) == "Approve (1)"
+    """Round 6, item 4: names what the button is doing ("Wait Ns, then
+    Approve") instead of the cryptic "Approve (2)" style the round-3 fix
+    shipped -- a bare number in parentheses reads as an unstated counter,
+    not "you must wait"."""
+    assert gui_prompter._critical_approve_label("Approve", 1.5) == "Wait 2s, then Approve"
+    assert gui_prompter._critical_approve_label("Approve", 0.05) == "Wait 1s, then Approve"
     assert gui_prompter._critical_approve_label("Approve", 0.0) == "Approve"
     assert gui_prompter._critical_approve_label("Approve", -1.0) == "Approve"
 
@@ -2132,10 +2283,10 @@ def test_critical_approve_button_starts_disabled_and_ticks_down(real_root):
     approve = next(
         w
         for w in _walk_widgets(root)
-        if isinstance(w, ttk.Button) and w.cget("text").startswith("Approve (")
+        if isinstance(w, ttk.Button) and w.cget("text").startswith("Wait ")
     )
     assert "disabled" in approve.state()
-    assert approve.cget("text") == "Approve (2)"
+    assert approve.cget("text") == "Wait 2s, then Approve"
 
     while scheduled and "disabled" in approve.state():
         scheduled.pop(0)()
@@ -2158,11 +2309,15 @@ def test_critical_approve_delay_gate_holds_against_ctrl_return(real_root):
     gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
     root.update()
 
-    buttons = {
-        w.cget("text").split(" (")[0]: w
-        for w in _walk_widgets(root)
-        if isinstance(w, ttk.Button) and w.cget("text").split(" (")[0] in ("Deny", "Approve")
-    }
+    buttons: dict = {}
+    for w in _walk_widgets(root):
+        if not isinstance(w, ttk.Button):
+            continue
+        text = w.cget("text")
+        if text == "Deny":
+            buttons["Deny"] = w
+        elif text == "Approve" or text.startswith("Wait "):
+            buttons["Approve"] = w
     _fake_focus_tracking(root, buttons["Deny"], buttons["Approve"])
     buttons["Deny"].event_generate("<Right>")
     root.update()
@@ -2517,6 +2672,22 @@ def test_disabled_state_maps_exist_for_deny_approve_and_link(real_root):
     assert "disabled" in link_fg_flat and gui_prompter._MUTED in link_fg_flat
 
 
+def test_deny_style_uses_the_neutral_fill_never_the_brand_tan(real_root):
+    """Round 6, item 5: Deny's real ttk style -- not just the palette
+    constants -- paints the neutral fill with dark ink, never the brand tan
+    (amber/tan stay reserved for severity/countdown and the wordmark/links).
+    """
+    import tkinter.ttk as ttk
+
+    root = real_root
+    gui_prompter._apply_ttk_style(root)
+    style = ttk.Style(root)
+
+    assert style.lookup("Doberman.Deny.TButton", "background") == gui_prompter._DENY_FILL
+    assert style.lookup("Doberman.Deny.TButton", "foreground") == gui_prompter._BG
+    assert style.lookup("Doberman.Deny.TButton", "background") != gui_prompter._BRAND
+
+
 def test_disable_on_expiry_clears_the_focus_rings_outer_line(real_root):
     """The wrapper Frame's ring may not reliably see <FocusOut> when the
     widget is disabled while still focused on every Tk build -- the expired
@@ -2843,7 +3014,7 @@ def test_countdown_re_warns_after_a_more_time_extension(monkeypatch, real_root):
     more_time = next(
         w
         for w in _walk_widgets(root)
-        if isinstance(w, ttk.Button) and w.cget("text") == gui_prompter._MORE_TIME_LABEL
+        if isinstance(w, ttk.Button) and w.cget("text").startswith("More time")
     )
     more_time.invoke()  # +120s -- remaining is now ~151, well past 30 again
     while scheduled and seen.count(30) < 1:

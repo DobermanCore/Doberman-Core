@@ -77,24 +77,30 @@ _PANEL = "#191411"  # message panel        (= --ink-2)
 _FG = "#f2f2f2"  # primary text           (= --fg)
 _MUTED = "#8f8b89"  # secondary text       (= --fg-3)
 _RULE = "#2d2824"  # hairline borders      (= --rule-2)
-_BRAND = "#ec9247"  # tan — brand wordmark AND Deny's solid fill (= --tan)
-_BRAND_ACTIVE = "#f2a564"  # tan hover/active
-_BRAND_FG = "#271700"  # dark ink on the tan Deny button
+_BRAND = "#ec9247"  # tan — the wordmark AND every link-style accent, nothing else (= --tan)
+#: Round 6 (item 5): Deny's fill is now a NEUTRAL light chip, never a brand
+#: color -- amber/tan were carrying too many jobs at once (severity, the
+#: countdown, the brand mark, AND the fail-closed button's own paint), so a
+#: human's eye had no reliable way to tell "this color means urgency" from
+#: "this color means brand" from "this color means safe default". _FG-tinted
+#: (a warm near-white, not a pure grey) rather than stark white so it still
+#: reads as part of this dark theme; _BG makes a >=7:1 dark ink on top of it.
+#: Deny stays the visually DOMINANT button through solid weight + ink
+#: contrast alone, not through owning an accent hue.
+_DENY_FILL = "#e8e4e1"  # neutral light fill for Deny (>= 7:1 vs _BG ink)
+_DENY_FILL_ACTIVE = "#f5f3f1"  # hover/active, still neutral -- no accent hue
 _APPROVE = "#fbb636"  # amber — Approve's outline + text (= --auth), never filled
 _APPROVE_ACTIVE = "#ffca5e"  # amber hover/active (link-style hover only)
 #: Keyboard focus ring — TWO-TONE by construction, because no single flat
 #: color can clear WCAG 1.4.11's >= 3:1 non-text-contrast bar against every
-#: surface it sits next to. Deny's fill (_BRAND) sits at mid-luminance: a
-#: ring dark enough to read against it (<=~0.096 relative luminance) is too
-#: dark to also read against the near-black window background (_BG needs
-#: >=~0.112) — those two ranges don't overlap, so a single ring color for
-#: Deny is mathematically impossible, not just untuned (round-2's fix reused
-#: _RULE, which cleared _BRAND at 6.08:1 but only 1.25:1 against Approve's
-#: actual fill _PANEL — the round-3 finding). The fix is a ring with two
+#: surface it sits next to. Deny's fill (_DENY_FILL) is now near-white, and
+#: Approve's fill (_PANEL) is near-black -- opposite ends of the luminance
+#: range, so no single ring color reads clearly against both button faces
+#: AND the near-black window background at once. The fix is a ring with two
 #: lines per button: an INNER line touching the button's own face, and an
 #: OUTER line (a wrapping frame's highlight — see _build_buttons) touching
 #: the window background.
-#:   - Deny:    inner = _RING_DENY (_BG, dark)   -> 8.13:1 vs _BRAND
+#:   - Deny:    inner = _RING_DENY (_BG, dark)   -> 15.40:1 vs _DENY_FILL
 #:              outer = _RING_OUTER (_FG, light) -> 17.38:1 vs _BG
 #:   - Approve: inner = _RING_APPROVE (_FG)      -> 16.32:1 vs _PANEL
 #:              outer = _RING_OUTER (_FG)        -> 17.38:1 vs _BG
@@ -157,9 +163,23 @@ _TWO_STEP_TIERS = frozenset({"two_factor", "role_elevation"})
 #: 8). Swaps just the trailing clause; see :func:`_risk_text_for_dialog`.
 _TIER_HINT_CONFIRM_ONLY = "confirm to continue"
 
-#: WCAG 2.2.1: a human actually present can ask for one extension.
+#: WCAG 2.2.1: a human actually present can ask for more time -- up to this
+#: many times per dialog (round 6, item 6: previously exactly once, which is
+#: itself a real accessibility gap for anyone who genuinely needs longer than
+#: one extra 2-minute window; a generous but still finite ceiling keeps the
+#: control from becoming an unbounded way to keep a dialog open forever).
+_MAX_EXTENSIONS = 10
 _EXTENSION_SECONDS = 120
-_MORE_TIME_LABEL = "More time (+2:00)"
+
+
+def _more_time_label(uses_left: int) -> str:
+    """``"More time (+2:00, 9 left)"`` -- names both what one use grants AND
+    how many remain, so the control never reads as infinitely reusable. Pure
+    formatting, split out from the Tk ticking in :func:`_build_countdown` so
+    it is testable without a display.
+    """
+    return f"More time (+{_mmss(_EXTENSION_SECONDS)}, {uses_left} left)"
+
 
 #: How long the countdown's in-window "Denied - no answer in M:SS" flash
 #: stays up before the dialog closes (item 3). Short: the real notice a human
@@ -307,11 +327,13 @@ def _apply_dark_title_bar(root: Any) -> None:
 def _apply_ttk_style(root: Any) -> None:
     """Style the two real button roles from the palette (never the OS default).
 
-    Deny is solid/filled (the safe, fail-closed default reads as the dominant
-    button); Approve is outlined on the panel color. Both use ``clam`` (the one
-    stdlib ttk theme that honors a custom ``focuscolor``/``bordercolor`` per
-    state), so the keyboard focus ring is the brand ring color — never Approve's
-    amber — on whichever button currently holds it. The link-style toggle
+    Deny is solid/filled in a NEUTRAL light color (never the brand tan/amber —
+    the safe, fail-closed default reads as the dominant button through solid
+    weight and ink contrast, not through owning an accent hue); Approve is
+    outlined on the panel color. Both use ``clam`` (the one stdlib ttk theme
+    that honors a custom ``focuscolor``/``bordercolor`` per state), so the
+    keyboard focus ring is never Approve's amber on whichever button
+    currently holds it. The link-style toggle
     ("Show all N characters") gets its own real focus ring too — previously it
     had none at all (borderwidth 0, no focus mapping).
 
@@ -348,17 +370,21 @@ def _apply_ttk_style(root: Any) -> None:
     }
     style.configure(
         "Doberman.Deny.TButton",
-        background=_BRAND,
-        foreground=_BRAND_FG,
-        bordercolor=_BRAND,
+        background=_DENY_FILL,
+        foreground=_BG,
+        bordercolor=_DENY_FILL,
         focuscolor=_RING_DENY,
         **common,
     )
     style.map(
         "Doberman.Deny.TButton",
-        background=[("disabled", _PANEL), ("active", _BRAND_ACTIVE), ("pressed", _BRAND_ACTIVE)],
+        background=[
+            ("disabled", _PANEL),
+            ("active", _DENY_FILL_ACTIVE),
+            ("pressed", _DENY_FILL_ACTIVE),
+        ],
         foreground=[("disabled", _MUTED)],
-        bordercolor=[("disabled", _PANEL), ("focus", _RING_DENY), ("!focus", _BRAND)],
+        bordercolor=[("disabled", _PANEL), ("focus", _RING_DENY), ("!focus", _DENY_FILL)],
         focuscolor=[("disabled", _PANEL)],
     )
     style.configure(
@@ -759,13 +785,34 @@ def _make_read_only(text: Any) -> None:
     text.bind("<Key>", _guard)
 
 
-def _expanded_line_cap(root: Any) -> int:
-    """Expanded-view line cap: 70% of the monitor's WORK area height (in real
-    text lines, via the target font's actual line height) — never a blind
-    fixed guess, so a very tall multi-line target can't push the dialog's
-    buttons past the bottom of even a small laptop panel. Falls back to the
-    fixed :data:`_TARGET_EXPANDED_MAX_LINES` ceiling when no monitor rect is
-    available (non-Windows, or any Win32 failure).
+#: Slack (device px) reserved beyond the monitor's WORK area rect for
+#: window-manager chrome the dialog's own widget geometry can't see --
+#: ``root.winfo_reqheight()`` measures only the Tk CLIENT area, never the OS
+#: title bar/DWM borders ``GetWindowRect`` includes, and a real capture on a
+#: 150%-scaled (144 DPI) monitor measured that gap at 56 device px. Without
+#: this margin, a cap that exactly fills the work area on paper still gets
+#: real screen pixels clipped off by the title bar alone.
+_EXPAND_WINDOW_CHROME_PX = 80
+
+
+def _expanded_line_cap(root: Any, panel: Any) -> int:
+    """Expanded-view line cap: however many real target-font lines fit in the
+    monitor's WORK area height once every OTHER element of the dialog (brand,
+    headline, question, risk, countdown, buttons, hint, padding -- anything
+    that ISN'T the target panel) is accounted for -- never a blind fraction of
+    the raw monitor height (P1, item 1: a 20-line target measured at 1549px
+    tall on an 1128px work area, with Deny/Approve pushed off the bottom,
+    because the old "70% of monitor height" math never asked how tall the
+    REST of the dialog already was).
+
+    ``root.winfo_reqheight() - panel.winfo_reqheight()`` is the real,
+    currently-measured height of everything else in the dialog -- valid at
+    the moment this is called, i.e. BEFORE the target panel is repainted to
+    its expanded size -- so subtracting that (plus a window-chrome margin)
+    from the work area leaves exactly how much room the target panel itself
+    may use. Falls back to the fixed :data:`_TARGET_EXPANDED_MAX_LINES`
+    ceiling when no monitor rect is available (non-Windows, or any Win32
+    failure).
     """
     monitor = _monitor_rect_under_cursor()
     if monitor is None:
@@ -777,7 +824,10 @@ def _expanded_line_cap(root: Any) -> int:
         line_h = tkfont.Font(root=root, font=_TARGET_FONT).metrics("linespace")
     except Exception:
         return _TARGET_EXPANDED_MAX_LINES
-    return max(4, int(work_h * 0.70) // max(line_h, 1))
+    root.update_idletasks()
+    other_h = max(root.winfo_reqheight() - panel.winfo_reqheight(), 0)
+    available = work_h - other_h - _EXPAND_WINDOW_CHROME_PX
+    return max(4, int(available) // max(line_h, 1))
 
 
 def _more_characters_note(n: int) -> str:
@@ -824,8 +874,10 @@ def _build_target_panel(
     displaylines"`` / ``"end-1c -1 displaylines"``), never guessed from a
     chars-per-line estimate, so they can never drift from what Tk actually
     renders. A ``toggle_label`` (item 4 — named for the action, e.g. "Show
-    the full command"/"path"/"URL") expands into a scrollable region (capped
-    at 70% of the monitor's work area — :func:`_expanded_line_cap`). The
+    the full command"/"path"/"URL") expands into a scrollable region capped
+    at whatever fits the monitor's work area ALONGSIDE the dialog's own other
+    content (:func:`_expanded_line_cap` — never a blind fraction of the raw
+    monitor height, so Deny/Approve can never end up off-screen). The
     question/risk/countdown this function's caller draws afterward are never
     inside this panel, so they can never be pushed out of view by a long
     target.
@@ -855,7 +907,14 @@ def _build_target_panel(
         state="normal",
         takefocus=True,
     )
-    text.pack(fill="x")
+    # side="left" (never the "top" default) so a later Scrollbar packed
+    # side="right" carves its slice from the SAME cavity axis (item 2): two
+    # widgets packed on the SAME left/right axis share the full cavity
+    # height; a Text packed side="top" first instead claims the whole
+    # cavity top-to-bottom before any sibling exists, leaving a Scrollbar
+    # added afterward only the thin leftover strip below it (measured at a
+    # ~30px stub against the panel's real height).
+    text.pack(side="left", fill="both", expand=True)
     text.tag_configure("muted", foreground=_MUTED)
     _make_read_only(text)
 
@@ -955,12 +1014,21 @@ def _build_target_panel(
             _paint([(target, None)], _TARGET_MAX_LINES)
 
     def _expand() -> None:
-        cap = _expanded_line_cap(root)
+        cap = _expanded_line_cap(root, panel)
         _paint([(target, None)], cap)
         if total > cap:  # hit the cap -- offer a scrollbar rather than clip silently
             sb = ttk.Scrollbar(panel, command=text.yview)
             text.configure(yscrollcommand=sb.set)
+            # Packed BEFORE re-packing the Text (item 2): pack() carves
+            # cavity in slave-list order, so the scrollbar must claim its
+            # own full-height strip on the right FIRST -- forgetting and
+            # re-adding the already-packed Text moves it to the end of that
+            # list, behind the scrollbar, so Text's expand=True then fills
+            # whatever cavity is left instead of having already consumed
+            # the whole panel before the scrollbar ever got a turn.
             sb.pack(side="right", fill="y")
+            text.pack_forget()
+            text.pack(side="left", fill="both", expand=True)
             scrollbar_holder["y"] = sb
 
     def _toggle() -> None:
@@ -1162,26 +1230,29 @@ def _warn_time_remaining(root: Any, secs: int) -> None:
 def _build_countdown(
     root: Any, frame: Any, timeout_s: float, on_expire: Any, *, action_id: str = "unknown"
 ) -> Any:
-    """A ticking "auto-denies in M:SS" label, plus a one-shot "More time"
-    control (WCAG 2.2.1 — a human actually present must be able to ask for
-    more time). The label adopts the same severity ramp risk uses as time
-    runs low — amber under 30s, bold BLOCK-red under 10s — so an urgent
-    countdown reads as urgent the same way an urgent risk does; at zero, a
-    brief "Denied" flash, then close.
+    """A ticking "auto-denies in M:SS" label, plus a "More time" control
+    (WCAG 2.2.1 — a human actually present must be able to ask for more
+    time). The label adopts the same severity ramp risk uses as time runs
+    low — amber under 30s, bold BLOCK-red under 10s — so an urgent countdown
+    reads as urgent the same way an urgent risk does; at zero, a brief
+    "Denied" flash, then close.
 
     At zero, ``on_expire`` runs FIRST and SYNCHRONOUSLY, before this function
     ever shows the flash or schedules the window's close: it must resolve the
     shared answer to a denial (through the same "first answer wins" door every
     ``_decide`` in the populate functions resolves through) and disable every
-    interactive widget, so a click or Return landing during the 1.5s flash can
-    never still change the outcome. The "More time" button is disabled the
-    same instant, alongside Deny/Approve/the code entry.
+    interactive widget, so a click or Return landing during the 0.6s flash
+    (:data:`_EXPIRY_FLASH_MS`) can never still change the outcome. The "More
+    time" button is disabled the same instant, alongside Deny/Approve/the
+    code entry.
 
-    "More time" is usable exactly ONCE per dialog (a real, focusable, but
-    never the *default*-focused control — :func:`_wire_keyboard` always moves
-    initial focus to Deny after this function returns) and extends the
-    countdown by :data:`_EXTENSION_SECONDS`; each use is logged (the action id
-    only, never the target).
+    "More time" is usable up to :data:`_MAX_EXTENSIONS` times per dialog
+    (round 6, item 6 — previously exactly once; a real, focusable, but never
+    the *default*-focused control — :func:`_wire_keyboard` always moves
+    initial focus to Deny after this function returns), each use extending
+    the countdown by :data:`_EXTENSION_SECONDS` and re-labelling the button
+    with how many uses remain (:func:`_more_time_label`); every use is logged
+    (the action id only, never the target).
     """
     import tkinter as tk
     import tkinter.ttk as ttk
@@ -1190,7 +1261,7 @@ def _build_countdown(
     label.pack(fill="x", pady=(2, 4))
     total = max(1, int(timeout_s))
     remaining = {"s": total}
-    extended = {"used": False}
+    extended = {"used": 0}
 
     def _paint(secs: int) -> None:
         if secs < 10:
@@ -1203,18 +1274,27 @@ def _build_countdown(
         label.configure(text=deadline_note_mmss(secs), fg=color, font=font)
 
     def _extend() -> None:
-        if extended["used"]:
+        if extended["used"] >= _MAX_EXTENSIONS:
             return
-        extended["used"] = True
-        more_time_btn.state(["disabled"])
+        extended["used"] += 1
+        uses_left = _MAX_EXTENSIONS - extended["used"]
+        more_time_btn.configure(text=_more_time_label(uses_left))
+        if uses_left <= 0:
+            more_time_btn.state(["disabled"])
         remaining["s"] += _EXTENSION_SECONDS
         logger.info(
-            "auth dialog countdown extended by %ss (action %s)", _EXTENSION_SECONDS, action_id
+            "auth dialog countdown extended by %ss (action %s, %s left)",
+            _EXTENSION_SECONDS,
+            action_id,
+            uses_left,
         )
         _paint(remaining["s"])
 
     more_time_btn = ttk.Button(
-        frame, text=_MORE_TIME_LABEL, command=_extend, style="Doberman.Link.TButton"
+        frame,
+        text=_more_time_label(_MAX_EXTENSIONS),
+        command=_extend,
+        style="Doberman.Link.TButton",
     )
     more_time_btn.pack(anchor="w", pady=(0, 6))
 
@@ -1340,13 +1420,17 @@ _CRITICAL_APPROVE_DELAY_S = 1.5
 
 
 def _critical_approve_label(base_text: str, remaining_s: float) -> str:
-    """``"Approve (2)"`` while the CRITICAL delay is still running; the bare
-    label once it clears. Pure formatting, split out from the Tk ticking in
-    :func:`_gate_approve_for_critical` so it is testable without a display.
+    """``"Wait 2s, then Approve"`` while the CRITICAL delay is still running;
+    the bare label once it clears. Names what the button is doing (item 4,
+    round 6) instead of the cryptic ``"Approve (2)"`` the round-3 fix shipped
+    -- a bare number in parentheses reads as a counter for something
+    unstated, not "you must wait". Pure formatting, split out from the Tk
+    ticking in :func:`_gate_approve_for_critical` so it is testable without a
+    display.
     """
     if remaining_s <= 0:
         return base_text
-    return f"{base_text} ({math.ceil(remaining_s)})"
+    return f"Wait {math.ceil(remaining_s)}s, then {base_text}"
 
 
 def _gate_approve_for_critical(root: Any, approve_btn: Any, severity_word: str | None) -> None:
@@ -1444,8 +1528,8 @@ def _populate_confirm(root: Any, message: str, answer: dict, timeout_s: float) -
 
     def _lock_out() -> None:
         # Resolve WITHOUT quitting -- the window must stay open through the
-        # "Denied" flash; _build_countdown's own root.after(1500, root.quit)
-        # is what actually closes it.
+        # "Denied" flash; _build_countdown's own
+        # root.after(_EXPIRY_FLASH_MS, root.quit) is what actually closes it.
         _resolve(False, "expired")
         _disable_on_expiry(root, widgets)
 
@@ -1545,8 +1629,8 @@ def _populate_confirm_parts(root: Any, parts: dict, answer: dict, timeout_s: flo
 
     def _lock_out() -> None:
         # Resolve WITHOUT quitting -- the window must stay open through the
-        # "Denied" flash; _build_countdown's own root.after(1500, root.quit)
-        # is what actually closes it.
+        # "Denied" flash; _build_countdown's own
+        # root.after(_EXPIRY_FLASH_MS, root.quit) is what actually closes it.
         _resolve(False, "expired")
         _disable_on_expiry(root, widgets)
 
@@ -1678,8 +1762,8 @@ def _populate_code(root: Any, message: str, answer: dict, timeout_s: float) -> N
 
     def _lock_out() -> None:
         # Resolve WITHOUT quitting -- the window must stay open through the
-        # "Denied" flash; _build_countdown's own root.after(1500, root.quit)
-        # is what actually closes it.
+        # "Denied" flash; _build_countdown's own
+        # root.after(_EXPIRY_FLASH_MS, root.quit) is what actually closes it.
         _resolve(None, "expired")
         _disable_on_expiry(root, widgets)
 
@@ -1757,8 +1841,8 @@ def _populate_code_parts(root: Any, parts: dict, answer: dict, timeout_s: float)
 
     def _lock_out() -> None:
         # Resolve WITHOUT quitting -- the window must stay open through the
-        # "Denied" flash; _build_countdown's own root.after(1500, root.quit)
-        # is what actually closes it.
+        # "Denied" flash; _build_countdown's own
+        # root.after(_EXPIRY_FLASH_MS, root.quit) is what actually closes it.
         _resolve(None, "expired")
         _disable_on_expiry(root, widgets)
 
@@ -1825,8 +1909,12 @@ _OUTCOME_TEXT = {
     "code_rejected": "Code rejected - denied",
     "expired": "Denied - no answer in time",
 }
-#: How long the outcome notice stays up before closing itself.
-_OUTCOME_DISPLAY_MS = 1200
+#: How long the outcome notice stays up before closing itself. Long enough to
+#: actually be read (and, via the title change, heard by a screen reader)
+#: rather than merely glimpsed -- round 6, item 3 raised this from 1200ms
+#: after measuring that a human moving their attention back from wherever
+#: the auth dialog had interrupted them could easily miss a sub-1.5s flash.
+_OUTCOME_DISPLAY_MS = 3000
 
 #: A one-line, actionable next step for an outcome that has one (item 5) --
 #: an outcome absent here (approved/denied) gets none: there is nothing more
@@ -1887,25 +1975,28 @@ def _show_outcome_window(text: str, outcome: str = "denied") -> None:
     it must never block longer than that or raise into the caller (a
     post-decision notice is purely cosmetic, never a decision path).
 
-    ``overrideredirect`` drops window-manager chrome (title bar, taskbar
-    entry) — the same trick used for any transient "toast" notice — so it
-    never grabs keyboard focus away from whatever the human was doing.
-    Reuses :func:`_open_root` (and so the macOS main-thread guard, and the
-    no-display case) rather than calling ``tkinter.Tk()`` directly.
+    Round 6 (item 3): this window keeps NORMAL window-manager chrome (never
+    ``overrideredirect`` — the previous chrome-less "toast" trick drops the
+    title bar, and with it the one channel — a title change — most screen
+    readers actually announce) and titles itself ``"Doberman - <outcome>"``
+    so a human who isn't looking at the screen still hears what happened.
+    It stays non-focus-stealing through ``-topmost`` ALONE — never
+    ``focus_force()`` — and can be dismissed the instant it's noticed, via
+    Escape or a click, rather than only ever waiting out the full display
+    time. Reuses :func:`_open_root` (and so the macOS main-thread guard, and
+    the no-display case) rather than calling ``tkinter.Tk()`` directly.
     """
     try:
         root = _open_root()
     except PrompterUnavailableError:
         return
     try:
-        root.title(_TITLE)
+        root.title(f"Doberman - {text}")
         root.configure(bg=_BG)
         root.resizable(False, False)
         root.attributes("-topmost", True)
-        try:
-            root.overrideredirect(True)  # no chrome; never requests window-manager focus
-        except Exception:  # noqa: S110 — cosmetic only
-            pass
+        root.bind("<Escape>", lambda _e: root.quit())
+        root.bind("<Button-1>", lambda _e: root.quit())
         _populate_outcome_notice(root, text, outcome)
         root.update_idletasks()
         # Item 10: the toast prefers the FOCUSED window's monitor over the
@@ -2089,7 +2180,7 @@ class GuiPrompter:
 
     def notify_outcome(self, parts: dict, outcome: str) -> None:  # noqa: ARG002 — parts unused here
         """Post-decision notice (item 4): a small topmost window shows
-        approved/denied/code_rejected/expired for ~1.2s then closes — a
+        approved/denied/code_rejected/expired for ~3s then closes — a
         wrong-but-well-formed code (or any other non-approval) no longer just
         silently closes the window. Never raises; purely cosmetic.
 
