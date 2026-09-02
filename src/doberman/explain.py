@@ -223,8 +223,14 @@ def _describe_layer(layer: str) -> str:
     return "the rules"
 
 
-def template_explanation(row: dict) -> str:
-    """Deterministic, offline "why" for a decision row. Always available, never raises."""
+def template_explanation(row: dict, *, with_reasons: bool = True) -> str:
+    """Deterministic, offline "why" for a decision row. Always available, never raises.
+
+    ``with_reasons=False`` omits the "Reasons: ..." clause (and its no-codes
+    fallback sentence) entirely - for a caller that already renders the reason
+    codes some other way (the dash feed's glossed ``gloss-list``, see
+    ``doberman.dash.app._feed_row``) so the sentence isn't said twice.
+    """
     role = row.get("agent_role") or "the agent"
     action_type = row.get("action_type") or "an action"
     target = row.get("target_path_class")
@@ -240,11 +246,12 @@ def template_explanation(row: dict) -> str:
         f"Doberman decided {verdict} after checking {_describe_layer(layer)}.",
     ]
 
-    if reason_codes:
-        reasons_text = "; ".join(_describe_reason(c) for c in reason_codes)
-        sentences.append(f"Reasons: {reasons_text}.")
-    else:
-        sentences.append("No specific reason codes were recorded for this decision.")
+    if with_reasons:
+        if reason_codes:
+            reasons_text = "; ".join(_describe_reason(c) for c in reason_codes)
+            sentences.append(f"Reasons: {reasons_text}.")
+        else:
+            sentences.append("No specific reason codes were recorded for this decision.")
 
     if verdict == "AUTH":
         sentences.append(
@@ -260,6 +267,116 @@ def template_explanation(row: dict) -> str:
         )
 
     return " ".join(sentences)
+
+
+#: Verdict -> the word :func:`headline` uses for what happened. Deliberately
+#: short - the headline is a fragment, not a sentence (see `headline` below).
+_HEADLINE_VERDICT_WORD: dict[str, str] = {
+    "BLOCK": "blocked",
+    "AUTH": "needs approval",
+    "PASS": "allowed",
+}
+
+#: Reason code -> a short (<=4 word), plain-English fact for `headline()`.
+#: `_headline_fact` walks the ROW's OWN reason-code list in ITS order and
+#: takes the first one with an entry here, so the row's own ordering (in
+#: practice, whichever rule fired most decisively) drives the headline even
+#: when several codes fired together - this dict does not impose its own
+#: ranking. A deliberate subset of REASON_DESCRIPTIONS (the common/
+#: high-signal codes), not all of them - a code missing here falls back to a
+#: humanized form of itself (see `_headline_fact`), so this never has to be
+#: exhaustive to stay safe.
+_HEADLINE_FACTS: dict[str, str] = {
+    "secret_exfiltration": "Secret exfiltration attempt",
+    "confirmed_exfil": "Confirmed secret exfiltration",
+    "multi_step_exfil": "Multi-step exfiltration pattern",
+    "sensitive_secret_access": "Secret file read",
+    "possible_high_entropy_secret": "Possible secret in payload",
+    "pii_data_class_egress": "Personal-data egress",
+    "encoded_exfiltration": "Encoded exfiltration attempt",
+    "smuggled_token_channel": "Smuggled token channel",
+    "destructive_command": "Recursive delete",
+    "protected_path_blocked": "Protected-path write",
+    "sensitive_path_access": "Sensitive-path access",
+    "bulk_operation": "Bulk operation",
+    "irreversible_high_blast": "Hard-to-undo action",
+    "lethal_trifecta": "Lethal-trifecta pattern",
+    "correlated_trifecta": "Lethal-trifecta pattern",
+    "correlated_destructive_flow": "Correlated destructive pattern",
+    "unknown_external_destination": "External upload",
+    "egress_blocked_by_mode": "Egress blocked by mode",
+    "anomalous_egress_velocity": "Anomalous egress burst",
+    "egress_route_divergence": "Unexpected egress route",
+    "unusual_for_workflow": "Unusual-for-agent action",
+    "unusual_for_deployment": "Unusual-for-deployment action",
+    "stylometric_outlier": "Writing-style outlier",
+    "role_blocked_target": "Role-restricted target",
+    "role_out_of_scope": "Out-of-scope action",
+    "policy_source_blocked": "Blocked instruction source",
+    "policy_source_sensitive": "Sensitive instruction source",
+    "instruction_nullification": "Instruction-nullification attempt",
+    "authority_override": "Authority-override attempt",
+    "indirect_injection": "Indirect prompt injection",
+    "embedded_instruction": "Embedded untrusted instruction",
+    "persona_override": "Persona-override attempt",
+    "urgency_secrecy_framing": "Urgency/secrecy framing",
+    "obfuscated_content": "Obfuscated content",
+    "repeat_after_block": "Repeated blocked request",
+    "turn_blocked_repeatedly": "Repeated-block lockout",
+    "unknown_tool": "Unrecognized tool",
+    "artifact_digest_mismatch": "Digest mismatch",
+    "tool_schema_changed": "Tool contract changed",
+    "environment_dump_command": "Environment dump",
+    "single_use_elevation_unclaimable": "Elevation already spent",
+}
+
+#: Reason codes whose headline reads better with the TARGET PATH CLASS as the
+#: trailing detail (``"... - .env class"``) rather than the action type - a
+#: path-shaped fact is more specific than a bare action type on its own.
+_HEADLINE_PATH_FOCUSED_CODES = frozenset(
+    {
+        "sensitive_secret_access",
+        "protected_path_blocked",
+        "sensitive_path_access",
+        "possible_high_entropy_secret",
+    }
+)
+
+
+def _headline_fact(reason_codes: list[str]) -> str | None:
+    for code in reason_codes:
+        fact = _HEADLINE_FACTS.get(code)
+        if fact:
+            return fact
+    # No code in the priority table - fall back to humanizing the FIRST code
+    # on the row (still reason-first, just not one we have a curated phrase
+    # for) rather than silently saying nothing about why.
+    for code in reason_codes:
+        return code.replace("_", " ").capitalize()
+    return None
+
+
+def headline(row: dict) -> str:
+    """A <=9-word, reason-first fragment for a feed row's COLLAPSED state.
+
+    Distinguishes otherwise-identical BLOCK rows at a glance (the "why", not
+    the full sentence) - e.g. "Recursive delete blocked - shell_exec" or
+    "Secret file read blocked - .env class". Falls back to a generic "Action"
+    fact when no reason codes are recorded. Never raises - unlike
+    :func:`template_explanation`, this never even touches ``agent_role``, so
+    a row missing every optional field still gets a plain fragment back.
+    """
+    reason_codes = _parse_reason_codes(row.get("reason_codes_json"))
+    verdict = row.get("final_verdict") or "UNKNOWN"
+    verdict_word = _HEADLINE_VERDICT_WORD.get(verdict, verdict.lower())
+    action_type = row.get("action_type") or "action"
+    target = row.get("target_path_class")
+
+    path_focused = any(code in _HEADLINE_PATH_FOCUSED_CODES for code in reason_codes)
+    tail = f"{target} class" if (path_focused and target) else action_type
+    fact = _headline_fact(reason_codes) or "Action"
+
+    return f"{fact} {verdict_word} - {tail}"
 
 
 def _llm_enrichment_enabled() -> bool:

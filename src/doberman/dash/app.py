@@ -78,7 +78,7 @@ from starlette.routing import Route
 from doberman.branding import DASH_MARK_PNG_B64
 from doberman.config import load_mode
 from doberman.dash.stats import build_stats, reason_codes
-from doberman.explain import REASON_DESCRIPTIONS, template_explanation
+from doberman.explain import REASON_DESCRIPTIONS, headline, template_explanation
 from doberman.policy.drift import apply_mode_change
 from doberman.policy.modes import SecurityMode
 from doberman.storage import approvals
@@ -231,6 +231,10 @@ _HTML_SHELL = """<!doctype html>
     color: var(--fg-2); padding-left: .6rem; margin-left: .6rem;
     border-left: 1px solid var(--rule);
   }
+  /* Brand + connection/guard travel together as one unit (round 6) so a
+     narrow viewport can keep them on the SAME first row - see the <=640px
+     block below, where this is the row that must fit brand + dot + pill. */
+  .topbar-row1 { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
   .topbar-right { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
   /* Three visually separated clusters - status / posture / utilities - so the
      topbar reads as grouped controls instead of one long undifferentiated row. */
@@ -238,10 +242,14 @@ _HTML_SHELL = """<!doctype html>
   .topbar-group + .topbar-group {
     padding-left: .9rem; margin-left: .3rem; border-left: 1px solid var(--rule-2);
   }
+  /* Round 6: a plain-text TAG chip (rounded rect), not a pill - the guard
+     pill below (.status-pill, border-radius: 999px) is the only true pill,
+     so the two green "connected" / "ON GUARD" states read as visually
+     distinct shapes, not just a dot vs. a pip glyph. */
   .chip {
     display: inline-flex; align-items: center; gap: .4rem;
     font-family: var(--mono); font-size: var(--fs-1); letter-spacing: .02em;
-    padding: .32rem .6rem; border: 1px solid var(--rule); border-radius: 999px;
+    padding: .32rem .6rem; border: 1px solid var(--rule); border-radius: var(--r-sm);
     background: var(--ink-2); color: var(--fg-3); white-space: nowrap;
   }
   .dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--neutral); flex: none; }
@@ -262,15 +270,22 @@ _HTML_SHELL = """<!doctype html>
   /* Ghost buttons: the theme and shortcuts toggles are conveniences, so they
      carry no border - the one control that changes the security posture
      (#mode-edit-btn) is the bordered one in the topbar. */
-  #theme-toggle-btn, #shortcuts-btn, #shortcuts-close-btn, #shortcuts-toggle-btn {
+  #theme-toggle-btn, #shortcuts-btn, #shortcuts-close-btn, #shortcuts-toggle-btn,
+  #panel-theme-toggle-btn, #feed-announce-toggle-btn {
     font-family: var(--font); font-size: var(--fs-1); font-weight: 600; padding: .35rem .8rem;
     border: 1px solid transparent; background: transparent; color: var(--fg-3);
   }
   #theme-toggle-btn:hover, #shortcuts-btn:hover, #shortcuts-close-btn:hover,
-  #shortcuts-toggle-btn:hover {
+  #shortcuts-toggle-btn:hover, #panel-theme-toggle-btn:hover, #feed-announce-toggle-btn:hover {
     border-color: var(--tan-hi); color: var(--tan-hi);
   }
   #shortcuts-toggle-btn[aria-pressed="false"] { color: var(--fg-3); font-style: italic; }
+  #feed-announce-toggle-btn[aria-pressed="false"] { color: var(--fg-3); font-style: italic; }
+  /* Round 6: `Shortcuts: off` dims the binding list itself, and the panel
+     title grows an "(off)" suffix (see renderShortcutsToggle) - the toggle
+     button alone saying "off" was easy to miss against a full dl of bindings
+     that mostly still work (only the bare single-character ones are gated). */
+  #shortcuts-dl.dimmed { opacity: .55; }
   .badge {
     display: inline-flex; align-items: center; font-family: var(--mono);
     font-size: var(--fs-1); font-weight: 700; letter-spacing: .02em;
@@ -283,6 +298,15 @@ _HTML_SHELL = """<!doctype html>
   .badge-risk-low { color: var(--pass); background: var(--pass-bg); }
   .badge-risk-medium { color: var(--auth); background: var(--auth-bg); }
   .badge-risk-high, .badge-risk-critical { color: var(--block); background: var(--block-bg); }
+  /* Base state: hidden on wide screens. `.badge`'s own `display: inline-flex`
+     (an AUTHOR rule) otherwise overrides the `hidden` ATTRIBUTE's UA
+     `display: none` outright regardless of specificity (author beats
+     user-agent in the cascade) - caught live in Chrome, the same class of
+     bug this file's other `[hidden]`-restatement comments describe. An ID
+     selector here beats `.badge`'s class selector on specificity alone, and
+     the <=640px media rule below (same ID, later in source order) then
+     wins back at that breakpoint. */
+  #posture-badge { display: none; }
   #stats {
     margin: 0 0 1.75rem; font-family: var(--mono); font-size: var(--fs-2); color: var(--fg-3);
     display: flex; flex-wrap: wrap; gap: .6rem 1.4rem; align-items: flex-start;
@@ -395,6 +419,11 @@ _HTML_SHELL = """<!doctype html>
   }
   #refresh-btn:hover { border-color: var(--tan-hi); color: var(--tan-hi); }
   .feed-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin: .7rem 0 .8rem; }
+  /* #feed-count + the announce toggle share one row even in the <=640px
+     column layout (see .feed-toolbar's mobile override) - two elements, one
+     wrapper, so they don't each cost a full row at the width where vertical
+     space is tightest (round 6 - the first feed row must start within 600px). */
+  .feed-toolbar-meta { display: inline-flex; align-items: center; gap: .6rem; }
   .filter-chip-group { display: flex; gap: .4rem; flex-wrap: wrap; }
   .filter-chip {
     font-family: var(--mono); font-size: var(--fs-1); padding: .4rem .9rem;
@@ -447,11 +476,18 @@ _HTML_SHELL = """<!doctype html>
      expand, so it gets no pointer cursor. */
   #feed > li.has-explanation { cursor: pointer; }
   /* Real roving focus (Up/Down/Home/End move DOM focus here, see
-     setActiveFeedEntry) - the outline is the single visual indicator for
-     both focus and "active" state, so the native :focus-visible ring below
-     is suppressed to avoid a double ring on the same row. */
-  #feed > li.active { background: var(--ink-2); outline: 1px solid var(--tan-hi); outline-offset: -1px; }
-  #feed > li:focus { outline: none; }
+     setActiveFeedEntry). Round 6: `.active` and a plain `:focus` rule
+     (outline suppressed to `none` on it) used to be two separate rules of
+     EQUAL specificity (0,0,1,1 each) - source order made the suppression
+     win over the active row's own outline on the very row that was both
+     active AND focused (which is every roving-focus row, since
+     setActiveFeedEntry() always calls .focus() right after adding the
+     class), so the ring never actually rendered. One rule, no suppression,
+     at the highest specificity either state needs. */
+  #feed > li.active { background: var(--ink-2); }
+  #feed > li:focus-visible, #feed > li.active:focus {
+    outline: 2px solid var(--tan-hi); outline-offset: -2px;
+  }
   #feed li .detail { color: var(--fg-3); overflow-wrap: anywhere; }
   /* Shared with the pending card's own reason line below - not scoped to the
      feed, since both use the same glossed-span markup (appendReasonCodeSpans). */
@@ -512,6 +548,40 @@ _HTML_SHELL = """<!doctype html>
       padding: 1rem 1.25rem; margin: 0; border-radius: var(--r-lg);
       background: var(--ink-1); box-shadow: var(--shadow-card); z-index: 15;
     }
+    /* A small tail pointing back at #mode-edit-btn (positionModeForm
+       right-aligns the popover under it) - so the popover reads as
+       anchored to its trigger, not a stray floating box. */
+    #mode-form:not([hidden])::before {
+      content: ""; position: absolute; top: -7px; right: 1.4rem;
+      width: 14px; height: 14px; background: var(--ink-1);
+      transform: rotate(45deg); border-radius: 2px 0 0 0;
+      box-shadow: -1px -1px 2px -1px oklch(0% 0 0 / 30%);
+    }
+  }
+  /* A blocked dismiss (Escape/outside click while a change is pending, see
+     attemptCloseModeForm) shakes the popover once - a silent no-op read as
+     broken. prefers-reduced-motion: reduce drops the transform entirely,
+     the aria-live hint text change alone still carries the signal. */
+  @keyframes mode-form-nudge {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-6px); }
+    75% { transform: translateX(6px); }
+  }
+  #mode-form.nudge { animation: mode-form-nudge .3s ease-in-out; }
+  @media (prefers-reduced-motion: reduce) { #mode-form.nudge { animation: none; } }
+  /* Visible popover title (round 6 - was sr-only, so the popover had no
+     on-screen heading at all) - same look as the shortcuts panel's title. */
+  #mode-form-title {
+    flex-basis: 100%; margin: 0 0 .3rem;
+    font-family: var(--mono); font-size: var(--fs-1); font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--fg-3);
+  }
+  /* A translucent scrim behind the popover while it's open - #main and
+     #header are also `inert` at that point (see openModeForm), so the scrim
+     is mostly a visual cue; it also doubles as an oversized outside-click
+     target since the light-dismiss handler is on `document`. */
+  #mode-scrim {
+    position: fixed; inset: 0; z-index: 14; background: oklch(0% 0 0 / 45%);
   }
   #mode-hint { flex-basis: 100%; margin: -.15rem 0 .2rem; color: var(--fg); font-size: var(--fs-2); }
   /* A downgrade in progress restyles the hint to the BLOCK color - it's the
@@ -562,6 +632,10 @@ _HTML_SHELL = """<!doctype html>
   }
   #shortcuts-panel:focus { outline: none; }
   #feed-count { color: var(--fg-3); font-size: var(--fs-1); align-self: center; }
+  /* Empty (no active filter) at initial load - a `<span>` with no `display:
+     none` still costs a full row in the mobile column layout for zero
+     content. Same pattern as #mode-hint:empty above. */
+  #feed-count:empty { display: none; }
   .row-done { color: var(--pass); font-weight: 600; margin-top: .4rem; }
   /* A styled <p>, not a heading - this panel is a transient overlay, not a
      section of the page outline. */
@@ -576,7 +650,20 @@ _HTML_SHELL = """<!doctype html>
   .panel-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
   @media (max-width: 640px) {
     .topbar { flex-direction: column; align-items: flex-start; }
+    /* Row 1: brand + connection dot + guard pill, nothing else - the goal is
+       the first feed row starting within 600px of the top (round 6). Every
+       rule from here down to #pending-empty below trims vertical padding/
+       margin toward that same budget - none of it changes at wider widths. */
+    .topbar { padding-bottom: .6rem; margin-bottom: .75rem; }
+    h2 { margin-top: .85rem; }
+    #stats { padding: .5rem .75rem; margin-bottom: 1rem; }
+    .topbar-row1 { width: 100%; justify-content: space-between; }
     .topbar-right { width: 100%; }
+    /* mode + enforcement collapse into ONE joined badge ("posture: strict
+       - enforcing"); the standalone theme toggle moves into the shortcuts
+       panel (see #panel-theme-toggle-btn) - only the "?" trigger stays. */
+    #mode-badge, #enforcement-badge, #theme-toggle-btn { display: none; }
+    #posture-badge { display: inline-flex; }
     /* Wrapped groups would otherwise show a stray leading divider. */
     .topbar-group + .topbar-group { border-left: none; padding-left: 0; margin-left: 0; }
     /* A squeezed flex row lets a badge/pill shrink below its text's natural
@@ -592,7 +679,7 @@ _HTML_SHELL = """<!doctype html>
     #feed li .row-main { flex-wrap: wrap; }
     #feed li .detail { flex-basis: 100%; }
     #pending-list .countdown { margin-left: 0; flex-basis: 100%; }
-    .feed-toolbar { flex-direction: column; align-items: stretch; }
+    .feed-toolbar { flex-direction: column; align-items: stretch; margin: .35rem 0 .4rem; gap: .4rem; }
     #feed-filter {
       width: 100%;
       /* In a column flex-toolbar the main axis is now vertical, so the
@@ -614,22 +701,25 @@ _HTML_SHELL = """<!doctype html>
 <body>
   <div id="announcer" class="sr-only" aria-live="polite"></div>
   <header class="topbar">
-    <div class="brand">
-      <img src="data:image/png;base64,%%DASH_MARK_PNG_B64%%" alt="" aria-hidden="true" />
-      <span class="word">DOBERMAN</span>
-      <span class="project">%%DASH_PROJECT_NAME%%</span>
-    </div>
-    <div class="topbar-right">
+    <div class="topbar-row1">
+      <div class="brand">
+        <img src="data:image/png;base64,%%DASH_MARK_PNG_B64%%" alt="" aria-hidden="true" />
+        <span class="word">DOBERMAN</span>
+        <span class="project">%%DASH_PROJECT_NAME%%</span>
+      </div>
       <div class="topbar-group">
         <span class="chip" id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></span>
         <span class="status-pill ok" id="guard-status"><span class="pip" id="guard-pip" aria-hidden="true">●</span><span id="guard-label">ON GUARD</span></span>
       </div>
+    </div>
+    <div class="topbar-right">
       <div class="topbar-group">
         <span class="badge badge-neutral" id="mode-badge">mode: -</span>
+        <span class="badge badge-neutral" id="posture-badge" hidden>posture: -</span>
         <button type="button" id="mode-edit-btn" aria-expanded="false" aria-controls="mode-form">change</button>
         <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
       </div>
-      <div class="topbar-group">
+      <div class="topbar-group" id="topbar-utility-group">
         <button type="button" id="theme-toggle-btn">Switch to light theme</button>
         <button type="button" id="shortcuts-btn" aria-haspopup="true" aria-expanded="false">Shortcuts (?)</button>
       </div>
@@ -637,20 +727,6 @@ _HTML_SHELL = """<!doctype html>
   </header>
   <main>
     <h1 class="sr-only">Doberman local dashboard</h1>
-    <div id="mode-form" hidden role="dialog" aria-modal="true" aria-labelledby="mode-form-title">
-      <p id="mode-form-title" class="sr-only">Change security mode</p>
-      <select id="mode-select" aria-label="Security mode"></select>
-      <p id="mode-hint" aria-live="polite"></p>
-      <label class="sr-only" for="mode-code">2FA code or password, only needed to lower strictness</label>
-      <input id="mode-code" type="password" autocomplete="off"
-        placeholder="code (to lower strictness)">
-      <div class="mode-form-actions">
-        <button type="button" id="mode-save-btn">Save</button>
-        <button type="button" id="mode-cancel-btn">Cancel</button>
-      </div>
-      <span id="mode-success"></span>
-      <span id="mode-error" role="alert"></span>
-    </div>
     <div id="stats">stats loading...</div>
     <section aria-labelledby="pending-heading">
       <h2 id="pending-heading">Pending approvals</h2>
@@ -669,11 +745,14 @@ _HTML_SHELL = """<!doctype html>
           <button type="button" class="filter-chip" data-verdict="AUTH" aria-pressed="false">AUTH</button>
           <button type="button" class="filter-chip" data-verdict="PASS" aria-pressed="false">PASS</button>
         </div>
-        <span id="feed-count" aria-live="polite"></span>
         <label class="sr-only" for="feed-filter">Filter recent decisions by text</label>
         <input type="search" id="feed-filter" placeholder="Filter (press / to focus)">
+        <span class="feed-toolbar-meta">
+          <span id="feed-count" aria-live="polite"></span>
+          <button type="button" id="feed-announce-toggle-btn" aria-pressed="true">Announce new rows: on</button>
+        </span>
       </div>
-      <ul id="feed" role="log" tabindex="0" aria-label="Recent decisions"></ul>
+      <ul id="feed" role="log" aria-live="off" tabindex="0" aria-label="Recent decisions"></ul>
       <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
       <div id="feed-nomatch" class="empty-state" hidden>
         No decisions match this filter.
@@ -682,9 +761,24 @@ _HTML_SHELL = """<!doctype html>
       <div id="feed-truncated" class="feed-note" hidden>older rows not shown - see doberman log</div>
     </section>
   </main>
+  <div id="mode-scrim" hidden></div>
+  <div id="mode-form" hidden role="dialog" aria-modal="true" aria-labelledby="mode-form-title">
+    <p id="mode-form-title">Security mode</p>
+    <select id="mode-select" aria-label="Security mode"></select>
+    <p id="mode-hint" aria-live="polite"></p>
+    <label class="sr-only" for="mode-code">2FA code or password, only needed to lower strictness</label>
+    <input id="mode-code" type="password" autocomplete="off"
+      placeholder="code (to lower strictness)">
+    <div class="mode-form-actions">
+      <button type="button" id="mode-save-btn">Save</button>
+      <button type="button" id="mode-cancel-btn">Cancel</button>
+    </div>
+    <span id="mode-success"></span>
+    <span id="mode-error" role="alert"></span>
+  </div>
   <div id="shortcuts-panel" hidden role="region" aria-label="Keyboard shortcuts" tabindex="-1">
-    <p class="panel-title">Shortcuts</p>
-    <dl>
+    <p class="panel-title" id="shortcuts-panel-title">Shortcuts</p>
+    <dl id="shortcuts-dl">
       <dt>/</dt><dd>Focus the decisions filter</dd>
       <dt>&uarr; / &darr;</dt><dd>Move the active row in the decisions feed</dd>
       <dt>Enter / Space</dt><dd>Expand or collapse the active row's explanation</dd>
@@ -696,6 +790,7 @@ _HTML_SHELL = """<!doctype html>
       <dt>Esc</dt><dd>Clear the decisions filter, or close this panel or the mode form</dd>
     </dl>
     <div class="panel-actions">
+      <button type="button" id="panel-theme-toggle-btn">Switch to light theme</button>
       <button type="button" id="shortcuts-toggle-btn" aria-pressed="true">Shortcuts: on</button>
       <button type="button" id="shortcuts-close-btn">Close</button>
     </div>
@@ -724,6 +819,20 @@ _HTML_SHELL = """<!doctype html>
         enforce: "badge badge-pass",
         monitor: "badge badge-auth",
         off: "badge badge-block"
+      };
+      // Round 6: a single word ("enforcing"/"monitoring"), not the raw dial
+      // name repeated verbatim after its own label ("enforcement: enforce"
+      // read as a stutter) - the exact pair still reaches the user via
+      // `title`, see renderStats below.
+      var ENFORCEMENT_WORD = {
+        enforce: "enforcing",
+        monitor: "monitoring",
+        off: "off"
+      };
+      var ENFORCEMENT_TITLE = {
+        enforce: "enforce: Doberman blocks and authenticates for real",
+        monitor: "monitor: decisions are logged only, nothing is blocked",
+        off: "off: Doberman is not evaluating actions"
       };
       // Plain-words gloss for a reason code (title="..." tooltip on the feed's
       // reason-code spans) - the exact same dict doberman.explain.template_explanation
@@ -797,6 +906,10 @@ _HTML_SHELL = """<!doctype html>
       // to whatever the OS prefers until the user overrides it explicitly.
       var THEME_KEY = "doberman-dash-theme";
       var themeToggleBtn = document.getElementById("theme-toggle-btn");
+      // Round 6: at <=640px the standalone topbar button hides (see the
+      // mobile CSS block) and this one inside the shortcuts panel takes
+      // over - both stay in sync via applyTheme() below either way.
+      var panelThemeToggleBtn = document.getElementById("panel-theme-toggle-btn");
       var mediaDark = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
 
       function readStoredTheme() {
@@ -820,14 +933,18 @@ _HTML_SHELL = """<!doctype html>
           document.documentElement.removeAttribute("data-theme");
         }
         var eff = effectiveTheme(explicit);
-        themeToggleBtn.textContent = eff === "dark" ? "Switch to light theme" : "Switch to dark theme";
+        var nextLabel = eff === "dark" ? "Switch to light theme" : "Switch to dark theme";
+        themeToggleBtn.textContent = nextLabel;
+        panelThemeToggleBtn.textContent = nextLabel;
       }
       applyTheme(readStoredTheme());
-      themeToggleBtn.addEventListener("click", function () {
+      function toggleTheme() {
         var next = effectiveTheme(readStoredTheme()) === "dark" ? "light" : "dark";
         writeStoredTheme(next);
         applyTheme(next);
-      });
+      }
+      themeToggleBtn.addEventListener("click", toggleTheme);
+      panelThemeToggleBtn.addEventListener("click", toggleTheme);
 
       var dot = document.getElementById("dot");
       var label = document.getElementById("label");
@@ -835,6 +952,10 @@ _HTML_SHELL = """<!doctype html>
       var statsEl = document.getElementById("stats");
       var modeBadge = document.getElementById("mode-badge");
       var enforcementBadge = document.getElementById("enforcement-badge");
+      // Combined "posture: strict - enforcing" badge for the <=640px topbar
+      // fold (see the mobile CSS block) - mode + enforcement joined into one
+      // line instead of two separate badges neither of which fits.
+      var postureBadge = document.getElementById("posture-badge");
       var modeEditBtn = document.getElementById("mode-edit-btn");
       var modeForm = document.getElementById("mode-form");
       var modeSelect = document.getElementById("mode-select");
@@ -1027,8 +1148,11 @@ _HTML_SHELL = """<!doctype html>
         }
 
         modeBadge.textContent = "mode: " + s.mode;
-        enforcementBadge.textContent = "enforcement: " + s.enforcement;
+        var enforcementWord = ENFORCEMENT_WORD[s.enforcement] || s.enforcement;
+        enforcementBadge.textContent = "enforcement: " + enforcementWord;
+        enforcementBadge.title = ENFORCEMENT_TITLE[s.enforcement] || "";
         enforcementBadge.className = ENFORCEMENT_BADGE_CLASS[s.enforcement] || "badge badge-neutral";
+        postureBadge.textContent = "posture: " + s.mode + " · " + enforcementWord;
         currentModeName = s.mode;
         // Keep the (closed) mode selector's value in sync with reality - but
         // never while the user has the form open with an in-progress choice,
@@ -1210,12 +1334,45 @@ _HTML_SHELL = """<!doctype html>
       window.addEventListener("resize", function () { if (!modeForm.hidden) { positionModeForm(); } });
       window.addEventListener("scroll", function () { if (!modeForm.hidden) { positionModeForm(); } }, { passive: true });
 
+      var mainEl = document.querySelector("main");
+      // NOT the whole <header> - #mode-edit-btn (the popover's own trigger,
+      // needed to close it by clicking it again) lives inside the header's
+      // "posture" group alongside the mode/enforcement badges, so only the
+      // OTHER two header groups (brand+status+guard, theme+shortcuts) go
+      // inert; that group stays fully interactive throughout.
+      var topbarRow1El = document.querySelector(".topbar-row1");
+      var topbarUtilityGroupEl = document.getElementById("topbar-utility-group");
+      var modeScrim = document.getElementById("mode-scrim");
+      // Distinct from modeHintText()'s passive "Unsaved change - Save or
+      // Cancel." (still shown while merely editing) - a BLOCKED dismiss
+      // attempt needs its OWN wording, or setting the identical string again
+      // is a silent no-op to aria-live (screen readers only announce a
+      // CHANGE in textContent, and Escape-while-pending would otherwise just
+      // re-assert text that was already there).
+      var MODE_FORM_BLOCKED_DISMISS_HINT =
+        "Unsaved change - use Cancel to discard or Save to apply";
+      var modeNudgeTimer = null;
+      function nudgeModeForm() {
+        modeForm.classList.remove("nudge");
+        void modeForm.offsetWidth; // restart the animation on a repeated blocked dismiss
+        modeForm.classList.add("nudge");
+        clearTimeout(modeNudgeTimer);
+        modeNudgeTimer = setTimeout(function () { modeForm.classList.remove("nudge"); }, 300);
+      }
+
       function openModeForm() {
         modeEditing = true;
         modeErrorEl.textContent = "";
         modeSuccessEl.textContent = "";
         modeCodeInput.value = "";
         modeForm.hidden = false;
+        modeScrim.hidden = false;
+        // While the popover is open the rest of the page is genuinely
+        // unreachable (not just visually dimmed) - Tab, a stray click, and a
+        // screen reader's virtual cursor all stay contained to the popover.
+        mainEl.inert = true;
+        topbarRow1El.inert = true;
+        topbarUtilityGroupEl.inert = true;
         modeEditBtn.setAttribute("aria-expanded", "true");
         positionModeForm();
         updateModeHint();
@@ -1228,6 +1385,10 @@ _HTML_SHELL = """<!doctype html>
         var wasOpen = !modeForm.hidden;
         modeEditing = false;
         modeForm.hidden = true;
+        modeScrim.hidden = true;
+        mainEl.inert = false;
+        topbarRow1El.inert = false;
+        topbarUtilityGroupEl.inert = false;
         modeCodeInput.value = "";
         modeErrorEl.textContent = "";
         modeSuccessEl.textContent = "";
@@ -1248,10 +1409,13 @@ _HTML_SHELL = """<!doctype html>
       // handler below) and an outside click both call this, and both get the
       // same answer - if nothing is unsaved, close for real; otherwise stay
       // open and surface the "Unsaved change" hint instead of silently
-      // discarding a pending mode change.
+      // discarding a pending mode change - now with a visible nudge (a
+      // blocked dismiss otherwise looked like nothing happened at all).
       function attemptCloseModeForm() {
         if (pendingModeChange()) {
-          refreshModeHint();
+          modeHintEl.textContent = MODE_FORM_BLOCKED_DISMISS_HINT;
+          modeHintEl.classList.toggle("lowering", computeModeDirection() === "lower");
+          nudgeModeForm();
           return false;
         }
         closeModeForm();
@@ -1265,11 +1429,15 @@ _HTML_SHELL = """<!doctype html>
 
       // Light dismiss: a click outside the open popover attempts to close it,
       // same as Escape (attemptCloseModeForm handles the "pending change"
-      // case identically either way).
+      // case identically either way). A BLOCKED attempt refocuses the
+      // popover's first control instead of leaving focus wherever the click
+      // landed (main/header are `inert` while open, so a click there would
+      // otherwise drop focus to <body> with nothing announced).
       document.addEventListener("click", function (e) {
         if (modeForm.hidden) { return; }
         if (modeForm.contains(e.target) || e.target === modeEditBtn) { return; }
-        attemptCloseModeForm();
+        var closed = attemptCloseModeForm();
+        if (!closed) { modeSelect.focus(); }
       });
 
       // Focus containment: Tab/Shift+Tab cycles within the popover's own
@@ -1390,6 +1558,15 @@ _HTML_SHELL = """<!doctype html>
           // through to the terminal/GUI channel: say so and stop offering
           // buttons that would only 409. The next poll removes the card.
           node.textContent = "moved to your terminal - answer it there";
+          // Announce the crossing exactly once per card (this tick re-runs
+          // every second for as long as the card is still on screen) - a
+          // per-node flag, not the shared announce() dedupe alone, since two
+          // different cards crossing moments apart would otherwise share
+          // the identical message and the second would be silently dropped.
+          if (!node.dataset.horizonAnnounced) {
+            node.dataset.horizonAnnounced = "1";
+            announce("Approval moved to your terminal.");
+          }
           var expiredCard = node.closest("li");
           if (expiredCard) {
             expiredCard.querySelectorAll("button.approve, button.deny").forEach(function (b) {
@@ -1738,6 +1915,13 @@ _HTML_SHELL = """<!doctype html>
 
       refreshPending();
       setInterval(refreshPending, PENDING_POLL_MS);
+      // Two tabs open on the same dashboard: a background tab's poll timer
+      // still runs, but a human switching back to it shouldn't wait up to
+      // PENDING_POLL_MS to see what the OTHER tab already resolved - catch
+      // up immediately the moment this tab becomes visible again.
+      document.addEventListener("visibilitychange", function () {
+        if (document.visibilityState === "visible") { refreshPending(); }
+      });
 
       // Manual refresh for the stats + pending views; both functions are safe
       // to call at any time and no new endpoint is involved.
@@ -1822,6 +2006,63 @@ _HTML_SHELL = """<!doctype html>
         setTimeout(function () { feedEl.focus(); }, 0);
       });
 
+      // #feed is `role="log" aria-live="off"` (round 6 - `role="log"` alone
+      // implies a live region, so every arriving row was ALREADY being
+      // announced individually, one at a time, with no way to turn it off).
+      // This toggle (WCAG 2.1.4-style persistence, same pattern as the
+      // shortcuts on/off toggle) gates a single DEBOUNCED summary instead:
+      // arrivals within a rolling 2s window collapse into one announcement
+      // ("3 new decisions: 2 BLOCK, 1 PASS").
+      var ANNOUNCE_FEED_KEY = "doberman-dash-announce-feed";
+      function announceFeedEnabled() {
+        try {
+          return window.localStorage.getItem(ANNOUNCE_FEED_KEY) !== "off";
+        } catch (e) {
+          return true;
+        }
+      }
+      function writeAnnounceFeedEnabled(on) {
+        try { window.localStorage.setItem(ANNOUNCE_FEED_KEY, on ? "on" : "off"); } catch (e) {}
+      }
+      var feedAnnounceToggleBtn = document.getElementById("feed-announce-toggle-btn");
+      function renderFeedAnnounceToggle() {
+        var on = announceFeedEnabled();
+        feedAnnounceToggleBtn.textContent = "Announce new rows: " + (on ? "on" : "off");
+        feedAnnounceToggleBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      }
+      renderFeedAnnounceToggle();
+      feedAnnounceToggleBtn.addEventListener("click", function () {
+        writeAnnounceFeedEnabled(!announceFeedEnabled());
+        renderFeedAnnounceToggle();
+      });
+
+      var FEED_ANNOUNCE_DEBOUNCE_MS = 2000;
+      var VERDICT_ANNOUNCE_ORDER = ["BLOCK", "AUTH", "PASS"];
+      var feedArrivalCounts = {};
+      var feedArrivalTotal = 0;
+      var feedAnnounceTimer = null;
+      function queueFeedArrivalAnnouncement(verdict) {
+        if (!announceFeedEnabled()) { return; }
+        feedArrivalTotal += 1;
+        feedArrivalCounts[verdict] = (feedArrivalCounts[verdict] || 0) + 1;
+        if (feedAnnounceTimer) { return; }
+        feedAnnounceTimer = setTimeout(function () {
+          var counts = feedArrivalCounts;
+          var total = feedArrivalTotal;
+          feedArrivalCounts = {};
+          feedArrivalTotal = 0;
+          feedAnnounceTimer = null;
+          var known = VERDICT_ANNOUNCE_ORDER.filter(function (v) { return counts[v]; });
+          var rest = Object.keys(counts).filter(function (v) {
+            return VERDICT_ANNOUNCE_ORDER.indexOf(v) === -1;
+          });
+          var parts = known.concat(rest).map(function (v) { return counts[v] + " " + v; });
+          announce(
+            total + " new decision" + (total === 1 ? "" : "s") + ": " + parts.join(", ")
+          );
+        }, FEED_ANNOUNCE_DEBOUNCE_MS);
+      }
+
       // --- Feed roving focus (Up/Down/Home/End move REAL DOM focus, not just
       // a CSS class + aria-activedescendant - a screen reader hears each row
       // as focus actually lands on it). Enter/Space expands the active row's
@@ -1866,9 +2107,18 @@ _HTML_SHELL = """<!doctype html>
         // expanded/collapsed state); a row with only glossed reason codes
         // (no explanation) has nothing to toggle but the gloss list itself,
         // so the row's own aria-expanded is the source of truth there.
+        // Round 6: expanding also swaps the element's OWN text from the
+        // short collapsed headline to the full explanation sentence (and
+        // back on collapse) - see the "decision" SSE handler below, which
+        // stashes both on data-headline/data-full.
         var expanded = explanationEl
           ? explanationEl.classList.toggle("expanded")
           : li.getAttribute("aria-expanded") !== "true";
+        if (explanationEl) {
+          explanationEl.textContent = expanded
+            ? (explanationEl.dataset.full || explanationEl.dataset.headline || "")
+            : (explanationEl.dataset.headline || explanationEl.dataset.full || "");
+        }
         li.setAttribute("aria-expanded", expanded ? "true" : "false");
         if (glossListEl) { glossListEl.hidden = !expanded; }
       }
@@ -1955,10 +2205,18 @@ _HTML_SHELL = """<!doctype html>
         try { window.localStorage.setItem(SHORTCUTS_ENABLED_KEY, on ? "on" : "off"); } catch (e) {}
       }
       var shortcutsToggleBtn = document.getElementById("shortcuts-toggle-btn");
+      var shortcutsPanelTitleEl = document.getElementById("shortcuts-panel-title");
+      var shortcutsDlEl = document.getElementById("shortcuts-dl");
       function renderShortcutsToggle() {
         var on = shortcutsEnabled();
         shortcutsToggleBtn.textContent = "Shortcuts: " + (on ? "on" : "off");
         shortcutsToggleBtn.setAttribute("aria-pressed", on ? "true" : "false");
+        // "off" alone on the toggle button was easy to miss against a full
+        // dl of bindings that mostly still work (only the bare single-
+        // character ones are actually gated) - dim the list and say so on
+        // the panel's own title too.
+        shortcutsPanelTitleEl.textContent = "Shortcuts" + (on ? "" : " (off)");
+        shortcutsDlEl.classList.toggle("dimmed", !on);
       }
       renderShortcutsToggle();
       shortcutsToggleBtn.addEventListener("click", function () {
@@ -2085,17 +2343,24 @@ _HTML_SHELL = """<!doctype html>
           rowMain.appendChild(detail);
 
           // BLOCK/AUTH only (CLAUDE.md #9 - every such row carries a human
-          // explanation; _feed_row leaves it empty for PASS). This is the
+          // explanation AND a short reason-first `headline`, see
+          // doberman.explain.headline; _feed_row leaves both empty for
+          // PASS). Round 6: the COLLAPSED state now shows the HEADLINE
+          // ("Recursive delete blocked - shell_exec"), not the full
+          // sentence - eight consecutive BLOCKs used to all start with the
+          // identical "<role> attempted <action>." until each was expanded.
+          // Expanding (click/tap or Enter/Space, see
+          // toggleActiveFeedExplanation) swaps this SAME element's text to
+          // the full explanation; collapsing swaps it back. This is the
           // row's PRIMARY text (body face, full contrast) and comes FIRST in
           // the DOM - rowMain (verdict/risk badges + the now-secondary,
-          // muted-mono action/target/reason-code line) follows it. One line
-          // by default; click/tap the row (see the click listener below) or
-          // Enter/Space on the active row (see the feed's keydown handler)
-          // expands it.
-          if (row.explanation) {
+          // muted-mono action/target/reason-code line) follows it.
+          if (row.headline || row.explanation) {
             var explanationEl = document.createElement("div");
             explanationEl.className = "row-explanation";
-            explanationEl.textContent = row.explanation;
+            explanationEl.dataset.headline = row.headline || "";
+            explanationEl.dataset.full = row.explanation || "";
+            explanationEl.textContent = row.headline || row.explanation;
             li.appendChild(explanationEl);
           }
           li.appendChild(rowMain);
@@ -2111,7 +2376,7 @@ _HTML_SHELL = """<!doctype html>
             li.appendChild(glossListEl);
           }
 
-          var expandable = Boolean(row.explanation) || Boolean(glossListEl);
+          var expandable = Boolean(row.headline) || Boolean(row.explanation) || Boolean(glossListEl);
           if (expandable) {
             li.classList.add("has-explanation");
             li.setAttribute("aria-expanded", "false");
@@ -2119,12 +2384,15 @@ _HTML_SHELL = """<!doctype html>
 
           // An accessible name independent of the visual layout above -
           // a screen reader hears this the moment roving focus lands here,
-          // rather than having to walk the row's child nodes itself.
+          // rather than having to walk the row's child nodes itself. The
+          // headline LEADS (round 6) - the same reason-first fragment the
+          // collapsed row shows visually, ahead of the verdict/action recap.
           var accessibleReasons = row.reason_codes && row.reason_codes.length
             ? row.reason_codes.join(", ")
             : "no reason codes";
           li.setAttribute(
             "aria-label",
+            (row.headline ? row.headline + ". " : "") +
             row.verdict + " " + row.action_type + " " +
             (row.target_path_class || "no target") + " - " +
             (row.explanation || accessibleReasons)
@@ -2184,6 +2452,7 @@ _HTML_SHELL = """<!doctype html>
             feedEl.scrollTop = feedEl.scrollHeight;
           }
           syncStatsSoon();
+          queueFeedArrivalAnnouncement(row.verdict);
         });
       } catch (e) {
         // EventSource unsupported/blocked - the feed just stays empty.
@@ -2325,9 +2594,20 @@ def _feed_row(row: dict) -> dict:
     explanation) is populated via :func:`doberman.explain.template_explanation`
     for BLOCK/AUTH rows only, and left empty for PASS - a PASS row needs no
     "why", and skipping it keeps the SSE payload small on the (usually
-    dominant) common case.
+    dominant) common case. ``with_reasons=False`` because the feed's own
+    glossed ``gloss-list`` (built client-side from ``reason_codes`` below)
+    already carries the reason codes - the "Reasons: ..." clause would just
+    say it twice.
+
+    ``headline`` (round 6) is a short, reason-first fragment
+    (:func:`doberman.explain.headline`, e.g. "Recursive delete blocked -
+    shell_exec") the feed shows as the row's COLLAPSED primary line, so eight
+    consecutive BLOCKs no longer all read as the identical opening sentence
+    until expanded - the full ``explanation`` only shows once a row is
+    expanded. Same BLOCK/AUTH-only gating as ``explanation``.
     """
     verdict = row.get("final_verdict")
+    show_why = verdict in ("BLOCK", "AUTH")
     return {
         "id": row.get("id"),
         "ts": row.get("ts"),
@@ -2337,7 +2617,8 @@ def _feed_row(row: dict) -> dict:
         "risk": row.get("risk"),
         "source_context": row.get("source_context"),
         "reason_codes": reason_codes(row),
-        "explanation": template_explanation(row) if verdict in ("BLOCK", "AUTH") else "",
+        "headline": headline(row) if show_why else "",
+        "explanation": template_explanation(row, with_reasons=False) if show_why else "",
     }
 
 

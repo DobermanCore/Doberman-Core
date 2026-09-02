@@ -203,7 +203,9 @@ def test_mode_form_is_a_light_dismiss_dialog(tmp_path):
         '<div id="mode-form" hidden role="dialog" aria-modal="true" '
         'aria-labelledby="mode-form-title">'
     ) in html
-    assert '<p id="mode-form-title" class="sr-only">Change security mode</p>' in html
+    # Round 6: the title is now VISIBLE ("Security mode", see test_dash_round6.py)
+    # instead of sr-only - the popover otherwise had no on-screen heading at all.
+    assert '<p id="mode-form-title">Security mode</p>' in html
     assert 'document.addEventListener("click", function (e) {' in html
     assert "if (modeForm.contains(e.target) || e.target === modeEditBtn) { return; }" in html
     assert "attemptCloseModeForm();" in html

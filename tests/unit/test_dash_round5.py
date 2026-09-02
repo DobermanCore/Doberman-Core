@@ -89,9 +89,13 @@ def test_build_gloss_list_is_the_shared_expand_mechanism(tmp_path):
     assert "function buildGlossList(codes) {" in html
     assert 'list.className = "gloss-list";' in html
     assert 'item.textContent = code + " - " + REASON_DESCRIPTIONS[code];' in html
-    # A feed row is expandable when it has an explanation OR a gloss list -
-    # not only an explanation any more.
-    assert "var expandable = Boolean(row.explanation) || Boolean(glossListEl);" in html
+    # A feed row is expandable when it has a headline, an explanation, OR a
+    # gloss list (round 6 added `row.headline` to this OR-chain) - not only
+    # an explanation any more.
+    assert (
+        "var expandable = Boolean(row.headline) || Boolean(row.explanation) || "
+        "Boolean(glossListEl);"
+    ) in html
     assert "if (expandable) {" in html
     # Pending cards render it unconditionally (never collapsed).
     assert "var pendingGlossList = buildGlossList(row.reason_codes);" in html
@@ -126,7 +130,10 @@ def test_row_styling_is_scoped_to_direct_children_not_the_nested_gloss_list(tmp_
     assert "#feed > li:last-child { border-bottom: none; }" in html
     assert "#feed > li:hover { background: var(--ink-2); }" in html
     assert "#feed > li.active {" in html
-    assert "#feed > li:focus { outline: none; }" in html
+    # Round 6: the old `#feed > li:focus { outline: none; }` suppression is
+    # gone (see test_dash_round6.py) - direct-child scoping now lives on its
+    # replacement instead.
+    assert "#feed > li:focus-visible, #feed > li.active:focus {" in html
     assert "#feed li {" not in html
 
 

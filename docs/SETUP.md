@@ -433,9 +433,28 @@ a warning color, states a factual one-line consequence of the mode you picked (d
 mode's real step-up thresholds - the floor hard blocks never change), and needs the same two-step
 arm-then-confirm gesture (a 5s countdown) as approving a pending action, plus the same possession
 factor; with neither enrolled it fails closed. Dismissing the popover (Escape or an outside click)
-with a change still pending keeps it open instead of silently discarding it; Cancel always discards.
-Every attempt lands in the same append-only
-ledger (`doberman policy-history`).
+with a change still pending keeps it open instead of silently discarding it (it now visibly shakes and
+states so, since a silent no-op looked identical to a closed popover); Cancel always discards. While the
+popover is open the rest of the page sits behind a scrim and is genuinely `inert` (not just visually
+dimmed), and the popover itself carries a visible "Security mode" title and a small tail pointing at its
+trigger. Every attempt lands in the same append-only ledger (`doberman policy-history`).
+
+Each `BLOCK`/`AUTH` feed row leads with a short, reason-first headline (e.g. "Recursive delete blocked -
+shell_exec" or "Secret file read blocked - .env class") instead of the full explanation sentence, so a run
+of consecutive BLOCKs no longer all read identically until expanded; expanding a row swaps in the full
+sentence, which no longer repeats the reason codes the row's own gloss list already shows. The feed itself
+is `role="log"` with `aria-live="off"` (a bare `role="log"` was silently announcing every arriving row one
+at a time) - a `Announce new rows: on/off` toggle next to the filter controls an ARIA summary instead,
+debounced to one announcement per 2s (e.g. "3 new decisions: 2 BLOCK, 1 PASS"). A pending card that crosses
+the dashboard's 90s answer window announces "Approval moved to your terminal" once; two tabs open on the
+same dashboard both catch up immediately on `visibilitychange` instead of waiting out the poll interval.
+
+At <=640px the topbar folds to one row (brand, connection chip, guard pill) plus a single joined
+`posture: <mode> - <word>` badge and the `change` control; the theme toggle moves into the shortcuts
+panel (opened via the `?` button, which stays put) to make room. `enforcement:` now reads a single word
+(`enforcing`/`monitoring`/`off`, the raw dial name is still in its `title`), and the "connected" chip is a
+plain rectangular tag (a dot inside it) rather than a second pill, so it no longer looks like a duplicate
+of the guard pill.
 
 ### Run the demo
 

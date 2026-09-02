@@ -27,6 +27,7 @@ from doberman.explain import (
     REDACTED_FIELDS,
     build_explanation_payload,
     explain_decision,
+    headline,
     template_explanation,
 )
 
@@ -185,6 +186,119 @@ def test_explain_decision_on_empty_row_never_raises():
     text = explain_decision({})
     assert isinstance(text, str)
     assert text
+
+
+# --- round 6: with_reasons=False for the dash feed body ----------------------
+
+
+def test_with_reasons_true_by_default_states_the_reason_codes():
+    row = _row(reason_codes_json=json.dumps(["destructive_command"]))
+    text = template_explanation(row)
+    assert "Reasons:" in text
+    assert "destructive" in text.lower()
+
+
+def test_with_reasons_false_omits_the_reasons_clause():
+    row = _row(reason_codes_json=json.dumps(["destructive_command"]))
+    text = template_explanation(row, with_reasons=False)
+    assert "Reasons:" not in text
+    assert "destructive" not in text.lower()
+    # The rest of the sentence (what/verdict) is unaffected.
+    assert "Doberman decided BLOCK" in text
+
+
+def test_with_reasons_false_omits_the_no_codes_fallback_too():
+    row = _row(reason_codes_json=json.dumps([]))
+    text = template_explanation(row, with_reasons=False)
+    assert "No specific reason codes" not in text
+
+
+# --- round 6: headline() - a short, reason-first fragment --------------------
+
+
+@pytest.mark.parametrize(
+    ("reason_codes_json", "expected_substrings"),
+    [
+        (json.dumps(["destructive_command"]), ["Recursive delete", "blocked", "shell_exec"]),
+        (json.dumps(["sensitive_secret_access"]), ["Secret file read", "blocked"]),
+        (json.dumps(["unknown_external_destination"]), ["External upload"]),
+        (json.dumps(["secret_exfiltration"]), ["Secret exfiltration attempt"]),
+        (json.dumps(["bulk_operation"]), ["Bulk operation"]),
+        (json.dumps(["lethal_trifecta"]), ["Lethal-trifecta pattern"]),
+    ],
+)
+def test_headline_is_reason_first_for_representative_codes(reason_codes_json, expected_substrings):
+    row = _row(reason_codes_json=reason_codes_json)
+    text = headline(row)
+    for substring in expected_substrings:
+        assert substring in text
+
+
+def test_headline_uses_target_path_class_for_path_focused_codes():
+    row = _row(
+        reason_codes_json=json.dumps(["sensitive_secret_access"]),
+        action_type="file_read",
+        target_path_class=".env",
+    )
+    text = headline(row)
+    assert ".env class" in text
+    assert "blocked" in text
+
+
+def test_headline_falls_back_to_action_type_when_no_path_focus():
+    row = _row(
+        reason_codes_json=json.dumps(["destructive_command"]),
+        action_type="shell_exec",
+        target_path_class=None,
+    )
+    text = headline(row)
+    assert text.endswith("shell_exec")
+
+
+def test_headline_uses_needs_approval_for_auth_verdict():
+    row = _row(final_verdict="AUTH", reason_codes_json=json.dumps(["unknown_external_destination"]))
+    text = headline(row)
+    assert "needs approval" in text
+
+
+def test_headline_falls_back_gracefully_with_no_reason_codes():
+    row = _row(reason_codes_json=json.dumps([]))
+    text = headline(row)
+    assert text
+    assert "blocked" in text
+
+
+def test_headline_never_crashes_on_an_empty_row():
+    text = headline({})
+    assert isinstance(text, str)
+    assert text
+
+
+def test_headline_distinguishes_otherwise_identical_block_rows():
+    """The whole point: eight BLOCKs with different reasons must not collapse
+    to the same headline - two different reason codes must produce two
+    different headlines even with the same verdict/action type."""
+    base = {"final_verdict": "BLOCK", "action_type": "shell_exec"}
+    a = headline(_row(**base, reason_codes_json=json.dumps(["destructive_command"])))
+    b = headline(_row(**base, reason_codes_json=json.dumps(["bulk_operation"])))
+    assert a != b
+
+
+@pytest.mark.parametrize(
+    "reason_codes_json",
+    [
+        json.dumps(["destructive_command"]),
+        json.dumps(["sensitive_secret_access"]),
+        json.dumps(["unknown_external_destination"]),
+        json.dumps(["multi_step_exfil"]),
+        json.dumps(["lethal_trifecta", "bulk_operation"]),
+        json.dumps([]),
+    ],
+)
+def test_headline_stays_at_or_under_nine_words(reason_codes_json):
+    row = _row(reason_codes_json=reason_codes_json, target_path_class=".env")
+    text = headline(row)
+    assert len(text.split()) <= 9
 
 
 # --- redaction allowlist (security) ------------------------------------------
