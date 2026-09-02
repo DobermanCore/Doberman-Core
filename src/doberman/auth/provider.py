@@ -161,8 +161,15 @@ def challenge_parts(
 
     if tone == "technical":
         reasons = ", ".join(decision.reason_codes) or "unspecified"
-        risk = f"RISK: {risk_word.upper()}"
-        headline = f"[{risk}]  Doberman authentication required [{tier.value}]"
+        # The bracket embedded in the HEADLINE stays a bare "RISK: HIGH" (the
+        # flat-string TTY/dashboard rendering has no severity chip of its own,
+        # so the bracket is that channel's only severity signal); parts["risk"]
+        # itself, which the GUI's risk LINE renders, additionally carries the
+        # tier hint -- "RISK: HIGH - this needs your code" -- so it never reads
+        # as a bare, unexplained repeat of the word the chip/bracket already
+        # show (item 4: never "HIGH  RISK: HIGH" with nothing else said).
+        risk = f"RISK: {risk_word.upper()} - {tier_hint}"
+        headline = f"[RISK: {risk_word.upper()}]  Doberman authentication required [{tier.value}]"
         verb = action.tool_name
         why = f"{reasons} - {decision.explanation.strip() or 'no further detail'}"
     else:
@@ -318,9 +325,22 @@ class LocalAuthProvider:
             except Exception:  # noqa: S110 — cosmetic only, must never affect the auth outcome
                 pass
 
+        def _deny_outcome() -> str:
+            """ "denied" normally, but "expired" when the prompter's own last
+            answer resolved via a countdown timeout rather than a real Deny
+            click/keypress (``GuiPrompter.last_reason`` -- getattr-gated, so a
+            prompter with no such concept, e.g. the TTY channel, always reads
+            as a plain denial). Distinguishing the two matters for
+            ``notify_outcome``'s toast text (item 3): a silent timeout and a
+            deliberate Deny are different facts for the human to see.
+            """
+            if getattr(prompter, "last_reason", None) == "expired":
+                return "expired"
+            return "denied"
+
         if tier in (AuthTier.soft_confirm, AuthTier.local_auth):
             approved = _confirm()
-            _notify("approved" if approved else "denied")
+            _notify("approved" if approved else _deny_outcome())
             return approved, tier.value
 
         # two_factor and role_elevation require presence AND possession.
@@ -337,8 +357,9 @@ class LocalAuthProvider:
             # ApprovalOutcome.unavailable -> fall through to the TOTP path below.
 
         if not _confirm():
-            _notify("denied")
-            return False, "denied"
+            outcome = _deny_outcome()
+            _notify(outcome)
+            return False, outcome
         # Names the exact target, mirroring the GUI's structured code dialog
         # (item 8) -- a human landing on a bare terminal code prompt should
         # not have to trust that it's still about the same action the first
