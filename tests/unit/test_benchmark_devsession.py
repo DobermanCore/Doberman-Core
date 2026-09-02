@@ -8,8 +8,12 @@ from __future__ import annotations
 import hashlib
 import json
 
-from tests.benchmarks.subjective_runner import HOLDOUT_EVERY
-from tests.benchmarks.suites.devsession import DevSessionAdapter
+import pytest
+
+from doberman.subjective.baseline import HST_WARMUP
+from doberman.subjective.drift import K_OBSERVATIONS
+from tests.benchmarks.subjective_runner import HOLDOUT_EVERY, run_subjective_eval
+from tests.benchmarks.suites.devsession import PAYLOAD_MARKER, DevSessionAdapter
 
 
 def _case_repr(cases: tuple) -> str:
@@ -68,3 +72,62 @@ def test_held_out_and_warm_case_ids_are_disjoint():
         assert warm.isdisjoint(holdout), archetype
         assert holdout, archetype
         assert warm, archetype
+
+
+# --- expensive tier: one real eval over the full devsession corpus ---------
+# Mirrors test_benchmark_subjective.py's own real_hst convention: production
+# HST size + a single shared module-scoped run (this corpus is ~4x the
+# fixture's size specifically so the warm phase clears K_OBSERVATIONS/
+# HST_WARMUP — see devsession.py's _CASES_PER_ARCHETYPE comment). Marks are
+# applied per-test (not a module-level ``pytestmark``, unlike that file)
+# because this module also carries the cheap tests above, which must stay
+# unmarked/fast — a module-level pytestmark would apply to the whole file.
+
+_real_hst_marks = (
+    pytest.mark.real_hst,
+    pytest.mark.timeout(1200),
+    # ONE shared xdist group for every production-size module (--dist
+    # loadgroup) — see test_benchmark_subjective.py for why.
+    pytest.mark.xdist_group("real_hst"),
+)
+
+
+def _real_hst_test(fn):
+    for mark in _real_hst_marks:
+        fn = mark(fn)
+    return fn
+
+
+@pytest.fixture(scope="module")
+def devsession_report() -> dict:
+    return run_subjective_eval(DevSessionAdapter())
+
+
+@_real_hst_test
+def test_warm_phase_clears_full_ensemble_engagement(devsession_report):
+    needed = max(K_OBSERVATIONS, HST_WARMUP)
+    per_suite = devsession_report["arms"]["provenance_free"]["per_suite"]
+    assert set(per_suite) == {"backend-dev", "script-runner", "test-ci-loop", "git-heavy-dev"}
+    for suite, stats in per_suite.items():
+        assert stats["n_warm_observations"] >= needed, suite
+        assert stats["hst_engaged"] is True, suite
+        assert stats["cold_start_active"] is False, suite
+
+
+@_real_hst_test
+def test_report_never_leaks_payload_marker(devsession_report):
+    assert PAYLOAD_MARKER not in json.dumps(devsession_report)
+
+
+@_real_hst_test
+def test_auc_and_held_out_fpr_are_bounded_and_present(devsession_report):
+    arm = devsession_report["arms"]["provenance_free"]
+    for suite, stats in arm["per_suite"].items():
+        if stats["auc"] is not None:
+            assert 0.0 <= stats["auc"] <= 1.0, suite
+        assert stats["benign"]["n"] > 0, suite  # held-out benign bucket is non-empty
+        assert stats["held_out_fpr"] is not None, suite
+        assert 0.0 <= stats["held_out_fpr"] <= 1.0, suite
+    pooled = arm["pooled"]
+    assert pooled["held_out_fpr"] is not None
+    assert 0.0 <= pooled["held_out_fpr"] <= 1.0
