@@ -17,7 +17,7 @@ Day-to-day posture, status, and review commands.
 | `doberman message-tone [TONE]` | Show or set the AUTH challenge tone (human/technical). Cosmetic display only; it changes nothing about what is evaluated or logged. | `--path`/`-p` |
 | `doberman role enable-default` | Turn on the built-in, opt-in least-privilege default role. | `--path`/`-p` |
 | `doberman role disable-default` | Turn the default role off. A weaken, so it is gated. | `--path`/`-p` |
-| `doberman status` | Leads with a `Protected: yes` / `Protected: no - <reason>` headline, then version/role, and four sections — Hooks, Policy (mode, prefs, policy version), Auth (2FA, password, elevations, taint), Health (a one-line pointer to `doberman doctor`) — followed by recent decisions. | `--path`/`-p`, `--json` |
+| `doberman status` | Leads with a `Protected: yes` / `Protected: no - <reason>` headline, then role, and four sections — Hooks, Policy (mode, prefs, policy version, installed Doberman version), Auth (2FA, password, elevations, taint), Health (a one-line pointer to `doberman doctor`) — followed by recent decisions. | `--path`/`-p`, `--json` |
 | `doberman doctor` | Read-only health self-check, grouped into the same Hooks/Policy/Auth/Health sections `status` uses; exits non-zero if a critical check fails, naming every failing check on the closing line. | `--path`/`-p`, `--json` |
 | `doberman update` | Check PyPI for a newer Doberman and print the upgrade command (never installs). Off under `DO_NOT_TRACK`/`CI`/`DOBERMAN_UPDATE_CHECK=off`. | — |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
@@ -170,7 +170,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `serve` | `2` | No downstream server command given after `--`. |
 | `serve` | `1` | MCP proxy runtime error. |
 | `mode` | `2` | Invalid mode name. |
-| `mode` | `1` | Mode change denied by the possession-factor gate. |
+| `mode` | `1` | A lowering was denied by the possession-factor gate (`error: lowering needs a possession factor - run 'doberman password set' first, then retry`). |
 | `enforcement` | `2` | Unknown enforcement state (must be `enforce`, `monitor`, or `off`). |
 | `enforcement` | `1` | Enforcement change denied by the gate. |
 | `role disable-default` | `1` | Disable denied by the gate. |

@@ -179,3 +179,40 @@ def test_install_hooks_help_points_back_to_setup():
     result = runner.invoke(app, ["install-hooks", "--help"], env={"FORCE_COLOR": "1"})
 
     assert "doberman setup" in _normalize_help_output(result.output)
+
+
+def test_policy_panel_split_from_policy_internals():
+    """round 5 item 10: the old "Policy" panel held every policy-shaped
+    command (10+ items) in one wall of text - it now splits into the few
+    essentials (`mode`/`review`/`role`) and a "Policy internals" panel for
+    the rest, `taint`/`tools` included (moved out of the equally overloaded
+    "Advanced" panel)."""
+    panels_by_name = {
+        (c.name or c.callback.__name__.replace("_", "-")): c.rich_help_panel
+        for c in app.registered_commands
+    }
+    assert panels_by_name["mode"] == "Policy"
+    assert panels_by_name["review"] == "Policy"
+    assert panels_by_name["enforcement"] == "Policy internals"
+    assert panels_by_name["prefs"] == "Policy internals"
+    assert panels_by_name["egress-velocity"] == "Policy internals"
+    assert panels_by_name["message-tone"] == "Policy internals"
+    assert panels_by_name["policy-history"] == "Policy internals"
+    assert panels_by_name["policy-versions"] == "Policy internals"
+
+    groups_by_name = {g.name: g.rich_help_panel for g in app.registered_groups}
+    assert groups_by_name["role"] == "Policy"
+    assert groups_by_name["taint"] == "Policy internals"
+    assert groups_by_name["tools"] == "Policy internals"
+
+
+def test_root_help_shows_both_policy_panels_with_getting_started_still_first():
+    root_output = _normalize_help_output(
+        runner.invoke(app, ["--help"], env={"FORCE_COLOR": "1"}).output
+    )
+    getting_started_idx = root_output.index("Getting started")
+    assert getting_started_idx < root_output.index("Policy internals")
+    assert "Policy internals" in root_output
+    # The plain "Policy" panel heading, not just its "Policy internals" cousin.
+    policy_heading_idx = root_output.index("Policy ─")
+    assert getting_started_idx < policy_heading_idx

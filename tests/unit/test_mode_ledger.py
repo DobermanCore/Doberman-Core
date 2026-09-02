@@ -36,7 +36,9 @@ def test_mode_downgrade_without_a_factor_is_denied_and_records_a_weaken_row(tmp_
 
     result = runner.invoke(app, ["mode", "light", "--path", root])
     assert result.exit_code == 1
-    assert "denied" in result.output.lower()
+    # round 5 item P1: names WHY, never the old bare "mode change denied".
+    assert "lowering needs a possession factor" in result.output.lower()
+    assert "doberman password set" in result.output.lower()
     assert load_mode(root) == "balanced"  # unchanged
 
     rows = asyncio.run(read_policy_changes(root))

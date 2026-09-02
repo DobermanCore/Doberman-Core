@@ -80,8 +80,9 @@ exits `3` (not `0` — nothing runs yet, but nothing is broken either, so a scri
 from both a fully-live run and a broken one) — nothing runs yet until you paste the printed block
 (or, for OpenClaw, follow its plugin README) and restart, so the closing "verify it's live" line
 points at that manual step rather than claiming the hooks are already active. When the wizard
-finishes, [set a possession factor](#4-set-a-password-and-2fa) — it's one of the pointers in
-`doberman setup`'s own closing `Also:` line.
+finishes, [set a possession factor](#4-set-a-password-and-2fa) — `doberman doctor`, one of the
+pointers in `doberman setup`'s own closing `Also:` line, already flags an unset one and names the
+same command.
 
 On a different host, or want to see exactly what gets wired? The next section covers each path by
 hand.
@@ -199,9 +200,10 @@ Both handlers fail closed and stay import-light, so they add minimal latency to 
 decision lands in the same local, redacted history: `doberman log` shows PreToolUse AUTH/BLOCK
 outcomes alongside PostToolUse ones, and `doberman status` leads with a one-line `Protected: yes`
 / `Protected: no - <reason>` verdict (hooks installed for at least one host and `doberman`
-resolvable on PATH), then the installed version and four sections — Hooks (which settings file(s)
-carry the hooks), Policy (mode, preferences, policy version), Auth (2FA, password, elevations,
-taint), and Health (a one-line pointer to `doberman doctor`) — followed by the last five decisions.
+resolvable on PATH), then four sections — Hooks (which settings file(s) carry the hooks), Policy
+(mode, preferences, policy version, then the installed Doberman version), Auth (2FA, password,
+elevations, taint), and Health (a one-line pointer to `doberman doctor`) — followed by the last
+five decisions.
 
 **Doberman protects its own hooks.** Once installed, the agent can't quietly remove them. A write
 or edit to `.claude/settings.json` is blocked, and other `.claude/` changes require

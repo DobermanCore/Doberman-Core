@@ -15,7 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 import doberman.cli.main as cli_module
-from doberman.config import load_mode, load_preferences
+from doberman.config import load_mode, load_policy, load_preferences
 from doberman.hosthooks.install import POST_COMMAND, PRE_COMMAND, _is_doberman_group
 
 app = cli_module.app
@@ -626,11 +626,16 @@ def test_openclaw_only_header_is_pending_not_complete(tmp_path: Path) -> None:
     assert "Hooks written." not in result.output
 
 
-def test_mcp_only_still_offers_the_demo_pointer(tmp_path: Path) -> None:
-    """The demo runs in-process, so it's valid to offer on the pending path too (item 13)."""
+def test_mcp_only_puts_the_demo_pointer_in_also_not_next(tmp_path: Path) -> None:
+    """round 5 item 8: a pending run's "Next:" is the verify-after-paste step -
+    the in-process demo doesn't prove the still-manual mcp wiring works, so it
+    is a low-key `Also:` pointer instead, never the bold "Next:" line."""
     result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
     assert result.exit_code == 3, result.output
-    assert "Next: `doberman demo --fast`" in result.output
+    assert "Next: `doberman demo --fast`" not in result.output
+    assert "Next: After you paste the block" in result.output
+    idx = result.output.index("Also:")
+    assert "doberman demo --fast" in result.output[idx : idx + 200]
 
 
 def test_claude_host_still_gets_setup_complete(tmp_path: Path) -> None:
@@ -717,14 +722,21 @@ def test_doctor_crash_falls_back_cleanly(tmp_path: Path, monkeypatch: pytest.Mon
     assert "Doctor: could not run here; verify with `doberman doctor`" in result.output
 
 
-def test_password_set_appears_in_the_also_line_when_no_factor_enrolled(tmp_path: Path) -> None:
-    """item 1: the old standalone "Next step:" line is folded into the
-    compact, muted "Also:" line at the end of the epilogue."""
+def test_also_line_no_longer_duplicates_password_set_or_telemetry_off(tmp_path: Path) -> None:
+    """round 5 item 6: the `Also:` line holds at most three items (doctor,
+    uninstall-hooks, docs) - `password set` moves into `doctor`'s own advice
+    (its Password check already warns and names the same command) and
+    `telemetry off` moves into the Telemetry section's own line, so neither
+    is repeated in `Also:` any more."""
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "Next step:" not in result.output
     idx = result.output.index("Also:")
-    assert "doberman password set" in result.output[idx : idx + 200]
+    also_line = result.output[idx : idx + 200]
+    assert "doberman password set" not in also_line
+    assert "doberman telemetry off" not in also_line
+    assert "doberman doctor" in also_line
+    assert "doberman uninstall-hooks" in also_line
 
 
 def test_enrolled_password_replaces_next_step_with_possession_factor(tmp_path: Path) -> None:
@@ -1020,10 +1032,11 @@ def test_telemetry_explanation_shows_only_when_interactive(tmp_path: Path) -> No
 def test_yes_telemetry_section_shows_compact_summary_not_full_explanation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`--yes` mentions telemetry at most twice per run (round 4 item 3): the
-    `-- Telemetry --` section shows the compact `Telemetry: on/off` summary
-    instead of the full explanation, and the `Also:` line is the only other
-    mention - not a 3rd one from the full paragraph too."""
+    """`--yes` mentions telemetry at most twice per run (round 5 item 12): the
+    `-- Telemetry --` header itself, and the compact on/off summary line right
+    below it (no redundant "Telemetry:" label - the header already said it) -
+    never the full explanation, and never a 3rd mention from `Also:` (that
+    pointer now lives only in this section - see the `Also:` tests)."""
     monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delenv("DO_NOT_TRACK", raising=False)
@@ -1033,7 +1046,13 @@ def test_yes_telemetry_section_shows_compact_summary_not_full_explanation(
     telemetry_idx = result.output.index("-- Telemetry --")
     doctor_idx = result.output.index("-- Doctor --")
     section_body = result.output[telemetry_idx:doctor_idx]
-    assert "Telemetry: on" in section_body
+    assert "on - anonymous usage counts" in section_body
+    # round 5 item 12: `Also:` no longer repeats the opt-out pointer - the
+    # Telemetry section above is now the ONLY place it's mentioned. (A raw
+    # word count over the whole output isn't reliable here: `tmp_path`'s own
+    # directory name can itself contain "telemetry".)
+    also_idx = result.output.index("Also:")
+    assert "telemetry" not in result.output[also_idx:].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1053,17 +1072,16 @@ def test_yes_summary_always_shows_telemetry_on_line(
     monkeypatch.delenv("DO_NOT_TRACK", raising=False)
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert (
-        "Telemetry: on - anonymous usage counts; `doberman telemetry off` to opt out"
-        in result.output
-    )
+    assert "on - anonymous usage counts; `doberman telemetry off` to opt out" in result.output
 
 
 def test_yes_summary_shows_telemetry_off_when_forced_off(tmp_path: Path) -> None:
     # conftest's autouse fixture already sets DOBERMAN_TELEMETRY=0 for every test.
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert "Telemetry: off" in result.output
+    telemetry_idx = result.output.index("-- Telemetry --")
+    doctor_idx = result.output.index("-- Doctor --")
+    assert "off" in result.output[telemetry_idx:doctor_idx]
 
 
 def test_telemetry_summary_line_shows_even_after_help_already_marked_the_notice_seen(
@@ -1077,7 +1095,7 @@ def test_telemetry_summary_line_shows_even_after_help_already_marked_the_notice_
     telemetry.first_run_notice()  # simulate: a user who read `--help` first
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert "Telemetry: on" in result.output
+    assert "on - anonymous usage counts" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1089,9 +1107,11 @@ def test_summary_ends_with_a_docs_pointer(tmp_path: Path) -> None:
     """item 1: the docs pointer now lives in the compact "Also:" line."""
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
+    # wrap_detail may (item 4/round5's shorter `Also:` line shifts where) wrap
+    # right between "docs:" and the URL - normalize whitespace first.
+    normalized = " ".join(result.output.split())
     assert (
-        "docs: https://github.com/DobermanCore/Doberman-Core/blob/main/docs/SETUP.md"
-        in result.output
+        "docs: https://github.com/DobermanCore/Doberman-Core/blob/main/docs/SETUP.md" in normalized
     )
 
 
@@ -1378,22 +1398,19 @@ def test_hosts_menu_eof_prints_the_setup_specific_abort_message(tmp_path: Path) 
 
 def test_weight_tuning_q_aborts_cleanly(tmp_path: Path) -> None:
     """item 6: 'q' during weight tuning aborts the whole wizard, same as any
-    other menu - it doesn't just skip the remaining dimensions. Round 4 item 1:
-    by this point the mode IS already persisted, so the abort message says so
-    instead of the (now false) "nothing written"."""
+    other menu - it doesn't just skip the remaining dimensions. Round 5 item
+    P1: the mode/prefs are now persisted only AFTER per-host wiring succeeds,
+    so aborting here (well before wiring) genuinely writes nothing - unlike
+    round 4, where the mode was already saved at this exact point."""
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
         input="\nbalanced\ny\nq\n",
     )
     assert result.exit_code == 1, result.output
-    assert (
-        "Aborted - security mode balanced was already saved (no hooks written); run "
-        "'doberman mode <other>' to change it, which needs your possession factor to "
-        "lower." in result.stderr
-    )
-    assert "Aborted - nothing written." not in result.stderr
-    assert load_mode(str(tmp_path)) == "balanced"
+    assert "Aborted - nothing written." in result.stderr
+    assert "already saved" not in result.stderr
+    assert load_policy(str(tmp_path)) is None
     assert not (tmp_path / ".claude").exists()
 
 
@@ -1487,7 +1504,7 @@ def test_no_telemetry_flag_disables_and_persists(tmp_path: Path) -> None:
 
     result = runner.invoke(app, ["setup", "--yes", "--no-telemetry", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert "Telemetry: off (--no-telemetry)" in result.output
+    assert "off (--no-telemetry)" in result.output
     assert telemetry.status().enabled is False
 
 
@@ -1592,8 +1609,9 @@ def test_openclaw_only_pending_message_has_no_paste_step(tmp_path: Path) -> None
     assert result.exit_code == 3, result.output
     normalized = " ".join(result.output.split())
     assert (
-        "After you follow adapters/openclaw/README.md and restart: ask your agent to "
-        "read .env and confirm it is blocked." in normalized
+        "After you follow https://github.com/DobermanCore/Doberman-Core/blob/main/"
+        "adapters/openclaw/README.md and restart: ask your agent to read .env and "
+        "confirm it is blocked." in normalized
     )
     assert "paste the block" not in normalized
 
@@ -1681,3 +1699,164 @@ def test_no_double_blank_line_in_a_full_interactive_run(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "\n\n\n" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Round 5: no raised-mode trap, abort discipline everywhere, wiring numbering,
+# dry-run ending, one Also: line, honest pending Next:, status Version/Prefs,
+# dead-doc-pointer-as-URL (items P1, 1-10 + 11-12)
+# ---------------------------------------------------------------------------
+
+
+def test_mode_and_prefs_are_not_written_until_wiring_succeeds(tmp_path: Path) -> None:
+    """item P1: nothing about the chosen mode/prefs touches disk before
+    per-host wiring succeeds - a completed run still ends up with the right
+    mode/prefs on disk, same as before, just persisted later in the flow."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nstrict\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert load_mode(str(tmp_path)) == "strict"
+    prefs = load_preferences(str(tmp_path))
+    assert prefs.confidentiality == pytest.approx(0.7)  # strict preset
+
+
+def test_global_confirm_eof_aborts_with_nothing_written(tmp_path: Path) -> None:
+    """round 5 item 2: the `--global` confirm ("Write to your real home
+    directory now?") is a bare `typer.confirm` that now goes through this
+    wizard's own abort discipline too - an exhausted stdin there aborts with
+    the standard message, not a bare Click ``Aborted!``, and (item P1) it is
+    reached before anything is persisted, so "nothing written" is accurate."""
+    result = runner.invoke(
+        app,
+        ["setup", "--mode", "balanced", "--host", "claude", "--global", "--path", str(tmp_path)],
+        input="",
+    )
+    assert result.exit_code == 1, result.output
+    assert "Aborted - nothing written." in result.stderr
+    assert "Aborted!" not in result.output
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_telemetry_prompt_eof_after_hooks_exist_names_the_written_files(tmp_path: Path) -> None:
+    """round 5 item 2: the telemetry consent confirm now also goes through
+    the abort discipline - but unlike every earlier prompt, it is reached
+    AFTER the mode/prefs/hooks persist step (item P1), so its abort message
+    must say so instead of the generic "nothing written", and must name the
+    file that was actually written (``.claude/settings.json``)."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\n",
+    )
+    assert result.exit_code == 1, result.output
+    settings_path = tmp_path / ".claude" / "settings.json"
+    assert settings_path.exists()
+    assert load_mode(str(tmp_path)) == "balanced"
+    assert (
+        f"Aborted - security mode balanced, preferences, hooks ({settings_path}) already "
+        "written; nothing else was." in result.stderr
+    )
+
+
+def test_weight_tuning_reprompt_separates_dimensions_with_a_blank_line(tmp_path: Path) -> None:
+    """round 5 item 11 (coordinator follow-up): under a piped/non-tty stdin
+    (no per-answer echo of its own), the next dimension's description used to
+    glue onto the end of the previous prompt's un-terminated line - a blank
+    line now separates every dimension, same discipline as every other
+    reprompt in this wizard."""
+    from doberman.hosthooks.setup import DIMENSION_DESCRIPTIONS
+    from doberman.policy.preferences import DIMENSIONS
+
+    weight_inputs = "\n".join(["", "", "", ""])
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input=f"\nbalanced\ny\n{weight_inputs}\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    for dim in DIMENSIONS[1:]:
+        description = DIMENSION_DESCRIPTIONS[dim]
+        assert f"[0.50]: {description}" not in result.output
+        assert f"\n\n  {description}" in result.output
+
+
+def test_multihost_interactive_wiring_gets_distinct_step_numbers(tmp_path: Path) -> None:
+    """round 5 item 4: every host actually being wired gets its own step
+    number - a `--host all`-equivalent run used to show the identical
+    "[N of M]" four times in a row for "Wiring"."""
+    result = runner.invoke(
+        app,
+        [
+            "setup",
+            "--host",
+            "claude",
+            "--host",
+            "codex",
+            "--host",
+            "mcp",
+            "--host",
+            "openclaw",
+            "--path",
+            str(tmp_path),
+        ],
+        input="balanced\nn\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Hook installation (Claude Code) [3 of 9]" in result.output
+    assert "Hook installation (Codex CLI) [4 of 9]" in result.output
+    assert "MCP proxy (Cursor / Claude Desktop / other MCP client) [5 of 9]" in result.output
+    assert "OpenClaw [6 of 9]" in result.output
+
+
+def test_dry_run_ends_with_a_plain_nothing_written_line(tmp_path: Path) -> None:
+    """item 5: `--dry-run` has an ending - the last line names, in plain
+    language, that nothing was written and how to actually apply it."""
+    result = runner.invoke(app, ["setup", "--yes", "--dry-run", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    last_line = next(line for line in reversed(result.output.splitlines()) if line.strip())
+    assert last_line == "Dry run - nothing written. Re-run without --dry-run to apply."
+
+
+def test_yes_wiring_lines_live_under_a_section_header(tmp_path: Path) -> None:
+    """item 7: `wrote .../already wired: ...` under `--yes` now lives under a
+    `-- Wiring --` section header, like the interactive path already does."""
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    settings_path = tmp_path / ".claude" / "settings.json"
+    header_idx = result.output.index("-- Wiring --")
+    wrote_idx = result.output.index(f"wrote {settings_path}")
+    assert header_idx < wrote_idx
+
+
+def test_summary_prefs_line_restates_the_four_numbers(tmp_path: Path) -> None:
+    """item 9: the setup summary's "Prefs:" line restates the four weights,
+    not just the source label - `status`'s own "Prefs:" line does the same."""
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    normalized = " ".join(result.output.split())
+    prefs_idx = normalized.index("Prefs:")
+    hosts_idx = normalized.index("Hosts:")
+    for token in (
+        "preset defaults for balanced",
+        "confidentiality=0.50",
+        "reversibility=0.50",
+        "interruption_tolerance=0.50",
+        "blast_radius=0.50",
+    ):
+        token_idx = normalized.index(token)
+        assert prefs_idx < token_idx < hosts_idx
+
+
+def test_openclaw_doc_pointer_is_a_real_github_url(tmp_path: Path) -> None:
+    """item 3: every `adapters/openclaw/README.md` mention in the CLI is now
+    the live GitHub URL, not a bare relative path that is dead outside a
+    cloned working tree."""
+    result = runner.invoke(app, ["setup", "--yes", "--host", "openclaw", "--path", str(tmp_path)])
+    assert result.exit_code == 3, result.output
+    assert (
+        "https://github.com/DobermanCore/Doberman-Core/blob/main/adapters/openclaw/README.md"
+        in result.output
+    )

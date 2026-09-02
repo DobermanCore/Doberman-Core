@@ -70,27 +70,34 @@ TELEMETRY_EXPLANATION = (
 
 
 def telemetry_summary_line() -> str:
-    """One-line consent summary ("Telemetry: on/off"), reused by the setup
-    wizard's ``--yes`` path (item 3) so it never needs the full explanation."""
+    """One-line consent summary, reused by the setup wizard's ``--yes`` path
+    (item 3) and its interactive path alike (round 5 item 12) so it never
+    needs the full explanation twice. No leading "Telemetry:" label - the
+    wizard's own section header already says that; this is the ONLY other
+    place in a successful run that names telemetry at all (the epilogue's
+    ``Also:`` line no longer repeats the opt-out pointer)."""
     from doberman import telemetry
 
     if telemetry.is_enabled():
-        return "Telemetry: on - anonymous usage counts; `doberman telemetry off` to opt out"
-    return "Telemetry: off"
+        return "on - anonymous usage counts; `doberman telemetry off` to opt out"
+    return "off"
 
 
-def configure_setup_consent(non_interactive: bool) -> None:
+def configure_setup_consent(non_interactive: bool, *, confirm=typer.confirm) -> None:
     """Ask the setup-only consent question; ``--yes`` prints a compact on/off
     summary instead.
 
     The caller is expected to have already printed a section header (e.g.
     ``_section("Telemetry")``). Interactive: print the full explanation, then
-    ask. ``--yes``: skip the explanation (the wizard mentions telemetry at
-    most twice per run - item 3 - and the ``Also:`` epilogue line already
-    covers the opt-out pointer) and print the one-line on/off summary instead;
-    ``telemetry.first_run_notice()`` is still called for its side effect only
-    (marks the notice "seen" so no later command in the session prints it),
-    discarding the text it returns since the summary line already says it.
+    ask, then print the same one-line summary ``--yes`` gets (round 5 item 12)
+    so both paths end on one consistent, single mention of the opt-out
+    pointer. ``--yes``: skip the explanation and question entirely and print
+    the summary directly; ``telemetry.first_run_notice()`` is still called for
+    its side effect only (marks the notice "seen" so no later command in the
+    session prints it), discarding the text it returns since the summary line
+    already says it. *confirm* lets the setup wizard inject its own
+    abort-aware wrapper (round 5 item 2) in place of a bare ``typer.confirm``;
+    it defaults to ``typer.confirm`` for any other caller.
     """
     from doberman import telemetry
 
@@ -101,10 +108,12 @@ def configure_setup_consent(non_interactive: bool) -> None:
         return
     for line in wrap_detail(TELEMETRY_EXPLANATION, indent=0):
         typer.echo(line)
-    if typer.confirm("Send anonymous usage stats to help improve Doberman?", default=True):
+    if confirm("Send anonymous usage stats to help improve Doberman?", True):
         telemetry.enable()
     else:
         telemetry.disable()
+    for line in wrap_detail(telemetry_summary_line(), indent=0, hang=2):
+        typer.echo(line)
 
 
 def capture_setup_completed(

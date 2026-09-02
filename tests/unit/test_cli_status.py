@@ -91,6 +91,20 @@ def test_status_shows_unknown_version_as_source_checkout(tmp_path, monkeypatch):
     assert "0.0.0+unknown" not in result.stdout
 
 
+def test_status_version_line_moves_below_protected_into_policy(tmp_path):
+    """round 5 item 9: `Version:` no longer sits right under the "Protected:
+    ..." headline/ASCII-art title - it moves down into the `-- Policy --`
+    section, right after `Policy version:`, its closest kin."""
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    protected_idx = result.stdout.index("Protected:")
+    policy_idx = result.stdout.index("-- Policy --")
+    policy_version_idx = result.stdout.index("Policy version:")
+    version_idx = result.stdout.index("Version:")
+    auth_idx = result.stdout.index("-- Auth --")
+    assert protected_idx < policy_idx < policy_version_idx < version_idx < auth_idx
+
+
 def test_status_reports_hook_install_state_per_scope(tmp_path):
     root = str(tmp_path)
     local_path = resolve_settings_path("local", root)
