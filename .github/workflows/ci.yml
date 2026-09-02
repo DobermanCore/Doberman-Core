@@ -39,7 +39,11 @@ jobs:
     # names that branch protection and the merge queue key on.
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Per-OS job ceiling: Linux legs run 4-7 min, Windows ~18 min, and a slow
+    # Windows runner has been 1.7x that (a 30-min cap cancelled a green run at
+    # 99%). The per-test --timeout below is what catches a hang; this only bounds
+    # a pathological runner.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}
     # Windows runners default `run:` to PowerShell; pin bash (Git Bash ships on
     # GitHub's Windows images) so the shell-scripted steps behave identically on
     # every OS.

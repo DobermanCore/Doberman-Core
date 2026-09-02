@@ -6,8 +6,7 @@ name: CI nightly (deep)
 #   - every OS/Python combination PR CI skips (Windows 3.11/3.13, macOS, 3.14)
 #   - random test order (pytest-randomly): an order-dependent test fails HERE,
 #     not as an xdist "flake" on somebody's PR
-#   - warnings promoted to errors: a deprecation lands as a red nightly, not as
-#     a broken install after the next dependency release
+#   - (warnings are errors on every leg, PR CI included — pyproject `filterwarnings`)
 #   - production-size half-space trees for the whole suite (PR CI shrinks them
 #     for speed — see tests/conftest.py::_fast_hst); this guards that shortcut
 #   - a dependency vulnerability audit (pip-audit), blocking here and only here
@@ -60,15 +59,14 @@ jobs:
           fi
       # -p randomly prints its seed at the top of the log; reproduce an order
       # failure locally with `pytest -p randomly -p "randomly_seed=<seed>"`.
-      # The one ignored warning is Starlette's httpx -> httpx2 test-client
-      # deprecation, tracked as a dependency follow-up, not a suite defect.
-      - name: Full suite — random order, warnings as errors, production-size trees
+      # Warnings are errors on every leg via pyproject's `filterwarnings` (with the
+      # tracked ignores listed after "error"); nothing to add here. A `-W error` on
+      # the command line would outrank the ini and re-raise every ignored warning.
+      - name: Full suite — random order, production-size trees
         env:
           DOBERMAN_TEST_REAL_HST: "1"
         run: >
           pytest -n auto --dist loadgroup -p randomly --timeout=900 --durations=40 --durations-min=5.0
-          -W error
-          -W "ignore:Using .httpx. with .starlette.testclient.*"
 
   dependency-audit:
     name: Dependency vulnerability audit

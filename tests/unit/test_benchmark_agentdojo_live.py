@@ -27,8 +27,11 @@ from tests.benchmarks.suites.agentdojo import AgentDojoAdapter  # noqa: E402
 pytestmark = [
     pytest.mark.real_hst,
     pytest.mark.timeout(1200),
-    # One xdist worker builds the module fixture once (--dist loadgroup); without
-    # the group every worker that draws an item from this module rebuilds it.
+    # ONE shared xdist group for every production-size module (--dist loadgroup):
+    # the module fixture is built once, and the four heavy builds run serially on
+    # one worker. A group per module (tried 2026-09-01) pegged every vCPU of the
+    # 4-core Windows runner at once and stalled the leg past its cap three times;
+    # the shared group ran green in 19.8 min on the same pool.
     pytest.mark.xdist_group("real_hst"),
 ]
 

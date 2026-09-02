@@ -6,6 +6,7 @@ translation + output shape.
 """
 
 import asyncio
+from pathlib import Path
 
 from doberman.engine.decision_engine import PASS_STUB, decide
 from doberman.engine.objective import ObjectiveGuardrail
@@ -149,6 +150,6 @@ def test_correlator_does_not_fire_without_a_session_id(tmp_path):
 def test_spine_never_imports_heavy_modules():
     import doberman.hosthooks.spine as mod
 
-    src = open(mod.__file__, encoding="utf-8").read()
+    src = Path(mod.__file__).read_text(encoding="utf-8")  # closed: -W error flags a leaked FileIO
     for heavy in ("proxy.executor", "numpy", "scipy", "river"):
         assert heavy not in src, f"spine must not import {heavy} (hot path)"
