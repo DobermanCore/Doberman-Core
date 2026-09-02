@@ -370,10 +370,27 @@ _HTML_SHELL = """<!doctype html>
     #stats-decisions, #stats-reasons { display: none; }
     #stats { flex-wrap: nowrap; overflow-x: auto; }
     #stats-verdicts .detail { display: none; }
+    /* Round 9: every direct child of #stats (each .stat-group, AND the bare
+       "updated HH:MM:SS" timestamp span appended alongside them) is itself
+       `display:flex;flex-wrap:wrap`-capable or a default flex-shrink:1 item -
+       inside a NOWRAP #stats that still let a child shrink or wrap its own
+       content onto multiple lines instead of just scrolling. The bare
+       timestamp span was the one that actually did (shrank to a ~60px column
+       and wrapped its own text 3 lines tall), which set the whole row's
+       height since align-items is flex-start. `flex: none` stops every child
+       from shrinking/wrapping itself - #stats scrolls horizontally instead. */
+    #stats > * { flex: none; white-space: nowrap; }
   }
   .empty-state {
     padding: 2rem 1.5rem; border: 1px dashed var(--rule); border-radius: var(--r);
     color: var(--fg-3); font-size: var(--fs-2); text-align: center;
+  }
+  /* Round 9: a one-line note at EVERY width, not just <=640px (was a
+     mobile-only override) - the big dashed empty-state box cost the feed's
+     above-the-fold room on a laptop too, and "nothing pending" doesn't need
+     a card of its own at any width. */
+  #pending-empty {
+    padding: .4rem 0; border: none; text-align: left; font-size: var(--fs-1);
   }
   #feed, #pending-list { list-style: none; margin: .5rem 0 0; }
   #feed:not(:empty) ~ #feed-empty { display: none; }
@@ -456,6 +473,12 @@ _HTML_SHELL = """<!doctype html>
      floor at 390px, but the same gap exists at any width). */
   #feed-clear-filters-btn { min-height: 44px; min-width: 44px; }
   .section-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: 1.4rem; }
+  /* Round 9: a flex item's own margin never collapses with its container's
+     (unlike two plain block siblings) - h2's usual 1.75rem/.6rem margin was
+     landing IN ADDITION to .section-head's own margin-top above, doubling
+     the gap above "Recent decisions" for no visual reason (the button beside
+     it needs no extra room). .section-head's own margin-top is enough. */
+  .section-head h2 { margin: 0; }
   #refresh-btn {
     font-family: var(--font); font-size: var(--fs-2); font-weight: 600;
     background: transparent; border: 1px solid var(--rule); color: var(--fg);
@@ -524,8 +547,12 @@ _HTML_SHELL = """<!doctype html>
      visible regardless of the mobile disclosure's collapsed/expanded state -
      the <=640px override below is what actually makes `hidden` hide it. */
   #feed-filters-panel { display: contents; }
+  /* Round 9: no max-height at any width - an inner `overflow-y: auto`
+     scroller nested inside the page's own scroll was a two-scrollbars trap
+     (round 8 already dropped it at <=640px; the same trap exists at every
+     width). The page scrolling instead is also what keeps the first feed row
+     above the fold on a laptop, alongside the compact #pending-empty below. */
   #feed {
-    max-height: 60vh; overflow-y: auto;
     border: 1px solid var(--rule-2); border-radius: var(--r); background: var(--ink-1);
   }
   /* Direct-child combinator (round 5) - a feed row's own .gloss-list is a
@@ -671,6 +698,13 @@ _HTML_SHELL = """<!doctype html>
      one form of this hint that actually weakens the guard. */
   #mode-hint.lowering { color: var(--block); }
   #mode-hint:empty { display: none; }
+  /* Round 9: the "hard blocks stay in force regardless of mode" reassurance
+     is its OWN element in the quieter --fg-2 tone, not appended into
+     #mode-hint's block-colored sentence above - a downgrade's actual
+     requirement/threshold change and the reassurance that you're still safe
+     are different severities and read poorly painted the identical color. */
+  #mode-reassurance { flex-basis: 100%; margin: -.1rem 0 .2rem; color: var(--fg-2); font-size: var(--fs-1); }
+  #mode-reassurance:empty { display: none; }
   #mode-form select, #mode-form input {
     font-size: var(--fs-2); padding: .35rem .55rem;
     background: var(--ink-2); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px;
@@ -754,7 +788,11 @@ _HTML_SHELL = """<!doctype html>
        margin toward that same budget - none of it changes at wider widths. */
     .topbar { padding-bottom: .6rem; margin-bottom: .75rem; }
     h2 { margin-top: .85rem; }
-    #stats { padding: .5rem .75rem; margin-bottom: 1rem; }
+    /* Round 9: trimmed from .5rem - with #stats > * now nowrap (see below),
+       the focal number's own --fs-4 line-height was the tallest thing in the
+       row and pushed the card to ~61px; a hair less vertical padding clears
+       the <=60px budget without touching that font size. */
+    #stats { padding: .4rem .75rem; margin-bottom: 1rem; }
     .topbar-row1 { width: 100%; justify-content: space-between; }
     .topbar-right { width: 100%; }
     /* mode + enforcement collapse into ONE joined badge ("posture: strict
@@ -811,18 +849,9 @@ _HTML_SHELL = """<!doctype html>
          its own content - it measured 192px tall. `flex: none` opts back out. */
       flex: none;
     }
-    /* A single-line note, not the big dashed empty-state box - this is the
-       FIRST thing on the page at this width, and the feed below it needs
-       the vertical room more than an empty queue does (round 5 - the first
-       feed row should start within the first 600px). */
-    #pending-empty {
-      padding: .4rem 0; border: none; text-align: left; font-size: var(--fs-1);
-    }
-    /* Round 8: an inner `overflow-y: auto` scroller nested inside the page's
-       own scroll is a trap at this width (two independent scroll gestures
-       fighting for the same swipe) - the page already scrolls, so let the
-       feed flow with it instead of capping its own height. */
-    #feed { max-height: none; overflow-y: visible; }
+    /* Round 9: #pending-empty and #feed's dropped max-height are now BASE
+       (unconditional) rules above - both used to be mobile-only overrides
+       here, moved out because the laptop-width fold needed them too. */
   }
 </style>
 </head>
@@ -868,7 +897,7 @@ _HTML_SHELL = """<!doctype html>
       </div>
       <div class="feed-toolbar">
         <div class="filter-chip-group" role="group" aria-label="Filter by verdict">
-          <button type="button" class="filter-chip" data-verdict="needs_attention" aria-pressed="true" title="BLOCK + AUTH - what Doberman stopped or escalated">Needs attention</button>
+          <button type="button" class="filter-chip" data-verdict="needs_attention" aria-pressed="true" title="Needs attention: BLOCK + AUTH - what Doberman stopped or escalated">Needs attention</button>
           <button type="button" class="filter-chip" data-verdict="" aria-pressed="false">All</button>
           <button type="button" class="filter-chip" data-verdict="BLOCK" aria-pressed="false">BLOCK</button>
           <button type="button" class="filter-chip" data-verdict="AUTH" aria-pressed="false">AUTH</button>
@@ -905,6 +934,7 @@ _HTML_SHELL = """<!doctype html>
     <p id="mode-form-title">Security mode</p>
     <select id="mode-select" aria-label="Security mode"></select>
     <p id="mode-hint" aria-live="polite"></p>
+    <p id="mode-reassurance"></p>
     <label class="sr-only" for="mode-code">2FA code or password, only needed to lower strictness</label>
     <input id="mode-code" type="password" autocomplete="off"
       placeholder="code (to lower strictness)">
@@ -969,10 +999,13 @@ _HTML_SHELL = """<!doctype html>
         monitor: "monitoring",
         off: "off"
       };
+      // Round 9: label first ("enforcement: <word>", matching the badge's own
+      // visible text verbatim) - the accessible name a title contributes must
+      // include the visible label, not just launch straight into the gloss.
       var ENFORCEMENT_TITLE = {
-        enforce: "enforce: Doberman blocks and authenticates for real",
-        monitor: "monitor: decisions are logged only, nothing is blocked",
-        off: "off: Doberman is not evaluating actions"
+        enforce: "enforcement: enforcing - Doberman blocks and authenticates for real",
+        monitor: "enforcement: monitoring - decisions are logged only, nothing is blocked",
+        off: "enforcement: off - Doberman is not evaluating actions"
       };
       // Plain-words gloss for a reason code (title="..." tooltip on the feed's
       // reason-code spans) - the exact same dict doberman.explain.template_explanation
@@ -1117,6 +1150,7 @@ _HTML_SHELL = """<!doctype html>
       var modeSuccessEl = document.getElementById("mode-success");
       var modeErrorEl = document.getElementById("mode-error");
       var modeHintEl = document.getElementById("mode-hint");
+      var modeReassuranceEl = document.getElementById("mode-reassurance");
       var modeEditing = false;
       var modesOrder = [];
       var currentModeName = null;
@@ -1216,6 +1250,13 @@ _HTML_SHELL = """<!doctype html>
       // paint "connected" over a dropped feed, and a state that hasn't changed
       // must not re-announce - so one renderer owns the chip and the announcer.
       var conn = { health: "unknown", feed: "unknown" };
+      // Round 9: the connection text's OWN last-announced value, tracked
+      // separately from announce()'s shared `lastAnnounced` - a health poll
+      // firing every 10s must not re-announce "Dashboard connected." just
+      // because some OTHER announcement (a refresh, a new feed row) landed
+      // in between and changed the shared dedupe value. Only an actual
+      // connection-state change (health/feed transition) should announce.
+      var lastConnectionText = null;
       function renderConnection() {
         var text, ok;
         if (conn.health === "unauthorized") {
@@ -1233,7 +1274,10 @@ _HTML_SHELL = """<!doctype html>
         }
         dot.className = ok ? "dot ok" : "dot err";
         label.textContent = text;
-        announce("Dashboard " + text + ".");
+        if (text !== lastConnectionText) {
+          lastConnectionText = text;
+          announce("Dashboard " + text + ".");
+        }
       }
       checkHealth();
       // Health is also polled on an interval (not just at load) so a server
@@ -1487,11 +1531,20 @@ _HTML_SHELL = """<!doctype html>
         if (direction === "lower") {
           var consequence = MODE_DOWNGRADE_CONSEQUENCE[modeSelect.value];
           return "Lower: needs your 2FA code or password. " +
-            (consequence || "This weakens the guard's step-up thresholds.") +
-            " - hard blocks (secrets, destructive commands, protected paths) " +
-            "stay in force regardless of mode.";
+            (consequence || "This weakens the guard's step-up thresholds.");
         }
         return "";
+      }
+
+      // Split out of modeConsequenceText() (round 9) so the "you're still
+      // safe" reassurance renders in the quieter --fg-2 tone (#mode-reassurance),
+      // separate from the block-colored requirement/threshold sentence above -
+      // a downgrade's real consequence and the floor that never moves with it
+      // are different severities and read poorly painted the same color.
+      function modeReassuranceText() {
+        return computeModeDirection() === "lower"
+          ? "Hard blocks (secrets, destructive commands, protected paths) stay in force regardless of mode."
+          : "";
       }
 
       function modeHintText() {
@@ -1511,6 +1564,10 @@ _HTML_SHELL = """<!doctype html>
       // this every 5s while modeEditing) must not silently overwrite
       // MODE_FORM_BLOCKED_DISMISS_HINT with the routine raise/lower text.
       function refreshModeHint() {
+        // Independent of modeDismissBlocked below - the reassurance carries
+        // no "unsaved change" wording, so a background poll refreshing it
+        // mid-blocked-dismiss can't stomp on anything that guard protects.
+        modeReassuranceEl.textContent = modeReassuranceText();
         if (modeDismissBlocked) { return; }
         modeHintEl.textContent = modeHintText();
         modeHintEl.classList.toggle("lowering", computeModeDirection() === "lower");
@@ -1607,6 +1664,7 @@ _HTML_SHELL = """<!doctype html>
         modeSuccessEl.textContent = "";
         modeHintEl.textContent = "";
         modeHintEl.classList.remove("lowering");
+        modeReassuranceEl.textContent = "";
         modeDismissBlocked = false;
         cancelModeArm();
         // Cancel (or any other path here) genuinely DISCARDS an unsaved pick -
@@ -1763,11 +1821,17 @@ _HTML_SHELL = """<!doctype html>
       // Truthful about what happens at 0: the challenge MOVES to the
       // terminal/GUI channel (DashboardPrompter raises PrompterUnavailableError
       // at the timeout, it does not deny) - never say "auto-denies" here.
-      function formatCountdown(msRemaining) {
+      // Split (round 9) so the privacy note below can quote the same bare
+      // "M:SS" clock inline, in its own sentence, instead of duplicating the
+      // digit math.
+      function formatRemainingClock(msRemaining) {
         var totalSeconds = Math.max(0, Math.round(msRemaining / 1000));
         var m = Math.floor(totalSeconds / 60);
         var s = totalSeconds % 60;
-        return "answerable here for " + m + ":" + (s < 10 ? "0" : "") + s +
+        return m + ":" + (s < 10 ? "0" : "") + s;
+      }
+      function formatCountdown(msRemaining) {
+        return "answerable here for " + formatRemainingClock(msRemaining) +
           ", then it moves to your terminal";
       }
 
@@ -1798,6 +1862,14 @@ _HTML_SHELL = """<!doctype html>
               b.disabled = true;
             });
           }
+        });
+        // Round 9: the privacy note's own short "M:SS" readout - same
+        // deadline as the header countdown above, just without its full
+        // sentence (the privacy note supplies its own surrounding words -
+        // see the pending-card builder below).
+        pendingList.querySelectorAll(".privacy-countdown[data-deadline]").forEach(function (node) {
+          var remaining = Number(node.dataset.deadline) - now;
+          node.textContent = remaining > 0 ? formatRemainingClock(remaining) : "0:00";
         });
       }
       setInterval(tickCountdowns, 1000);
@@ -1959,11 +2031,27 @@ _HTML_SHELL = """<!doctype html>
 
           // The card says what it deliberately does NOT show: only a
           // redacted class/summary ever reaches this screen, never the raw
-          // command.
+          // command. Round 9: `d` DENIES the action outright (it does not
+          // send it anywhere) - the old wording claiming the Deny key
+          // reviews it there was simply false. Reading the raw command means
+          // doing nothing: leaving the card alone until the same 90s horizon
+          // the header countdown already tracks falls through it to the
+          // terminal.
           var privacyNote = document.createElement("div");
           privacyNote.className = "privacy-note";
-          privacyNote.textContent =
-            "The raw command stays in your terminal. Let this fall through (or press d) to review it there.";
+          privacyNote.appendChild(document.createTextNode(
+            "The raw command stays in your terminal. To read it before " +
+            "deciding, leave this card alone - it moves there in "));
+          var privacyCountdown = document.createElement("span");
+          privacyCountdown.className = "privacy-countdown";
+          if (deadlineMs !== null) {
+            privacyCountdown.dataset.deadline = String(deadlineMs);
+            privacyCountdown.textContent = formatRemainingClock(deadlineMs - Date.now());
+          } else {
+            privacyCountdown.textContent = "a moment";
+          }
+          privacyNote.appendChild(privacyCountdown);
+          privacyNote.appendChild(document.createTextNode("."));
           li.appendChild(privacyNote);
 
           var totpInput = null;
@@ -2450,6 +2538,15 @@ _HTML_SHELL = """<!doctype html>
         if (fullEl) { fullEl.hidden = !expanded; }
         li.setAttribute("aria-expanded", expanded ? "true" : "false");
         if (glossListEl) { glossListEl.hidden = !expanded; }
+        // Round 9: scroll AFTER the row's height changes, not before - the
+        // click path's setActiveFeedEntry() already scrolled based on the
+        // row's PRE-expansion height, and Enter/Space here has no earlier
+        // scroll at all. Next frame, once the browser has laid out the
+        // newly-revealed content, is what actually keeps the headline (this
+        // row's own first line) from being pushed out of view by its own growth.
+        requestAnimationFrame(function () {
+          li.scrollIntoView({ block: "nearest" });
+        });
       }
 
       feedEl.addEventListener("keydown", function (e) {

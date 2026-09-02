@@ -47,10 +47,10 @@ def _index_html(tmp_path) -> str:
 
 def test_privacy_note_points_at_the_terminal(tmp_path):
     html = _index_html(tmp_path)
-    assert (
-        "The raw command stays in your terminal. Let this fall through (or press d) "
-        "to review it there."
-    ) in html
+    # Superseded by round 9 (test_dash_round9.py): `d` DENIES, it never sends
+    # the action anywhere, so "press d ... to review it there" was false.
+    # Kept as a narrower assertion of the still-true half of this note.
+    assert "The raw command stays in your terminal." in html
     assert "Doberman never shows the raw command here" not in html
 
 
@@ -124,9 +124,11 @@ def test_focal_number_prefers_pending_over_recent_block(tmp_path):
 def test_needs_attention_chip_has_a_title_repeated_in_the_panel(tmp_path):
     html = _index_html(tmp_path)
     definition = "BLOCK + AUTH - what Doberman stopped or escalated"
+    # Round 9: the title's accessible name now leads with the chip's own
+    # visible label ("Needs attention: ...") - see test_dash_round9.py.
     assert (
         '<button type="button" class="filter-chip" data-verdict="needs_attention" '
-        f'aria-pressed="true" title="{definition}">Needs attention</button>'
+        f'aria-pressed="true" title="Needs attention: {definition}">Needs attention</button>'
     ) in html
     assert f'"Needs attention" = {definition}.' in html
 
@@ -211,8 +213,14 @@ def test_near_top_scroll_pin_replaces_near_bottom(tmp_path):
 
 def test_mobile_feed_drops_its_inner_scroller(tmp_path):
     html = _index_html(tmp_path)
-    media_start = html.rindex("@media (max-width: 640px) {")
-    assert html.index("#feed { max-height: none; overflow-y: visible; }", media_start) > media_start
+    # Round 9: no max-height at ANY width now (test_dash_round9.py) - #feed's
+    # base rule itself carries no max-height/overflow-y any more, so there is
+    # nothing left for the <=640px block to override.
+    feed_start = html.index("#feed {")
+    feed_end = html.index("}", feed_start)
+    block = html[feed_start:feed_end]
+    assert "max-height" not in block
+    assert "overflow-y" not in block
 
 
 # --------------------------------------------------------------------------
@@ -234,4 +242,6 @@ def test_panel_theme_toggle_present_for_390px_reachability(tmp_path):
     html = _index_html(tmp_path)
     # Always in the DOM inside the "?" panel - CSS hides the standalone
     # topbar toggle at <=640px, but this one takes over regardless of width.
-    assert '<button type="button" id="panel-theme-toggle-btn">Switch to light theme</button>' in html
+    assert (
+        '<button type="button" id="panel-theme-toggle-btn">Switch to light theme</button>' in html
+    )

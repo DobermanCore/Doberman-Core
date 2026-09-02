@@ -410,11 +410,13 @@ refresh is always shown in the UI (never silently), with a retry control.
 
 An `AUTH` challenge can be answered from the dashboard instead of the terminal: it lists pending
 approvals and resolves one at a time, a single-use transition, so two concurrent resolves of the
-same row can never both win. Each pending card points at the channel that can actually answer
-(`The raw command stays in your terminal. Let this fall through (or press d) to review it there.`) and shows
-a live countdown to the dashboard's own 90s answer window (`answerable here for M:SS, then it moves
-to your terminal`) - at 0 the challenge has genuinely moved to the terminal/GUI channel (not been
-denied), independent of the approval row's own longer DB TTL. Both Approve and Deny need the same
+same row can never both win. Each pending card points at the channel that can actually answer -
+`d` denies the action outright, it does not send it anywhere, so the note reads `The raw command
+stays in your terminal. To read it before deciding, leave this card alone - it moves there in
+M:SS.` with a live countdown - and shows the same live countdown in the row header (`answerable
+here for M:SS, then it moves to your terminal`) - at 0 the challenge has genuinely moved to the
+terminal/GUI channel (not been denied), independent of the approval row's own longer DB TTL. Both
+Approve and Deny need the same
 two-step arm-then-confirm gesture (a 5s countdown) before they submit. The dashboard never verifies
 a TOTP code itself; a tier that needs one gets a real, visible "6-digit code" label above the field,
 and the code rides opaquely to the same auth-challenge machinery already running in the decision

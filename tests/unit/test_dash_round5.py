@@ -248,7 +248,11 @@ def test_downgrade_consequence_is_derived_per_mode(tmp_path):
     # sentence is expected.
     consequence_block = html.split("var MODE_DOWNGRADE_CONSEQUENCE = {")[1].split("};")[0]
     assert "paranoid:" not in consequence_block
-    assert "hard blocks (secrets, destructive commands, protected paths) " in html
+    # Round 9: the "hard blocks stay in force" reassurance moved out of this
+    # sentence into its own element/tone, and its own standalone sentence
+    # (see test_dash_round9.py) - still present on the page, just no longer
+    # glued onto the consequence text (hence the now-capitalized "Hard").
+    assert "Hard blocks (secrets, destructive commands, protected paths) " in html
     assert "stay in force regardless of mode." in html
 
 
@@ -260,10 +264,10 @@ def test_downgrade_consequence_is_derived_per_mode(tmp_path):
 def test_pending_card_states_what_it_cannot_show(tmp_path):
     html = _index_html(tmp_path)
     # Round 8: points at the channel that can actually answer (the terminal),
-    # not just at what the dashboard withholds.
-    assert (
-        "The raw command stays in your terminal. Let this fall through (or press d) to review it there."
-    ) in html
+    # not just at what the dashboard withholds. Round 9: the exact wording is
+    # now covered by test_dash_round9.py (the "press d" phrasing was false -
+    # `d` denies, it never sends the action anywhere).
+    assert "The raw command stays in your terminal." in html
     assert 'privacyNote.className = "privacy-note";' in html
 
 
@@ -332,8 +336,10 @@ def test_mobile_fold_hides_decisions_and_reasons_stat_groups(tmp_path):
 
 def test_mobile_pending_empty_is_a_single_line_not_a_dashed_box(tmp_path):
     html = _index_html(tmp_path)
-    start = html.rindex("@media (max-width: 640px) {")
-    end = html.index("}", html.index("#pending-empty {", start))
+    # Round 9: this is now a base (unconditional) rule, not mobile-only - see
+    # test_dash_round9.py - so it holds at every width, this one included.
+    start = html.index("#pending-empty {")
+    end = html.index("}", start)
     block = html[start:end]
     assert "border: none" in block
     assert "text-align: left" in block

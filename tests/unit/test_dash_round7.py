@@ -263,11 +263,13 @@ def test_truncation_note_names_the_dropped_row_count(tmp_path):
 def test_needs_attention_is_the_default_chip_and_select_option(tmp_path):
     html = _index_html(tmp_path)
     # Round 8: the chip also carries a `title` defining "Needs attention"
-    # (see test_dash_round8.py) - matched here without depending on the exact
-    # attribute text, just that it still immediately precedes the label.
+    # (see test_dash_round8.py; round 9 makes the title lead with the chip's
+    # own label - see test_dash_round9.py) - matched here without depending
+    # on the exact attribute text, just that it still immediately precedes
+    # the label.
     assert (
         '<button type="button" class="filter-chip" data-verdict="needs_attention" '
-        'aria-pressed="true" title="BLOCK + AUTH - what Doberman stopped or escalated"'
+        'aria-pressed="true" title="Needs attention: BLOCK + AUTH - what Doberman stopped or escalated"'
         ">Needs attention</button>" in html
     )
     assert (
