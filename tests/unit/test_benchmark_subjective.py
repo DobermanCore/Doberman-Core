@@ -21,8 +21,10 @@ pytestmark = [
     pytest.mark.real_hst,
     pytest.mark.timeout(1200),
     # One xdist worker builds the module fixture once (--dist loadgroup); without
-    # the group every worker that draws an item from this module rebuilds it.
-    pytest.mark.xdist_group("real_hst"),
+    # the group every worker that draws an item from this module rebuilds it. One
+    # group PER module, so the production-size modules still run in parallel with
+    # each other instead of trailing the suite as one serial chain.
+    pytest.mark.xdist_group("real_hst_bench_subjective"),
 ]
 
 # --- fixture ------------------------------------------------------------
