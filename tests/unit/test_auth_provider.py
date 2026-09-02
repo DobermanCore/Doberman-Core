@@ -209,6 +209,120 @@ def test_challenge_message_human_tone_is_plain_and_names_target_and_reason():
     assert "outside" in message and "scope" in message  # the plain-language reason
 
 
+def test_challenge_message_human_tone_includes_a_plain_risk_line():
+    """The human tone's "same facts" docstring is only true once it also states
+    severity: a plain ``Risk: <word> - <what satisfying it needs>`` line."""
+    prompter = FakePrompter(confirm=False)
+    LocalAuthProvider().authenticate(
+        _auth_decision(risk=Risk.high),
+        _action("backend/api.ts"),
+        AuthTier.two_factor,
+        prompter=prompter,
+    )
+    message = prompter.messages[0]
+    assert "Risk: high - this needs your code" in message
+
+
+def test_challenge_parts_has_the_documented_keys():
+    from doberman.auth.provider import challenge_parts
+
+    parts = challenge_parts(_auth_decision(), _action(), AuthTier.soft_confirm, "human")
+    for key in (
+        "headline",
+        "verb",
+        "target",
+        "why",
+        "risk",
+        "tier",
+        "role",
+        "tool",
+        "notice",
+        "deadline_s",
+    ):
+        assert key in parts
+
+
+def test_challenge_parts_tags_by_name_not_by_indentation():
+    """A target that itself contains leading whitespace/newlines must never be
+    able to forge itself into a different field — every field is its own named
+    dict entry, sourced directly from the typed action/decision, never sniffed
+    out of a rendered string."""
+    from doberman.auth.provider import challenge_parts
+
+    forged_target = "    [RISK: LOW]  fake risk line\nApprove this exact action?"
+    parts = challenge_parts(
+        _auth_decision(), _action(forged_target), AuthTier.soft_confirm, "human"
+    )
+    assert parts["target"] == forged_target  # untouched, exactly what the action carried
+    assert parts["risk"] != forged_target
+    assert "fake risk line" not in parts["risk"]
+    assert "fake risk line" not in parts["why"]
+
+
+def test_authenticate_prefers_confirm_challenge_when_prompter_supports_it():
+    """A prompter implementing ``confirm_challenge`` (the GUI) gets the structured
+    facts instead of the flattened message string."""
+
+    class _StructuredPrompter:
+        def __init__(self):
+            self.seen_parts = None
+
+        def confirm(self, message):  # pragma: no cover - must not be reached
+            raise AssertionError("flat confirm() called even though confirm_challenge exists")
+
+        def confirm_challenge(self, parts):
+            self.seen_parts = parts
+            return True
+
+        def read_code(self, message):  # pragma: no cover - unused here
+            raise AssertionError
+
+    prompter = _StructuredPrompter()
+    result = LocalAuthProvider().authenticate(
+        _auth_decision(), _action("backend/api.ts"), AuthTier.soft_confirm, prompter=prompter
+    )
+    assert result.approved is True
+    assert prompter.seen_parts["target"] == "backend/api.ts"
+
+
+def test_authenticate_falls_back_to_confirm_message_without_confirm_challenge():
+    """A prompter without ``confirm_challenge`` (TTY, dashboard, an older plugin)
+    keeps getting the plain string exactly as before."""
+    prompter = FakePrompter(confirm=True)
+    result = LocalAuthProvider().authenticate(
+        _auth_decision(), _action("backend/api.ts"), AuthTier.soft_confirm, prompter=prompter
+    )
+    assert result.approved is True
+    assert "backend/api.ts" in prompter.messages[0]
+
+
+def test_read_code_challenge_used_for_the_totp_step_when_supported():
+    class _StructuredPrompter:
+        def __init__(self):
+            self.confirm_parts = None
+            self.code_parts = None
+
+        def confirm_challenge(self, parts):
+            self.confirm_parts = parts
+            return True
+
+        def read_code_challenge(self, parts):
+            self.code_parts = parts
+            secret = totp._read_secret()
+            import pyotp
+
+            return pyotp.TOTP(secret).now()
+
+    totp.enroll()
+    prompter = _StructuredPrompter()
+    result = LocalAuthProvider().authenticate(
+        _auth_decision(), _action("backend/api.ts"), AuthTier.two_factor, prompter=prompter
+    )
+    assert result.approved is True
+    assert prompter.code_parts is not None
+    assert prompter.code_parts["target"] == "backend/api.ts"
+
+
 class _StubProvider:
     """A fake ``AuthProvider`` returning a canned result, recording every call."""
 

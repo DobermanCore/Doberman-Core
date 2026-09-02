@@ -29,7 +29,7 @@ This module imports the F3 entry-point registry for discovery but never imports
 
 import logging
 from datetime import datetime, timezone
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from doberman.auth import totp
 from doberman.auth.approval import ApprovalOutcome, request_approval, resolve_approval_method
@@ -113,6 +113,103 @@ def _plain_why(decision: Decision) -> str:
     return sentence[:1].upper() + sentence[1:] + "."
 
 
+#: What satisfying each tier actually requires, in plain words, for the risk line
+#: ("Risk: high - this needs your code"). Keyed by tier (not risk) because the
+#: proof required is a function of the tier, not the raw risk label.
+_TIER_HINT: dict[AuthTier, str] = {
+    AuthTier.soft_confirm: "confirm to continue",
+    AuthTier.local_auth: "confirm to continue",
+    AuthTier.two_factor: "this needs your code",
+    AuthTier.role_elevation: "this needs your code",
+}
+
+
+def challenge_parts(
+    decision: Decision, action: SecurityObject, tier: AuthTier, tone: str = "human"
+) -> dict[str, Any]:
+    """The structured facts behind one challenge, tagged by NAME rather than by
+    position or leading whitespace.
+
+    Feeds both :func:`_challenge_message` (the plain-string message every
+    ``Prompter`` — TTY, dashboard, a plugin — already understands) and a
+    structured prompter's ``confirm_challenge``/``read_code_challenge`` (the
+    GUI): both render the exact same underlying facts, only the plain-string
+    path flattens them into prose first. Because the GUI reads named fields
+    instead of sniffing indentation out of a rendered string, nothing in
+    ``action.target`` can forge itself into looking like the risk line or the
+    question (the old leading-whitespace-means-"the command" heuristic).
+
+    ``tone`` changes wording only ("technical" is the original detailed
+    format; "human", the default, is a plain rendering of the same facts) —
+    reason codes stay on the ``Decision`` and in the logs either way.
+
+    ``deadline_s`` is deliberately left ``None`` here: this module has no
+    opinion on any one channel's timeout (the GUI dialog's real, enforced
+    countdown is owned by :class:`~doberman.auth.gui_prompter.GuiPrompter`
+    itself) — a value here would be decorative at best and misleading at
+    worst if a renderer trusted it over the deadline it actually enforces.
+    """
+    target = action.target or "(no target)"
+    notice = action.metadata.get("approval_memory_notice")
+    notice = notice if isinstance(notice, str) and notice else None
+    risk_word = decision.final_risk.value
+    tier_hint = _TIER_HINT.get(tier, "confirm to continue")
+
+    if tone == "technical":
+        reasons = ", ".join(decision.reason_codes) or "unspecified"
+        risk = f"RISK: {risk_word.upper()}"
+        headline = f"[{risk}]  Doberman authentication required [{tier.value}]"
+        verb = action.tool_name
+        why = f"{reasons} - {decision.explanation.strip() or 'no further detail'}"
+    else:
+        risk = f"Risk: {risk_word} - {tier_hint}"
+        verb = _plain_verb(action.action_type)
+        headline = f"Your agent wants to {verb}:"
+        why = _plain_why(decision)
+
+    return {
+        "tone": tone,
+        "headline": headline,
+        "verb": verb,
+        "target": target,
+        "why": why,
+        "risk": risk,
+        "tier": tier.value,
+        "role": action.agent_role,
+        "tool": action.tool_name,
+        "notice": notice,
+        "deadline_s": None,
+    }
+
+
+def _message_from_parts(parts: dict[str, Any]) -> str:
+    """Flatten :func:`challenge_parts` into the plain-string message every
+    ``Prompter`` (TTY, dashboard, a plugin that only implements ``confirm``)
+    already understands. Shared by :func:`_challenge_message` and the
+    ``FallbackPrompter`` chain's per-channel fallback.
+    """
+    prefix = f"{parts['notice']}\n\n" if parts["notice"] else ""
+    if parts["tone"] == "technical":
+        return prefix + (
+            f"{parts['headline']}\n"
+            f"  role:   {parts['role']}\n"
+            f"  action: {parts['verb']} -> {parts['target']}\n"
+            f"  reason: {parts['why']}\n"
+            f"Approve THIS exact action?"
+        )
+    return prefix + (
+        f"{parts['headline']}\n"
+        f"\n"
+        f"    {parts['target']}\n"
+        f"\n"
+        f"{parts['why']}\n"
+        f"\n"
+        f"{parts['risk']}\n"
+        f"\n"
+        f"Approve this exact action?"
+    )
+
+
 def _challenge_message(
     decision: Decision, action: SecurityObject, tier: AuthTier, tone: str = "human"
 ) -> str:
@@ -120,32 +217,11 @@ def _challenge_message(
 
     Shown only to the local human approving the action (never logged), so it may
     include the concrete target — that is the whole point of an action-specific
-    challenge ("approve THIS file", not a generic "enter 2FA"). ``tone``
-    controls wording only: "technical" is the original detailed format,
-    "human" (the default, S1) is a plain, friendly rendering of the exact same
-    facts — reason codes stay on the Decision and in the logs either way.
+    challenge ("approve THIS file", not a generic "enter 2FA"). A thin wrapper
+    over :func:`challenge_parts` + :func:`_message_from_parts` — see
+    :func:`challenge_parts` for what "tone" changes and what it doesn't.
     """
-    target = action.target or "(no target)"
-    notice = action.metadata.get("approval_memory_notice")
-    prefix = f"{notice}\n\n" if isinstance(notice, str) and notice else ""
-    if tone == "technical":
-        reasons = ", ".join(decision.reason_codes) or "unspecified"
-        return prefix + (
-            f"[RISK: {decision.final_risk.upper()}]  Doberman authentication required [{tier.value}]\n"
-            f"  role:   {action.agent_role}\n"
-            f"  action: {action.tool_name} -> {target}\n"
-            f"  reason: {reasons} - {decision.explanation.strip() or 'no further detail'}\n"
-            f"Approve THIS exact action?"
-        )
-    return prefix + (
-        f"Your agent wants to {_plain_verb(action.action_type)}:\n"
-        f"\n"
-        f"    {target}\n"
-        f"\n"
-        f"{_plain_why(decision)}\n"
-        f"\n"
-        f"Approve this exact action?"
-    )
+    return _message_from_parts(challenge_parts(decision, action, tier, tone))
 
 
 class LocalAuthProvider:
@@ -165,10 +241,11 @@ class LocalAuthProvider:
     ) -> AuthResult:
         prompter = prompter or CliPrompter()
         when = at or datetime.now(timezone.utc)
-        message = _challenge_message(decision, action, tier, message_tone)
+        parts = challenge_parts(decision, action, tier, message_tone)
+        message = _message_from_parts(parts)
 
         try:
-            approved, method = self._run_tier(tier, message, prompter, action.id)
+            approved, method = self._run_tier(tier, message, prompter, action.id, parts=parts)
         except Exception:  # noqa: BLE001 — any input/timeout error is a denial
             logger.info("local auth challenge failed for action %s; denying", action.id)
             approved, method = False, "error"
@@ -183,7 +260,12 @@ class LocalAuthProvider:
 
     @staticmethod
     def _run_tier(
-        tier: AuthTier, message: str, prompter: Prompter, action_id: str = ""
+        tier: AuthTier,
+        message: str,
+        prompter: Prompter,
+        action_id: str = "",
+        *,
+        parts: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
         """Collect tier-appropriate proof. Returns (approved, method).
 
@@ -195,9 +277,30 @@ class LocalAuthProvider:
         — still a real second factor, never a bypass. Only an explicit human
         ``approved`` (or a valid TOTP code) satisfies the tier; a timeout, cancel,
         error, or ``denied`` all deny.
+
+        ``parts`` (from :func:`challenge_parts`) is optional and keyword-only so
+        every existing positional call (``message`` alone) keeps working
+        unchanged: when a prompter implements ``confirm_challenge``/
+        ``read_code_challenge`` (the GUI) it is consulted with the structured
+        facts instead of the flattened ``message`` string; any other prompter
+        (TTY, dashboard, a plugin, or ``parts=None``) falls back to
+        ``confirm(message)``/``read_code(message)`` exactly as before.
         """
+
+        def _confirm() -> bool:
+            structured = getattr(prompter, "confirm_challenge", None) if parts else None
+            if structured is not None:
+                return bool(structured(parts))
+            return bool(prompter.confirm(message))
+
+        def _read_code(fallback_message: str) -> str:
+            structured = getattr(prompter, "read_code_challenge", None) if parts else None
+            if structured is not None:
+                return str(structured(parts))
+            return str(prompter.read_code(fallback_message))
+
         if tier in (AuthTier.soft_confirm, AuthTier.local_auth):
-            return prompter.confirm(message), tier.value
+            return _confirm(), tier.value
 
         # two_factor and role_elevation require presence AND possession.
         elevation = tier is AuthTier.role_elevation
@@ -210,9 +313,9 @@ class LocalAuthProvider:
                 return False, "denied"
             # ApprovalOutcome.unavailable -> fall through to the TOTP path below.
 
-        if not prompter.confirm(message):
+        if not _confirm():
             return False, "denied"
-        code = prompter.read_code("Enter your 2FA code")
+        code = _read_code("Enter your 2FA code")
         return totp.verify(code), "totp+elevation" if elevation else "totp"
 
 
