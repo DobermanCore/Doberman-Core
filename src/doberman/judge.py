@@ -1,5 +1,13 @@
 """A constrained, BYO-model shadow-adjudicator implementation (C6 spec, v1).
 
+Implements the C6 contract from
+``doberman-vault/Plans/2026-08-03-defenseclaw-derived-security-candidates-c1-c8-spec.md``
+(lines 130-155): a per-category two-boolean (``unambiguous``, ``high_impact``)
+judge output, mapped **deterministically in code** — never free text — to risk
+(TT->CRITICAL, TF->HIGH, FT->MEDIUM, FF->LOW), and raise-only relative to the
+deterministic result it shadows. v1 (this task) is SHADOW-ONLY and has NO
+production caller.
+
 OFFLINE / MEASUREMENT-ONLY (ADR 0028, ADR 0029): :class:`HaikuJudgeAdjudicator`
 implements the :class:`doberman.engine.adjudicator.Adjudicator` Protocol and is
 structurally usable as a shadow-seam plugin, but nothing in core wires it into
@@ -33,6 +41,7 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
+from doberman.engine.decision_engine import max_risk, max_verdict
 from doberman.models import GuardrailResult, ReasonCode, Risk, Verdict
 
 logger = logging.getLogger("doberman.judge")
@@ -71,29 +80,58 @@ def judge_enabled() -> bool:
     return _judge_enabled()
 
 
-def _recommend(unambiguous: bool, high_impact: bool) -> GuardrailResult | None:
-    """Pure, deterministic mapping from the model's two booleans to a shadow
-    recommendation. Mirrors ``LocalReferenceAdjudicator``'s abstain-when-unsure
-    shape (doberman.engine.adjudicator): the judge only ever recommends when it
-    says its own read is unambiguous; an ambiguous read abstains (``None``)
-    regardless of impact, rather than guessing. No new ``ReasonCode`` is added
-    for this slice (out of scope) - the AUTH branch reuses
-    ``ReasonCode.unclassified_action`` as the closest existing generic code for
-    "a second opinion flagged this without a more specific built-in reason."
+def _recommend(unambiguous: bool, high_impact: bool, current: GuardrailResult) -> GuardrailResult:
+    """Deterministic, EXHAUSTIVE two-boolean -> risk mapping, raise-only
+    against ``current`` (C6 spec:
+    ``doberman-vault/Plans/2026-08-03-defenseclaw-derived-security-candidates-c1-c8-spec.md``,
+    lines 139/151). Every one of the four ``(unambiguous, high_impact)``
+    pairs maps to a risk level — the judge never emits free-text severity and
+    never abstains on a valid boolean pair (abstention, ``None``, is reserved
+    for unavailability / gate-off / malformed model output — Task 2):
+
+        (True,  True)  -> Risk.critical
+        (True,  False) -> Risk.high
+        (False, True)  -> Risk.medium
+        (False, False) -> Risk.low
+
+    RAISE-ONLY: the returned risk is ``max(current.risk, mapped_risk)``; the
+    returned verdict is ``max(current.verdict, Verdict.AUTH)`` when the
+    mapped risk is high/critical, else exactly ``current.verdict`` — neither
+    axis is ever lower than ``current``'s. No new ``ReasonCode`` is added for
+    this slice (out of scope): when the mapping actually raises something
+    above ``current`` (either axis moved), the result carries
+    ``ReasonCode.unclassified_action`` as the closest existing generic code
+    for "a second opinion flagged this without a more specific built-in
+    reason"; when nothing raises, ``current``'s own reason codes and
+    explanation are carried through unchanged rather than replaced.
     """
-    if not unambiguous:
-        return None
-    if high_impact:
-        return GuardrailResult(
-            verdict=Verdict.AUTH,
-            risk=Risk.high,
-            reason_codes=[ReasonCode.unclassified_action],
-            explanation="shadow: judge read this action as clear and high-impact",
-        )
+    if unambiguous and high_impact:
+        mapped_risk = Risk.critical
+    elif unambiguous:
+        mapped_risk = Risk.high
+    elif high_impact:
+        mapped_risk = Risk.medium
+    else:
+        mapped_risk = Risk.low
+
+    result_risk = max_risk(current.risk, mapped_risk)
+    result_verdict = (
+        max_verdict(current.verdict, Verdict.AUTH)
+        if mapped_risk in (Risk.high, Risk.critical)
+        else current.verdict
+    )
+
+    if result_risk == current.risk and result_verdict == current.verdict:
+        return current.model_copy(deep=True)
+    explanation = "shadow: judge read this action as {} and {}".format(
+        "unambiguous" if unambiguous else "ambiguous",
+        "high-impact" if high_impact else "low-impact",
+    )
     return GuardrailResult(
-        verdict=Verdict.PASS,
-        risk=Risk.low,
-        explanation="shadow: judge read this action as clear and low-impact",
+        verdict=result_verdict,
+        risk=result_risk,
+        reason_codes=[ReasonCode.unclassified_action],
+        explanation=explanation,
     )
 
 

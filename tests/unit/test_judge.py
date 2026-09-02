@@ -8,6 +8,7 @@ optional `[judge]` extra.
 
 import importlib.machinery
 import importlib.util
+import itertools
 import sys
 import types
 
@@ -15,29 +16,76 @@ import pytest
 
 from doberman.engine.adjudicator import Adjudicator
 from doberman.judge import HaikuJudgeAdjudicator, _recommend, judge_enabled
-from doberman.models import GuardrailResult, Risk, Verdict
+from doberman.models import (
+    RISK_ORDER,
+    VERDICT_ORDER,
+    GuardrailResult,
+    ReasonCode,
+    Risk,
+    Verdict,
+)
 
 _PASS = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
+_ALL_VERDICTS = (Verdict.PASS, Verdict.AUTH, Verdict.BLOCK)
+_ALL_RISKS = (Risk.low, Risk.medium, Risk.high, Risk.critical)
+_ALL_BOOL_PAIRS = ((True, True), (True, False), (False, True), (False, False))
+
+
+def _make_current(verdict: Verdict, risk: Risk) -> GuardrailResult:
+    """A valid `GuardrailResult` for every (verdict, risk) combination —
+    non-PASS verdicts need a reason code + explanation (model validator)."""
+    if verdict is Verdict.PASS:
+        return GuardrailResult(verdict=verdict, risk=risk)
+    return GuardrailResult(
+        verdict=verdict,
+        risk=risk,
+        reason_codes=[ReasonCode.unclassified_action],
+        explanation="pre-existing deterministic verdict",
+    )
+
 
 @pytest.mark.parametrize(
-    ("unambiguous", "high_impact", "expected_verdict", "expect_none"),
+    ("unambiguous", "high_impact", "expected_risk", "expected_verdict", "expect_raise"),
     [
-        (True, False, Verdict.PASS, False),
-        (True, True, Verdict.AUTH, False),
-        (False, False, None, True),
-        (False, True, None, True),
+        # C6 spec (defenseclaw-derived-security-candidates-c1-c8-spec.md:139):
+        # TT->CRITICAL, TF->HIGH, FT->MEDIUM, FF->LOW — EXHAUSTIVE, never None.
+        (True, True, Risk.critical, Verdict.AUTH, True),
+        (True, False, Risk.high, Verdict.AUTH, True),
+        (False, True, Risk.medium, Verdict.PASS, True),
+        (False, False, Risk.low, Verdict.PASS, False),
     ],
 )
-def test_recommend_maps_all_four_boolean_combinations(
-    unambiguous, high_impact, expected_verdict, expect_none
+def test_recommend_maps_all_four_boolean_combinations_exhaustively(
+    unambiguous, high_impact, expected_risk, expected_verdict, expect_raise
 ):
-    result = _recommend(unambiguous, high_impact)
-    if expect_none:
-        assert result is None
+    """The mapping never abstains on a valid boolean pair (unlike the old
+    ambiguous->None shape) and is applied raise-only against a PASS/low
+    `current`: a mapped risk of high/critical also raises the verdict to
+    AUTH; medium/low never raise the verdict past whatever `current` had."""
+    result = _recommend(unambiguous, high_impact, _PASS)
+    assert result.risk == expected_risk
+    assert result.verdict == expected_verdict
+    if expect_raise:
+        assert result.reason_codes == [ReasonCode.unclassified_action]
+        assert result.explanation.strip()
     else:
-        assert result is not None
-        assert result.verdict == expected_verdict
+        # nothing raised relative to `current` -> current's own reason
+        # codes/explanation are carried through unchanged, not replaced.
+        assert result.reason_codes == _PASS.reason_codes
+        assert result.explanation == _PASS.explanation
+
+
+@pytest.mark.parametrize(("unambiguous", "high_impact"), _ALL_BOOL_PAIRS)
+@pytest.mark.parametrize(("verdict", "risk"), list(itertools.product(_ALL_VERDICTS, _ALL_RISKS)))
+def test_recommend_never_lowers_current_on_either_axis(verdict, risk, unambiguous, high_impact):
+    """Raise-only property (C6 spec): for every (unambiguous, high_impact)
+    pair and every possible `current` verdict/risk, `_recommend` never
+    returns a risk or verdict lower than `current`'s."""
+    current = _make_current(verdict, risk)
+    result = _recommend(unambiguous, high_impact, current)
+    assert RISK_ORDER[result.risk] >= RISK_ORDER[risk]
+    assert VERDICT_ORDER[result.verdict] >= VERDICT_ORDER[verdict]
 
 
 def test_haiku_judge_adjudicator_is_structurally_an_adjudicator():
