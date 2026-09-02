@@ -73,6 +73,7 @@ from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.render import (
+    format_utc_timestamp,
     humanize_auth_result,
     next_step_line,
     style_text,
@@ -1730,9 +1731,12 @@ def log(
             if row["auth_result"] or row["final_verdict"] == "AUTH"
             else ""
         )
+        # round 8 design critique item 7: the same "YYYY-MM-DD HH:MM:SS UTC"
+        # format the tui's why panel shows (no microseconds) - `--jsonl`
+        # keeps the raw stored `ts` string unchanged (scripts parse that one).
         typer.echo(
-            f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<{_ACTION_WIDTH}} "
-            f"{target}  [{reasons}]{auth}"
+            f"{format_utc_timestamp(row['ts'])}  {verdict_label_str(row['final_verdict'])} "
+            f"{row['action_type']:<{_ACTION_WIDTH}} {target}  [{reasons}]{auth}"
         )
         # --why (round 4 design critique item 8, round 6 item 7): a compact,
         # indented plain-language block under each BLOCK/AUTH row - the row

@@ -39,6 +39,7 @@ from doberman.tui import (  # noqa: E402
     WhyScreen,
     _abs_utc_and_age,
     _all_targets_missing,
+    _headers_for,
     _target_width_need,
     _to_local,
     _truncate,
@@ -51,6 +52,16 @@ _SECRET = "SYNTHETIC-SECRET-AKIA0000TEST"  # noqa: S105 — synthetic test fixtu
 
 def _static_text(static) -> str:
     return str(static.content)
+
+
+def _visible_static_lines(static, height: int) -> list[str]:
+    """The first `height` rendered lines of `static` (a `Text`-holding
+    `Static`, always freshly scrolled to the top for a new row selection) -
+    what a viewer of `height` rows actually SEES, as opposed to
+    `_static_text`'s full (possibly taller than the viewport) raw content.
+    Used to assert on the docked why panel's real on-screen text (round 8
+    design critique item 1) rather than its widget height alone."""
+    return [static.render_line(y).text for y in range(height)]
 
 
 def _visible_footer_text(app) -> str:
@@ -276,8 +287,10 @@ async def test_next_line_present_for_block_and_auth_absent_for_pass(tmp_path):
 
 
 async def test_columns_are_plain_words_in_the_documented_order():
+    # >=100 columns (round 8 design critique item 2 hides risk/auth below
+    # that) so the full documented column set is actually on screen here.
     app = DecisionExplainerApp(".")
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(120, 24)) as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
         labels = [str(col.label) for col in table.columns.values()]
@@ -298,10 +311,11 @@ async def test_verdict_cell_uses_ascii_glyph_and_the_shared_render_palette(tmp_p
 
 
 async def test_risk_cell_is_colored_by_severity(tmp_path):
+    # >=100 columns (round 8 item 2 hides risk/auth below that).
     root = str(tmp_path)
     await _seed(root, action_id="act-1", verdict=Verdict.BLOCK, risk=Risk.critical)
     app = DecisionExplainerApp(root)
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(120, 24)) as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
         risk_cell = table.get_row_at(0)[3]
@@ -310,6 +324,7 @@ async def test_risk_cell_is_colored_by_severity(tmp_path):
 
 
 async def test_auth_cell_is_humanized(tmp_path):
+    # >=100 columns (round 8 item 2 hides risk/auth below that).
     root = str(tmp_path)
     await _seed(
         root,
@@ -319,7 +334,7 @@ async def test_auth_cell_is_humanized(tmp_path):
         auth_result="executed",
     )
     app = DecisionExplainerApp(root)
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(120, 24)) as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
         auth_cell = table.get_row_at(0)[4]
@@ -355,7 +370,8 @@ async def test_auth_cell_short_form_for_memory_approval(tmp_path):
         auth_result="soft_confirm+memory",
     )
     app = DecisionExplainerApp(root)
-    async with app.run_test() as pilot:
+    # >=100 columns (round 8 item 2 hides risk/auth below that).
+    async with app.run_test(size=(120, 24)) as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
         auth_cell = table.get_row_at(0)[4]
@@ -386,7 +402,12 @@ async def test_no_db_at_path_is_distinct_from_an_empty_db(tmp_path):
     app = DecisionExplainerApp(str(tmp_path))
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
-        raw_text = _static_text(app.query_one("#explanation"))
+        # round 8 design critique item 5: the message renders INSIDE the
+        # table's own area (the table itself is hidden), not in the why panel
+        # below an empty table - one region, not two.
+        assert app.query_one("#decisions").display is False
+        assert app.query_one("#empty-message").display is True
+        raw_text = _static_text(app.query_one("#empty-message"))
         text = raw_text.lower()
         assert "no decision log at" in text
         # `~`-shortened when the path is under home (asserted via the same
@@ -398,6 +419,8 @@ async def test_no_db_at_path_is_distinct_from_an_empty_db(tmp_path):
         # missing decision log almost always means Doberman was never set up
         # here at all.
         assert "doberman setup" in text
+        # The why panel itself has nothing to explain.
+        assert _static_text(app.query_one("#explanation")) == ""
 
 
 async def test_empty_but_existing_db_gets_a_different_honest_message(tmp_path):
@@ -407,7 +430,9 @@ async def test_empty_but_existing_db_gets_a_different_honest_message(tmp_path):
     app = DecisionExplainerApp(root)
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
-        text = _static_text(app.query_one("#explanation")).lower()
+        assert app.query_one("#decisions").display is False
+        assert app.query_one("#empty-message").display is True
+        text = _static_text(app.query_one("#empty-message")).lower()
         assert "hasn't decided anything yet" in text
         assert "no decision log at" not in text
         # round 3 design critique item 9: the empty state isn't a dead end -
@@ -430,12 +455,22 @@ async def test_filtered_to_zero_matches_is_distinct_from_no_data(tmp_path):
         # `_rebuild_table` can legitimately land a tick late under load.
         text = await _wait_for(
             pilot,
-            lambda: _static_text(app.query_one("#explanation")),
+            lambda: _static_text(app.query_one("#empty-message")),
             lambda t: t == "(no rows match the filter - press esc to clear it)",
         )
         assert text == "(no rows match the filter - press esc to clear it)"
+        assert app.query_one("#decisions").display is False
         assert "hasn't decided anything yet" not in text
         assert "no decision log at" not in text
+        # Clearing the filter restores the table (round 8 design critique
+        # item 5: the swap is reversible, not a one-way trip).
+        filter_input.value = ""
+        await _wait_for(
+            pilot,
+            lambda: app.query_one("#decisions").display,
+            lambda displayed: displayed is True,
+        )
+        assert app.query_one("#empty-message").display is False
 
 
 # --- bounded load / subtitle --------------------------------------------------
@@ -451,13 +486,16 @@ async def test_subtitle_reports_showing_n_of_m(tmp_path):
         # Count first (design critique item 9) - it must survive truncation
         # at a narrow width; the path is the part that's safe to lose. The
         # verdict breakdown (round 6 design critique item 4) is over the
-        # LOADED rows, not the filtered ones - all 3 PASS here.
-        assert app.sub_title == f"showing 3 of 3 - 0 BLOCK / 0 AUTH / 3 PASS - {root}"
+        # LOADED rows, not the filtered ones - all 3 PASS here. Round 8
+        # design critique item 3: "loaded" names that scope explicitly.
+        assert app.sub_title == f"showing 3 of 3 - 0 BLOCK / 0 AUTH / 3 PASS loaded - {root}"
         app.query_one("#filter").value = "block"
         # round 5 design critique item 11: poll - `on_input_changed` ->
         # `_apply_filter` -> `_update_subtitle` can legitimately land a tick
         # late under load, same race class as the two named tests.
-        expected_filtered = f"showing 0 of 3 - 0 BLOCK / 0 AUTH / 3 PASS - {root}"
+        # "(filtered)" (round 8 item 3) marks that the count differs BECAUSE
+        # a filter narrowed it, not just "0 happen to match 3".
+        expected_filtered = f"showing 0 of 3 (filtered) - 0 BLOCK / 0 AUTH / 3 PASS loaded - {root}"
         await _wait_for(pilot, lambda: app.sub_title, lambda t: t == expected_filtered)
         assert app.sub_title == expected_filtered
 
@@ -476,7 +514,7 @@ async def test_last_bounds_how_many_rows_load(tmp_path):
         # verdict breakdown (round 6 item 4) counts only the 2 LOADED rows.
         assert (
             app.sub_title
-            == f"showing 2 of 2 (last 2; --last for more) - 0 BLOCK / 0 AUTH / 2 PASS - {root}"
+            == f"showing 2 of 2 (last 2; --last for more) - 0 BLOCK / 0 AUTH / 2 PASS loaded - {root}"
         )
 
 
@@ -707,6 +745,51 @@ async def test_next_auth_still_notifies_when_auth_rows_exist_but_are_filtered_ou
         await pilot.press("a")
         await pilot.pause()
         assert notified == ["no AUTH rows in view"]
+
+
+async def test_next_auth_on_the_only_auth_row_says_no_other_instead_of_re_selecting_it(
+    tmp_path, monkeypatch
+):
+    # round 8 design critique item 6: exactly one AUTH row exists and the
+    # cursor is already on it - the wraparound search used to land right
+    # back on `start` and silently "succeed" (move_cursor to the same row).
+    # That must instead read as "there is nothing ELSE to jump to".
+    root = str(tmp_path)
+    await _seed(
+        root, action_id="act-auth", verdict=Verdict.AUTH, reason_codes=[ReasonCode.unknown_tool]
+    )
+    await _seed(root, action_id="act-pass", verdict=Verdict.PASS, reason_codes=[])
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        # DESC id order: row0=act-pass, row1=act-auth.
+        table.move_cursor(row=1)
+        assert app._visible_rows[1]["action_id"] == "act-auth"
+        notified = []
+        monkeypatch.setattr(app, "notify", lambda msg, **kw: notified.append(msg))
+        moved = app.jump_to_verdict(Verdict.AUTH.value, forward=True)
+        assert moved is False
+        assert notified == ["no other AUTH rows in view"]
+        assert table.cursor_row == 1  # never moved (not even to itself)
+
+
+async def test_next_block_on_the_only_block_row_also_says_no_other(tmp_path, monkeypatch):
+    # The fix lives in the one shared `jump_to_verdict` - `b`/`B` get it too.
+    root = str(tmp_path)
+    await _seed_block(root, action_id="act-block")
+    await _seed(root, action_id="act-pass", verdict=Verdict.PASS, reason_codes=[])
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        # DESC id order: row0=act-pass, row1=act-block.
+        table.move_cursor(row=1)
+        notified = []
+        monkeypatch.setattr(app, "notify", lambda msg, **kw: notified.append(msg))
+        moved = app.jump_to_verdict(Verdict.BLOCK.value, forward=True)
+        assert moved is False
+        assert notified == ["no other BLOCK rows in view"]
 
 
 # --- dead keys: no row actions when there's nothing to act on ---------------
@@ -1036,6 +1119,11 @@ async def test_question_mark_opens_help_listing_every_binding(tmp_path):
         help_text = _static_text(app.screen.query_one("#help-text"))
         for key in ("q ", "r ", "? ", "/ ", "b ", "B ", "a ", "y ", "home", "end", "tab", "enter"):
             assert key in help_text, key
+        # round 8 design critique item 4: the arrow keys and page up/down are
+        # DataTable's own built-in bindings - never an App-level `Binding`, so
+        # nothing else would ever surface them here.
+        assert "up / down" in help_text
+        assert "page up" in help_text
         assert "action" in help_text  # the filter also matches action type
         await pilot.press("escape")
         await pilot.pause()
@@ -1395,9 +1483,22 @@ def test_truncate_never_shows_a_bare_cut_below_4_chars_without_a_marker():
     assert _truncate("abcdefgh", 0) == ""
 
 
-def test_target_width_need_floors_at_8_and_caps_at_24():
-    assert _target_width_need([]) == 8  # nothing loaded yet
-    assert _target_width_need([{"target_path_class": "*.py"}]) == 8  # shorter than the floor
+def test_target_width_need_defaults_to_8_when_nothing_is_loaded():
+    assert _target_width_need([]) == 8  # nothing loaded yet - unchanged default
+
+
+def test_target_width_need_shrinks_below_the_old_floor_for_genuinely_short_values():
+    # round 8 design critique item 2 supersedes round 7's floor-of-8: an
+    # all-short real value (e.g. every loaded row's target is ".env"-length
+    # or shorter) reports its ACTUAL need down to `_TARGET_WIDTH_MIN` (4), so
+    # `_widths_for` can shrink `target`'s starting width to match instead of
+    # always paying for 8 columns nothing needs.
+    assert _target_width_need([{"target_path_class": "*.py"}]) == 4
+    assert _target_width_need([{"target_path_class": ".env"}]) == 4
+    assert _target_width_need([{"target_path_class": "a"}]) == 4  # floors at the MIN, not 1
+
+
+def test_target_width_need_grows_for_real_content_and_caps_at_24():
     assert (
         _target_width_need([{"target_path_class": "backend/secrets/*.env"}]) == 21
     )  # exact content need
@@ -1450,6 +1551,68 @@ def test_widths_for_hides_target_and_gives_its_reclaimed_width_to_why():
     assert hidden["why"] > shown["why"]
     total = sum(hidden.values()) + 2 * len(hidden)
     assert total + 3 + 1 <= 80
+
+
+# --- round 8: risk/auth hide below 100 columns, target/why floors ----------
+
+
+def test_headers_for_hides_risk_and_auth_below_100_columns():
+    shown = _headers_for(hide_target=False, hide_risk_auth=False)
+    hidden = _headers_for(hide_target=False, hide_risk_auth=True)
+    assert "risk" in shown and "auth" in shown
+    assert "risk" not in hidden and "auth" not in hidden
+    # Nothing else moves - same relative order, just two fewer columns.
+    assert [h for h in shown if h not in ("risk", "auth")] == list(hidden)
+
+
+def test_widths_for_80_columns_with_risk_auth_hidden_gives_target_and_why_at_least_12():
+    # round 8 design critique item 2: hiding risk/auth frees enough width
+    # that a REAL (not trivially short) target value grows target past the
+    # old 8-column floor, and why keeps well past its own floor too.
+    target_need = len("backend/secrets/*.env")  # 21: a real, moderate value
+    widths = _widths_for(80, hide_risk_auth=True, target_need=target_need)
+    assert "risk" not in widths and "auth" not in widths
+    assert widths["target"] >= 12
+    assert widths["why"] >= 12
+    total = sum(widths.values()) + 2 * len(widths)
+    assert total + 3 + 1 <= 80
+
+
+def test_widths_for_80_columns_shrinks_target_below_its_old_floor_for_all_short_values():
+    # round 8 design critique item 2: when every loaded value is genuinely
+    # short (".env", or missing - "-"), `target` must not sit padded out to
+    # 8 (or grown to 12) - it shrinks to the real need (the MIN floor, 4),
+    # donating the reclaimed width to `why` instead.
+    target_need = _target_width_need([{"target_path_class": ".env"}, {"target_path_class": None}])
+    assert target_need == 4
+    widths = _widths_for(80, hide_risk_auth=True, target_need=target_need)
+    assert widths["target"] == 4
+    assert widths["why"] > 12  # got the donated width, not just its own floor
+    total = sum(widths.values()) + 2 * len(widths)
+    assert total + 3 + 1 <= 80
+
+
+async def test_table_hides_risk_and_auth_columns_at_80_columns(tmp_path):
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _wait_loaded(pilot, app)
+        assert "risk" not in app._headers
+        assert "auth" not in app._headers
+        table = app.query_one("#decisions")
+        labels = [str(col.label) for col in table.columns.values()]
+        assert "risk" not in labels and "auth" not in labels
+
+
+async def test_table_keeps_risk_and_auth_columns_at_120_columns(tmp_path):
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await _wait_loaded(pilot, app)
+        assert "risk" in app._headers
+        assert "auth" in app._headers
 
 
 def test_all_targets_missing_true_only_when_every_row_lacks_one():
@@ -1952,7 +2115,8 @@ async def test_pending_auth_row_shows_pending_not_a_dash(tmp_path):
         auth_result=None,
     )
     app = DecisionExplainerApp(root)
-    async with app.run_test() as pilot:
+    # >=100 columns (round 8 item 2 hides risk/auth below that).
+    async with app.run_test(size=(120, 24)) as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
         auth_cell = table.get_row_at(0)[4]
@@ -1975,11 +2139,14 @@ async def test_focused_pane_gets_a_focus_border_title(tmp_path):
         table = app.query_one("#decisions")
         panel = app.query_one("#explanation-scroll")
         assert table.border_title and "focus" in table.border_title.lower()
-        assert not panel.border_title
+        # round 8 design critique item 1: the why panel's border_title now
+        # ALSO carries the selected row's absolute-time+age line, so it's no
+        # longer empty while unfocused - only "focus" itself must be absent.
+        assert "focus" not in (panel.border_title or "").lower()
         await pilot.press("tab")
         await pilot.pause()
         assert panel.border_title and "focus" in panel.border_title.lower()
-        assert not table.border_title
+        assert "focus" not in (table.border_title or "").lower()
 
 
 # --- round 5: empty state is honest about keys (item 9) -----------------------
@@ -2124,6 +2291,90 @@ async def test_why_panel_shows_at_least_three_lines_at_76x16(tmp_path):
         assert expl_scroll.size.height >= 3
 
 
+# --- round 8: the explanation itself leads the panel body, at every size ----
+
+
+async def _seed_multi_reason_block(root: str, action_id: str = "act-block") -> None:
+    await _seed(
+        root,
+        action_id=action_id,
+        verdict=Verdict.BLOCK,
+        reason_codes=[
+            ReasonCode.destructive_command,
+            ReasonCode.bulk_operation,
+            ReasonCode.sensitive_path_access,
+            ReasonCode.lethal_trifecta,
+            ReasonCode.irreversible_high_blast,
+        ],
+    )
+
+
+async def test_why_panel_body_shows_at_least_5_lines_of_explanation_at_80x24(tmp_path):
+    # round 8 design critique item 1: at 80x24 the panel used to show only
+    # "(scroll for more)" and the timestamp line - the explanation itself
+    # was pushed below the fold. Now that both live in the border instead,
+    # the body starts with the explanation and at least 5 real lines of it
+    # are actually on screen.
+    root = str(tmp_path)
+    await _seed_multi_reason_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _wait_loaded(pilot, app)
+        scroll = app.query_one("#explanation-scroll")
+        static = app.query_one("#explanation")
+        lines = _visible_static_lines(static, scroll.size.height)
+        non_blank = [line for line in lines if line.strip()]
+        assert len(non_blank) >= 5, lines
+        # The FIRST non-blank line is the explanation, not a cue or a
+        # timestamp - both of those now live in the border.
+        assert non_blank[0].startswith("Doberman decided BLOCK"), non_blank[0]
+        assert "(scroll for more)" not in lines[0]
+        assert "UTC" not in lines[0]
+
+
+async def test_why_panel_body_shows_at_least_3_lines_of_explanation_at_76x16(tmp_path):
+    root = str(tmp_path)
+    await _seed_multi_reason_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(76, 16)) as pilot:
+        await _wait_loaded(pilot, app)
+        scroll = app.query_one("#explanation-scroll")
+        static = app.query_one("#explanation")
+        lines = _visible_static_lines(static, scroll.size.height)
+        non_blank = [line for line in lines if line.strip()]
+        assert len(non_blank) >= 3, lines
+        assert non_blank[0].startswith("Doberman decided BLOCK"), non_blank[0]
+        assert "(scroll for more)" not in lines[0]
+        assert "UTC" not in lines[0]
+
+
+async def test_why_panel_border_carries_the_time_line_not_the_body(tmp_path):
+    # The absolute-time+age line moves to `border_title` (round 8 design
+    # critique item 1) - it must never appear in the body text at all.
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _wait_loaded(pilot, app)
+        scroll = app.query_one("#explanation-scroll")
+        assert scroll.border_title and "UTC" in scroll.border_title
+        body = _static_text(app.query_one("#explanation"))
+        assert "UTC" not in body
+
+
+async def test_table_below_30_rows_still_keeps_at_least_6_visible_rows(tmp_path):
+    # round 8 design critique item 1: the compact-why split (below
+    # `_COMPACT_WHY_HEIGHT`) hands the why panel the bigger share, but the
+    # table must never shrink to near-nothing in the process.
+    root = str(tmp_path)
+    await _seed_many(root, 20)
+    app = DecisionExplainerApp(root)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _wait_loaded(pilot, app)
+        table = app.query_one("#decisions")
+        assert table.scrollable_content_region.height >= 6
+
+
 # --- round 6: verdict counts in the header (item 4) --------------------------
 
 
@@ -2139,11 +2390,11 @@ async def test_subtitle_shows_verdict_breakdown_over_loaded_rows(tmp_path):
     app = DecisionExplainerApp(root, last=500)
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
-        assert app.sub_title == f"showing 45 of 45 - 22 BLOCK / 1 AUTH / 22 PASS - {root}"
+        assert app.sub_title == f"showing 45 of 45 - 22 BLOCK / 1 AUTH / 22 PASS loaded - {root}"
         # The filter narrows N (how many are SHOWN); the verdict breakdown is
         # always over the loaded window, never the filtered one.
         app.query_one("#filter").value = "block"
-        expected = f"showing 22 of 45 - 22 BLOCK / 1 AUTH / 22 PASS - {root}"
+        expected = f"showing 22 of 45 (filtered) - 22 BLOCK / 1 AUTH / 22 PASS loaded - {root}"
         await _wait_for(pilot, lambda: app.sub_title, lambda t: t == expected)
         assert app.sub_title == expected
 
@@ -2258,18 +2509,26 @@ async def _seed_long_explanation(root: str, action_id: str = "act-long") -> None
 
 
 async def test_docked_why_panel_earns_its_scroll_cue_only_when_it_overflows(tmp_path):
+    # round 8 design critique item 1: the cue now lives in `border_subtitle`,
+    # not prepended to the panel BODY - the body starts with the explanation
+    # itself regardless of whether the cue is showing.
     root = str(tmp_path)
     await _seed_long_explanation(root)
 
     short_app = DecisionExplainerApp(root)
     async with short_app.run_test(size=(76, 16)) as pilot:
         await _wait_loaded(pilot, short_app)
+        scroll = short_app.query_one("#explanation-scroll")
+        assert str(scroll.border_subtitle) == "(scroll for more)"
         panel_text = _static_text(short_app.query_one("#explanation"))
-        assert panel_text.startswith("(scroll for more)")
+        assert not panel_text.startswith("(scroll for more)")
+        assert "Doberman decided" in panel_text  # the explanation leads
 
     tall_app = DecisionExplainerApp(root)
     async with tall_app.run_test(size=(76, 60)) as pilot:
         await _wait_loaded(pilot, tall_app)
+        scroll = tall_app.query_one("#explanation-scroll")
+        assert str(scroll.border_subtitle) == ""
         panel_text = _static_text(tall_app.query_one("#explanation"))
         assert "(scroll for more)" not in panel_text
 
@@ -2290,20 +2549,21 @@ async def test_docked_why_panel_scroll_cue_clears_once_the_row_no_longer_overflo
     async with app.run_test(size=(76, 30)) as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
+        scroll = app.query_one("#explanation-scroll")
         # DESC id order: row0=act-short, row1=act-long.
         table.move_cursor(row=1)
         await _wait_for(
             pilot,
-            lambda: _static_text(app.query_one("#explanation")),
-            lambda t: t.startswith("(scroll for more)"),
+            lambda: str(scroll.border_subtitle),
+            lambda t: t == "(scroll for more)",
         )
         table.move_cursor(row=0)
         text = await _wait_for(
             pilot,
-            lambda: _static_text(app.query_one("#explanation")),
-            lambda t: "(scroll for more)" not in t,
+            lambda: str(scroll.border_subtitle),
+            lambda t: t == "",
         )
-        assert "(scroll for more)" not in text
+        assert text == ""
 
 
 async def test_why_screen_earns_its_scroll_cue_only_when_it_overflows(tmp_path):

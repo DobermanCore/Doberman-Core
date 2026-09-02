@@ -232,6 +232,30 @@ def test_wrap_detail_keeps_a_multi_word_quoted_doberman_command_on_one_line():
     assert "'doberman mode'" in " ".join(lines)
 
 
+def test_format_utc_timestamp_strips_microseconds_and_labels_utc():
+    # round 8 design critique item 7: `doberman log`'s timestamp column must
+    # read the same format the tui why panel shows - no microseconds, an
+    # explicit " UTC" suffix, a space (not "T") between date and time.
+    assert (
+        render.format_utc_timestamp("2026-07-30T00:00:01.123456+00:00") == "2026-07-30 00:00:01 UTC"
+    )
+    assert render.format_utc_timestamp("2026-07-30T00:00:01Z") == "2026-07-30 00:00:01 UTC"
+
+
+def test_format_utc_timestamp_assumes_naive_values_are_already_utc():
+    assert render.format_utc_timestamp("2026-07-30T00:00:01") == "2026-07-30 00:00:01 UTC"
+
+
+def test_format_utc_timestamp_converts_a_non_utc_offset():
+    assert render.format_utc_timestamp("2026-07-30T05:00:01+05:00") == "2026-07-30 00:00:01 UTC"
+
+
+def test_format_utc_timestamp_never_raises_on_junk_or_missing_values():
+    assert render.format_utc_timestamp(None) == "None"
+    assert render.format_utc_timestamp("not-a-timestamp") == "not-a-timestamp"
+    assert render.format_utc_timestamp(12345) == "12345"
+
+
 def test_a_242_char_line_wraps_into_multiple_lines():
     phrase = "Shell, package, or git egress requires authentication because "
     text = (phrase * 4)[:242]

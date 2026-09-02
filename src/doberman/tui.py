@@ -84,6 +84,14 @@ _TARGET_WIDTH_FLOOR = 8
 #: point the extra width serves one outlier value better than `why` serves
 #: every row, and the full value is always still reachable in the why panel.
 _TARGET_WIDTH_CAP = 24
+#: Absolute minimum `target` may shrink to (round 8 design critique item 2) -
+#: below `_TARGET_WIDTH_FLOOR`, `target`'s STARTING width now shrinks toward
+#: the data's real need instead of sitting pinned at the floor: when every
+#: loaded value is genuinely short (".env", or missing - "-"), padding the
+#: column out to 8 wastes width `why` could use instead. Real/longer values
+#: are unaffected - they still start at the floor and grow from there (see
+#: `_widths_for`).
+_TARGET_WIDTH_MIN = 4
 _WHY_WIDTH_FLOOR = 8
 _WIDTHS: dict[str, int] = {
     "": 1,
@@ -99,14 +107,21 @@ _WIDTHS: dict[str, int] = {
 
 def _target_width_need(rows: list[dict]) -> int:
     """The `target` column's content-driven width: the longest visible
-    `target_path_class` among ``rows``, floored at ``_TARGET_WIDTH_FLOOR`` and
-    capped at ``_TARGET_WIDTH_CAP`` (round 7 design critique item 1) - real
-    values like "backend/secrets/*.env" need more than the old fixed 6, but
-    one outlier-long value should never swallow the whole `why` budget.
-    Vacuously the floor for an empty/not-yet-loaded ``rows`` - nothing to
-    measure yet."""
-    longest = max((len(str(row.get("target_path_class") or "")) for row in rows), default=0)
-    return max(_TARGET_WIDTH_FLOOR, min(_TARGET_WIDTH_CAP, longest))
+    `target_path_class` among ``rows``, floored at ``_TARGET_WIDTH_MIN`` (not
+    ``_TARGET_WIDTH_FLOOR`` - round 8 design critique item 2 supersedes round
+    7 item 1's fixed floor-of-8: an all-short column like ".env"/"-" must be
+    able to report a real need as low as 4, so ``_widths_for`` can shrink
+    `target`'s STARTING width to match instead of always paying for 8) and
+    capped at ``_TARGET_WIDTH_CAP`` - real values like "backend/secrets/*.env"
+    need more than the old fixed 6, but one outlier-long value should never
+    swallow the whole `why` budget. Vacuously the FLOOR (not the min) for an
+    empty/not-yet-loaded ``rows`` - nothing measured yet, so this keeps the
+    old default-load behavior unchanged."""
+    longest = max(
+        (len(str(row.get("target_path_class") or "")) for row in rows),
+        default=_TARGET_WIDTH_FLOOR,
+    )
+    return max(_TARGET_WIDTH_MIN, min(_TARGET_WIDTH_CAP, longest))
 
 
 #: `time` cell width once the loaded rows span more than one calendar day (see
@@ -136,11 +151,19 @@ _CELL_PADDING = 2
 _BORDER_COLUMNS = 3
 
 
+#: Below this terminal width, `risk` and `auth` drop out of the table
+#: entirely (round 8 design critique item 2) - both are already restated in
+#: the why panel/full-screen why, so at a narrow terminal they cost two whole
+#: columns (+padding) that `target`/`why` need more.
+_NARROW_COLUMNS_WIDTH = 100
+
+
 def _widths_for(
     terminal_width: int,
     *,
     multi_day: bool = False,
     hide_target: bool = False,
+    hide_risk_auth: bool = False,
     target_need: int = _TARGET_WIDTH_FLOOR,
 ) -> dict[str, int]:
     """Column widths for ``terminal_width``: every column starts at its
@@ -154,12 +177,18 @@ def _widths_for(
     even when more spare width is available - the extra always goes to
     ``why`` instead.
 
-    ``target`` and ``why`` both keep at least their floor (8) at 80 terminal
-    columns even with a long real `target` present - `target` gets whatever
-    spare the floors leave over (up to ``target_need``), and `why` keeps its
-    own floor regardless (round 6 design critique item 1 reserves one more
-    column for Textual's own vertical scrollbar - see ``_BORDER_COLUMNS`` - a
-    smaller cost than a spurious horizontal scrollbar).
+    ``target``'s STARTING width (round 8 design critique item 2) is the
+    SMALLER of ``_TARGET_WIDTH_FLOOR`` and ``target_need`` - a genuinely long
+    value (need > floor) still starts at the floor and grows from there,
+    unchanged from round 7; an all-short column (need < floor, e.g. every
+    loaded value is ".env" or missing) starts BELOW the floor instead, at
+    its real need (down to ``_TARGET_WIDTH_MIN``), donating the difference
+    to ``why`` rather than padding `target` out to a width nothing needs.
+
+    ``why`` keeps its own floor (8) regardless (round 6 design critique item
+    1 reserves one more column for Textual's own vertical scrollbar - see
+    ``_BORDER_COLUMNS`` - a smaller cost than a spurious horizontal
+    scrollbar).
 
     ``multi_day`` widens ``time`` to fit "MM-DD HH:MM" (see ``_time_cell``) -
     that extra width comes out of the same spare pool ``target``/``why``
@@ -171,12 +200,23 @@ def _widths_for(
     automatically folds its reclaimed width (plus its own cell padding) into
     ``why`` - the caller is expected to also stop adding a ``target`` column
     to the table in that case.
+
+    ``hide_risk_auth=True`` (terminal narrower than ``_NARROW_COLUMNS_WIDTH``)
+    likewise drops ``risk``/``auth`` entirely - both are restated in the why
+    panel/full-screen why, so at a narrow width they cost more than they earn
+    the caller is expected to also stop adding those columns (see
+    ``_headers_for``).
     """
     widths = dict(_WIDTHS)
     if multi_day:
         widths["time"] = _TIME_WIDTH_MULTI_DAY
+    if hide_risk_auth:
+        widths.pop("risk", None)
+        widths.pop("auth", None)
     if hide_target:
-        widths.pop("target")
+        widths.pop("target", None)
+    else:
+        widths["target"] = min(_TARGET_WIDTH_FLOOR, target_need)
     used = sum(widths.values()) + _CELL_PADDING * len(widths)
     spare = max(0, terminal_width - used - _BORDER_COLUMNS - 1)
     if not hide_target:
@@ -188,11 +228,20 @@ def _widths_for(
     return widths
 
 
-def _headers_for(*, hide_target: bool) -> tuple[str, ...]:
+def _headers_for(*, hide_target: bool, hide_risk_auth: bool = False) -> tuple[str, ...]:
     """Column headers to actually declare on the table - ``_HEADERS`` minus
     ``target`` when every loaded row's target is "-" (round 5 design critique
-    item 3)."""
-    return tuple(h for h in _HEADERS if h != "target") if hide_target else _HEADERS
+    item 3), minus ``risk``/``auth`` below ``_NARROW_COLUMNS_WIDTH`` (round 8
+    design critique item 2) - both stay fully visible in the why panel/
+    full-screen why, so hiding them from the table costs nothing a reviewer
+    can't get one keystroke away."""
+    drop = set()
+    if hide_target:
+        drop.add("target")
+    if hide_risk_auth:
+        drop.add("risk")
+        drop.add("auth")
+    return tuple(h for h in _HEADERS if h not in drop)
 
 
 def _all_targets_missing(rows: list[dict]) -> bool:
@@ -234,24 +283,24 @@ _EXPLAIN_DEBOUNCE_S = 0.3
 _LEGEND = "X BLOCK  ! AUTH  . PASS"
 
 
-def _panel_text(body: str, provenance: str, *, time_line: str | None = None) -> Text:
-    """The docked why panel's content: an optional muted `time_line` (the
-    row's absolute UTC instant + relative age, round 7 design critique item
-    2) first, then `body` (the explanation/remedy), then a blank line, then
-    `provenance` styled muted/dim (round 5 design critique item 6). Built
-    from plain strings only - `body`/`provenance`/`time_line` are never
+def _panel_text(body: str, provenance: str) -> Text:
+    """The docked why panel's BODY content: `body` (the explanation/remedy)
+    first, then a blank line, then `provenance` styled muted/dim (round 5
+    design critique item 6). Round 8 design critique item 1 moves the
+    absolute-time+age line OUT of this body and into `_WhyPanel.border_title`
+    (see `DecisionExplainerApp._show_explanation`/`_WhyPanel.set_time_line`) -
+    at a short terminal that line (plus the scroll cue, now in
+    `border_subtitle` too) used to crowd the explanation itself below the
+    fold, so the panel appeared to show only "(scroll for more)" and a
+    timestamp. Built from a plain string only - `body`/`provenance` are never
     re-parsed as markup (this constructs a `Text` directly, the same
     literal-rendering guarantee the module docstring promises), so a crafted
-    stored value still can't restyle anything; the `dim` spans cover only the
-    text we ourselves appended (the leading time line and the trailing
-    provenance line), never `body`.
+    stored value still can't restyle anything; the `dim` span covers only the
+    trailing provenance line we ourselves appended, never `body`.
     """
-    prefix = f"{time_line}\n\n" if time_line else ""
-    combined = f"{prefix}{body}\n\n{provenance}"
+    combined = f"{body}\n\n{provenance}"
     text = Text(combined)
     text.stylize("dim", len(combined) - len(provenance), len(combined))
-    if time_line:
-        text.stylize("dim", 0, len(time_line))
     return text
 
 
@@ -509,6 +558,7 @@ def _row_cells(
     *,
     multi_day: bool = False,
     hide_target: bool = False,
+    hide_risk_auth: bool = False,
 ) -> tuple[Text, ...]:
     widths = widths or _WIDTHS
     verdict_str = str(row.get("final_verdict") or "-")
@@ -519,23 +569,29 @@ def _row_cells(
         "": Text(""),
         "verdict": _verdict_cell(verdict_str),
         "time": Text(_time_cell(row, multi_day=multi_day)),
-        "risk": Text(_truncate(risk_str, widths["risk"]), style=render.risk_rich_style(risk_str)),
-        "auth": Text(
+        "action": Text(_truncate(str(row.get("action_type") or "-"), widths["action"])),
+        "why": Text(_truncate(_reason_codes_words(row), widths["why"])),
+    }
+    if not hide_risk_auth:
+        cells["risk"] = Text(
+            _truncate(risk_str, widths["risk"]), style=render.risk_rich_style(risk_str)
+        )
+        cells["auth"] = Text(
             _truncate(
                 render.humanize_auth_result(
                     row.get("auth_result"), short=True, verdict=verdict_str
                 ),
                 widths["auth"],
             )
-        ),
-        "action": Text(_truncate(str(row.get("action_type") or "-"), widths["action"])),
-        "why": Text(_truncate(_reason_codes_words(row), widths["why"])),
-    }
+        )
     if not hide_target:
         cells["target"] = Text(
             _truncate(str(row.get("target_path_class") or "-"), widths["target"])
         )
-    return tuple(cells[header] for header in _headers_for(hide_target=hide_target))
+    return tuple(
+        cells[header]
+        for header in _headers_for(hide_target=hide_target, hide_risk_auth=hide_risk_auth)
+    )
 
 
 def _why_header_line(row: dict, time_line: str) -> str:
@@ -605,6 +661,14 @@ class _WhyPanel(VerticalScroll):
     no-op from the browsing perspective: Home/End are meant as "jump to the
     first/last decision", a meaning that must not depend on which widget the
     `tab` key most recently focused.
+
+    Round 8 design critique item 1: `border_title` carries the selected row's
+    absolute-time+age line (set via `set_time_line`, itself called from
+    `DecisionExplainerApp._show_explanation`), with the same `[focus]` cue
+    `_DecisionTable` shows appended while this pane has focus - moved here
+    OUT of the panel BODY, which used to prepend that line (and the scroll
+    cue) ahead of the explanation itself, crowding it below the fold at a
+    short terminal.
     """
 
     BINDINGS = [
@@ -612,14 +676,33 @@ class _WhyPanel(VerticalScroll):
         Binding("end", "app.goto_last", "last", show=False),
     ]
 
+    #: The current row's absolute-time+age line (or "" - nothing selected),
+    #: kept on the widget itself so `on_focus`/`on_blur` can rebuild
+    #: `border_title` (time line + "[focus]") without reaching into the app.
+    _time_line: str = ""
+
+    def set_time_line(self, time_line: str) -> None:
+        self._time_line = time_line
+        self._refresh_border_title(focused=self.has_focus)
+
+    def _refresh_border_title(self, *, focused: bool) -> None:
+        # `focused` is passed in explicitly (never read from `self.has_focus`
+        # here) - same reason `_set_focus_title` takes it as a parameter: at
+        # the exact moment `on_focus`/`on_blur` fires, `self.has_focus` is
+        # not yet guaranteed to reflect the NEW state.
+        suffix = " [focus]" if focused else ""
+        if self._time_line:
+            self.border_title = Text(f"{self._time_line}{suffix}")
+        else:
+            self.border_title = Text(suffix.strip())
+
     def on_focus(self) -> None:
-        # Same second focus cue as `_DecisionTable` (round 5 design critique
-        # item 8) - see its `on_focus` docstring for why this is a message
-        # handler and not `watch_has_focus`.
-        _set_focus_title(self, focused=True)
+        # Second focus cue (round 5 design critique item 8), folded into the
+        # same border_title this panel now also uses for the time line.
+        self._refresh_border_title(focused=True)
 
     def on_blur(self) -> None:
-        _set_focus_title(self, focused=False)
+        self._refresh_border_title(focused=False)
 
 
 class WhyScreen(ModalScreen[None]):
@@ -753,6 +836,12 @@ class HelpScreen(ModalScreen[None]):
         "Doberman decision log - keyboard reference\n"
         "\n"
         "Navigate\n"
+        # round 8 design critique item 4: the arrow keys and page up/down
+        # are DataTable's own built-in bindings (never App-level, so they
+        # don't otherwise appear here) - listed for discoverability, not
+        # because this app defines them itself.
+        "  up / down         move the cursor one row\n"
+        "  page up / down    move the cursor a page of rows at a time\n"
         "  tab          move focus between the table and the why panel\n"
         "  b / B        next / previous BLOCK (also inside the why screen)\n"
         "  a            next AUTH (also inside the why screen)\n"
@@ -870,6 +959,30 @@ _MSG_TOO_SMALL = (
     f"Terminal too small - resize to at least {_MIN_TERMINAL_WIDTH}x{_MIN_TERMINAL_HEIGHT}"
 )
 
+#: Below this many terminal rows, the vertical split swaps to favor the why
+#: panel over the table (round 8 design critique item 1 - see
+#: `DecisionExplainerApp._apply_why_split` and the `.compact-why` CSS): a
+#: reviewer at a laptop-height terminal is here to read the explanation, not
+#: to see a few more table rows. Comfortably above `_MIN_TERMINAL_HEIGHT`
+#: (16) - the swap engages well before the too-small gate ever would.
+_COMPACT_WHY_HEIGHT = 30
+
+#: Inside the compact-why range, `#decisions` also gets an explicit
+#: min-height floor (see `_apply_why_split`) so it never shrinks to
+#: near-nothing just because the why panel now claims the bigger 2fr share -
+#: but ONLY once the terminal is at least this tall. Below it (down to the
+#: app's own absolute floor, `_MIN_TERMINAL_HEIGHT` = 16), that floor plus
+#: `#explanation-scroll`'s own CSS `min-height: 5` already exceeds the whole
+#: available body height, which broke Textual's layout outright (measured:
+#: the panel's own box overflowed past the screen's height). At that tight
+#: end the why panel's own floor - real explanation lines, the actual
+#: priority there - wins instead; `#decisions` is simply allowed to shrink.
+_DECISIONS_FLOOR_MIN_HEIGHT = 20
+#: `#decisions`' own min-height once `_DECISIONS_FLOOR_MIN_HEIGHT` is met -
+#: 6 visible content rows (1 DataTable header row + 5 data rows) + 2 border
+#: rows.
+_DECISIONS_MIN_HEIGHT_ROWS = 8
+
 
 class DecisionExplainerApp(App[None]):
     """Browse the redacted decision log; show `explain_decision` for the selected row."""
@@ -937,6 +1050,14 @@ class DecisionExplainerApp(App[None]):
     #decisions:focus {
         border: solid $accent;
     }
+    /* Same slot/sizing as `#decisions` - round 8 design critique item 5:
+       only one of the two is ever `display`ed at a time, so swapping between
+       them never shifts the rest of the layout. */
+    #empty-message {
+        height: 2fr;
+        border: solid $panel;
+        padding: 1;
+    }
     #filter {
         dock: bottom;
     }
@@ -950,6 +1071,26 @@ class DecisionExplainerApp(App[None]):
     }
     #explanation {
         padding: 1;
+    }
+    /* round 8 design critique item 1: below `_COMPACT_WHY_HEIGHT` rows
+       (`_apply_why_split` toggles this class on `#body`), the why panel gets
+       the larger share of the split instead of the table - the explanation
+       is the point. No explicit `min-height` here: at the absolute size
+       floor (76x16) `#explanation-scroll`'s own `min-height: 5` already
+       consumes most of the tight budget, and stacking a competing hard
+       floor on `#decisions` too made the two mins jointly exceed the
+       container - Textual's layout has no good answer for that (measured:
+       the panel's box overflowed the screen's own height). At any size with
+       real headroom (80x24 and up) the 1fr:2fr ratio alone already leaves
+       the table comfortably more than 6 rows - see the round 8 pilot test. */
+    .compact-why #decisions {
+        height: 1fr;
+    }
+    .compact-why #empty-message {
+        height: 1fr;
+    }
+    .compact-why #explanation-scroll {
+        height: 2fr;
     }
     /* auto/max-height (round 4 design critique item 1): a fixed height: 1
        silently clipped the "Next" text to whatever fit on one line - it must
@@ -978,6 +1119,11 @@ class DecisionExplainerApp(App[None]):
         self._columns_ready = False
         self._multi_day = False
         self._hide_target = False
+        # Below `_NARROW_COLUMNS_WIDTH` (round 8 design critique item 2) -
+        # purely width-driven (unlike `_hide_target`), so it's set as soon as
+        # the terminal size is known (`on_mount`/`on_resize`), not only after
+        # a load completes.
+        self._hide_risk_auth = False
         # The `target` column's content-driven width need (round 7 design
         # critique item 1) - recomputed from the loaded rows in `_load_rows`.
         self._target_need = _TARGET_WIDTH_FLOOR
@@ -1007,6 +1153,15 @@ class DecisionExplainerApp(App[None]):
                 cursor_foreground_priority="renderable",
                 cursor_background_priority="renderable",
             )
+            # Shown INSTEAD of "#decisions" (round 8 design critique item 5)
+            # when there's nothing to show a table OF: no decision log, an
+            # empty one, or a filter matching zero rows - occupies the same
+            # layout slot rather than leaving a 0-row table on screen while
+            # the message shows somewhere else. Toggled by
+            # `_show_empty_message`/`_hide_empty_message`.
+            empty_message = Static("", id="empty-message", markup=False)
+            empty_message.display = False
+            yield empty_message
             yield Input(
                 placeholder="filter (verdict / target / action / reason codes)", id="filter"
             )
@@ -1059,10 +1214,12 @@ class DecisionExplainerApp(App[None]):
 
     async def on_mount(self) -> None:
         self._apply_size_gate()
+        self._apply_why_split()
         table = self.query_one("#decisions", _DecisionTable)
-        self._widths = _widths_for(self.size.width)
-        self._headers = _HEADERS
-        for header in _HEADERS:
+        self._hide_risk_auth = self.size.width < _NARROW_COLUMNS_WIDTH
+        self._widths = _widths_for(self.size.width, hide_risk_auth=self._hide_risk_auth)
+        self._headers = _headers_for(hide_target=False, hide_risk_auth=self._hide_risk_auth)
+        for header in self._headers:
             table.add_column(header, width=self._widths[header], key=header)
         self._columns_ready = True
         self.query_one("#filter", Input).display = False
@@ -1072,8 +1229,11 @@ class DecisionExplainerApp(App[None]):
         # item 8): the app's own default auto-focus at startup never posts a
         # Focus message, so `_DecisionTable`/`_WhyPanel`'s own `on_focus`
         # never fires for it - only a later `tab` does.
-        for pane in (table, self.query_one("#explanation-scroll", _WhyPanel)):
-            _set_focus_title(pane, focused=pane.has_focus)
+        _set_focus_title(table, focused=table.has_focus)
+        # Seeds the WhyPanel's initial border_title too - same "on_focus never
+        # fires for the app's own startup auto-focus" gap noted above.
+        why_panel = self.query_one("#explanation-scroll", _WhyPanel)
+        why_panel._refresh_border_title(focused=why_panel.has_focus)
         self._load_worker = self._load_rows()
 
     async def wait_loaded(self) -> None:
@@ -1094,6 +1254,33 @@ class DecisionExplainerApp(App[None]):
         self.query_one("#body", Vertical).display = not too_small
         self.query_one("#date-bar", Static).display = not too_small
         self.refresh_bindings()
+
+    def _apply_why_split(self) -> None:
+        """Below `_COMPACT_WHY_HEIGHT` rows, swap the vertical split so the
+        why panel (not the table) gets the larger share (round 8 design
+        critique item 1): a short terminal used to give the table 2fr and
+        the why panel a cramped 1fr - backwards for what this app is FOR, a
+        reviewer reading the explanation.
+
+        `#decisions`/`#empty-message` also get an explicit min-height floor
+        (set here in Python, not CSS - see `_DECISIONS_FLOOR_MIN_HEIGHT`'s
+        docstring for why a STATIC CSS floor broke layout at the tightest
+        terminal size) so the table doesn't shrink to near-nothing at a
+        merely-short (not tiny) terminal - but only once there's actually
+        room for it alongside the why panel's own floor.
+        """
+        body = self.query_one("#body", Vertical)
+        table = self.query_one("#decisions", _DecisionTable)
+        empty = self.query_one("#empty-message", Static)
+        compact = self.size.height < _COMPACT_WHY_HEIGHT
+        body.set_class(compact, "compact-why")
+        min_height = (
+            _DECISIONS_MIN_HEIGHT_ROWS
+            if compact and self.size.height >= _DECISIONS_FLOOR_MIN_HEIGHT
+            else 0
+        )
+        table.styles.min_height = min_height
+        empty.styles.min_height = min_height
 
     # --- loading -----------------------------------------------------------
 
@@ -1121,15 +1308,17 @@ class DecisionExplainerApp(App[None]):
             self._rows = rows
             self._multi_day = _spans_multiple_days(rows)
             self._hide_target = _all_targets_missing(rows)
+            self._hide_risk_auth = self.size.width < _NARROW_COLUMNS_WIDTH
             self._target_need = _target_width_need(rows)
             self._apply_widths(
                 _widths_for(
                     self.size.width,
                     multi_day=self._multi_day,
                     hide_target=self._hide_target,
+                    hide_risk_auth=self._hide_risk_auth,
                     target_need=self._target_need,
                 ),
-                _headers_for(hide_target=self._hide_target),
+                _headers_for(hide_target=self._hide_target, hide_risk_auth=self._hide_risk_auth),
             )
             if not rows:
                 self._reset_to_empty(_MSG_NO_ROWS)
@@ -1142,8 +1331,9 @@ class DecisionExplainerApp(App[None]):
         """Re-declare the table's columns at ``widths``/``headers``. Returns
         whether anything changed - callers rebuild the row data only when it
         did. ``headers`` defaults to the current header set (a pure width
-        change, e.g. a resize); it differs only when ``target`` is hidden or
-        restored (round 5 design critique item 3)."""
+        change, e.g. a resize); it differs when ``target`` is hidden or
+        restored (round 5 design critique item 3), or ``risk``/``auth`` cross
+        the ``_NARROW_COLUMNS_WIDTH`` threshold (round 8 item 2)."""
         headers = headers if headers is not None else self._headers
         if widths == self._widths and headers == self._headers:
             return False
@@ -1161,19 +1351,24 @@ class DecisionExplainerApp(App[None]):
 
     def on_resize(self) -> None:
         """Re-fit the columns: spare width goes to why, never a scrollbar.
-        Also re-gates the too-small notice and re-evaluates which footer
+        Also re-gates the too-small notice, re-applies the compact-why split
+        (round 8 design critique item 1), and re-evaluates which footer
         bindings fit (round 5 design critique items 2 + 10)."""
         self._apply_size_gate()
+        self._apply_why_split()
         if not self._columns_ready:
             # The first layout resize lands before on_mount adds the columns.
             return
+        self._hide_risk_auth = self.size.width < _NARROW_COLUMNS_WIDTH
         widths = _widths_for(
             self.size.width,
             multi_day=self._multi_day,
             hide_target=self._hide_target,
+            hide_risk_auth=self._hide_risk_auth,
             target_need=self._target_need,
         )
-        if self._apply_widths(widths, _headers_for(hide_target=self._hide_target)):
+        headers = _headers_for(hide_target=self._hide_target, hide_risk_auth=self._hide_risk_auth)
+        if self._apply_widths(widths, headers):
             self._rebuild_table()
         self.refresh_bindings()
         # A resize can flip the docked why panel's overflow state without any
@@ -1185,16 +1380,23 @@ class DecisionExplainerApp(App[None]):
         self.refresh_bindings()  # see `_rebuild_table` - same footer-staleness fix
         self._multi_day = False
         self._hide_target = False
+        self._hide_risk_auth = self.size.width < _NARROW_COLUMNS_WIDTH
         self._target_need = _TARGET_WIDTH_FLOOR
         self._gutter_row = None
         self._apply_widths(
-            _widths_for(self.size.width, multi_day=False, hide_target=False), _HEADERS
+            _widths_for(
+                self.size.width,
+                multi_day=False,
+                hide_target=False,
+                hide_risk_auth=self._hide_risk_auth,
+            ),
+            _headers_for(hide_target=False, hide_risk_auth=self._hide_risk_auth),
         )
         self.query_one("#decisions", _DecisionTable).clear()
         self._current_key = None
         self._update_date_bar(None)
         self._update_next_line(None)
-        self._set_panel(message)
+        self._show_empty_message(message)
         self._update_subtitle()
 
     def action_reload(self) -> None:
@@ -1261,12 +1463,17 @@ class DecisionExplainerApp(App[None]):
             self._update_date_bar(None)
             self._update_next_line(None)
             if self._rows:  # data exists, the filter just excluded all of it
-                self._set_panel(_MSG_NO_MATCH)
+                self._show_empty_message(_MSG_NO_MATCH)
             return
+        self._hide_empty_message()
         for row in self._visible_rows:
             table.add_row(
                 *_row_cells(
-                    row, self._widths, multi_day=self._multi_day, hide_target=self._hide_target
+                    row,
+                    self._widths,
+                    multi_day=self._multi_day,
+                    hide_target=self._hide_target,
+                    hide_risk_auth=self._hide_risk_auth,
                 ),
                 key=_row_key(row),
             )
@@ -1300,14 +1507,27 @@ class DecisionExplainerApp(App[None]):
         # as "that's everything" when it may not be (round 3 design critique
         # item 5).
         suffix = f" (last {total}; --last for more)" if self._last and total == self._last else ""
+        # round 8 design critique item 3: name which count is which - a bare
+        # "showing 11 of 45" reads as "11 of 45 total" until the verdict
+        # breakdown right after it is read as "45 loaded, 11 currently shown"
+        # instead. "(filtered)" only appears while a filter is actually
+        # ACTIVE (not merely whenever visible != total, which can't happen
+        # any other way here, but the intent is "a filter narrowed this").
+        try:
+            filter_active = bool(self.query_one("#filter", Input).value.strip())
+        except Exception:  # noqa: BLE001 — defensive: not mounted yet
+            filter_active = False
+        filtered_label = " (filtered)" if filter_active else ""
         # Verdict breakdown (round 6 design critique item 4): over the LOADED
         # rows (`self._rows`), never the filtered `self._visible_rows` - the
         # filter narrows which rows are shown, not how many of each verdict
         # actually exist in the loaded window. Omitted entirely when nothing
-        # is loaded - nothing to break down yet.
-        counts = f" - {_verdict_counts_text(self._rows)}" if self._rows else ""
+        # is loaded - nothing to break down yet. "loaded" (round 8 item 3)
+        # makes that scope explicit rather than implied.
+        counts = f" - {_verdict_counts_text(self._rows)} loaded" if self._rows else ""
         self.sub_title = (
-            f"showing {len(self._visible_rows)} of {total}{suffix}{counts} - {self._repo_root}"
+            f"showing {len(self._visible_rows)} of {total}{filtered_label}"
+            f"{suffix}{counts} - {self._repo_root}"
         )
 
     # --- selection / why panel ------------------------------------------------
@@ -1317,12 +1537,16 @@ class DecisionExplainerApp(App[None]):
         self._refresh_why_panel_scroll_cue()
 
     def _refresh_why_panel_scroll_cue(self) -> None:
-        """Prepend a muted `_HELP_SCROLL_CUE` as the docked why panel's first
-        line whenever its content overflows the visible height - same pattern
-        as `HelpScreen._refresh_scroll_cue` (round 7 design critique item 3),
-        but re-run on every panel update (not just resize), since unlike the
-        help screen's fixed text, this panel's content changes on every row
-        selection/filter edit.
+        """Set the docked why panel's `border_subtitle` to `_HELP_SCROLL_CUE`
+        whenever its content overflows the visible height, else clear it -
+        same overflow test as `HelpScreen._refresh_scroll_cue` (round 7
+        design critique item 3), re-run on every panel update (not just
+        resize), since unlike the help screen's fixed text, this panel's
+        content changes on every row selection/filter edit. Round 8 design
+        critique item 1 moves the cue from the panel BODY (prepended ahead of
+        the explanation, crowding it below the fold at a short terminal) into
+        `border_subtitle`, alongside the time line's move into `border_title`
+        - the body now starts with the explanation itself, always.
 
         Measures the overflow SYNCHRONOUSLY via `Static.get_content_height`
         (the content's own required height at its current render width)
@@ -1343,17 +1567,31 @@ class DecisionExplainerApp(App[None]):
         width = static.content_size.width or scroll.size.width
         height = scroll.size.height
         if not width or not height or base == "":
+            scroll.border_subtitle = Text("")
             return
         content_height = static.get_content_height(scroll.size, scroll.size, width)
-        if content_height <= height:
-            return
-        cue = Text(_HELP_SCROLL_CUE, style="dim")
-        combined: str | Text = (
-            Text("\n\n").join([cue, base])
-            if isinstance(base, Text)
-            else f"{_HELP_SCROLL_CUE}\n\n{base}"
-        )
-        static.update(combined)
+        scroll.border_subtitle = Text(_HELP_SCROLL_CUE if content_height > height else "")
+
+    def _show_empty_message(self, message: str) -> None:
+        """Show `message` INSIDE the table's own area (round 8 design
+        critique item 5): swap the DataTable out for `#empty-message`, a
+        Static occupying the same layout slot, instead of leaving a 0-row
+        table on screen (still drawing its border and header) while the
+        message shows somewhere else entirely (the why panel below it) - two
+        regions each separately saying "nothing here" read as a broken
+        layout, not "no data". The why panel itself goes blank (nothing to
+        explain) and loses its time-line border title.
+        """
+        self.query_one("#decisions", _DecisionTable).display = False
+        empty = self.query_one("#empty-message", Static)
+        empty.update(message)
+        empty.display = True
+        self.query_one("#explanation-scroll", _WhyPanel).set_time_line("")
+        self._set_panel("")
+
+    def _hide_empty_message(self) -> None:
+        self.query_one("#empty-message", Static).display = False
+        self.query_one("#decisions", _DecisionTable).display = True
 
     def _update_date_bar(self, row: dict | None) -> None:
         # No legend when nothing is loaded at all - "nothing to filter"
@@ -1402,32 +1640,33 @@ class DecisionExplainerApp(App[None]):
         self._current_key = key
         # Computed once per selection (round 7 design critique item 2), not on
         # a live-updating timer - re-selecting the same row later recomputes a
-        # fresh age, but simply leaving it on screen never ticks.
+        # fresh age, but simply leaving it on screen never ticks. Round 8
+        # design critique item 1: this now goes to the panel's border_title
+        # (via `set_time_line`), not the panel body - see `_panel_text`.
         time_line = _abs_utc_and_age(row)
+        self.query_one("#explanation-scroll", _WhyPanel).set_time_line(time_line)
         self._update_date_bar(row)
         self._update_next_line(row)
         self._update_gutter(index)
         cached = self._explain_cache.get(key)
         if cached is not None:
             body, provenance = cached
-            self._set_panel(_panel_text(body, provenance, time_line=time_line))
+            self._set_panel(_panel_text(body, provenance))
             return
         body = template_explanation(row)
         if not llm_enrichment_enabled():
             # Nothing to enrich with - never schedule a worker that would only
             # ever return the same template text.
             self._explain_cache[key] = (body, _PROV_TEMPLATE)
-            self._set_panel(_panel_text(body, _PROV_TEMPLATE, time_line=time_line))
+            self._set_panel(_panel_text(body, _PROV_TEMPLATE))
             return
-        self._set_panel(_panel_text(body, _PROV_PENDING, time_line=time_line))
+        self._set_panel(_panel_text(body, _PROV_PENDING))
         if self._explain_timer is not None:
             self._explain_timer.stop()
-        self._explain_timer = self.set_timer(
-            _EXPLAIN_DEBOUNCE_S, lambda: self._explain_worker(row, time_line)
-        )
+        self._explain_timer = self.set_timer(_EXPLAIN_DEBOUNCE_S, lambda: self._explain_worker(row))
 
     @work(thread=True, exclusive=True, group="explain")
-    def _explain_worker(self, row: dict, time_line: str) -> None:
+    def _explain_worker(self, row: dict) -> None:
         worker = get_current_worker()
         key = _row_key(row)
         try:
@@ -1444,12 +1683,11 @@ class DecisionExplainerApp(App[None]):
         def _apply() -> None:
             # Runs on the UI thread: re-check the selection so a slow (opt-in)
             # LLM call can never overwrite a newer row's panel with stale text.
-            # `time_line` is the one captured at selection time (round 7 item
-            # 2), not recomputed here - the age must not drift just because
-            # the LLM call took a few extra seconds.
+            # The border's time line was already set synchronously at
+            # selection time - nothing to redo here even for a delayed reply.
             self._explain_cache[key] = (text, provenance)
             if self._current_key == key:
-                self._set_panel(_panel_text(text, provenance, time_line=time_line))
+                self._set_panel(_panel_text(text, provenance))
 
         try:
             self.call_from_thread(_apply)
@@ -1530,16 +1768,28 @@ class DecisionExplainerApp(App[None]):
 
         ``scroll=True`` (round 6 design critique item 2, explicit here even
         though it's `move_cursor`'s own default): a jump this far from the
-        current row is exactly the case that must never land off-screen."""
+        current row is exactly the case that must never land off-screen.
+
+        Round 8 design critique item 6: when the CURSOR ROW ITSELF is the
+        only match (e.g. the single AUTH row in view, cursor already on it),
+        the wraparound search lands right back on `start` - silently
+        "jumping" the cursor to the row it's already on reads as success,
+        not as "there is nothing else to jump to". That case notifies
+        `no other {verdict} rows in view` and returns `False` instead of
+        moving the cursor to itself.
+        """
         rows = self._visible_rows
         total = len(rows)
         if total:
             start = self._cursor_index()
-            start = start if start is not None else (0 if forward else total - 1)
+            actual_start = start if start is not None else (0 if forward else total - 1)
             step = 1 if forward else -1
             for offset in range(1, total + 1):
-                index = (start + offset * step) % total
+                index = (actual_start + offset * step) % total
                 if rows[index].get("final_verdict") == verdict:
+                    if start is not None and index == start:
+                        self.notify(f"no other {verdict} rows in view", markup=False)
+                        return False
                     self.query_one("#decisions", _DecisionTable).move_cursor(row=index, scroll=True)
                     return True
         self.notify(f"no {verdict} rows in view", markup=False)

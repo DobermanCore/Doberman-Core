@@ -212,6 +212,39 @@ def test_log_default_human_empty_message(tmp_path):
     assert "(no decisions recorded yet)" in result.stdout
 
 
+def test_log_human_view_timestamp_matches_the_tui_panel_format(tmp_path):
+    # round 8 design critique item 7: the plain human view's timestamp column
+    # must read the same "YYYY-MM-DD HH:MM:SS UTC" format (no microseconds)
+    # the tui's why panel shows - not the raw stored ISO string with its "T"
+    # separator and "Z"/offset suffix.
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return [{**_ROWS[1], "ts": "2026-07-30T00:00:01.123456+00:00"}]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "2026-07-30 00:00:01 UTC" in result.stdout
+    assert "2026-07-30T00:00:01" not in result.stdout
+    assert ".123456" not in result.stdout
+
+
+def test_log_jsonl_keeps_the_raw_ts_string_unchanged(tmp_path):
+    # `--jsonl` must never adopt the human view's reformatted timestamp -
+    # scripts parse the raw ISO value `read_decisions` returned.
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return [{**_ROWS[1], "ts": "2026-07-30T00:00:01.123456+00:00"}]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path), "--jsonl"])
+    assert result.exit_code == 0
+    obj = json.loads(result.stdout.splitlines()[0])
+    assert obj["ts"] == "2026-07-30T00:00:01.123456+00:00"
+
+
 def test_log_human_action_column_does_not_shift_for_long_types(tmp_path):
     """`network_request` is wider than `git_op`; both targets must align (#428)."""
     import doberman.cli.main as main_mod
@@ -277,7 +310,7 @@ def test_log_why_prints_plain_summary_and_next_step_for_block_and_auth_rows(tmp_
     assert "doberman dash" in normalized
     # Nothing is printed under the trailing "ALLOW" row.
     lines = result.stdout.splitlines()
-    allow_index = next(i for i, ln in enumerate(lines) if ln.startswith("2026-07-30T00:00:01Z"))
+    allow_index = next(i for i, ln in enumerate(lines) if ln.startswith("2026-07-30 00:00:01 UTC"))
     assert allow_index == len(lines) - 1
 
 

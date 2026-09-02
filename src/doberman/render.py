@@ -16,6 +16,7 @@ import re
 import shutil
 import sys
 import textwrap
+from datetime import datetime, timezone
 
 import typer
 
@@ -148,6 +149,31 @@ def next_step_line(verdict: str | None, *, tui_hint: bool = True) -> str | None:
     else:
         return None
     return line if tui_hint else line.removesuffix(_TUI_HINT)
+
+
+def format_utc_timestamp(value: object) -> str:
+    """Format a stored ``ts`` value as ``YYYY-MM-DD HH:MM:SS UTC`` (no
+    microseconds) - shared by `doberman log`'s timestamp column and the `tui`
+    why panel's absolute-time header (see `doberman.tui._abs_utc_and_age`),
+    so the two surfaces agree on one unambiguous representation of the same
+    instant instead of `log` printing the raw stored ISO string and the tui
+    printing something else (round 8 design critique item 7).
+
+    A naive (offset-less) value is assumed already UTC - every real row is
+    stamped via ``datetime.now(timezone.utc).isoformat()`` (see
+    ``doberman.storage.log.build_record``). Falls back to ``str(value)``
+    unchanged for anything that isn't a parseable ISO datetime (missing,
+    corrupt, or legacy row) - never raises.
+    """
+    if isinstance(value, str):
+        try:
+            ts = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return f"{ts.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    return str(value)
 
 
 def deadline_note(seconds: float) -> str:
