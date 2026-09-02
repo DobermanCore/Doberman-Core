@@ -339,7 +339,16 @@ class LocalAuthProvider:
         if not _confirm():
             _notify("denied")
             return False, "denied"
-        code = _read_code("Enter your 2FA code")
+        # Names the exact target, mirroring the GUI's structured code dialog
+        # (item 8) -- a human landing on a bare terminal code prompt should
+        # not have to trust that it's still about the same action the first
+        # (confirm) prompt named.
+        code_prompt = (
+            f"Enter your 2FA code to approve: {parts['target']}"
+            if parts
+            else ("Enter your 2FA code")
+        )
+        code = _read_code(code_prompt)
         verified = totp.verify(code)
         _notify("approved" if verified else "code_rejected")
         return verified, "totp+elevation" if elevation else "totp"

@@ -323,3 +323,21 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 @pytest.hookimpl(trylast=True)
 def pytest_runtest_teardown(item: pytest.Item) -> None:
     _apply_hst_size(*_HST_PRODUCTION)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Auto-mark every test that uses the GUI prompter tests' ``real_root``
+    fixture ``real_display`` (item 12 of the round-4 GUI dialog critique).
+
+    A fixture can't add its own marker in time for ``-m``/``-k`` selection --
+    by the time a fixture runs, mark-based deselection has already happened at
+    collection. Fixture NAMES, though, are already known at collection time
+    (``item.fixturenames``), so this hook adds the marker from there instead
+    of hand-maintaining a list of test names. Lets a local coverage run
+    approximate the headless Linux CI runner (which skips every real-Tk test)
+    via ``-m "not real_display"`` without a real display test actually
+    needing one to be deselected.
+    """
+    for item in items:
+        if "real_root" in getattr(item, "fixturenames", ()):
+            item.add_marker(pytest.mark.real_display)

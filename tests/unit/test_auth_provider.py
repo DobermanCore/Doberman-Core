@@ -42,6 +42,7 @@ class FakePrompter:
         return self._confirm
 
     def read_code(self, message: str) -> str:
+        self.messages.append(message)
         return self._code
 
 
@@ -532,6 +533,21 @@ def test_plugin_raising_is_denied_with_error_method():
     )
     assert result.approved is False
     assert result.method == "error"
+
+
+def test_two_factor_code_prompt_names_the_exact_target():
+    """Item 8: the terminal's SECOND (code) step keeps the action binding the
+    first (confirm) step already established -- a human landing on a bare
+    "enter a code" prompt should never have to trust it is still about the
+    same action without being told so."""
+    totp.enroll()
+    secret = totp._read_secret()
+    code = pyotp.TOTP(secret).now()
+    prompter = FakePrompter(confirm=True, code=code)
+    LocalAuthProvider().authenticate(
+        _auth_decision(), _action("backend/api.ts"), AuthTier.two_factor, prompter=prompter
+    )
+    assert prompter.messages[-1] == "Enter your 2FA code to approve: backend/api.ts"
 
 
 def test_plugin_approving_a_different_action_id_is_denied():
