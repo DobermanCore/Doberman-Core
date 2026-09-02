@@ -56,6 +56,8 @@ from doberman.hosthooks.install import DASHBOARD_COMMAND
 from doberman.models import ActionType
 from doberman.policy.checklist import recommend_policy
 from doberman.policy.drift import (
+    Classification,
+    _prefs_classify,
     _run_weaken_gate,
     _verify_possession_factor,
     apply_change,
@@ -69,7 +71,7 @@ from doberman.policy.drift import (
 from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
-from doberman.render import verdict_label, verdict_label_str
+from doberman.render import style_text, verdict_label, verdict_label_str
 from doberman.storage.approval_memory import clear as clear_approval_memory
 from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
@@ -389,6 +391,21 @@ def review(
         typer.echo(f"\nSaved policy to {path}/.doberman/policies.yaml")
     else:
         typer.echo("\n(read-only; re-run with --yes to save)")
+
+
+#: Mode -> (color, bold) for the setup wizard's summary line, via render.style_text.
+_MODE_STYLE: dict[str, tuple[str, bool]] = {
+    "light": ("green", False),
+    "balanced": ("green", False),
+    "strict": ("yellow", True),
+    "paranoid": ("bright_red", True),
+}
+
+
+def _section(title: str, width: int = 58) -> str:
+    """A fixed-width ``-- <title> ----...`` section rule for the setup wizard."""
+    prefix = f"-- {title} "
+    return prefix + "-" * max(0, width - len(prefix))
 
 
 def _apply_mode_change(
@@ -962,8 +979,8 @@ def doctor(
     Policy version check records the observed policy version into
     `.doberman/policies.db` (itself a diagnostic record; it never touches policy,
     decisions, or enforcement). Exits non-zero if any critical check
-    (hooks / config / DB) is not healthy, so it is script-friendly
-    (`doberman doctor && ...`).
+    (hooks / hook command on PATH / config / DB) is not healthy, so it is
+    script-friendly (`doberman doctor && ...`).
     """
     from doberman.cli.doctor import CheckStatus, critical_failures, run_checks
 
@@ -2798,7 +2815,7 @@ def setup(
     elif yes:
         chosen_hosts = default_hosts(detected)
     else:
-        typer.echo("-- Hosts -------------------------------------------------")
+        typer.echo(_section("Hosts"))
         for line in host_menu_lines(detected):
             typer.echo(line)
         typer.echo("")
@@ -2807,7 +2824,7 @@ def setup(
         )
         while True:
             raw = typer.prompt(
-                "Which hosts should Doberman guard? (numbers or names, comma-separated)",
+                "Which hosts should Doberman guard? (numbers or names, comma-separated, or 'all')",
                 default=default_nums,
             )
             try:
@@ -2827,12 +2844,10 @@ def setup(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
     elif yes:
-        from doberman.policy.modes import SecurityMode
-
         chosen_mode = SecurityMode.balanced
     else:
         typer.echo("")
-        typer.echo("-- Security mode ---------------------------------------")
+        typer.echo(_section("Security mode"))
         for line in mode_menu_lines():
             typer.echo(line)
         typer.echo("Not sure? `doberman demo --mode strict` shows what each mode blocks.")
@@ -2847,53 +2862,125 @@ def setup(
 
     telemetry_cmd.configure_setup_consent(yes)
 
+    # A genuinely fresh repo (no persisted policy yet) mirrors apply_mode_change's
+    # own establish_ok first-run bypass: choosing an initial mode/preference
+    # posture establishes it, it doesn't weaken one.
+    first_run = load_policy(path) is None
+
     # Save the chosen mode. First-run onboarding establishes the initial posture
     # freely (establish_ok); a re-run over an existing policy still gates a
     # lowering behind a possession factor, so setup can't bypass the mode gate.
-    try:
-        if (
-            _apply_mode_change(chosen_mode.value, path, "doberman setup wizard", establish_ok=True)
-            is None
-        ):
+    # Under --yes a lowering is refused up front rather than falling through to
+    # the gate, which would otherwise open a real confirmation prompt on stdin.
+    mode_order = list(SecurityMode)
+    mode_applied = True
+    if yes and not first_run:
+        current_mode = resolve_mode(load_mode(path))
+        if mode_order.index(chosen_mode) < mode_order.index(current_mode):
             typer.echo(
-                "note: mode not lowered (a lowering needs an enrolled possession factor); "
-                "keeping the current mode",
+                f"note: --yes cannot lower the mode from {current_mode.value} to "
+                f"{chosen_mode.value}: a lowering needs a possession factor. Run "
+                f"`doberman mode {chosen_mode.value}` interactively.",
                 err=True,
             )
-    except ValueError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(2) from exc
+            mode_applied = False
+
+    if mode_applied:
+        try:
+            if (
+                _apply_mode_change(
+                    chosen_mode.value, path, "doberman setup wizard", establish_ok=True
+                )
+                is None
+            ):
+                typer.echo(
+                    "note: mode not lowered (a lowering needs an enrolled possession factor); "
+                    "keeping the current mode",
+                    err=True,
+                )
+                mode_applied = False
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+
+    persisted_mode = resolve_mode(load_mode(path))
 
     # ------------------------------------------------------------------
     # d. Guardrails / preferences
     # ------------------------------------------------------------------
-    preset_vector = vector_for(chosen_mode)
-    tune_prefs = False
-
-    if not yes:
-        typer.echo("")
-        typer.echo("-- Preference tuning -----------------------------------")
-        typer.echo(
-            f"The {chosen_mode.value!r} preset applies these weights: "
-            + "  ".join(f"{n}={getattr(preset_vector, n):.2f}" for n in DIMENSIONS)
-        )
-        tune_prefs = typer.confirm("Tune individual weights? (advanced)", default=False)
-
-    if tune_prefs:
-        vector = preset_vector
-        typer.echo("Enter a weight in [0, 1] for each dimension (press Enter to keep current):")
-        for dim in DIMENSIONS:
-            current = getattr(vector, dim)
-            typer.echo(f"  {DIMENSION_DESCRIPTIONS[dim]}")
-            raw_w = typer.prompt(f"  {dim} [{current:.2f}]", default=str(current))
-            try:
-                vector = vector.with_weight(dim, float(raw_w))
-            except (KeyError, ValueError) as exc:
-                typer.echo(f"  warning: {exc} - keeping {current:.2f}")
-        save_preferences(vector, path)
+    if not mode_applied:
+        # The mode stayed put; writing a preset/tuned vector for the requested
+        # (unapplied) mode would silently overwrite the persisted preferences
+        # with no possession-factor check at all. Skip the write entirely.
+        prefs_source = "unchanged (the mode change was not applied)"
+        typer.echo("note: preferences unchanged (the mode change was not applied)", err=True)
     else:
-        # Persist the preset so load_preferences returns the mode's preset explicitly.
-        save_preferences(preset_vector, path)
+        preset_vector = vector_for(persisted_mode)
+        tune_prefs = False
+
+        if not yes:
+            typer.echo("")
+            typer.echo(_section("Preference tuning"))
+            typer.echo(
+                f"The {persisted_mode.value!r} preset applies these weights: "
+                + "  ".join(f"{n}={getattr(preset_vector, n):.2f}" for n in DIMENSIONS)
+            )
+            tune_prefs = typer.confirm("Tune individual weights? (advanced)", default=False)
+
+        if tune_prefs:
+            vector = preset_vector
+            typer.echo("Enter a weight in [0, 1] for each dimension (press Enter to keep current):")
+            for dim in DIMENSIONS:
+                current = getattr(vector, dim)
+                typer.echo(f"  {DIMENSION_DESCRIPTIONS[dim]}")
+                raw_w = typer.prompt(f"  {dim}", default=f"{current:.2f}")
+                try:
+                    vector = vector.with_weight(dim, float(raw_w))
+                except (KeyError, ValueError) as exc:
+                    typer.echo(f"  warning: {exc} - keeping {current:.2f}")
+            new_vector = vector
+            prefs_source = "custom (tuned)"
+        else:
+            new_vector = preset_vector
+            prefs_source = f"preset defaults for {persisted_mode.value}"
+
+        if first_run:
+            # Establishing the initial preference posture is free, same as the
+            # mode's own establish_ok bypass.
+            save_preferences(new_vector, path)
+        else:
+            # Route through the same gated, raise-only chokepoint `doberman
+            # prefs` uses: a lowering relative to the persisted vector needs a
+            # possession factor. Under --yes, refuse a lowering up front rather
+            # than let the gate open a real confirmation prompt on stdin.
+            current_vector = load_preferences(path)
+            classification = _prefs_classify(current_vector.to_mapping(), new_vector.to_mapping())
+            if classification is Classification.weaken and yes:
+                typer.echo(
+                    "note: --yes cannot lower preferences below the persisted vector: a "
+                    "lowering needs a possession factor. Run `doberman prefs <dimension> "
+                    "<value>` interactively.",
+                    err=True,
+                )
+                prefs_source = "unchanged (not lowered)"
+            else:
+                outcome = asyncio.run(
+                    apply_preferences_change(
+                        current_vector.to_mapping(),
+                        new_vector.to_mapping(),
+                        "doberman setup wizard",
+                        repo_root=path,
+                    )
+                )
+                if outcome.approved:
+                    save_preferences(new_vector, path, ledger_ts=outcome.ts)
+                else:
+                    typer.echo(
+                        "note: preferences not lowered (a lowering needs a possession "
+                        "factor); keeping the current preferences",
+                        err=True,
+                    )
+                    prefs_source = "unchanged (not lowered)"
 
     # ------------------------------------------------------------------
     # e. Per-host wiring
@@ -2908,7 +2995,7 @@ def setup(
             claude_scope = "project"
         else:
             typer.echo("")
-            typer.echo("-- Hook installation (Claude Code) ----------------------")
+            typer.echo(_section("Hook installation (Claude Code)"))
             use_global = typer.confirm(
                 "Install hooks globally (~/.claude/settings.json)?",
                 default=False,
@@ -2927,6 +3014,7 @@ def setup(
         except OSError as exc:
             typer.echo(f"error: could not write {settings_path}: {exc}", err=True)
             raise typer.Exit(1) from exc
+        typer.echo(f"wrote {settings_path}")
         wired.append(("claude", str(settings_path)))
 
     if "codex" in chosen_hosts:
@@ -2936,7 +3024,7 @@ def setup(
             codex_scope = "repo"
         else:
             typer.echo("")
-            typer.echo("-- Hook installation (Codex CLI) -------------------------")
+            typer.echo(_section("Hook installation (Codex CLI)"))
             use_user = typer.confirm(
                 "Install the Codex hook user-wide (~/.codex/hooks.json)?",
                 default=False,
@@ -2947,7 +3035,7 @@ def setup(
 
     if "mcp" in chosen_hosts:
         typer.echo("")
-        typer.echo("-- MCP proxy (Cursor / Claude Desktop / other MCP client) ---")
+        typer.echo(_section("MCP proxy (Cursor / Claude Desktop / other MCP client)"))
         typer.echo(
             "Doberman can't edit this host's MCP config for you; paste this into it, "
             "replacing <your-mcp-server-command> with your existing tool server command:"
@@ -2968,7 +3056,7 @@ def setup(
 
     if "openclaw" in chosen_hosts:
         typer.echo("")
-        typer.echo("-- OpenClaw -------------------------------------------------")
+        typer.echo(_section("OpenClaw"))
         typer.echo(
             "OpenClaw agents route through Doberman via a small local plugin, not a hook-pack."
         )
@@ -2977,16 +3065,24 @@ def setup(
         )
         wired.append(("openclaw", None))
 
+    hooks_kind_wired = [h for h in wired if next(x for x in HOSTS if x.key == h[0]).kind == "hooks"]
+
     # ------------------------------------------------------------------
     # f. Doctor pass
     # ------------------------------------------------------------------
     typer.echo("")
-    typer.echo("-- Doctor -------------------------------------------------")
+    typer.echo(_section("Doctor"))
     try:
         from doberman.cli.doctor import CheckStatus, critical_failures, run_checks
 
         results = run_checks(path)
         critical = critical_failures(results)
+        if not hooks_kind_wired:
+            # Nothing hooks-based was wired this run (mcp/openclaw only) — the
+            # hook checks have nothing to diagnose, so they'd only ever read as
+            # a false "not installed" critical. Scope them out and say so.
+            hooks_only = {"Host hooks", "Hook command"}
+            critical = [r for r in critical if r.name not in hooks_only]
         # Non-critical warnings (no decision DB or fingerprint key yet, no TUI
         # extra) are normal right after a fresh setup — count them, don't list
         # them as failures; `doberman doctor` has the detail.
@@ -2997,21 +3093,30 @@ def setup(
             line += f", {len(warnings)} warning(s) (`doberman doctor` shows them)"
         if critical:
             line += f", {len(critical)} critical - needs attention:"
-        typer.echo(line)
+        if not hooks_kind_wired:
+            line += " (hooks n/a for this host)"
+        if critical:
+            typer.echo(style_text(line, "bright_red", bold=True))
+        elif warnings:
+            typer.echo(style_text(line, "yellow", bold=True))
+        else:
+            typer.echo(style_text(line, "green"))
         for r in critical:
-            typer.echo(f"  - {r.name}")
-    except Exception as exc:  # noqa: BLE001 — a diagnostic pass must never crash setup
-        typer.echo(f"Doctor: could not run ({type(exc).__name__})")
+            typer.echo(f"  - {r.name}: {r.detail}")
+    except Exception:  # noqa: BLE001 — a diagnostic pass must never crash setup
+        typer.echo("Doctor: could not run here; verify with `doberman doctor`")
 
     # ------------------------------------------------------------------
     # g. Summary
     # ------------------------------------------------------------------
     typer.echo("")
-    typer.echo("-- Setup complete ------------------------------------------")
-    typer.echo(f"Mode:       {chosen_mode.value}")
-    typer.echo(
-        f"Prefs:      {'custom (tuned)' if tune_prefs else 'preset defaults for ' + chosen_mode.value}"
-    )
+    typer.echo(_section("Setup complete"))
+    fg, bold = _MODE_STYLE[persisted_mode.value]
+    mode_line = f"Mode:       {style_text(persisted_mode.value, fg, bold=bold)}"
+    if persisted_mode is not chosen_mode:
+        mode_line += f" (requested {chosen_mode.value}; not lowered)"
+    typer.echo(mode_line)
+    typer.echo(f"Prefs:      {prefs_source}")
     typer.echo("Hosts:")
     for host_key, target in wired:
         if host_key == "claude":
@@ -3019,12 +3124,12 @@ def setup(
         elif host_key == "codex":
             typer.echo(f"  codex    hook written to {target}")
         elif host_key == "mcp":
-            typer.echo("  mcp      config printed above (paste into your client)")
+            typer.echo("  mcp      paste the block above into your client, then restart it")
+            typer.echo("  Verify it's live: ask your agent to read .env and confirm it is blocked.")
         elif host_key == "openclaw":
-            typer.echo("  openclaw instructions printed above")
+            typer.echo("  openclaw follow adapters/openclaw/README.md, then run its canary check")
     typer.echo("")
 
-    hooks_kind_wired = [h for h in wired if next(x for x in HOSTS if x.key == h[0]).kind == "hooks"]
     if hooks_kind_wired:
         typer.echo("Hooks written. Doberman activates when you restart your session.")
         for host_key, _ in hooks_kind_wired:
@@ -3034,11 +3139,37 @@ def setup(
     telemetry_cmd.capture_setup_completed(
         chosen_mode.value, [h for h, _ in wired], claude_scope, yes
     )
-    typer.echo(
-        "Next step: `doberman password set` - later lowerings need a possession factor "
-        "(a 2FA code if enrolled, otherwise this password)."
-    )
-    typer.echo("Also: `doberman 2fa setup` (optional)  |  `doberman status`  |  `doberman doctor`")
+
+    if hooks_kind_wired:
+        if yes:
+            typer.echo("See it work: `doberman demo --fast`")
+        elif typer.confirm(
+            "See it work? Run a scripted attack through the real engine now "
+            "(`doberman demo --fast`)",
+            default=True,
+        ):
+            typer.echo("")
+            demo_outcomes = run_demo(
+                mode=persisted_mode.value,
+                repo_root=path,
+                fast=True,
+                on_scenario=lambda outcome: typer.echo(format_outcome_line(outcome)),
+            )
+            typer.echo("")
+            typer.echo(format_summary_table(demo_outcomes))
+
+    typer.echo("")
+    if not password.is_enrolled() and not totp.is_enrolled():
+        typer.echo(
+            "Next step: `doberman password set` - later lowerings need a possession factor "
+            "(a 2FA code if enrolled, otherwise this password)."
+        )
+    else:
+        factor = "2FA" if totp.is_enrolled() else "password"
+        typer.echo(f"Possession factor: set ({factor}).")
+    typer.echo("Check health:  doberman doctor")
+    if hooks_kind_wired:
+        typer.echo("Change your mind:  doberman uninstall-hooks")
 
 
 @app.command("session-summary")

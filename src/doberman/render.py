@@ -59,6 +59,17 @@ def supports_color() -> bool:
     return sys.stdout.isatty()  # pragma: no cover - only if click lacks the helper
 
 
+def style_text(text: str, fg: str, *, bold: bool = False) -> str:
+    """Color ``text`` with ``fg`` (+ ``bold``) when the terminal supports it, else plain.
+
+    Generic sibling of :func:`verdict_label` for one-off status lines (e.g. the
+    setup wizard's mode/doctor lines) that aren't a :class:`Verdict`.
+    """
+    if not supports_color():
+        return text
+    return typer.style(text, fg=fg, bold=bold)
+
+
 def verdict_label(verdict: Verdict) -> str:
     """A fixed-width label for ``verdict`` — colored when the terminal supports it.
 

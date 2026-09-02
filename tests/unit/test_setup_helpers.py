@@ -173,6 +173,13 @@ def test_host_menu_lines_marks_only_detected() -> None:
     assert "detected" not in codex_line
 
 
+def test_host_menu_lines_detected_tags_align() -> None:
+    """Every ``<- detected`` tag starts at the same column, regardless of label length."""
+    lines = host_menu_lines({h.key for h in HOSTS})
+    columns = {line.index("<- detected") for line in lines}
+    assert len(columns) == 1, f"tags not aligned: {lines}"
+
+
 # ---------------------------------------------------------------------------
 # parse_host_choice
 # ---------------------------------------------------------------------------

@@ -48,9 +48,11 @@ command), see the [PATH appendix](#appendix-a-stale-doberman-on-path). Maintaine
 ## 2. Run `doberman setup`
 
 One command does the whole job on any host. An interactive wizard detects which agents you have
-installed (Claude Code, Codex CLI, an MCP client, OpenClaw), asks which ones to guard, then picks
-your alertness mode, tunes your guardrails, and wires each chosen host — finishing with a doctor
-pass:
+installed (Claude Code, Codex CLI, an MCP client, OpenClaw), asks which ones to guard, picks your
+alertness mode, asks whether to send anonymous usage stats, tunes your guardrails, and wires each
+chosen host — finishing with a doctor pass and, if you wired a hooks-based host (Claude Code or
+Codex), an offer to run a scripted attack through the real engine right there so you can watch it
+work:
 
 ```bash
 doberman setup
@@ -304,9 +306,9 @@ fingerprint key.
 doberman doctor
 ```
 
-It only diagnoses (it never changes state) and exits non-zero when a critical check (hooks,
-config, or the decision database) isn't healthy, so it's safe to gate a script on
-`doberman doctor && ...`.
+It only diagnoses (it never changes state) and exits non-zero when a critical check (hooks, the
+hook command being on PATH, config, or the decision database) isn't healthy, so it's safe to gate
+a script on `doberman doctor && ...`.
 
 Optionally, map what Doberman can see:
 
