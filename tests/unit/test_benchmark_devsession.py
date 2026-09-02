@@ -74,20 +74,27 @@ def test_held_out_and_warm_case_ids_are_disjoint():
         assert warm, archetype
 
 
-# --- expensive tier: one real eval over the full devsession corpus ---------
-# Mirrors test_benchmark_subjective.py's own real_hst convention: production
-# HST size + a single shared module-scoped run (this corpus is ~4x the
-# fixture's size specifically so the warm phase clears K_OBSERVATIONS/
-# HST_WARMUP — see devsession.py's _CASES_PER_ARCHETYPE comment). Marks are
-# applied per-test (not a module-level ``pytestmark``, unlike that file)
-# because this module also carries the cheap tests above, which must stay
-# unmarked/fast — a module-level pytestmark would apply to the whole file.
+# --- one real eval over the full devsession corpus --------------------------
+# Not real_hst-tier: the warm-sufficiency proof compares n_warm_observations
+# against K_OBSERVATIONS/HST_WARMUP, and hst_engaged/cold_start_active are
+# both `observed` vs those same constants (subjective_runner.py) — none of it
+# depends on HST tree SIZE (HST_TREES/HST_HEIGHT), which is all the real_hst
+# marker controls (conftest.py's _apply_hst_size). So this block runs at the
+# default fast HST on every PR leg, and at production size only when the
+# nightly deep workflow sets DOBERMAN_TEST_REAL_HST=1 (conftest.py's
+# pytest_runtest_setup forces production size for every item then,
+# regardless of marker). Marks are applied per-test (not a module-level
+# ``pytestmark``) because this module also carries the cheap tests above,
+# which must stay unmarked/fast — a module-level pytestmark would apply to
+# the whole file.
 
 _real_hst_marks = (
-    pytest.mark.real_hst,
-    pytest.mark.timeout(1200),
-    # ONE shared xdist group for every production-size module (--dist
-    # loadgroup) — see test_benchmark_subjective.py for why.
+    # Measured ~172s at the default fast HST; ~4x headroom (also covers the
+    # nightly's DOBERMAN_TEST_REAL_HST=1 production-size run, measured ~327s).
+    pytest.mark.timeout(700),
+    # ONE shared xdist group so this module's 3 tests (1 module-scoped
+    # fixture, 4 archetypes x ~650 warm+held-out actions each opening
+    # SQLite) never run in parallel with another heavy suite.
     pytest.mark.xdist_group("real_hst"),
 )
 
