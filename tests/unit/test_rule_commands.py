@@ -392,3 +392,54 @@ def test_normalized_package_install_command_blocks_end_to_end(tmp_path):
     result = RULE.evaluate(obj, ctx)
     assert result.verdict is Verdict.BLOCK
     assert ReasonCode.destructive_command in result.reason_codes
+
+
+# --- command + args composition (token boundaries kept) ---------------------
+# `command`/`cmd`/`script` and a list-valued `args` are reconstructed together
+# with shlex.join, not the first-key-wins + plain-space-join that used to drop
+# the `-rf /` argv entirely and re-split an opaque `-c` payload on the wrong
+# boundaries. See doberman.engine.rules.commands.command_line_from_arguments.
+
+
+def _cmd_args(raw_arguments, *, action_type=ActionType.shell_exec):
+    action = SecurityObject(
+        id="cmd-args-1",
+        ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
+        agent_role="unknown",
+        action_type=action_type,
+        tool_name="shell_exec",
+    )
+    ctx = EvalContext(metadata={"raw_arguments": raw_arguments})
+    return RULE.evaluate(action, ctx)
+
+
+def test_command_plus_args_list_is_reconstructed_and_blocks():
+    # {"command": "rm", "args": ["-rf", "/"]} used to surface only "rm" (the
+    # first non-empty key) and PASS — the destructive argv was invisible.
+    result = _cmd_args({"command": "rm", "args": ["-rf", "/"]})
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+def test_args_only_bash_dash_c_payload_is_not_passed():
+    # {"args": ["bash", "-c", "rm -rf /"]} used to be space-joined then
+    # re-split by shlex, losing the -c payload's token boundary. It must
+    # never PASS, whether the rule lands on opaque_command (AUTH) or
+    # recognizes the destructive payload outright (BLOCK).
+    result = _cmd_args({"args": ["bash", "-c", "rm -rf /"]})
+    assert result.verdict is not Verdict.PASS
+
+
+def test_args_with_bare_apostrophe_does_not_false_positive():
+    # {"args": ["--grep", "it's"]} on a non-command action type used to make
+    # shlex choke on the bare apostrophe (after a plain-space join) and the
+    # rule spuriously stepped up to AUTH (opaque_command) even though this
+    # action type never carries a command line.
+    result = _cmd_args({"args": ["--grep", "it's"]}, action_type=ActionType.file_read)
+    assert result.verdict is Verdict.PASS
+
+
+def test_args_only_list_still_blocks():
+    result = _cmd_args({"args": ["rm", "-rf", "/"]})
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes

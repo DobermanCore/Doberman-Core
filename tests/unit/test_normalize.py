@@ -54,6 +54,20 @@ def test_shell_with_no_args():
     assert obj.action_type is ActionType.shell_exec
 
 
+def test_shell_command_plus_args_composes_full_command_line(tmp_path):
+    # {"command": "rm", "args": ["-rf", "/"]} must be reconstructed into the
+    # SAME command line as an equivalent single string — the action
+    # fingerprint (HMAC'd over the un-redacted command line, see
+    # _action_fingerprint) is the only place normalize() surfaces this, since
+    # obj.target is built from the redacted args' "command" key alone. Before
+    # the fix, the "args" tail was invisible: fingerprints would NOT match.
+    root = str(tmp_path)
+    split = normalize("shell_exec", {"command": "rm", "args": ["-rf", "/"]}, {"repo_root": root})
+    combined = normalize("shell_exec", {"command": "rm -rf /"}, {"repo_root": root})
+    assert split.action_fingerprint is not None
+    assert split.action_fingerprint == combined.action_fingerprint
+
+
 def test_path_array_uses_representative_target_plus_count():
     obj = normalize("fs_delete", {"path": ["a.txt", "b.txt", "c.txt"]})
     assert obj.target == "a.txt"

