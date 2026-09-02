@@ -346,7 +346,7 @@ _HTML_SHELL = """<!doctype html>
   .filter-chip-group { display: flex; gap: .4rem; flex-wrap: wrap; }
   .filter-chip {
     font-family: var(--mono); font-size: var(--fs-1); padding: .4rem .9rem;
-    border: 1px solid var(--rule); border-radius: 999px; background: var(--ink-2); color: var(--fg-3);
+    border: 1px solid var(--rule); border-radius: 999px; background: var(--ink-2); color: var(--fg-2);
   }
   .filter-chip[aria-pressed="true"] {
     background: var(--auth-bg); border-color: var(--auth); color: var(--auth);
@@ -959,10 +959,17 @@ _HTML_SHELL = """<!doctype html>
           modeForm.style.right = "";
           return;
         }
+        // The trigger may have been scrolled out of view (a long feed): bring
+        // it back first, then anchor - and never place the popover above the
+        // viewport's top edge whatever the rect says.
+        if (modeEditBtn.scrollIntoView) { modeEditBtn.scrollIntoView({ block: "nearest" }); }
         var rect = modeEditBtn.getBoundingClientRect();
-        modeForm.style.top = (rect.bottom + 8) + "px";
+        modeForm.style.top = Math.max(8, rect.bottom + 8) + "px";
         modeForm.style.right = Math.max(8, window.innerWidth - rect.right) + "px";
       }
+      // Keep the popover anchored while it is open (resize, scroll).
+      window.addEventListener("resize", function () { if (!modeForm.hidden) { positionModeForm(); } });
+      window.addEventListener("scroll", function () { if (!modeForm.hidden) { positionModeForm(); } }, { passive: true });
 
       function openModeForm() {
         modeEditing = true;
