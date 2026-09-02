@@ -390,17 +390,26 @@ fresh, single-use token for that run; open the printed URL to connect, since eve
 authenticated with that token. `--path` selects the repo to report on (default: the current
 directory).
 
-It shows a summary stats line (verdict counts, top reason codes, current mode, effective
-enforcement) and a live decision feed that backfills recent decisions, then streams new ones. Both
-are read-only and serve only already-redacted fields, never a raw target, argument, or secret.
+It shows a summary stats line (verdict counts, top reason codes, a recent-window verdict
+breakdown, current mode, effective enforcement) and a live decision feed that backfills recent
+decisions, then streams new ones. Both are read-only and serve only already-redacted fields, never
+a raw target, argument, or secret. Verdict filter chips (All/BLOCK/AUTH/PASS) plus a text filter
+sit above the feed to find a specific decision quickly; a dropped live connection or a failed
+refresh is always shown in the UI (never silently), with a retry control.
 
 An `AUTH` challenge can be answered from the dashboard instead of the terminal: it lists pending
 approvals and resolves one at a time, a single-use transition, so two concurrent resolves of the
-same row can never both win. The dashboard never verifies a TOTP code itself; it relays the
-human's decision (and, for tiers that need one, the code) to the same auth-challenge machinery
-already running in the decision path. This channel engages only while the dashboard's own
-heartbeat is fresh; a stale heartbeat or an unanswered approval falls back to the next channel
-(MCP elicitation, then GUI dialog, then terminal) with no added latency.
+same row can never both win. Each pending card shows a live countdown to the dashboard's own 90s
+answer window (`auto-denies in M:SS if unanswered`) — the terminal/GUI fallback engages after that,
+independent of the approval row's own longer DB TTL. The dashboard never verifies a TOTP code
+itself; it relays the human's decision (and, for tiers that need one, the code) to the same
+auth-challenge machinery already running in the decision path. This channel engages only while the
+dashboard's own heartbeat is fresh; a stale heartbeat or an unanswered approval falls back to the
+next channel (MCP elicitation, then GUI dialog, then terminal) with no added latency.
+
+Keyboard shortcuts (`/` to filter, `r` to refresh, `a`/`d` to act on the first pending item, `?` for
+the full list) work from anywhere on the page; a manual light/dark toggle persists per browser
+regardless of the OS theme, and the browser tab's favicon tints amber while an approval is pending.
 
 You can also switch Light/Balanced/Strict/Paranoid from the dashboard. It goes through the same
 gate as `doberman mode`: raising applies immediately, and lowering prompts for the same possession
