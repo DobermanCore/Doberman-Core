@@ -39,7 +39,24 @@ raw package name or any other argv text — mirrors the module contract in
 
 from __future__ import annotations
 
-from doberman.engine.rules.commands import _argv_from_tokens
+import json
+from importlib.resources import files
+
+from doberman.engine.rules.commands import (
+    _argv_from_tokens,
+    _command_text,
+    _raw_command_payload,
+    walk_command,
+)
+from doberman.models import (
+    ActionType,
+    EvalContext,
+    GuardrailResult,
+    ReasonCode,
+    Risk,
+    SecurityObject,
+    Verdict,
+)
 
 #: verb -> (ecosystem, install-subcommands that take a package NAME
 #: operand). Deliberately excludes publish/upload/push (C3 is an admission
@@ -108,6 +125,10 @@ def _is_installable_name(name: str) -> bool:
         return False
     if "://" in name or "git+" in name.lower():
         return False
+    if "\\" in name:
+        return False  # Windows-style local path
+    if len(name) >= 2 and name[1] == ":" and name[0].isalpha():
+        return False  # Windows drive prefix, e.g. "C:..."
     return True
 
 
@@ -169,3 +190,130 @@ def _within_edit_distance_one(a: str, b: str) -> bool:
         used = True
         j += 1
     return True
+
+
+_PASS = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
+
+#: Same command-bearing action types DestructiveCommandRule recognizes
+#: (`commands.py`'s `_COMMAND_ACTION_TYPES`) — a tool-name label is not a
+#: trust boundary. Any OTHER action type still gets scanned via the
+#: raw-arguments fallback below, just without the `action.target` fallback
+#: (a file path or URL on an unrelated action must never be misread as a
+#: shell command) — see `commands.py:895-906` for the pattern being mirrored.
+_COMMAND_ACTION_TYPES = frozenset(
+    {ActionType.shell_exec, ActionType.git_op, ActionType.package_install}
+)
+
+
+def _bucket_by_length(names: frozenset[str]) -> dict[int, frozenset[str]]:
+    buckets: dict[int, set[str]] = {}
+    for name in names:
+        buckets.setdefault(len(name), set()).add(name)
+    return {length: frozenset(members) for length, members in buckets.items()}
+
+
+def _load_json_lists(filename: str) -> dict[str, frozenset[str]]:
+    """Load a bundled ``{ecosystem: [names]}`` JSON file once, at import time."""
+    raw = files("doberman.engine.rules.data").joinpath(filename).read_text(encoding="utf-8")
+    data = json.loads(raw)
+    return {
+        ecosystem: frozenset(name.lower() for name in names)
+        for ecosystem, names in data.items()
+        if ecosystem != "generated_at"
+    }
+
+
+_DEFAULT_KNOWN_MALICIOUS: dict[str, frozenset[str]] = _load_json_lists(
+    "known_malicious_packages.json"
+)
+_DEFAULT_POPULAR_BY_LEN: dict[str, dict[int, frozenset[str]]] = {
+    ecosystem: _bucket_by_length(names)
+    for ecosystem, names in _load_json_lists("popular_packages.json").items()
+}
+
+
+class DependencyAdmissionRule:
+    """BLOCK on a bundled known-malicious package name; AUTH on a name one
+    edit away from a bundled popular name that is not itself popular.
+
+    Pure: all data is loaded once at import time (the module-level
+    constants above); ``evaluate()`` touches no filesystem, environment
+    variable, or socket. Raise-only within this rule (PASS -> AUTH -> BLOCK,
+    never handed back downgraded), and the edit-distance heuristic never
+    reaches BLOCK on its own — only exact known-malicious membership does.
+    """
+
+    def __init__(
+        self,
+        known_malicious: dict[str, frozenset[str]] | None = None,
+        popular_by_len: dict[str, dict[int, frozenset[str]]] | None = None,
+    ) -> None:
+        self._known_malicious = (
+            known_malicious if known_malicious is not None else _DEFAULT_KNOWN_MALICIOUS
+        )
+        self._popular_by_len = (
+            popular_by_len if popular_by_len is not None else _DEFAULT_POPULAR_BY_LEN
+        )
+
+    def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
+        if action.action_type in _COMMAND_ACTION_TYPES:
+            command = _command_text(action, ctx)
+        else:
+            command = _raw_command_payload(ctx)
+        if not command or not command.strip():
+            return _PASS
+
+        segments, _ambiguous, _dynamic = walk_command(command)
+        auth_hit: GuardrailResult | None = None
+        for tokens in segments:
+            parsed = _ecosystem_and_names(tokens)
+            if parsed is None:
+                continue
+            ecosystem, names = parsed
+            for name in names:
+                if self._is_known_malicious(ecosystem, name):
+                    return self._block_result(ecosystem)
+                if auth_hit is None and self._is_typosquat(ecosystem, name):
+                    auth_hit = self._auth_result(ecosystem)
+        return auth_hit if auth_hit is not None else _PASS
+
+    def _is_known_malicious(self, ecosystem: str, name: str) -> bool:
+        return name in self._known_malicious.get(ecosystem, frozenset())
+
+    def _is_typosquat(self, ecosystem: str, name: str) -> bool:
+        if len(name) < _MIN_TYPOSQUAT_NAME_LEN or name.startswith("@"):
+            return False
+        by_len = self._popular_by_len.get(ecosystem, {})
+        if name in by_len.get(len(name), frozenset()):
+            return False  # itself a recognized popular package
+        for delta in (-1, 0, 1):
+            for candidate in by_len.get(len(name) + delta, frozenset()):
+                if _within_edit_distance_one(name, candidate):
+                    return True
+        return False
+
+    @staticmethod
+    def _block_result(ecosystem: str) -> GuardrailResult:
+        return GuardrailResult(
+            verdict=Verdict.BLOCK,
+            risk=Risk.critical,
+            reason_codes=[ReasonCode.dependency_known_malicious],
+            explanation=(
+                f"A {ecosystem} package name in this command is on Doberman's "
+                "bundled known-malicious list; installation is blocked."
+            ),
+        )
+
+    @staticmethod
+    def _auth_result(ecosystem: str) -> GuardrailResult:
+        return GuardrailResult(
+            verdict=Verdict.AUTH,
+            risk=Risk.medium,
+            reason_codes=[ReasonCode.dependency_name_typosquat],
+            explanation=(
+                f"A {ecosystem} package name in this command is one character "
+                "away from a popular package name and is not itself a "
+                "recognized popular package (possible typosquat); "
+                "authentication required."
+            ),
+        )

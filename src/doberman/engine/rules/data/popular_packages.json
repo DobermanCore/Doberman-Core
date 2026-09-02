@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-09-02",
+  "pypi": [
+    "requests", "numpy", "flask", "django", "pytest", "boto3", "pyyaml",
+    "click", "urllib3", "setuptools", "pip", "wheel", "six", "certifi",
+    "idna", "charset-normalizer", "cryptography", "pandas", "scipy", "pillow"
+  ],
+  "npm": [
+    "react", "lodash", "express", "axios", "chalk", "commander", "webpack",
+    "typescript", "eslint", "prettier", "react-dom", "vue", "next", "jest",
+    "moment", "dotenv", "uuid", "semver", "request", "left-pad"
+  ],
+  "cargo": [
+    "serde", "tokio", "clap", "rand", "regex", "anyhow", "thiserror", "log",
+    "futures", "syn"
+  ],
+  "rubygems": [
+    "rails", "rspec", "rake", "bundler", "nokogiri", "devise", "sidekiq",
+    "puma", "rubocop", "faker"
+  ],
+  "go": [
+    "github.com/gin-gonic/gin", "github.com/spf13/cobra",
+    "github.com/stretchr/testify", "github.com/gorilla/mux",
+    "github.com/sirupsen/logrus"
+  ]
+}
