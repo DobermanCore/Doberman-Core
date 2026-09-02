@@ -341,3 +341,20 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         if "real_root" in getattr(item, "fixturenames", ()):
             item.add_marker(pytest.mark.real_display)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Arm a shutdown watchdog on every process (xdist workers included).
+
+    An interpreter that cannot exit -- a non-daemon thread left behind by a
+    test, an event loop that never woke -- otherwise stalls the whole job in
+    silence at 99 % until the runner's timeout kills it (45 minutes on the
+    Windows leg, three times on 2026-09-02, never with a traceback: the
+    per-test ``--timeout`` cannot fire once the last test has finished).
+    faulthandler's watchdog is a C thread that needs no GIL: after 120 s it
+    dumps every thread's stack to stderr and exits hard, so the log names the
+    culprit and the job ends. A normal exit cancels it.
+    """
+    import faulthandler
+
+    faulthandler.dump_traceback_later(timeout=120, exit=True)

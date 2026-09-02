@@ -22,9 +22,9 @@ Day-to-day posture, status, and review commands.
 | `doberman update` | Check PyPI for a newer Doberman and print the upgrade command (never installs). Off under `DO_NOT_TRACK`/`CI`/`DOBERMAN_UPDATE_CHECK=off`. | — |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
 | `doberman policy-versions` | Every policy version that has been in force (newest first); `--show` prints one snapshot, `--verify` checks the catalogue. | `--show`, `--verify`, `--path`/`-p`, `--json` |
-| `doberman log` | Recent redacted decision log, newest first. | `--last`/`-n`, `--path`/`-p`, `--jsonl` |
+| `doberman log` | Recent redacted decision log, newest first. Its timestamp column reads `YYYY-MM-DD HH:MM:SS UTC` (no microseconds, matching the `tui`'s why panel); `--jsonl` keeps the raw stored `ts` value unchanged. | `--last`/`-n`, `--path`/`-p`, `--jsonl`, `--why` |
 | `doberman decision-log-prune` | Delete resolved decisions by age and/or retained-row budget. Never touches pending AUTH rows or the policy-change ledger. | `--older-than-days`, `--max-rows`, `--path`/`-p` |
-| `doberman tui` | Interactive decision log with a plain-language "why" panel. Needs the `tui` extra. | `--path`/`-p` |
+| `doberman tui` | Interactive decision log with a plain-language "why" panel. Keys: `?` help (lists every binding, including the arrow keys/page up/page down that come from the table itself; a proper modal - it never stacks, other keys are inert while it's open, and it also opens from inside the full-screen why view), `/` filter, `b`/`B`/`a` next/prev BLOCK or next AUTH (says "no other ... rows in view" rather than silently re-selecting the row you're already on when it's the only match), `w`/`enter` full-screen why, `tab` switch focus, `y` copy id, `home`/`end`, `r` reload, `q` quit. The footer always shows the same 6 bindings (`w`/`/`/`b`/`?`/`q`/`r`) at any width; `B`/`a`/`y` are keyboard-only, documented in `?`. `risk`/`auth` drop out of the table below 100 terminal columns (both are already restated in the why panel/full-screen why); the header reads `showing N of M (filtered) - X BLOCK / Y AUTH / Z PASS loaded` so it's clear which count is which. Times show in your local zone (`HH:MM:SS`, or date-qualified `MM-DD HH:MM` across a multi-day window); the why panel's border carries the row's absolute UTC instant plus a relative age ("2m ago", with a `[focus]` cue appended while it has focus) and, when its content overflows, a muted "(scroll for more)" cue in its border subtitle - the panel body itself always starts with the explanation. An empty log, a filtered-to-zero view, or a missing decision log replaces the table (not the why panel) with the message, in the table's own area. Below 76x16 the app shows a one-line "resize" notice instead of the browser, and its own footer then shows only `q`/"quit" (every key still works, just hidden). Needs the `tui` extra. | `--path`/`-p`, `--last`/`-n` |
 | `doberman dash` | Localhost-only dashboard: live decision feed, stats, and an AUTH approve/deny queue. Needs the `dash` extra. | `--port`, `--path`/`-p` |
 | `doberman demo` | Scripted attack reel through the real decision engine. Nothing runs against a real tool or downstream server. | `--path`/`-p`, `--mode`, `--fast`, `--quiet`/`-q` |
 | `doberman revoke ELEVATION_ID` | Revoke an active role elevation by id (see `doberman status`). | `--path`/`-p` |
@@ -139,6 +139,14 @@ Emits `{version, path, ok, checks[], critical_failures[]}`. `ok` is `true` only 
 
 One redacted JSON object per decision line, newest first. Fields are an allowlist of already-redacted data: `ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id`, `agent_role`, and `risk` when present. Empty stdout when there are no rows.
 
+### `doberman log --why`
+
+Under each `BLOCK`/`AUTH` row (only), prints an indented, terminal-width-wrapped plain-language block plus the same "Next:" remedy step the `tui` browser's why panel shows. The block is `doberman.explain`'s deterministic template (offline) minus its trailing technical "(Checked by: ...)" aside: a "Doberman decided BLOCK after checking the rules." summary, what was attempted (e.g. "cli attempted shell_exec on \*.sh."), and the human-readable reason description(s) (e.g. "Reasons: the command looked destructive (e.g. a recursive delete)."), not just the raw reason code the row above already shows in brackets. Default output (and `--jsonl`) is unchanged; `--why` only adds these extra lines to the human-readable view. The `tui` browser's own full-screen why panel prints this same "Next:" step without the "press w for detail" hint that only makes sense inside the `tui` (the docked `#next-line` widget in the main browser view keeps that hint - the affordance and the remedy stay two different lines).
+
+An `AUTH` row with no answer yet shows `auth=pending - not yet answered` (the `tui`'s narrow auth column: `pending`) rather than the plain `-` a `PASS`/`BLOCK` row (which never had an auth step at all) shows - a still-open question must never look identical to "not applicable."
+
+Over a window with no `BLOCK`/`AUTH` row at all, `--why` prints one extra line after the rows: `(no BLOCK or AUTH rows in this window - nothing to explain)` - so a reviewer scanning for whether `--why` did anything here doesn't have to infer "no" from an absence.
+
 ### `doberman policy-history --json` schema
 
 A JSON array of policy-change rows in newest-first order: each element carries the change timestamp, the changed key, the previous and new values, and the actor. No raw policy content, secret, or file path appears.
@@ -194,6 +202,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `revoke` | `1` | Elevation id not found, or revoke failed. |
 | `policy-versions` | `2` | `--show` given something that is not a `pv1:` id or at least 8 hex characters. |
 | `policy-versions` | `1` | `--show` matched nothing or was ambiguous; `--verify` found `mismatch` or `drift`. |
+| `tui` | `2` | `--path` does not exist, exists but is not a directory, or `--last` is less than 1. |
 | `tui` | `1` | The optional `textual` extra is not installed. |
 | `dash` | `1` | The optional `dash` extra is not installed. |
 | `demo` | `1` | Invalid mode name, or a scenario did not match its expected outcome. |

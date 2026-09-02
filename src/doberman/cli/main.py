@@ -53,6 +53,7 @@ from doberman.egress.velocity import (
     _VOLUME_THRESHOLD_BYTES,
     VelocityThresholds,
 )
+from doberman.explain import why_body
 from doberman.hosthooks.install import DASHBOARD_COMMAND
 from doberman.models import ActionType
 from doberman.policy.checklist import recommend_policy
@@ -76,7 +77,15 @@ from doberman.policy.drift import (
 from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
-from doberman.render import style_text, verdict_label, verdict_label_str, wrap_detail
+from doberman.render import (
+    format_utc_timestamp,
+    humanize_auth_result,
+    next_step_line,
+    style_text,
+    verdict_label,
+    verdict_label_str,
+    wrap_detail,
+)
 from doberman.storage.approval_memory import clear as clear_approval_memory
 from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
@@ -1986,6 +1995,14 @@ def log(
         "--jsonl",
         help="Emit one redacted JSON object per line (no headings; empty if none).",
     ),
+    why: bool = typer.Option(
+        False,
+        "--why",
+        help=(
+            "Under each BLOCK/AUTH row, also print a one-line plain-language "
+            "why plus the same Next: step the tui shows. Ignored with --jsonl."
+        ),
+    ),
 ) -> None:
     """Show the recent redacted decision log (newest first).
 
@@ -2021,30 +2038,69 @@ def log(
         return
     typer.echo("Doberman decision log")
     typer.echo("=" * 32)
+    # round 7 design critique item 6: `--why` over a window with no BLOCK/AUTH
+    # row must say so explicitly rather than silently printing nothing extra -
+    # a reviewer scanning for "did --why do anything here" shouldn't have to
+    # infer "no" from an absence.
+    any_explained = False
     for row in rows:
         target = row["target_path_class"] or "-"
         reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
-        if row["auth_result"] == "soft_confirm+memory":
-            auth = "; approved via 5-minute memory (soft_confirm)"
-        else:
-            auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
-        typer.echo(
-            f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<{_ACTION_WIDTH}} "
-            f"{target}  [{reasons}]{auth}"
+        # A pending AUTH row (no answer yet) must never look identical to "no
+        # auth step at all" - round 5 design critique item 7.
+        auth = (
+            f"; auth={humanize_auth_result(row['auth_result'], verdict=row['final_verdict'])}"
+            if row["auth_result"] or row["final_verdict"] == "AUTH"
+            else ""
         )
+        # round 8 design critique item 7: the same "YYYY-MM-DD HH:MM:SS UTC"
+        # format the tui's why panel shows (no microseconds) - `--jsonl`
+        # keeps the raw stored `ts` string unchanged (scripts parse that one).
+        typer.echo(
+            f"{format_utc_timestamp(row['ts'])}  {verdict_label_str(row['final_verdict'])} "
+            f"{row['action_type']:<{_ACTION_WIDTH}} {target}  [{reasons}]{auth}"
+        )
+        # --why (round 4 design critique item 8, round 6 item 7): a compact,
+        # indented plain-language block under each BLOCK/AUTH row - the row
+        # above already shows the verdict and raw reason codes, so `why_body`
+        # (the "what was attempted" + "Reasons: ..." sentences, everything
+        # `template_explanation` says minus the trailing technical "(Checked
+        # by: ...)" aside) is what actually ADDS information, unlike the old
+        # one-line `first_sentence` alone. Same "Next" remedy the tui shows,
+        # so both surfaces agree.
+        if why and row["final_verdict"] in ("BLOCK", "AUTH"):
+            any_explained = True
+            for line in wrap_detail(why_body(row)):
+                typer.echo(line)
+            next_line = next_step_line(row["final_verdict"], tui_hint=False)
+            if next_line:
+                for line in wrap_detail(next_line):
+                    typer.echo(line)
+    if why and not any_explained:
+        typer.echo("(no BLOCK or AUTH rows in this window - nothing to explain)")
 
 
 @app.command(rich_help_panel="Daily")
 def tui(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    last: int = typer.Option(500, "--last", "-n", min=1, help="Load the most recent N decisions."),
 ) -> None:
     """Browse the redacted decision log interactively, with a plain-language "why" panel.
 
     Every row shown is already redacted - a path class, reason codes, the verdict,
-    and the auth outcome - the same data `doberman log` prints. Requires the
-    optional 'textual' extra; `doberman log` remains the plain, dependency-free
-    fallback.
+    the risk, and the auth outcome - the same data `doberman log` prints. Requires
+    the optional 'textual' extra; `doberman log` remains the plain,
+    dependency-free fallback. The load is bounded by `--last` (mirrors
+    `doberman log --last`); the header shows how many rows are loaded versus how
+    many currently match the in-app filter.
     """
+    target = Path(path)
+    if not target.exists():
+        typer.echo(f"error: --path {path} does not exist", err=True)
+        raise typer.Exit(code=2)
+    if not target.is_dir():
+        typer.echo(f"error: --path {path} is not a directory", err=True)
+        raise typer.Exit(code=2)
     if importlib.util.find_spec("textual") is None:
         typer.echo(
             "error: The TUI requires the optional 'textual' extra: "
@@ -2054,7 +2110,7 @@ def tui(
         raise typer.Exit(code=1)
     from doberman.tui import run_tui
 
-    run_tui(path)
+    run_tui(path, last=last)
 
 
 _DASH_HOST = "127.0.0.1"

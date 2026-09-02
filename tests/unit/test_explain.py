@@ -27,8 +27,12 @@ from doberman.explain import (
     REDACTED_FIELDS,
     build_explanation_payload,
     explain_decision,
+    explain_decision_with_source,
+    first_sentence,
     headline,
+    llm_enrichment_enabled,
     template_explanation,
+    why_body,
 )
 
 runner = CliRunner()
@@ -126,7 +130,7 @@ def test_template_explanation_for_block_row_mentions_policy_or_role_change():
 def test_missing_agent_role_renders_as_an_agent():
     row = _row(agent_role=None)
     text = template_explanation(row)
-    assert text.startswith("an agent attempted ")
+    assert "An agent attempted " in text
 
 
 def test_agent_role_literally_unknown_renders_as_an_agent_not_the_word_unknown():
@@ -136,7 +140,7 @@ def test_agent_role_literally_unknown_renders_as_an_agent_not_the_word_unknown()
     # know" statement.
     row = _row(agent_role="unknown")
     text = template_explanation(row)
-    assert text.startswith("an agent attempted ")
+    assert "An agent attempted " in text
     assert "unknown attempted" not in text
 
 
@@ -206,6 +210,121 @@ def test_explain_decision_on_empty_row_never_raises():
     text = explain_decision({})
     assert isinstance(text, str)
     assert text
+
+
+def test_template_explanation_is_ascii_only():
+    # cp1252-safe on Windows: no em dash or other non-ASCII punctuation, for
+    # either verdict's closing sentence.
+    for verdict in ("BLOCK", "AUTH", "PASS"):
+        text = template_explanation(_row(final_verdict=verdict))
+        assert text.isascii(), text
+
+
+def test_template_explanation_decided_layer_is_plain_words_not_raw_schema():
+    # round 4 design critique item 6: the technical "<layer> decided
+    # <verdict>" phrasing moved out of the headline sentence (now a plain
+    # "Doberman decided X after checking Y") but is kept - via
+    # `_describe_checked_by` - as a trailing detail, never deleted outright.
+    # Round 6 design critique item 10: that trailing detail itself moved from
+    # jargon ("the objective guardrail layer") to the same plain words as the
+    # headline ("the rules"), and "Decided by" became "Checked by" - Doberman
+    # doesn't "decide with a layer", it checks things.
+    objective = template_explanation(_row(decided_layer="objective"))
+    assert "(Checked by: the rules.)" in objective
+    assert "objective guardrail layer" not in objective
+    combined = template_explanation(_row(decided_layer="combined"))
+    assert "(Checked by: the rules and the behaviour baseline.)" in combined
+    assert "guardrail layer" not in combined
+
+
+def test_first_sentence_is_the_plain_layer_verdict_summary():
+    # round 4 design critique item 6: this is deliberately
+    # `template_explanation`'s FIRST sentence (round 6 item 7 moved
+    # `doberman log --why` off of this alone and onto `why_body`, below - the
+    # row `doberman log` prints already shows the verdict, so this one-liner
+    # by itself added nothing new).
+    block = _row(final_verdict="BLOCK", decided_layer="objective")
+    assert first_sentence(block) == "Doberman decided BLOCK after checking the rules."
+    assert template_explanation(block).startswith(first_sentence(block))
+
+    auth_combined = _row(final_verdict="AUTH", decided_layer="combined")
+    assert (
+        first_sentence(auth_combined)
+        == "Doberman decided AUTH after checking the rules and the behaviour baseline."
+    )
+    assert first_sentence(auth_combined).isascii()
+
+
+def test_why_body_adds_the_what_and_reasons_but_drops_the_checked_by_aside():
+    # round 6 design critique item 7: `doberman log --why` must ADD
+    # information beyond the row `doberman log` already prints (verdict, raw
+    # reason codes) - `why_body` is `template_explanation` minus its trailing
+    # "(Checked by: ...)" sentence, which is the one part that adds nothing a
+    # `--why` reader doesn't already know from context.
+    block = _row(
+        final_verdict="BLOCK",
+        decided_layer="objective",
+        reason_codes_json=json.dumps(["destructive_command"]),
+    )
+    body = why_body(block)
+    assert body.isascii()
+    assert body == template_explanation(block).removesuffix(" (Checked by: the rules.)")
+    assert body.startswith(first_sentence(block))
+    assert "cli attempted shell_exec on *.sh." in body
+    # The reason DESCRIPTION, not just the raw code - the raw code already
+    # appears in `doberman log`'s own row.
+    assert "the command looked destructive" in body
+    assert "Checked by" not in body
+
+
+def test_pass_row_with_no_reason_codes_says_what_was_checked():
+    row = _row(final_verdict="PASS", reason_codes_json=json.dumps([]))
+    text = template_explanation(row)
+    assert "no specific reason codes were recorded" not in text.lower()
+    assert "checked" in text.lower()
+    assert "clean" in text.lower()
+
+
+def test_explain_decision_with_source_reports_template_when_disabled(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DOBERMAN_EXPLAIN_LLM", raising=False)
+    row = _row()
+    text, source = explain_decision_with_source(row)
+    assert source == "template"
+    assert text == template_explanation(row)
+
+
+def test_explain_decision_with_source_reports_llm_on_success(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_EXPLAIN_LLM", "1")
+    _install_fake_anthropic(monkeypatch, lambda kwargs: _FakeMessage("stubbed narrator text"))
+    text, source = explain_decision_with_source(_row())
+    assert (text, source) == ("stubbed narrator text", "llm")
+
+
+def test_explain_decision_with_source_reports_template_on_llm_failure(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_EXPLAIN_LLM", "1")
+
+    def _boom(_kwargs):
+        raise RuntimeError("network error")
+
+    _install_fake_anthropic(monkeypatch, _boom)
+    row = _row()
+    text, source = explain_decision_with_source(row)
+    assert source == "template"
+    assert text == template_explanation(row)
+
+
+def test_llm_enrichment_enabled_mirrors_the_gate(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DOBERMAN_EXPLAIN_LLM", raising=False)
+    assert llm_enrichment_enabled() is False
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_EXPLAIN_LLM", "1")
+    _install_fake_anthropic(monkeypatch, _never_called)
+    assert llm_enrichment_enabled() is True
 
 
 # --- round 6: with_reasons=False for the dash feed body ----------------------
@@ -508,3 +627,30 @@ def test_tui_appears_in_help():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "tui" in result.output
+
+
+def test_tui_command_with_missing_path_exits_2_before_the_textual_check(tmp_path):
+    missing = tmp_path / "does-not-exist"
+    result = runner.invoke(app, ["tui", "--path", str(missing)])
+    assert result.exit_code == 2
+    assert "does not exist" in result.output
+    # The path prints plainly - no `!r` repr quoting around it.
+    assert f"'{missing}'" not in result.output
+    assert str(missing) in result.output
+
+
+def test_tui_command_with_a_file_path_says_not_a_directory(tmp_path):
+    # Distinct from "does not exist" (design critique item 8): the path is
+    # real, it's just the wrong kind of thing.
+    a_file = tmp_path / "some-file.txt"
+    a_file.write_text("not a directory", encoding="utf-8")
+    result = runner.invoke(app, ["tui", "--path", str(a_file)])
+    assert result.exit_code == 2
+    assert "is not a directory" in result.output
+    assert "does not exist" not in result.output
+    assert f"'{a_file}'" not in result.output
+
+
+def test_tui_command_rejects_last_below_one(tmp_path):
+    result = runner.invoke(app, ["tui", "--path", str(tmp_path), "--last", "0"])
+    assert result.exit_code == 2
