@@ -659,25 +659,45 @@ _HTML_SHELL = """<!doctype html>
             return res.json();
           })
           .then(function () {
-            dot.className = "dot ok";
-            label.textContent = "connected";
-            announce("Dashboard connected.");
+            conn.health = "ok";
+            renderConnection();
           })
           .catch(function (err) {
-            dot.className = "dot err";
             // A rejected token is the one failure a human can actually fix, and
             // only by reopening the link THIS run printed - so say that instead
             // of a dead-end "not connected", and drop the stale token so the next
             // load doesn't silently retry it.
             if (err && err.status === 401) {
               try { window.sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
-              label.textContent = "not authorized - reopen the link printed by doberman dash";
-              announce("Dashboard not authorized - reopen the link printed by doberman dash.");
+              conn.health = "unauthorized";
             } else {
-              label.textContent = "not connected";
-              announce("Dashboard not connected.");
+              conn.health = "down";
             }
+            renderConnection();
           });
+      }
+
+      // The chip reflects BOTH signals: the health poll (server reachable, token
+      // accepted) and the live feed (SSE open). A 10 s health tick must never
+      // paint "connected" over a dropped feed, and a state that hasn't changed
+      // must not re-announce - so one renderer owns the chip and the announcer.
+      var conn = { health: "unknown", feed: "unknown" };
+      function renderConnection() {
+        var text, ok;
+        if (conn.health === "unauthorized") {
+          ok = false; text = "not authorized - reopen the link printed by doberman dash";
+        } else if (conn.health === "down") {
+          ok = false; text = "not connected";
+        } else if (conn.feed === "dropped") {
+          ok = false; text = "feed dropped - reconnecting";
+        } else if (conn.health === "ok" && conn.feed === "open") {
+          ok = true; text = "connected";
+        } else {
+          ok = false; text = "connecting";
+        }
+        dot.className = ok ? "dot ok" : "dot err";
+        label.textContent = text;
+        announce("Dashboard " + text + ".");
       }
       checkHealth();
       // Health is also polled on an interval (not just at load) so a server
@@ -983,7 +1003,7 @@ _HTML_SHELL = """<!doctype html>
 
           var reasons = document.createElement("div");
           reasons.className = "detail";
-          reasons.textContent = (row.reason_codes || []).join(", ") || "no auth";
+          reasons.textContent = (row.reason_codes || []).join(", ") || "no reason codes recorded";
           li.appendChild(reasons);
 
           var explanation = document.createElement("div");
@@ -1212,7 +1232,13 @@ _HTML_SHELL = """<!doctype html>
           var firstCard = pendingList.querySelector("li");
           if (!firstCard) { return; }
           var actionBtn = firstCard.querySelector(e.key === "a" ? "button.approve" : "button.deny");
-          if (actionBtn) { actionBtn.click(); }
+          if (!actionBtn) { return; }
+          // `a` only ARMS and focuses Approve: the confirming press must land on
+          // the button itself (Enter/Space/click), so a repeated `a` can never
+          // approve unseen - the two-step stays two distinct gestures.
+          if (e.key === "a" && actionBtn.dataset.armed === "1") { actionBtn.focus(); return; }
+          actionBtn.click();
+          actionBtn.focus();
         }
       });
 
@@ -1221,14 +1247,12 @@ _HTML_SHELL = """<!doctype html>
       try {
         var source = new EventSource("/api/feed?token=" + encodeURIComponent(token));
         source.addEventListener("open", function () {
-          dot.className = "dot ok";
-          label.textContent = "connected";
-          announce("Live feed connected.");
+          conn.feed = "open";
+          renderConnection();
         });
         source.addEventListener("error", function () {
-          dot.className = "dot err";
-          label.textContent = "feed dropped - reconnecting";
-          announce("Live feed dropped. Reconnecting.");
+          conn.feed = "dropped";
+          renderConnection();
         });
         source.addEventListener("decision", function (evt) {
           var row;
