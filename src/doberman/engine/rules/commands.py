@@ -103,6 +103,21 @@ DEFAULT_PROTECTED_BRANCHES: tuple[str, ...] = ("main", "master", "release", "dev
 #: every skip into a mode-independent hard BLOCK.
 _VERIFICATION_BYPASS_LONG_FLAGS = {"--no-verify", "--no-gpg-sign"}
 
+#: git global options that take their value as a SEPARATE following token
+#: (``-C <path>``, ``-c <k=v>``) — both the option and its value token must be
+#: skipped when hunting for the actual subcommand. Every other global option
+#: (``--git-dir=...``, ``--work-tree=...``, ``--no-pager``, ``-p``,
+#: ``--paginate``, ...) either carries its value in the same token (``=``) or
+#: takes none, so a generic "any other leading -/-- token" skip covers it.
+_GIT_GLOBAL_OPTIONS_WITH_VALUE = {"-C", "-c"}
+
+#: git commit short options that consume a value — either as the rest of
+#: their own cluster (``-mFixBug``) or, when the cluster ends exactly at the
+#: option letter (bare ``-m``), as the following token. Once one of these is
+#: seen, the remainder of that cluster is the option's value, never further
+#: flags.
+_GIT_COMMIT_VALUE_SHORT_OPTIONS = set("mFCctS")
+
 # Command-substitution bodies: $(...) and `...`. We recurse into these so a
 # destructive command hidden inside a substitution is still evaluated.
 _SUBSTITUTION = re.compile(r"\$\((?P<paren>[^()]*)\)|`(?P<backtick>[^`]*)`")
@@ -815,21 +830,50 @@ def _git_is_history_rewrite(tokens: list[str]) -> bool:
     return "clean" in tokens and any(t.startswith("-") and "f" in t for t in tokens)
 
 
+def _git_subcommand_argv(tokens: list[str]) -> list[str]:
+    """``tokens`` with ``git`` and any leading global options stripped, so the
+    subcommand (if any) is the first remaining element. Skips ``-C <path>``/
+    ``-c <k=v>`` (and their value token), ``--git-dir=...``/``--work-tree=...``,
+    ``--no-pager``, ``-p``/``--paginate``, and any other leading ``-``/``--``
+    token — so ``git -C repo commit ...`` still locates ``commit``, and a
+    non-commit verb (``log``, ``tag``, ``shortlog``) that merely mentions
+    "commit" among its own arguments is never mistaken for it."""
+    if not tokens or tokens[0] != "git":
+        return []
+    rest = tokens[1:]
+    i = 0
+    while i < len(rest) and rest[i].startswith("-"):
+        i += 2 if rest[i] in _GIT_GLOBAL_OPTIONS_WITH_VALUE else 1
+    return rest[i:]
+
+
 def _git_commit_bypasses_verification(tokens: list[str]) -> bool:
     """``git commit`` with ``--no-verify``/``-n``/``--no-gpg-sign`` (skips hooks or
     signing). ``-n`` is git's short alias for ``--no-verify`` and combines with
     other short commit flags (``-an``, ``-nm``), so any single-dash token
-    containing the letter ``n`` counts. Only a ``-m``'s VALUE (a separate,
-    non-``-``-prefixed token) can contain the literal text "no-verify", and that
-    token is never scanned here, so a commit message is never misread as the
-    flag."""
-    if not tokens or tokens[0] != "git" or "commit" not in tokens:
+    containing the letter ``n`` counts — UNLESS that ``n`` sits inside a
+    value-taking short option's attached value (``-mnote``), in which case the
+    rest of that token (and, for a bare ``-m``, the following token) is the
+    option's VALUE and is never scanned as flags. This also means a commit
+    message is never misread as the flag."""
+    argv = _git_subcommand_argv(tokens)
+    if not argv or argv[0] != "commit":
         return False
-    for token in tokens[1:]:
+    skip_next = False
+    for token in argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
         if token in _VERIFICATION_BYPASS_LONG_FLAGS:
             return True
-        if token.startswith("-") and not token.startswith("--") and "n" in token[1:]:
-            return True
+        if not (token.startswith("-") and not token.startswith("--")):
+            continue
+        for i, ch in enumerate(token[1:], start=1):
+            if ch == "n":
+                return True
+            if ch in _GIT_COMMIT_VALUE_SHORT_OPTIONS:
+                skip_next = len(token) == i + 1  # bare "-m": value is the NEXT token
+                break
     return False
 
 

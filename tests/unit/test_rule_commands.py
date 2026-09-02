@@ -675,3 +675,47 @@ def test_verification_bypass_flag_is_never_a_floor_hard_block():
     assert ReasonCode.verification_bypass_flag not in FLOOR_HARD_BLOCKS
     result = _cmd("git commit --no-verify", action_type=ActionType.git_op)
     assert result.verdict is Verdict.AUTH
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # "commit" appears somewhere in argv, but the actual git subcommand
+        # is not "commit" — must never be classified as a commit-verification
+        # bypass.
+        "git log --grep commit -n 5",
+        "git tag -n commit",
+        "git log commit -n 5",
+        "git shortlog -n commit",
+        # Real `git commit`, but the "n" is inside a value-taking short
+        # option's attached value, not a standalone -n/-xn flag.
+        "git commit -mnote",
+        "git commit -a -mFixBugInParser",
+    ],
+)
+def test_non_bypass_commands_pass(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.verification_bypass_flag not in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -C repo commit -n -m x",  # -C global option must not shift subcommand detection
+        "git commit -an -m x",
+        "git commit --no-verify -m x",
+        "git commit -a --no-gpg-sign",
+    ],
+)
+def test_real_git_commit_bypass_variants_require_auth(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.verification_bypass_flag in result.reason_codes
+
+
+def test_plain_git_commit_with_message_passes():
+    # Explicit positive control: a normal, non-bypassing commit must PASS
+    # outright, not merely avoid BLOCK.
+    result = _cmd('git commit -m "fix parser"', action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
