@@ -173,7 +173,8 @@ def test_yes_refuses_to_lower_mode_without_prompting(tmp_path: Path) -> None:
     assert "Reason:" not in result.output
     assert "not lowered" in result.output
     assert (
-        "Mode:       balanced (requested light; not lowered - see 'doberman mode')" in result.output
+        "Mode:       balanced (requested light; not lowered - a possession factor is "
+        "required, run 'doberman mode light')" in result.output
     )
     assert load_mode(str(tmp_path)) == "balanced"
     prefs = load_preferences(str(tmp_path))
@@ -190,7 +191,8 @@ def test_yes_lowering_refusal_survives_2_dev_null(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--mode", "light", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert (
-        "Mode:       balanced (requested light; not lowered - see 'doberman mode')" in result.stdout
+        "Mode:       balanced (requested light; not lowered - a possession factor is "
+        "required, run 'doberman mode light')" in result.stdout
     )
 
 
@@ -296,7 +298,9 @@ def test_host_reprompt_error_gets_error_prefix_on_stderr(tmp_path: Path) -> None
 def test_demo_prompt_eof_never_fails_a_succeeded_setup(tmp_path: Path) -> None:
     """stdin closing right at the optional closing demo prompt (item 2) must
     never turn a succeeded setup into a failure - it degrades to the same
-    static demo pointer `--yes` prints, and stays the last line."""
+    static demo pointer `--yes` prints. item 13: a leading blank line keeps
+    the fallback off the confirm prompt's own (newline-less) line, so it
+    lands as its own standalone final line rather than glued to the prompt."""
     # Input order: hosts, mode, tune=n, claude scope=n, telemetry=n - then
     # stdin runs out exactly at the demo confirm (no trailing answer for it).
     result = runner.invoke(
@@ -305,11 +309,12 @@ def test_demo_prompt_eof_never_fails_a_succeeded_setup(tmp_path: Path) -> None:
         input="\nbalanced\nn\nn\nn",
     )
     assert result.exit_code == 0, result.output
-    # The confirm's own prompt text was echoed with no trailing newline before
-    # stdin ran out, so the fallback pointer lands glued to it on the same
-    # physical line - assert the output *ends with* it rather than requiring
-    # a standalone line.
-    assert result.output.rstrip("\n").endswith("See it work: `doberman demo --fast`")
+    lines = result.output.splitlines()
+    next_idx = lines.index("Next: `doberman demo --fast`")
+    # The confirm's own prompt line ends in "[Y/n]: " with no newline of its
+    # own; our fallback must land as its own line, not glued onto that tail.
+    assert lines[next_idx - 1].endswith("[Y/n]: ")
+    assert any(line.startswith("Also: ") for line in lines[next_idx:])
     assert "BLOCK" not in result.output
 
 
@@ -418,7 +423,10 @@ def test_interactive_telemetry_yes_persists_and_emits_setup_event(
     assert result.exit_code == 0, result.output
     assert telemetry.status().enabled is True
     question = "Send anonymous usage stats to help improve Doberman? [Y/n]"
-    note = "Counts and command names only. Never paths, prompts, secrets, or reason payloads."
+    # The full explanation now wraps onto multiple lines (item 9), so pin the
+    # ordering check to its first sentence rather than the whole (now
+    # possibly-split-across-lines) note.
+    note = "Counts and command names only."
     assert result.output.index(note) < result.output.index(question)
     assert (
         "setup_completed",
@@ -535,16 +543,18 @@ def test_interactive_hosts_1_2_wires_both(tmp_path: Path) -> None:
 
 
 def test_yes_host_mcp_prints_serve_block_and_writes_no_hook_file(tmp_path: Path) -> None:
+    # mcp-only is a pending run (item 7): exits 3, not 0.
     result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 3, result.output
     assert "doberman serve --" in result.output
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / ".codex").exists()
 
 
 def test_yes_host_openclaw_prints_pointer(tmp_path: Path) -> None:
+    # openclaw-only is a pending run (item 7): exits 3, not 0.
     result = runner.invoke(app, ["setup", "--yes", "--host", "openclaw", "--path", str(tmp_path)])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 3, result.output
     assert "adapters/openclaw/README.md" in result.output
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / ".codex").exists()
@@ -554,7 +564,7 @@ def test_yes_host_mcp_doctor_scoped_and_shows_canary(tmp_path: Path) -> None:
     """MCP-only: the hooks-only doctor checks are scoped out, and the summary
     gets its own end state + canary instead of the hooks restart banner."""
     result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 3, result.output  # mcp-only is pending (item 7)
     assert "  - Host hooks" not in result.output
     assert "  - Hook command" not in result.output
     assert "hooks n/a" in result.output
@@ -569,7 +579,7 @@ def test_yes_host_mcp_doctor_scoped_and_shows_canary(tmp_path: Path) -> None:
 def test_yes_host_openclaw_doctor_scoped(tmp_path: Path) -> None:
     """OpenClaw-only: same doctor scoping as MCP-only (no hooks-kind host wired)."""
     result = runner.invoke(app, ["setup", "--yes", "--host", "openclaw", "--path", str(tmp_path)])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 3, result.output  # openclaw-only is pending (item 7)
     assert "  - Host hooks" not in result.output
     assert "  - Hook command" not in result.output
     assert "hooks n/a" in result.output
@@ -583,7 +593,7 @@ def test_yes_host_openclaw_doctor_scoped(tmp_path: Path) -> None:
 
 def test_mcp_only_header_is_pending_not_complete(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 3, result.output  # item 7: pending exits 3, not 0
     assert "-- Setup pending --" in result.output
     assert "-- Setup complete --" not in result.output
     assert "Hooks written." not in result.output
@@ -591,7 +601,7 @@ def test_mcp_only_header_is_pending_not_complete(tmp_path: Path) -> None:
 
 def test_openclaw_only_header_is_pending_not_complete(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--host", "openclaw", "--path", str(tmp_path)])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 3, result.output  # item 7: pending exits 3, not 0
     assert "-- Setup pending --" in result.output
     assert "-- Setup complete --" not in result.output
     assert "Hooks written." not in result.output
@@ -600,8 +610,8 @@ def test_openclaw_only_header_is_pending_not_complete(tmp_path: Path) -> None:
 def test_mcp_only_still_offers_the_demo_pointer(tmp_path: Path) -> None:
     """The demo runs in-process, so it's valid to offer on the pending path too (item 13)."""
     result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
-    assert result.exit_code == 0, result.output
-    assert "See it work: `doberman demo --fast`" in result.output
+    assert result.exit_code == 3, result.output
+    assert "Next: `doberman demo --fast`" in result.output
 
 
 def test_claude_host_still_gets_setup_complete(tmp_path: Path) -> None:
@@ -688,11 +698,14 @@ def test_doctor_crash_falls_back_cleanly(tmp_path: Path, monkeypatch: pytest.Mon
     assert "Doctor: could not run here; verify with `doberman doctor`" in result.output
 
 
-def test_password_set_is_the_first_next_step(tmp_path: Path) -> None:
+def test_password_set_appears_in_the_also_line_when_no_factor_enrolled(tmp_path: Path) -> None:
+    """item 1: the old standalone "Next step:" line is folded into the
+    compact, muted "Also:" line at the end of the epilogue."""
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    idx = result.output.index("Next step:")
-    assert "password set" in result.output[idx : idx + 60]
+    assert "Next step:" not in result.output
+    idx = result.output.index("Also:")
+    assert "doberman password set" in result.output[idx : idx + 200]
 
 
 def test_enrolled_password_replaces_next_step_with_possession_factor(tmp_path: Path) -> None:
@@ -745,8 +758,12 @@ def test_yes_honest_incomplete_when_hook_command_critical(
     health_idx = result.output.index("Check health:")
     assert docs_idx < health_idx
     normalized = " ".join(result.output.split())
-    assert "Not protecting this repo yet: Hook command - " in normalized
-    assert "Fix it, then run `doberman doctor` to confirm." in normalized
+    # item 8: the doctor block above already printed the full detail once;
+    # the closing sentence references the critical by name only.
+    assert (
+        "Not protecting this repo yet: fix 'Hook command' above, then run 'doberman doctor'."
+        in normalized
+    )
 
 
 def test_interactive_honest_incomplete_when_hook_command_critical(
@@ -793,23 +810,32 @@ def test_claude_host_gets_the_same_verify_line_as_codex_and_mcp(tmp_path: Path) 
     )
 
 
-def test_verify_line_and_demo_invite_are_the_last_two_content_lines(tmp_path: Path) -> None:
+def test_verify_and_next_precede_the_final_also_line(tmp_path: Path) -> None:
+    """item 1: Verify -> Next (bold) -> Also, with Also now the closing line -
+    no more seven equal-weight lines competing for attention."""
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     lines = [line for line in result.output.splitlines() if line.strip()]
-    assert lines[-2] == "Verify it's live: ask your agent to read .env and confirm it is blocked."
-    assert lines[-1] == "See it work: `doberman demo --fast`"
-
-
-def test_uninstall_hooks_off_ramp_sits_directly_above_the_closing_pair(tmp_path: Path) -> None:
-    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
-    assert result.exit_code == 0, result.output
-    lines = [line for line in result.output.splitlines() if line.strip()]
-    idx = lines.index("Change your mind:  doberman uninstall-hooks")
-    assert (
-        lines[idx + 1] == "Verify it's live: ask your agent to read .env and confirm it is blocked."
+    verify_idx = lines.index(
+        "Verify it's live: ask your agent to read .env and confirm it is blocked."
     )
-    assert lines[idx + 2] == "See it work: `doberman demo --fast`"
+    next_idx = lines.index("Next: `doberman demo --fast`")
+    also_idx = next(i for i, line in enumerate(lines) if line.startswith("Also: "))
+    assert next_idx == verify_idx + 1
+    assert also_idx == next_idx + 1
+    # the "Also:" line is the last thing printed (it may itself wrap over a
+    # couple of lines, e.g. the docs URL).
+    assert all(not line.startswith(("--", "Verify", "Next:")) for line in lines[also_idx + 1 :])
+
+
+def test_uninstall_hooks_pointer_moves_into_the_also_line(tmp_path: Path) -> None:
+    """item 1: the standalone "Change your mind:" line is retired; the
+    uninstall-hooks pointer now lives in the compact "Also:" line."""
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Change your mind:  doberman uninstall-hooks" not in result.output
+    idx = result.output.index("Also:")
+    assert "doberman uninstall-hooks" in result.output[idx : idx + 300]
 
 
 def test_rerun_with_unchanged_hooks_prints_already_wired(tmp_path: Path) -> None:
@@ -951,14 +977,17 @@ def test_telemetry_gets_its_own_section_after_hosts_before_doctor(tmp_path: Path
 
 
 def test_telemetry_explanation_shows_even_under_yes(tmp_path: Path) -> None:
-    """The one-line "what is sent" explanation prints even under --yes, which
-    never asks the confirm question."""
+    """The "what is sent" explanation prints even under --yes, which never
+    asks the confirm question. It wraps at 78 columns (item 9) and glosses
+    "reason payloads" inline (item 10) rather than leaving it unexplained."""
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
+    normalized = " ".join(result.output.split())
     assert (
-        "Counts and command names only. Never paths, prompts, secrets, or reason payloads."
-        in result.output
+        "Counts and command names only. Never paths, prompts, secrets, or reason "
+        "payloads (the structured why-blocked details)." in normalized
     )
+    assert "https://github.com/DobermanCore/Doberman-Core/blob/main/docs/TELEMETRY.md" in normalized
 
 
 # ---------------------------------------------------------------------------
@@ -1011,10 +1040,11 @@ def test_telemetry_summary_line_shows_even_after_help_already_marked_the_notice_
 
 
 def test_summary_ends_with_a_docs_pointer(tmp_path: Path) -> None:
+    """item 1: the docs pointer now lives in the compact "Also:" line."""
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert (
-        "Docs: https://github.com/DobermanCore/Doberman-Core/blob/main/docs/SETUP.md"
+        "docs: https://github.com/DobermanCore/Doberman-Core/blob/main/docs/SETUP.md"
         in result.output
     )
 
@@ -1156,7 +1186,225 @@ def test_mode_menu_lines_wraps_long_descriptions_with_a_hanging_indent() -> None
     from doberman.hosthooks.setup import mode_menu_lines
 
     lines = mode_menu_lines()
-    strict_idx = next(i for i, line in enumerate(lines) if line.lstrip().startswith("3)"))
+    strict_idx = next(i for i, line in enumerate(lines) if line.lstrip().startswith("[3]"))
     next_line = lines[strict_idx + 1]
     assert next_line.startswith("                ")  # hanging indent, not column 0
     assert next_line.strip()
+
+
+# ---------------------------------------------------------------------------
+# Round 3: honest-end wizard polish (items 1-13)
+# ---------------------------------------------------------------------------
+
+
+def test_host_and_mode_menus_share_the_same_numbering_style() -> None:
+    """item 9: both menus use `[N]`, not `1)` for one and `[1]` for the other."""
+    from doberman.hosthooks.setup import host_menu_lines, mode_menu_lines
+
+    assert host_menu_lines(set())[0].lstrip().startswith("[1]")
+    assert mode_menu_lines()[0].lstrip().startswith("[1]")
+
+
+def test_codex_host_gets_verify_line_and_already_wired_summary(tmp_path: Path) -> None:
+    """item 1: Codex gets the same epilogue "Verify it's live" pointer Claude
+    and mcp get, not only its own mid-wiring TRUST ritual. item 2: a re-run
+    with unchanged hooks says "already wired" in the Hosts: summary too."""
+    first = runner.invoke(app, ["setup", "--yes", "--host", "codex", "--path", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+    assert (
+        "Verify it's live: ask your agent to read .env and confirm it is blocked." in first.output
+    )
+    assert "  codex    hook written to" in first.output
+
+    second = runner.invoke(app, ["setup", "--yes", "--host", "codex", "--path", str(tmp_path)])
+    assert second.exit_code == 0, second.output
+    assert "  codex    already wired:" in second.output
+
+
+def test_write_and_already_wired_lines_render_bold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """item 2: the write is the visible event - bold when color is supported.
+    Click's own ``echo()`` strips ANSI on any non-tty stream (CliRunner
+    included), so - same pattern as test_cli_verdict_render.py - this is
+    tested at the ``style_text`` level directly, not via captured CLI output."""
+    import doberman.render as render_mod
+
+    monkeypatch.setattr(render_mod, "supports_color", lambda: True)
+    assert render_mod.style_text("wrote /tmp/x", bold=True) == "\x1b[1mwrote /tmp/x\x1b[0m"
+    assert (
+        render_mod.style_text("already wired: /tmp/x", bold=True)
+        == "\x1b[1malready wired: /tmp/x\x1b[0m"
+    )
+
+    monkeypatch.setattr(render_mod, "supports_color", lambda: False)
+    assert render_mod.style_text("wrote /tmp/x", bold=True) == "wrote /tmp/x"
+
+
+def test_interactive_step_counter_appears_in_section_titles(tmp_path: Path) -> None:
+    """item 3: a fully-interactive run numbers every prompt-bearing section;
+    "Wiring" covers Hook installation/MCP/OpenClaw as one stage."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Hosts [1 of 6]" in result.output
+    assert "Security mode [2 of 6]" in result.output
+    assert "Preference tuning [3 of 6]" in result.output
+    assert "Hook installation (Claude Code) [4 of 6]" in result.output
+    assert "Telemetry [5 of 6]" in result.output
+    assert "Doctor [6 of 6]" in result.output
+
+
+def test_yes_run_shows_no_step_counters(tmp_path: Path) -> None:
+    """item 3: `--yes` prompts for nothing, so it never shows a step counter."""
+    import re
+
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert re.search(r"\[\d+ of \d+\]", result.output) is None
+
+
+def test_tune_prefs_invalid_weight_reprompts_and_names_changed_dims(tmp_path: Path) -> None:
+    """item 4: an invalid weight reprompts exactly like every other field
+    (never a raw `could not convert string to float`), and the summary
+    names exactly the dimensions that actually changed."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\ny\nabc\n0.9\n\n\n\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "error: 'abc' is not a number between 0 and 1 - try again" in result.stderr
+    assert "could not convert string to float" not in result.output
+    assert "Prefs:      custom (tuned: confidentiality)" in result.output
+
+
+def test_tune_prefs_nothing_changed_falls_back_to_preset_name(tmp_path: Path) -> None:
+    """item 4: tuning through every prompt and keeping every default names
+    the preset, not an empty "custom (tuned: )"."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\ny\n\n\n\n\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Prefs:      preset defaults for balanced" in result.output
+
+
+def test_hosts_menu_q_aborts_cleanly(tmp_path: Path) -> None:
+    """item 6: 'q' at the Hosts menu aborts cleanly, exit 1, nothing written."""
+    result = runner.invoke(app, ["setup", "--path", str(tmp_path)], input="q\n")
+    assert result.exit_code == 1, result.output
+    assert "Aborted - nothing written." in result.stderr
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_mode_menu_quit_aborts_cleanly(tmp_path: Path) -> None:
+    """item 6: 'quit' (not just 'q') also aborts cleanly."""
+    result = runner.invoke(app, ["setup", "--path", str(tmp_path)], input="\nquit\n")
+    assert result.exit_code == 1, result.output
+    assert "Aborted - nothing written." in result.stderr
+
+
+def test_mode_menu_five_invalid_answers_aborts(tmp_path: Path) -> None:
+    """item 6: five invalid answers in a row aborts rather than looping forever."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbogus\nbogus\nbogus\nbogus\nbogus\n",
+    )
+    assert result.exit_code == 1, result.output
+    assert "Aborted - nothing written." in result.stderr
+    assert result.stderr.count("error:") == 5
+
+
+def test_hosts_menu_eof_prints_the_setup_specific_abort_message(tmp_path: Path) -> None:
+    """item 6: an exhausted stdin at a menu gets this wizard's own message,
+    never a bare Click 'Aborted!'."""
+    result = runner.invoke(app, ["setup", "--path", str(tmp_path)], input="")
+    assert result.exit_code == 1, result.output
+    assert "Aborted - nothing written." in result.stderr
+    assert "Aborted!" not in result.output
+
+
+def test_weight_tuning_q_aborts_cleanly(tmp_path: Path) -> None:
+    """item 6: 'q' during weight tuning aborts the whole wizard, same as any
+    other menu - it doesn't just skip the remaining dimensions."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\ny\nq\n",
+    )
+    assert result.exit_code == 1, result.output
+    assert "Aborted - nothing written." in result.stderr
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_doctor_critical_detail_appears_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """item 8: the doctor block prints a critical's detail once; the closing
+    red sentence references it by name only, not a repeated/truncated copy."""
+    from doberman.cli import doctor as doctor_mod
+
+    def _fake_run_checks(path: str) -> list:
+        return [
+            doctor_mod.CheckResult(
+                "Config",
+                doctor_mod.CheckStatus.FAIL,
+                "no policy saved - run `doberman setup`",
+                critical=True,
+            )
+        ]
+
+    monkeypatch.setattr(doctor_mod, "run_checks", _fake_run_checks)
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 1, result.output
+    assert result.output.count("no policy saved - run `doberman setup`") == 1
+    normalized = " ".join(result.output.split())
+    assert (
+        "Not protecting this repo yet: fix 'Config' above, then run 'doberman doctor'."
+        in normalized
+    )
+
+
+def test_invalid_host_rejects_before_the_welcome_banner(tmp_path: Path) -> None:
+    """item 9: `--host vscode` is a hard usage error before any banner prints."""
+    result = runner.invoke(app, ["setup", "--yes", "--host", "vscode", "--path", str(tmp_path)])
+    assert result.exit_code == 2, result.output
+    assert "Welcome to Doberman setup!" not in result.output
+    assert "unknown host(s) vscode" in result.output
+
+
+def test_blast_radius_glossed_in_tuning_copy(tmp_path: Path) -> None:
+    """item 10: `blast_radius` carries an inline gloss where it's shown as a
+    raw weight name, unlike the other three dimensions (already plain English)."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    normalized = " ".join(result.output.split())
+    assert "blast_radius=0.50 (actions affecting many targets)" in normalized
+
+
+def test_dry_run_without_yes_and_no_tty_uses_defaults(tmp_path: Path) -> None:
+    """item 12: `--dry-run` with no `--yes` and no TTY on stdin behaves like
+    `--yes --dry-run` (defaults, preview, exit 0) instead of hitting EOF at
+    the first prompt."""
+    result = runner.invoke(app, ["setup", "--dry-run", "--path", str(tmp_path)], input="")
+    assert result.exit_code == 0, result.output
+    assert "stdin is not a terminal - using defaults for the preview" in result.stderr
+    assert "[dry-run] would set mode: balanced" in result.output
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_dry_run_with_yes_unaffected_by_the_non_tty_check(tmp_path: Path) -> None:
+    """item 12: the non-tty note is specific to the no-`--yes` case; a plain
+    `--yes --dry-run` never prints it."""
+    result = runner.invoke(app, ["setup", "--yes", "--dry-run", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "stdin is not a terminal" not in result.output
+    assert "stdin is not a terminal" not in result.stderr

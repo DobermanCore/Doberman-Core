@@ -61,11 +61,13 @@ def supports_color() -> bool:
     return sys.stdout.isatty()  # pragma: no cover - only if click lacks the helper
 
 
-def style_text(text: str, fg: str, *, bold: bool = False) -> str:
+def style_text(text: str, fg: str | None = None, *, bold: bool = False) -> str:
     """Color ``text`` with ``fg`` (+ ``bold``) when the terminal supports it, else plain.
 
     Generic sibling of :func:`verdict_label` for one-off status lines (e.g. the
-    setup wizard's mode/doctor lines) that aren't a :class:`Verdict`.
+    setup wizard's mode/doctor lines) that aren't a :class:`Verdict`. ``fg`` is
+    optional so a caller can ask for bold-only styling (e.g. the setup
+    wizard's "wrote <path>" / "Next: ..." lines) with no color tint.
     """
     if not supports_color():
         return text

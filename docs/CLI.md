@@ -152,15 +152,16 @@ Emits `{version, decisions, sessions, unsessioned_decisions, interventions, inte
 
 ## Exit codes
 
-Every command follows a two-value convention: the same code always means the same class of failure, regardless of which command raises it.
+Every command follows the same small convention: the same code always means the same class of outcome, regardless of which command raises it.
 
 | Code | Meaning |
 |------|---------|
 | `0` | The command completed normally. |
 | `1` | A gate denied the change, a runtime error occurred, a required optional extra is missing, or the operation finished with errors. |
 | `2` | Bad input: an argument or option value is invalid before any state is touched. |
+| `3` | Pending: a manual step still stands between here and protection (`setup` only — see its row below). |
 
-Code `2` is reserved for input-validation failures that could be caught before any I/O or gate check runs, so a script can branch on "bad flag" versus "gate denied." Code `1` covers everything else: auth denials, runtime errors, missing optional extras, and partial-success failures.
+Code `2` is reserved for input-validation failures that could be caught before any I/O or gate check runs, so a script can branch on "bad flag" versus "gate denied." Code `1` covers everything else: auth denials, runtime errors, missing optional extras, and partial-success failures. Code `3` is narrower still — today only `setup`'s pending case uses it, so a script can tell "nothing runs yet, but nothing is broken either" apart from both `0` (fully live) and `1` (broken).
 
 ### Per-command detail
 
@@ -178,7 +179,8 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `egress-velocity` | `2` | Unknown knob, missing value, or a non-positive value. |
 | `egress-velocity` | `1` | Threshold change denied by the gate. |
 | `doctor` | `1` | One or more critical checks failed. |
-| `setup` | `1` | The closing doctor pass found a critical (e.g. hooks call `doberman`, which is not on PATH) — printed as `-- Setup incomplete --`, never `complete`. A run that only wired `mcp`/`openclaw` (no hooks-based host) prints `-- Setup pending --` instead and still exits `0` — that is not an error, just nothing running yet. |
+| `setup` | `1` | The closing doctor pass found a critical (e.g. hooks call `doberman`, which is not on PATH) — printed as `-- Setup incomplete --`, never `complete`. |
+| `setup` | `3` | A run that only wired `mcp`/`openclaw` (no hooks-based host) — printed as `-- Setup pending --`. Not an error: a manual paste-and-restart step still stands between here and protection, so it is distinguished from both a fully-live `0` and a broken `1`. |
 | `password set` | `1` | Passwords did not match, or enrollment failed. |
 | `2fa setup` | `1` | TOTP enrollment failed. |
 | `2fa remove` | `1` | Not enrolled, confirmation declined, or unenroll failed. |
@@ -203,7 +205,7 @@ Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`, `insta
 
 ### Collision audit
 
-`grep -n "typer.Exit(code=" src/doberman/cli/main.py` returns 64 call sites: 11 use `code=2` (all input-validation rejections, checked before any gate runs) and 53 use `code=1`, including `setup`'s new honest-end exit when the closing doctor pass finds a critical. No command uses both codes for the same logical condition, and no two commands use the same code for contradictory meanings. This section documents the count; it changes no exit-code value.
+`grep -c "typer.Exit(code=" src/doberman/cli/main.py` returns 67 call sites: 11 use `code=2` (all input-validation rejections, checked before any gate runs), 55 use `code=1`, and 1 uses `code=3` (`setup`'s pending case). No command uses two different codes for the same logical condition, and no two commands use the same code for contradictory meanings. This section documents the count; it changes no exit-code value.
 
 ## Examples
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import typer
 
+from doberman.render import wrap_detail
+
 telemetry_app = typer.Typer(
     help="Anonymous usage telemetry (on by default; `doberman telemetry off` stops it).",
     no_args_is_help=True,
@@ -48,9 +50,13 @@ def register_cli_telemetry(root_app: typer.Typer, *sub_apps: typer.Typer) -> Non
 
 #: Reused verbatim so the explanation reads the same whether or not a question
 #: follows it (``--yes`` never asks, but still says what telemetry sends).
+#: "reason payloads" is glossed inline (item 10) since it's jargon with no
+#: nearby definition, unlike "possession factor"/"trifecta" elsewhere in the
+#: wizard, which already carry one at their point of use.
 TELEMETRY_EXPLANATION = (
-    "Counts and command names only. Never paths, prompts, secrets, or reason payloads. "
-    "See docs/TELEMETRY.md."
+    "Counts and command names only. Never paths, prompts, secrets, or reason "
+    "payloads (the structured why-blocked details). See "
+    "https://github.com/DobermanCore/Doberman-Core/blob/main/docs/TELEMETRY.md."
 )
 
 
@@ -63,7 +69,8 @@ def configure_setup_consent(non_interactive: bool) -> None:
     """
     from doberman import telemetry
 
-    typer.echo(TELEMETRY_EXPLANATION)
+    for line in wrap_detail(TELEMETRY_EXPLANATION, indent=0):
+        typer.echo(line)
     if non_interactive:
         notice = telemetry.first_run_notice()
         if notice:

@@ -306,6 +306,22 @@ def test_status_headline_protected_no_when_installed_but_not_on_path(tmp_path, m
     assert "not on PATH" in first_line
 
 
+def test_status_not_on_path_headline_names_the_fixing_command(tmp_path, monkeypatch):
+    """item 9: `status` exits 0 even when unprotected, so its first line must
+    be self-sufficient - it names the fix, not just the diagnosis."""
+    import shutil
+
+    root = str(tmp_path)
+    local_path = resolve_settings_path("local", root)
+    write_settings(local_path, merge_doberman_hooks({}))
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: None)
+
+    result = runner.invoke(app, ["status", "--path", root])
+    assert result.exit_code == 0, result.output
+    first_line = result.stdout.splitlines()[0]
+    assert "doberman doctor" in first_line
+
+
 def test_status_never_leaks_enrolled_secret_in_either_view(tmp_path):
     """A synthetic TOTP secret seeded into state must never appear in text or JSON."""
     totp.enroll()

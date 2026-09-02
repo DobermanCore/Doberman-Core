@@ -72,10 +72,12 @@ immediately. The closing doctor pass is not cosmetic: if it finds a critical (mo
 `doberman` command not being on PATH yet), the wizard prints `-- Setup incomplete --` and exits `1`
 instead of claiming success — re-run `doberman doctor` for the fix, then `doberman setup` again. A
 run that only wired `mcp` and/or `openclaw` (no hooks-based host) prints `-- Setup pending --`
-instead of `complete` and exits `0` — nothing runs yet until you paste the printed block into your
-client and restart it, so the closing "verify it's live" line points at that manual step rather
-than claiming the hooks are already active. When the wizard finishes, [set a possession
-factor](#4-set-a-password-and-2fa) — it's the first line of `doberman setup`'s own next steps.
+instead of `complete` and exits `3` (not `0` — nothing runs yet, but nothing is broken either, so a
+script can tell it apart from both a fully-live run and a broken one) — nothing runs yet until you
+paste the printed block into your client and restart it, so the closing "verify it's live" line
+points at that manual step rather than claiming the hooks are already active. When the wizard
+finishes, [set a possession factor](#4-set-a-password-and-2fa) — it's one of the pointers in
+`doberman setup`'s own closing `Also:` line.
 
 On a different host, or want to see exactly what gets wired? The next section covers each path by
 hand.

@@ -154,13 +154,15 @@ def parse_host_choice(raw: str, detected: set[str]) -> list[str]:
 def mode_menu_lines() -> list[str]:
     """Return formatted menu lines for the four security modes.
 
-    A description too long for the terminal (the ``strict`` one routinely is)
-    wraps with a hanging indent, so continuation lines land under the
-    description column rather than at the left margin.
+    Uses the same ``[N]`` numbering style as :func:`host_menu_lines` (item 9)
+    so the two wizard menus read consistently. A description too long for the
+    terminal (the ``strict`` one routinely is) wraps with a hanging indent, so
+    continuation lines land under the description column rather than at the
+    left margin.
     """
     lines: list[str] = []
     for i, mode in enumerate(SecurityMode, start=1):
-        prefix = f"  {i}) {mode.value:<10} "
+        prefix = f"  [{i}] {mode.value:<10} "
         wrapped = wrap_detail(MODE_DESCRIPTIONS[mode], indent=len(prefix))
         lines.append(prefix + wrapped[0][len(prefix) :])
         lines.extend(wrapped[1:])
