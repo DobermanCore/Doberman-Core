@@ -176,9 +176,10 @@ def verify(code: str, *, at: int | None = None) -> bool:
     :func:`_now` seam so tests can advance it independently (e.g. past the
     cooldown) without faking the TOTP time step. A successful verify clears
     the persisted lockout state. Every attempt is counted on disk BEFORE
-    ``pyotp`` runs (mirrors :func:`doberman.auth.password.verify`), so
-    concurrent guesses cannot overwrite each other's count; an attempt that
-    cannot be recorded is denied.
+    ``pyotp`` runs (mirrors :func:`doberman.auth.password.verify`), so a guess
+    is on the record before the verifier runs — the read-modify-write is
+    still unlocked, so this shrinks the concurrent-guess window rather than
+    closing it; an attempt that cannot be recorded is denied.
 
     Lockout semantics (H5b): once ``_MAX_CONSECUTIVE_FAILURES`` consecutive
     failures accrue, further attempts are denied until

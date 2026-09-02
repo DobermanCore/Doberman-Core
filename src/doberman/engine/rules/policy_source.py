@@ -20,7 +20,7 @@ but nothing can ever loosen a constraint a higher-authority source set.
 import fnmatch
 
 from doberman.canonical import canonicalize
-from doberman.engine.rules.paths import raw_path_candidates
+from doberman.engine.rules.paths import RAW_PATH_KEYS_STRICT, raw_path_candidates
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -72,7 +72,11 @@ class PolicySourceRule:
             raw_arguments = (
                 ctx.metadata.get("raw_arguments") if isinstance(ctx.metadata, dict) else None
             )
-            paths = raw_path_candidates(raw_arguments) if isinstance(raw_arguments, dict) else []
+            paths = (
+                raw_path_candidates(raw_arguments, RAW_PATH_KEYS_STRICT)
+                if isinstance(raw_arguments, dict)
+                else []
+            )
         if not paths:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 

@@ -284,3 +284,29 @@ def test_unrecognized_tool_with_inline_secret_blocks_like_shell_tool():
     assert helper_result.verdict is shell_result.verdict is Verdict.BLOCK
     assert ReasonCode.secret_exfiltration in helper_result.reason_codes
     assert ReasonCode.secret_exfiltration in shell_result.reason_codes
+
+
+def test_network_request_with_args_list_keeps_network_branch_checks():
+    # A fetch tool's ``args`` list is request options, not a shell line. It
+    # must NOT flip the action into command egress: pre-payload-shape, a
+    # network_request always ran the embedded-credential / IP-literal checks,
+    # and the command branch (broker PASS site, "shell egress" AUTH) would
+    # bypass them (reviewer finding on ADR 0092).
+    url = "http://user:pw@203.0.113.9/upload"
+    ctx = EvalContext(metadata={"raw_arguments": {"url": url, "args": ["-v"]}})
+    with_args = normalize("fetch", {"url": url, "args": ["-v"]})
+    plain = normalize("fetch", {"url": url})
+    assert with_args.action_type is plain.action_type is ActionType.network_request
+
+    with_args_result = RULE.evaluate(with_args, ctx)
+    plain_result = RULE.evaluate(plain, EvalContext(metadata={"raw_arguments": {"url": url}}))
+    assert with_args_result.verdict is plain_result.verdict is Verdict.AUTH
+    assert with_args_result.reason_codes == plain_result.reason_codes
+
+
+def test_network_request_with_args_list_to_trusted_host_is_not_false_command_egress():
+    ctx = EvalContext(metadata={"raw_arguments": {"url": "https://pypi.org/x", "args": ["-v"]}})
+    obj = normalize("fetch", {"url": "https://pypi.org/x", "args": ["-v"]})
+    assert obj.action_type is ActionType.network_request
+    result = RULE.evaluate(obj, ctx)
+    assert ReasonCode.egress_requires_auth not in result.reason_codes

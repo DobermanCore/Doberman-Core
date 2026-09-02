@@ -135,7 +135,12 @@ def _carries_command(action: SecurityObject, ctx: EvalContext | None = None) -> 
         ActionType.git_op,
     ):
         return True
-    if ctx is None:
+    if ctx is None or action.action_type is ActionType.network_request:
+        # A network action's destination IS its URL: an ``args`` list on a
+        # fetch tool is request options, not a shell line, and treating it as
+        # command egress would route the action through the command branch
+        # (broker PASS site, "shell egress" AUTH) instead of the network
+        # branch's embedded-credential / IP-literal checks.
         return False
     raw_arguments = ctx.metadata.get("raw_arguments") if isinstance(ctx.metadata, dict) else None
     if not isinstance(raw_arguments, dict):

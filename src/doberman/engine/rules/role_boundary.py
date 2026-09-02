@@ -29,7 +29,7 @@ boundary's own escalation, nothing else.
 """
 
 from doberman.auth.elevation import ElevationGrant, find_cover
-from doberman.engine.rules.paths import raw_path_candidates
+from doberman.engine.rules.paths import RAW_PATH_KEYS_STRICT, raw_path_candidates
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -103,13 +103,17 @@ class RoleBoundaryRule:
             # path-shaped raw argument (an unrecognized tool name, {"path":
             # ...}) — the tool NAME is caller-supplied and not a trust
             # boundary, so classify those candidates too rather than
-            # abstaining. A shell command's target is a command line, a
-            # network target a URL — those carry no "path"/"file"/"filename"/
-            # "target" key and still correctly abstain here.
+            # abstaining. Only the unambiguous keys ("path"/"file"/
+            # "filename") count here: a shell or network tool's "target"
+            # is a command line / host, not a path, so it still abstains.
             raw_arguments = (
                 ctx.metadata.get("raw_arguments") if isinstance(ctx.metadata, dict) else None
             )
-            paths = raw_path_candidates(raw_arguments) if isinstance(raw_arguments, dict) else []
+            paths = (
+                raw_path_candidates(raw_arguments, RAW_PATH_KEYS_STRICT)
+                if isinstance(raw_arguments, dict)
+                else []
+            )
         if not paths:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 

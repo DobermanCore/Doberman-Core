@@ -176,3 +176,16 @@ def test_shell_command_argument_still_abstains_on_role_boundary(tmp_path):
         metadata={"repo_root": str(tmp_path), "raw_arguments": {"command": "ls"}},
     )
     assert RULE.evaluate(action, ctx).verdict is Verdict.PASS
+
+
+def test_non_path_tool_target_key_is_not_a_path_candidate(tmp_path):
+    # "target" names a host/URL/command for non-path tools (ping {"target":
+    # "https://host"}); only path/file/filename count there, so the rule
+    # abstains instead of canonicalizing a URL as an out-of-scope path.
+    action = _action("https://example.com", action_type=ActionType.shell_exec)
+    ctx = EvalContext(
+        role=FRONTEND,
+        mode="balanced",
+        metadata={"repo_root": str(tmp_path), "raw_arguments": {"target": "https://example.com"}},
+    )
+    assert RULE.evaluate(action, ctx).verdict is Verdict.PASS

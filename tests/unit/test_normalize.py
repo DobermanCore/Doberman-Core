@@ -197,3 +197,10 @@ def test_each_call_gets_unique_id_and_aware_ts():
     b = normalize("fs_write", {"path": "x"})
     assert a.id != b.id
     assert a.ts.tzinfo is not None
+
+
+def test_oversized_composed_command_target_keeps_value_cap():
+    # A huge args list must not escape the per-value length cap via the
+    # composed "command + args" target: fall back to the command key alone.
+    obj = normalize("shell_exec", {"command": "echo", "args": ["x" * 20] * 40})
+    assert obj.target == "echo"

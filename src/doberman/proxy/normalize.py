@@ -617,8 +617,10 @@ def _extract_target(action_type: ActionType, arguments: dict[str, Any]) -> tuple
                 # redacted (long/secret-shaped): REDACTED must stay a clean
                 # sentinel, never a partial composite.
                 composed = command_line_from_arguments(arguments)
-                if composed:
+                if composed and len(composed) <= MAX_VALUE_LENGTH:
                     return composed, metadata
+                # Oversized composite (a huge args list): keep the per-value
+                # cap the redactor already enforces and log the head alone.
             return value, metadata
         if isinstance(value, list | tuple) and value:
             # Path arrays: representative first element + count in metadata.
