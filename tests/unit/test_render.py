@@ -204,6 +204,34 @@ def test_humanize_auth_result_unrecognized_value_falls_back_to_humanized_raw():
     assert render.humanize_auth_result("totp") == "totp"
 
 
+def test_humanize_auth_result_pending_for_an_unanswered_auth_row():
+    # round 5 design critique item 7: a still-open AUTH row is a real,
+    # ongoing state - it must never look identical to a PASS/BLOCK row's
+    # genuine "no auth step at all" dash.
+    assert render.humanize_auth_result(None, verdict="AUTH") == "pending - not yet answered"
+    assert render.humanize_auth_result(None, verdict="AUTH", short=True) == "pending"
+    assert render.humanize_auth_result(None, verdict="PASS") == "-"
+    assert render.humanize_auth_result(None, verdict="BLOCK") == "-"
+    assert render.humanize_auth_result(None) == "-"  # no verdict given - old behavior
+
+
+def test_wrap_detail_keeps_a_quoted_doberman_command_on_one_line():
+    # Coordinator CI fix: 'doberman dash' broke across two wrapped lines on a
+    # narrower-than-local CI terminal - a quoted 'doberman <command>' phrase
+    # must now stay unbreakable regardless of width.
+    text = render.next_step_line("AUTH", tui_hint=False)
+    lines = render.wrap_detail(text, indent=0, width=60)
+    assert "'doberman dash'" in " ".join(lines)
+    assert not any(line.rstrip().endswith("'doberman") for line in lines)
+
+
+def test_wrap_detail_keeps_a_multi_word_quoted_doberman_command_on_one_line():
+    text = render.next_step_line("BLOCK", tui_hint=False)
+    lines = render.wrap_detail(text, indent=0, width=60)
+    assert "'doberman review --yes'" in " ".join(lines)
+    assert "'doberman mode'" in " ".join(lines)
+
+
 def test_a_242_char_line_wraps_into_multiple_lines():
     phrase = "Shell, package, or git egress requires authentication because "
     text = (phrase * 4)[:242]

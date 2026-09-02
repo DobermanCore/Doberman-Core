@@ -12,6 +12,7 @@ not honor on every version.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import textwrap
@@ -93,8 +94,24 @@ _AUTH_RESULT_SHORT_LABELS: dict[str, str] = {
     "soft_confirm+memory": "mem ok",
 }
 
+#: An AUTH row with no `auth_result` yet is *awaiting an answer* - a real,
+#: ongoing state, not "nothing happened" - so it must never render identical
+#: to a PASS/BLOCK row's genuine "no auth step at all" dash (round 5 design
+#: critique item 7).
+_PENDING_AUTH_LABEL = "pending - not yet answered"
+_PENDING_AUTH_SHORT_LABEL = "pending"
+
 _MIN_WRAP_WIDTH = 60
 _MAX_WRAP_WIDTH = 120
+
+#: A quoted `'doberman <command...>'` token reads worse split across a line
+#: break than an ordinary word of the same length would (a CI run once wrapped
+#: "'doberman dash'" as "'doberman" / "dash'" at a narrower-than-local
+#: terminal width) — protected by swapping its inner spaces for a NUL
+#: placeholder before wrapping (never a real character in this text), then
+#: restoring them after. Always shorter than `_MIN_WRAP_WIDTH`, so it never
+#: forces `textwrap`'s own long-word splitting.
+_UNBREAKABLE_COMMAND_RE = re.compile(r"'doberman [^']*'")
 
 #: "Next" lines: one accurate, actionable line per verdict - what a human can
 #: actually do about this decision, using only real `doberman` commands/files
@@ -218,14 +235,22 @@ def risk_rich_style(risk: str) -> str:
     return _RISK_STYLES.get(risk, "")
 
 
-def humanize_auth_result(auth_result: str | None, *, short: bool = False) -> str:
+def humanize_auth_result(
+    auth_result: str | None, *, short: bool = False, verdict: str | None = None
+) -> str:
     """Plain-English label for a decision row's raw `auth_result` value.
 
     Shared by `doberman log` and the `tui` browser's auth column so the two
-    views can never drift apart. ``None``/empty (still-pending AUTH) renders
-    as "-". An unrecognized/future value (a raw auth-tier/method name, or a
-    corrupt row) falls back to the value itself with underscores turned to
-    spaces — never raises, never invents a meaning it wasn't told.
+    views can never drift apart. ``None``/empty renders as "-" — UNLESS
+    ``verdict`` is ``"AUTH"``, in which case it means the row is still
+    awaiting an answer, which must read as :data:`_PENDING_AUTH_LABEL` (or
+    the short form) rather than the same dash a PASS/BLOCK row (which never
+    had an auth step at all) would show (round 5 design critique item 7).
+    ``verdict`` defaults to ``None`` — a caller that doesn't have it yet
+    keeps the old plain-dash behavior. An unrecognized/future ``auth_result``
+    value (a raw auth-tier/method name, or a corrupt row) falls back to the
+    value itself with underscores turned to spaces — never raises, never
+    invents a meaning it wasn't told.
 
     ``short=True`` returns the narrower :data:`_AUTH_RESULT_SHORT_LABELS` form
     where one exists (e.g. "mem ok" for "soft_confirm+memory") — for the
@@ -234,6 +259,8 @@ def humanize_auth_result(auth_result: str | None, *, short: bool = False) -> str
     the full label.
     """
     if not auth_result:
+        if verdict == Verdict.AUTH.value:
+            return _PENDING_AUTH_SHORT_LABEL if short else _PENDING_AUTH_LABEL
         return "-"
     if short:
         short_label = _AUTH_RESULT_SHORT_LABELS.get(auth_result)
@@ -254,4 +281,6 @@ def wrap_detail(text: str, indent: int = 4, width: int | None = None) -> list[st
     width = max(_MIN_WRAP_WIDTH, min(_MAX_WRAP_WIDTH, width))
     prefix = " " * indent
     wrap_width = max(1, width - indent)
-    return [prefix + line for line in (textwrap.wrap(text, width=wrap_width) or [""])]
+    protected = _UNBREAKABLE_COMMAND_RE.sub(lambda m: m.group(0).replace(" ", "\x00"), text)
+    wrapped = textwrap.wrap(protected, width=wrap_width) or [""]
+    return [prefix + line.replace("\x00", " ") for line in wrapped]

@@ -44,8 +44,10 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.coordinate import Coordinate
-from textual.screen import ModalScreen, Screen
+from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Header, Input, LoadingIndicator, Static
+from textual.widgets._footer import FooterKey
 from textual.widgets.data_table import CellDoesNotExist
 from textual.worker import Worker, get_current_worker
 
@@ -68,10 +70,13 @@ from doberman.storage.log import read_decisions
 _HEADERS: tuple[str, ...] = ("", "verdict", "time", "risk", "auth", "action", "target", "why")
 #: Minimum content width per column, sized so the whole table fits an 80-column
 #: terminal without horizontal scroll (undiscoverable at 80x24 - see the design
-#: critique). Target class and reason codes ("why") are the two columns this
-#: browser is willing to shorten with a trailing "..." - and the two that grow
-#: to absorb any width a wider terminal offers (see ``_widths_for``); the full
-#: value for both always remains reachable in the why panel / full-screen why.
+#: critique). `why` (reason codes) is the one column this browser is willing to
+#: shorten with a trailing "..." and the one that grows to absorb any width a
+#: wider terminal offers (see ``_widths_for``) - real decision logs show a
+#: `target` of "-" for every shell-exec row, so `target` is now a FIXED floor
+#: (round 5 design critique item 3) rather than sharing the spare width the
+#: way it used to; the full value for both always remains reachable in the why
+#: panel / full-screen why.
 _WIDTHS: dict[str, int] = {
     "": 1,
     "verdict": 7,
@@ -79,7 +84,7 @@ _WIDTHS: dict[str, int] = {
     "risk": 8,
     "auth": 7,
     "action": 10,
-    "target": 10,
+    "target": 6,
     "why": 5,
 }
 
@@ -102,35 +107,59 @@ _CELL_PADDING = 2
 _BORDER_COLUMNS = 2
 
 
-def _widths_for(terminal_width: int, *, multi_day: bool = False) -> dict[str, int]:
-    """Column widths for ``terminal_width``: the minimums, plus spare width
-    split between ``target`` (1/3) and ``why`` (2/3) - reason codes are what a
-    reviewer scans for, so they get the larger share of any room a wide
-    terminal offers. Never narrower than the minimums.
+def _widths_for(
+    terminal_width: int, *, multi_day: bool = False, hide_target: bool = False
+) -> dict[str, int]:
+    """Column widths for ``terminal_width``: the minimums, with ALL spare width
+    going to ``why`` - reason codes are what a reviewer scans for, and
+    ``target`` is a fixed floor now (round 5 design critique item 3: a real
+    decision log shows "-" for `target` on every shell-exec row, so it must
+    stop absorbing width `why` could use instead). Never narrower than the
+    minimums.
 
     ``why`` must keep at least 8 columns at 80 terminal columns, single- or
-    multi-day alike (round 4 design critique items 2/11 - it measured only 5
-    even on a single-day log, since 80 columns left zero spare to distribute).
-    The room comes from ``auth``/``action``/``target``'s own minimums (never
-    ``why``'s) - see the reduced values in :data:`_WIDTHS`.
+    multi-day alike (round 4 design critique items 2/11); with ``target``
+    fixed at 6 it now measures 14 there (round 5 raised the floor further).
 
     ``multi_day`` widens ``time`` to fit "MM-DD HH:MM" (see ``_time_cell``),
     borrowing the difference back from ``target`` (never ``why`` - the whole
     point of this function) so the 80-column no-scroll budget still holds for
     a multi-day log too.
+
+    ``hide_target=True`` (every loaded row's target is "-" - see
+    :func:`_all_targets_missing`) drops the ``target`` key entirely BEFORE the
+    spare-width math runs, so one column fewer consuming the budget
+    automatically folds its reclaimed width (plus its own cell padding) into
+    ``why`` - the caller is expected to also stop adding a ``target`` column
+    to the table in that case.
     """
     widths = dict(_WIDTHS)
     if multi_day:
         delta = _TIME_WIDTH_MULTI_DAY - widths["time"]
         widths["time"] = _TIME_WIDTH_MULTI_DAY
         widths["target"] = max(1, widths["target"] - delta)
+    if hide_target:
+        widths.pop("target")
     used = sum(widths.values()) + _CELL_PADDING * len(widths)
     spare = max(0, terminal_width - used - _BORDER_COLUMNS - 1)
-    if spare:
-        extra_target = spare // 3
-        widths["target"] += extra_target
-        widths["why"] += spare - extra_target
+    widths["why"] += spare
     return widths
+
+
+def _headers_for(*, hide_target: bool) -> tuple[str, ...]:
+    """Column headers to actually declare on the table - ``_HEADERS`` minus
+    ``target`` when every loaded row's target is "-" (round 5 design critique
+    item 3)."""
+    return tuple(h for h in _HEADERS if h != "target") if hide_target else _HEADERS
+
+
+def _all_targets_missing(rows: list[dict]) -> bool:
+    """Whether every one of ``rows`` has no ``target_path_class`` - if so, the
+    column is pure dead weight (always "-") and is dropped entirely in favor
+    of giving that width to ``why`` (round 5 design critique item 3). Vacuously
+    ``False`` for an empty/not-yet-loaded ``rows`` - nothing to hide behind
+    yet, and the column stays present until a real load says otherwise."""
+    return bool(rows) and not any(row.get("target_path_class") for row in rows)
 
 
 _MSG_NO_ROWS = (
@@ -144,8 +173,11 @@ _MSG_NO_MATCH = "(no rows match the filter - press esc to clear it)"
 #: leaving a binding that visibly does nothing when the table is empty.
 _ROW_ACTIONS = frozenset({"open_why", "copy_action_id", "next_block", "prev_block", "next_auth"})
 
-#: Provenance stamps for the top of the why panel (ADR-style honesty about
-#: where the text came from - never silently upgrade/replace without saying so).
+#: Provenance stamps for the why panel (ADR-style honesty about where the
+#: text came from - never silently upgrade/replace without saying so). Now
+#: rendered as a MUTED one-liner at the END of the panel (round 5 design
+#: critique item 6: the explanation is the point, the source note is
+#: supporting detail, not the headline).
 _PROV_TEMPLATE = "source: offline template"
 _PROV_LLM = "source: LLM narration (metadata only)"
 _PROV_PENDING = "narrating..."
@@ -158,6 +190,36 @@ _EXPLAIN_DEBOUNCE_S = 0.3
 #: One-line legend for the ASCII verdict glyphs, shown in the date bar so the
 #: glyph meaning is never something a user has to remember or look up in `?`.
 _LEGEND = "X BLOCK  ! AUTH  . PASS"
+
+
+def _panel_text(body: str, provenance: str) -> Text:
+    """The docked why panel's content: `body` (the explanation/remedy) first,
+    then a blank line, then `provenance` styled muted/dim (round 5 design
+    critique item 6). Built from plain strings only - `body`/`provenance` are
+    never re-parsed as markup (this constructs a `Text` directly, the same
+    literal-rendering guarantee the module docstring promises), so a crafted
+    stored value still can't restyle anything; the `dim` span covers only the
+    trailing provenance text we ourselves appended.
+    """
+    combined = f"{body}\n\n{provenance}"
+    text = Text(combined)
+    text.stylize("dim", len(combined) - len(provenance), len(combined))
+    return text
+
+
+#: The literal prefix of every `render.next_step_line` remedy - bolded in the
+#: docked "Next" line so it reads as the remedy, not more prose (round 5
+#: design critique item 6).
+_NEXT_LINE_PREFIX = "Next"
+
+
+def _next_line_text(line: str) -> Text:
+    text = Text(line)
+    if line.startswith(_NEXT_LINE_PREFIX):
+        # The AUTH/accent style (bold) - shared with the verdict palette so
+        # this never keeps a second copy of the color choice.
+        text.stylize(render.verdict_rich_style(Verdict.AUTH), 0, len(_NEXT_LINE_PREFIX))
+    return text
 
 
 def _truncate(text: str, width: int) -> str:
@@ -295,27 +357,38 @@ def _verdict_cell(verdict_str: str) -> Text:
 
 
 def _row_cells(
-    row: dict, widths: dict[str, int] | None = None, *, multi_day: bool = False
+    row: dict,
+    widths: dict[str, int] | None = None,
+    *,
+    multi_day: bool = False,
+    hide_target: bool = False,
 ) -> tuple[Text, ...]:
     widths = widths or _WIDTHS
     verdict_str = str(row.get("final_verdict") or "-")
     risk_str = str(row.get("risk") or "-")
-    return (
+    cells: dict[str, Text] = {
         # Gutter: blank by default - `_update_gutter` marks the cursor row
         # with ">" (round 3 design critique item 2).
-        Text(""),
-        _verdict_cell(verdict_str),
-        Text(_time_cell(row, multi_day=multi_day)),
-        Text(_truncate(risk_str, widths["risk"]), style=render.risk_rich_style(risk_str)),
-        Text(
+        "": Text(""),
+        "verdict": _verdict_cell(verdict_str),
+        "time": Text(_time_cell(row, multi_day=multi_day)),
+        "risk": Text(_truncate(risk_str, widths["risk"]), style=render.risk_rich_style(risk_str)),
+        "auth": Text(
             _truncate(
-                render.humanize_auth_result(row.get("auth_result"), short=True), widths["auth"]
+                render.humanize_auth_result(
+                    row.get("auth_result"), short=True, verdict=verdict_str
+                ),
+                widths["auth"],
             )
         ),
-        Text(_truncate(str(row.get("action_type") or "-"), widths["action"])),
-        Text(_truncate(str(row.get("target_path_class") or "-"), widths["target"])),
-        Text(_truncate(_reason_codes_words(row), widths["why"])),
-    )
+        "action": Text(_truncate(str(row.get("action_type") or "-"), widths["action"])),
+        "why": Text(_truncate(_reason_codes_words(row), widths["why"])),
+    }
+    if not hide_target:
+        cells["target"] = Text(
+            _truncate(str(row.get("target_path_class") or "-"), widths["target"])
+        )
+    return tuple(cells[header] for header in _headers_for(hide_target=hide_target))
 
 
 def _why_header_line(row: dict) -> str:
@@ -333,6 +406,15 @@ def _why_header_line(row: dict) -> str:
     action_str = str(row.get("action_type") or "-")
     target_str = str(row.get("target_path_class") or "-")
     return f"{glyph} {verdict_str}  {time_str}  {risk_str}  {action_str}  {target_str}"
+
+
+def _set_focus_title(widget: Widget, *, focused: bool) -> None:
+    """Set/clear a widget's `[focus]` border title (round 5 design critique
+    item 8). Always a `Text` object, never a plain str - `border_title`'s
+    setter otherwise parses a str as Textual markup, and a literal
+    "[focus]" would be swallowed as an (invalid, empty) markup tag rather
+    than displayed."""
+    widget.border_title = Text("[focus]") if focused else Text("")
 
 
 class _DecisionTable(DataTable):
@@ -355,6 +437,20 @@ class _DecisionTable(DataTable):
         Binding("end", "app.goto_last", "last", show=False),
     ]
 
+    def on_focus(self) -> None:
+        # A second, non-color cue that this pane has focus (round 5 design
+        # critique item 8) - the border's own color-only change is invisible
+        # under NO_COLOR/limited palettes. A message handler, deliberately
+        # NOT `watch_has_focus`: overriding that reactive watcher (even as a
+        # no-op) breaks Textual's own `:focus` CSS pseudo-class re-styling on
+        # blur - some internal machinery keys off that exact method name.
+        # `DecisionExplainerApp._sync_focus_titles` seeds the INITIAL state
+        # (this handler never fires for the app's own auto-focus at startup).
+        _set_focus_title(self, focused=True)
+
+    def on_blur(self) -> None:
+        _set_focus_title(self, focused=False)
+
 
 class _WhyPanel(VerticalScroll):
     """The docked why panel - same Home/End forwarding as `_DecisionTable`.
@@ -370,6 +466,15 @@ class _WhyPanel(VerticalScroll):
         Binding("home", "app.goto_first", "first", show=False),
         Binding("end", "app.goto_last", "last", show=False),
     ]
+
+    def on_focus(self) -> None:
+        # Same second focus cue as `_DecisionTable` (round 5 design critique
+        # item 8) - see its `on_focus` docstring for why this is a message
+        # handler and not `watch_has_focus`.
+        _set_focus_title(self, focused=True)
+
+    def on_blur(self) -> None:
+        _set_focus_title(self, focused=False)
 
 
 class WhyScreen(ModalScreen[None]):
@@ -434,8 +539,23 @@ class WhyScreen(ModalScreen[None]):
         self.app.action_copy_action_id()  # type: ignore[attr-defined]
 
 
-class HelpScreen(Screen[None]):
-    """`?`: every keybinding this app has, in plain words."""
+#: Appended only when the help body doesn't fit the screen (see
+#: `HelpScreen._refresh_scroll_cue`) - round 5 design critique item 5.
+_HELP_SCROLL_CUE = "(scroll for more)"
+
+
+class HelpScreen(ModalScreen[None]):
+    """`?`: every keybinding this app has, in plain words.
+
+    Modal (round 5 design critique item 4): a plain `Screen` still forwards
+    keys it doesn't bind itself down to the App underneath, so `w`/`b`/`B`/`a`
+    used to silently open/jump the main browser while this screen sat on top
+    of it. As a `ModalScreen`, the app-level bindings for those keys are
+    simply unreachable while this screen is the top of the stack - the
+    App's `action_help`/`action_open_why`/etc. also guard explicitly (see
+    `DecisionExplainerApp`), so the behavior doesn't depend on that Textual
+    internal alone.
+    """
 
     BINDINGS = [
         Binding("escape", "close", "close"),
@@ -476,8 +596,70 @@ class HelpScreen(Screen[None]):
             yield Static(self._TEXT, id="help-text", markup=False)
         yield Footer()
 
+    def on_mount(self) -> None:
+        self.call_after_refresh(self._refresh_scroll_cue)
+
+    def on_resize(self) -> None:
+        self._refresh_scroll_cue()
+
+    def _refresh_scroll_cue(self) -> None:
+        # Only earns the cue when the body actually overflows the viewport -
+        # a fixed line would be a lie at a tall enough terminal (round 5
+        # design critique item 5).
+        scroll = self.query_one("#help-scroll", VerticalScroll)
+        overflows = scroll.virtual_size.height > scroll.size.height
+        text = f"{self._TEXT}\n{_HELP_SCROLL_CUE}" if overflows else self._TEXT
+        self.query_one("#help-text", Static).update(text)
+
     def action_close(self) -> None:
         self.app.pop_screen()
+
+
+#: Below this terminal width, the main browser's footer drops the low-priority
+#: bindings below rather than let them wrap or get silently clipped (round 5
+#: design critique item 2).
+_NARROW_FOOTER_WIDTH = 100
+#: The least-important half of the row-scoped actions (per the importance
+#: ordering `DecisionExplainerApp.BINDINGS` already documents) - dropped from
+#: the footer below `_NARROW_FOOTER_WIDTH`, but never disabled: they stay
+#: fully live via the keyboard and documented in `?`.
+_FOOTER_LOW_PRIORITY_ACTIONS = frozenset({"prev_block", "next_auth", "copy_action_id", "reload"})
+
+
+class _AdaptiveFooter(Footer):
+    """The main browser's `Footer`, minus `_FOOTER_LOW_PRIORITY_ACTIONS` below
+    `_NARROW_FOOTER_WIDTH` columns (round 5 design critique item 2).
+
+    Deliberately does NOT lean on `check_action` to hide these: `check_action`
+    also gates whether the key itself dispatches (`App.run_action` re-checks
+    it), and `B`/`a`/`y`/`r` must keep WORKING at any width - only the footer
+    entry should disappear. Filtering the `FooterKey` widgets straight out of
+    `compose()` keeps the underlying bindings fully live while still
+    recomposing whenever the App calls `refresh_bindings()` (its `on_resize`
+    does, on every resize) via the `bindings_updated_signal` the base
+    `Footer` already listens for.
+    """
+
+    def compose(self) -> ComposeResult:
+        narrow = self.app.size.width < _NARROW_FOOTER_WIDTH
+        for widget in super().compose():
+            if (
+                narrow
+                and isinstance(widget, FooterKey)
+                and widget.action in _FOOTER_LOW_PRIORITY_ACTIONS
+            ):
+                continue
+            yield widget
+
+
+#: Below this width/height, the app shows one honest line instead of a
+#: DataTable/panels that can't lay out at that size (round 5 design critique
+#: item 10).
+_MIN_TERMINAL_WIDTH = 60
+_MIN_TERMINAL_HEIGHT = 12
+_MSG_TOO_SMALL = (
+    f"Terminal too small - resize to at least {_MIN_TERMINAL_WIDTH}x{_MIN_TERMINAL_HEIGHT}"
+)
 
 
 class DecisionExplainerApp(App[None]):
@@ -566,19 +748,28 @@ class DecisionExplainerApp(App[None]):
         self._rows: list[dict] = []
         self._visible_rows: list[dict] = []
         self._current_key: str | None = None
-        self._explain_cache: dict[str, str] = {}
+        # (body, provenance) - kept separate so the docked panel can style the
+        # provenance line as muted without re-parsing anything (item 6).
+        self._explain_cache: dict[str, tuple[str, str]] = {}
         self._explain_timer = None
         self._load_worker: Worker[None] | None = None
         self._widths: dict[str, int] = dict(_WIDTHS)
+        self._headers: tuple[str, ...] = _HEADERS
         self._columns_ready = False
         self._multi_day = False
+        self._hide_target = False
         self._gutter_row: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static("", id="date-bar")
         yield LoadingIndicator(id="loading")
-        with Vertical():
+        # Shown INSTEAD of "#body" below `_MIN_TERMINAL_WIDTH`x`_MIN_TERMINAL_HEIGHT`
+        # (round 5 design critique item 10) - toggled by `_apply_size_gate`.
+        too_small = Static(_MSG_TOO_SMALL, id="too-small", markup=False)
+        too_small.display = False
+        yield too_small
+        with Vertical(id="body"):
             yield _DecisionTable(
                 id="decisions",
                 cursor_type="row",
@@ -596,7 +787,7 @@ class DecisionExplainerApp(App[None]):
             # critique item 3): a "Next" step must stay visible even when the
             # panel above needs to scroll for a long explanation.
             yield Static("", id="next-line", markup=False)
-        yield Footer()
+        yield _AdaptiveFooter()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         # `escape`/"clear" is shown while the filter input has focus (the
@@ -613,6 +804,11 @@ class DecisionExplainerApp(App[None]):
             if self.focused is filter_input:
                 return True
             return bool(filter_input.value.strip())
+        # round 5 design critique item 9: with nothing loaded at all, there is
+        # nothing to filter - hide the footer entry rather than offer a search
+        # box over zero rows.
+        if action == "filter" and not self._rows:
+            return False
         # round 4 design critique item 3: with no rows to act on (nothing
         # loaded, or the filter matched zero rows) these five actions would be
         # dead keys - hide them from the footer instead of leaving a binding
@@ -622,20 +818,37 @@ class DecisionExplainerApp(App[None]):
         return True
 
     async def on_mount(self) -> None:
+        self._apply_size_gate()
         table = self.query_one("#decisions", _DecisionTable)
         self._widths = _widths_for(self.size.width)
+        self._headers = _HEADERS
         for header in _HEADERS:
             table.add_column(header, width=self._widths[header], key=header)
         self._columns_ready = True
         self.query_one("#filter", Input).display = False
         self.query_one("#loading", LoadingIndicator).display = False
         self._update_subtitle()
+        # Seed the initial `[focus]` border title (round 5 design critique
+        # item 8): the app's own default auto-focus at startup never posts a
+        # Focus message, so `_DecisionTable`/`_WhyPanel`'s own `on_focus`
+        # never fires for it - only a later `tab` does.
+        for pane in (table, self.query_one("#explanation-scroll", _WhyPanel)):
+            _set_focus_title(pane, focused=pane.has_focus)
         self._load_worker = self._load_rows()
 
     async def wait_loaded(self) -> None:
         """Test helper: wait for the current (or most recently started) load."""
         if self._load_worker is not None:
             await self._load_worker.wait()
+
+    def _apply_size_gate(self) -> None:
+        """Below `_MIN_TERMINAL_WIDTH`x`_MIN_TERMINAL_HEIGHT`, swap the whole
+        body for one honest line instead of a DataTable/panels that can't lay
+        out at that size (round 5 design critique item 10)."""
+        too_small = self.size.width < _MIN_TERMINAL_WIDTH or self.size.height < _MIN_TERMINAL_HEIGHT
+        self.query_one("#too-small", Static).display = too_small
+        self.query_one("#body", Vertical).display = not too_small
+        self.query_one("#date-bar", Static).display = not too_small
 
     # --- loading -----------------------------------------------------------
 
@@ -647,6 +860,7 @@ class DecisionExplainerApp(App[None]):
             path = db_path(self._repo_root)
             if not path.exists():
                 self._rows = []
+                self._hide_target = False
                 self._reset_to_empty(
                     f"No decision log at {_shorten_home(path)}. "
                     "Press q to quit, then rerun with --path <repo>."
@@ -655,7 +869,13 @@ class DecisionExplainerApp(App[None]):
             rows = await read_decisions(self._repo_root, limit=self._last)
             self._rows = rows
             self._multi_day = _spans_multiple_days(rows)
-            self._apply_widths(_widths_for(self.size.width, multi_day=self._multi_day))
+            self._hide_target = _all_targets_missing(rows)
+            self._apply_widths(
+                _widths_for(
+                    self.size.width, multi_day=self._multi_day, hide_target=self._hide_target
+                ),
+                _headers_for(hide_target=self._hide_target),
+            )
             if not rows:
                 self._reset_to_empty(_MSG_NO_ROWS)
                 return
@@ -663,34 +883,51 @@ class DecisionExplainerApp(App[None]):
         finally:
             loading.display = False
 
-    def _apply_widths(self, widths: dict[str, int]) -> bool:
-        """Re-declare the table's columns at ``widths``. Returns whether
-        anything changed - callers rebuild the row data only when it did."""
-        if widths == self._widths:
+    def _apply_widths(self, widths: dict[str, int], headers: tuple[str, ...] | None = None) -> bool:
+        """Re-declare the table's columns at ``widths``/``headers``. Returns
+        whether anything changed - callers rebuild the row data only when it
+        did. ``headers`` defaults to the current header set (a pure width
+        change, e.g. a resize); it differs only when ``target`` is hidden or
+        restored (round 5 design critique item 3)."""
+        headers = headers if headers is not None else self._headers
+        if widths == self._widths and headers == self._headers:
             return False
-        self._widths = widths
         table = self.query_one("#decisions", _DecisionTable)
-        for header in _HEADERS:
-            table.remove_column(header)
-        for header in _HEADERS:
+        for header in self._headers:
+            try:
+                table.remove_column(header)
+            except Exception:  # noqa: BLE001, S110 — defensive: header already gone
+                pass
+        for header in headers:
             table.add_column(header, width=widths[header], key=header)
+        self._widths = widths
+        self._headers = headers
         return True
 
     def on_resize(self) -> None:
-        """Re-fit the columns: spare width goes to target/why, never a scrollbar."""
+        """Re-fit the columns: spare width goes to why, never a scrollbar.
+        Also re-gates the too-small notice and re-evaluates which footer
+        bindings fit (round 5 design critique items 2 + 10)."""
+        self._apply_size_gate()
         if not self._columns_ready:
             # The first layout resize lands before on_mount adds the columns.
             return
-        widths = _widths_for(self.size.width, multi_day=self._multi_day)
-        if self._apply_widths(widths):
+        widths = _widths_for(
+            self.size.width, multi_day=self._multi_day, hide_target=self._hide_target
+        )
+        if self._apply_widths(widths, _headers_for(hide_target=self._hide_target)):
             self._rebuild_table()
+        self.refresh_bindings()
 
     def _reset_to_empty(self, message: str) -> None:
         self._visible_rows = []
         self.refresh_bindings()  # see `_rebuild_table` - same footer-staleness fix
         self._multi_day = False
+        self._hide_target = False
         self._gutter_row = None
-        self._apply_widths(_widths_for(self.size.width, multi_day=False))
+        self._apply_widths(
+            _widths_for(self.size.width, multi_day=False, hide_target=False), _HEADERS
+        )
         self.query_one("#decisions", _DecisionTable).clear()
         self._current_key = None
         self._update_date_bar(None)
@@ -766,7 +1003,10 @@ class DecisionExplainerApp(App[None]):
             return
         for row in self._visible_rows:
             table.add_row(
-                *_row_cells(row, self._widths, multi_day=self._multi_day), key=_row_key(row)
+                *_row_cells(
+                    row, self._widths, multi_day=self._multi_day, hide_target=self._hide_target
+                ),
+                key=_row_key(row),
             )
         # Restore the previously selected row by key rather than snapping to
         # row 0 - a resize (or a filter edit that still matches it) must not
@@ -792,17 +1032,25 @@ class DecisionExplainerApp(App[None]):
 
     # --- selection / why panel ------------------------------------------------
 
-    def _set_panel(self, text: str) -> None:
+    def _set_panel(self, text: str | Text) -> None:
         self.query_one("#explanation", Static).update(text)
 
     def _update_date_bar(self, row: dict | None) -> None:
-        self.query_one("#date-bar", Static).update(_date_bar_text(row))
+        # No legend when nothing is loaded at all - "nothing to filter"
+        # applies here too (round 5 design critique item 9): the glyphs
+        # aren't worth explaining for a browser with zero rows in it.
+        text = _date_bar_text(row) if self._rows else ""
+        self.query_one("#date-bar", Static).update(text)
 
     def _update_next_line(self, row: dict | None) -> None:
         # Docked separately from the panel body (round 3 design critique item
         # 3) so it stays on screen even while the why panel itself scrolls.
+        # tui_hint stays True here (the default) - this IS the "press w for
+        # detail" affordance; the full-screen why (`full_why_text`) is the
+        # detail itself and must not repeat it (round 5 design critique item 1).
         next_line = render.next_step_line(row.get("final_verdict")) if row is not None else None
-        self.query_one("#next-line", Static).update(next_line or "")
+        widget = self.query_one("#next-line", Static)
+        widget.update(_next_line_text(next_line) if next_line else "")
 
     def _update_gutter(self, index: int) -> None:
         # The 1-char cursor gutter (round 3 design critique item 2): clear the
@@ -837,17 +1085,17 @@ class DecisionExplainerApp(App[None]):
         self._update_gutter(index)
         cached = self._explain_cache.get(key)
         if cached is not None:
-            self._set_panel(cached)
+            body, provenance = cached
+            self._set_panel(_panel_text(body, provenance))
             return
         body = template_explanation(row)
         if not llm_enrichment_enabled():
             # Nothing to enrich with - never schedule a worker that would only
             # ever return the same template text.
-            text = f"{_PROV_TEMPLATE}\n\n{body}"
-            self._explain_cache[key] = text
-            self._set_panel(text)
+            self._explain_cache[key] = (body, _PROV_TEMPLATE)
+            self._set_panel(_panel_text(body, _PROV_TEMPLATE))
             return
-        self._set_panel(f"{_PROV_PENDING}\n\n{body}")
+        self._set_panel(_panel_text(body, _PROV_PENDING))
         if self._explain_timer is not None:
             self._explain_timer.stop()
         self._explain_timer = self.set_timer(_EXPLAIN_DEBOUNCE_S, lambda: self._explain_worker(row))
@@ -866,14 +1114,13 @@ class DecisionExplainerApp(App[None]):
         if worker.is_cancelled:
             return
         provenance = _PROV_LLM if source == "llm" else _PROV_FALLBACK
-        full = f"{provenance}\n\n{text}"
 
         def _apply() -> None:
             # Runs on the UI thread: re-check the selection so a slow (opt-in)
             # LLM call can never overwrite a newer row's panel with stale text.
-            self._explain_cache[key] = full
+            self._explain_cache[key] = (text, provenance)
             if self._current_key == key:
-                self._set_panel(full)
+                self._set_panel(_panel_text(text, provenance))
 
         try:
             self.call_from_thread(_apply)
@@ -882,18 +1129,26 @@ class DecisionExplainerApp(App[None]):
 
     def full_why_text(self, row: dict) -> str:
         """The complete why text for `row`: a row-identity header line, cached
-        body, every reason code, the action id, and a "Next" step - what
-        `WhyScreen` displays (round 3 design critique item 4: paging through
-        rows with b/B/a must never lose track of which row is on screen)."""
+        body, every reason code, the action id, a muted provenance note, and a
+        "Next" step - what `WhyScreen` displays (round 3 design critique item
+        4: paging through rows with b/B/a must never lose track of which row
+        is on screen; round 5 item 6: the explanation leads, the provenance
+        note trails near the end, same as the docked panel)."""
         header = _why_header_line(row)
         key = _row_key(row)
         cached = self._explain_cache.get(key)
-        body = cached if cached is not None else f"{_PROV_TEMPLATE}\n\n{template_explanation(row)}"
+        body, provenance = (
+            cached if cached is not None else (template_explanation(row), _PROV_TEMPLATE)
+        )
         action_id = row.get("action_id") or "-"
         text = (
-            f"{header}\n\n{body}\n\nreason codes: {_reason_codes_text(row)}\naction id: {action_id}"
+            f"{header}\n\n{body}\n\n"
+            f"reason codes: {_reason_codes_text(row)}\naction id: {action_id}\n\n{provenance}"
         )
-        next_line = render.next_step_line(row.get("final_verdict"))
+        # tui_hint=False (round 5 design critique item 1): this full-screen
+        # why IS the detail "press w for detail" points at - it must not tell
+        # the reader to press w again to see itself.
+        next_line = render.next_step_line(row.get("final_verdict"), tui_hint=False)
         return f"{text}\n\n{next_line}" if next_line else text
 
     def current_row(self) -> dict | None:
@@ -903,11 +1158,22 @@ class DecisionExplainerApp(App[None]):
             return None
         return self._visible_rows[index]
 
+    def _help_open(self) -> bool:
+        """Whether a `HelpScreen` is the current top screen - `?`/`w`/`b`/`B`/
+        `a` must all be inert while it's open (round 5 design critique item
+        4). `HelpScreen` being a `ModalScreen` already makes these keys
+        unreachable from the keyboard on their own (see its docstring); this
+        guard makes the App's own actions defensive regardless of how they're
+        invoked."""
+        return isinstance(self.screen, HelpScreen)
+
     def _open_why_screen(self) -> None:
         if self.current_row() is not None:
             self.push_screen(WhyScreen())
 
     def action_open_why(self) -> None:
+        if self._help_open():
+            return
         self._open_why_screen()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -917,6 +1183,8 @@ class DecisionExplainerApp(App[None]):
         self._open_why_screen()
 
     def action_help(self) -> None:
+        if self._help_open():  # never stack a second HelpScreen
+            return
         self.push_screen(HelpScreen())
 
     # --- next/prev BLOCK, next AUTH, copy id ----------------------------------
@@ -945,12 +1213,18 @@ class DecisionExplainerApp(App[None]):
         return False
 
     def action_next_block(self) -> None:
+        if self._help_open():
+            return
         self.jump_to_verdict(Verdict.BLOCK.value, forward=True)
 
     def action_prev_block(self) -> None:
+        if self._help_open():
+            return
         self.jump_to_verdict(Verdict.BLOCK.value, forward=False)
 
     def action_next_auth(self) -> None:
+        if self._help_open():
+            return
         self.jump_to_verdict(Verdict.AUTH.value, forward=True)
 
     def action_goto_first(self) -> None:

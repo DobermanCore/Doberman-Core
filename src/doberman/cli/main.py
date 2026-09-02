@@ -1718,7 +1718,13 @@ def log(
     for row in rows:
         target = row["target_path_class"] or "-"
         reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
-        auth = f"; auth={humanize_auth_result(row['auth_result'])}" if row["auth_result"] else ""
+        # A pending AUTH row (no answer yet) must never look identical to "no
+        # auth step at all" - round 5 design critique item 7.
+        auth = (
+            f"; auth={humanize_auth_result(row['auth_result'], verdict=row['final_verdict'])}"
+            if row["auth_result"] or row["final_verdict"] == "AUTH"
+            else ""
+        )
         typer.echo(
             f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<{_ACTION_WIDTH}} "
             f"{target}  [{reasons}]{auth}"

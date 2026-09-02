@@ -258,9 +258,13 @@ def test_log_why_prints_plain_summary_and_next_step_for_block_and_auth_rows(tmp_
     with patch.object(main_mod, "read_decisions", _rows):
         result = runner.invoke(app, ["log", "--path", str(tmp_path), "--why"])
     assert result.exit_code == 0
-    assert "Doberman decided AUTH after checking the rules." in result.stdout
-    assert "Next: re-running the action asks again" in result.stdout
-    assert "doberman dash" in result.stdout
+    # Whitespace-normalized: `wrap_detail` wraps to the real terminal width, so
+    # on a narrower CI runner "doberman dash" could otherwise land split across
+    # two physical lines even though it now renders as one unbreakable phrase.
+    normalized = " ".join(result.stdout.split())
+    assert "Doberman decided AUTH after checking the rules." in normalized
+    assert "Next: re-running the action asks again" in normalized
+    assert "doberman dash" in normalized
     # Nothing is printed under the trailing "ALLOW" row.
     lines = result.stdout.splitlines()
     allow_index = next(i for i, ln in enumerate(lines) if ln.startswith("2026-07-30T00:00:01Z"))
