@@ -1836,7 +1836,7 @@ async def test_terminal_too_small_shows_one_line_notice_instead_of_the_browser(t
         assert app.query_one("#body").display is False
         assert (
             _static_text(app.query_one("#too-small"))
-            == "Terminal too small - resize to at least 60x12"
+            == "Terminal too small - resize to at least 76x12"
         )
 
 

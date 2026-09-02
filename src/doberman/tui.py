@@ -654,8 +654,10 @@ class _AdaptiveFooter(Footer):
 
 #: Below this width/height, the app shows one honest line instead of a
 #: DataTable/panels that can't lay out at that size (round 5 design critique
-#: item 10).
-_MIN_TERMINAL_WIDTH = 60
+#: item 10). 76 = the sum of the column minimums (multi-day time) plus
+#: DataTable's cell padding - measured, not a round number: at 60 columns the
+#: table's virtual width is 68 and it scrolls sideways.
+_MIN_TERMINAL_WIDTH = 76
 _MIN_TERMINAL_HEIGHT = 12
 _MSG_TOO_SMALL = (
     f"Terminal too small - resize to at least {_MIN_TERMINAL_WIDTH}x{_MIN_TERMINAL_HEIGHT}"
