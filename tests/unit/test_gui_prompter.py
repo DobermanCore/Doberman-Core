@@ -34,6 +34,24 @@ from doberman.auth.gui_prompter import (
 # --- GuiPrompter: answers ----------------------------------------------------------
 
 
+def _off_main_thread(monkeypatch) -> None:
+    """Make ``gui_prompter`` believe it runs off the main thread.
+
+    ``gui_prompter.threading`` IS the global module, so these patches reach
+    ``logging`` too, which reads ``current_thread().name`` for every record. Bare
+    ``object()`` stand-ins raised AttributeError from inside ``logger.info``
+    whenever an earlier test had left the doberman logger enabled (order-dependent;
+    the nightly's random order caught it on macOS). Named stand-ins stay distinct
+    for the prompter's main-thread check and harmless for logging.
+    """
+    monkeypatch.setattr(
+        gui_prompter.threading, "current_thread", lambda: types.SimpleNamespace(name="worker")
+    )
+    monkeypatch.setattr(
+        gui_prompter.threading, "main_thread", lambda: types.SimpleNamespace(name="MainThread")
+    )
+
+
 @pytest.mark.parametrize("answer", [True, False])
 def test_confirm_returns_the_dialog_answer(monkeypatch, answer):
     monkeypatch.setattr(gui_prompter, "_confirm_dialog", lambda _msg, **_kw: answer)
@@ -123,8 +141,7 @@ def test_open_root_raises_prompter_unavailable_when_tk_init_fails(monkeypatch):
 def test_macos_off_main_thread_refuses_before_touching_tkinter(monkeypatch):
     tkinter = pytest.importorskip("tkinter")
     monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
-    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
-    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+    _off_main_thread(monkeypatch)
 
     def _boom(*_a, **_k):
         raise AssertionError("tkinter.Tk() must never be called off the main thread on macOS")
@@ -154,8 +171,7 @@ def test_non_macos_off_main_thread_is_unaffected(monkeypatch, platform):
     """Windows/Linux users see zero behavior change -- this hazard is macOS-only."""
     tkinter = pytest.importorskip("tkinter")
     monkeypatch.setattr(gui_prompter.sys, "platform", platform)
-    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
-    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+    _off_main_thread(monkeypatch)
 
     attempted = []
     monkeypatch.setattr(tkinter, "Tk", lambda: attempted.append(True) or object())
@@ -191,8 +207,7 @@ def test_real_background_thread_on_macos_is_refused(monkeypatch):
 def test_gui_prompter_confirm_refuses_off_main_thread_on_macos(monkeypatch):
     """The guard is reachable through the public GuiPrompter API, not just _open_root."""
     monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
-    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
-    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+    _off_main_thread(monkeypatch)
     with pytest.raises(PrompterUnavailableError):
         GuiPrompter().confirm("Approve?")
 
@@ -201,8 +216,7 @@ def test_fallback_chain_falls_through_gui_to_tty_on_macos_background_thread(monk
     """The #399 shape: GuiPrompter is refused (macOS, background thread), and the
     chain falls through to the next channel rather than silently approving."""
     monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
-    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
-    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+    _off_main_thread(monkeypatch)
 
     tty = _Recorder(confirm=True)
     assert FallbackPrompter([GuiPrompter(), tty]).confirm("Approve?") is True
@@ -227,8 +241,7 @@ def test_fallback_chain_denies_when_gui_and_tty_both_unavailable_on_macos(monkey
     )
 
     monkeypatch.setattr(gui_prompter.sys, "platform", "darwin")
-    monkeypatch.setattr(gui_prompter.threading, "current_thread", lambda: object())
-    monkeypatch.setattr(gui_prompter.threading, "main_thread", lambda: object())
+    _off_main_thread(monkeypatch)
 
     now = datetime(2026, 6, 10, tzinfo=timezone.utc)
     action = SecurityObject(
