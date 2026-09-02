@@ -831,16 +831,41 @@ def _auth(reason: ReasonCode, explanation: str) -> GuardrailResult:
     )
 
 
+def command_line_from_arguments(arguments: dict) -> str | None:
+    """Reconstruct the command line a tool will run from its raw arguments.
+
+    A string ``command``/``cmd``/``script`` is the line. A list-valued ``args``
+    is an argv: joined with ``shlex.join`` so every token keeps its boundary
+    (never plain-space-joined then re-split — that loses the token boundary of
+    e.g. ``bash -c "rm -rf /"`` and mis-splits values with a bare apostrophe),
+    and appended to a string ``command``/``cmd`` when both are present (the
+    common ``{"command": "rm", "args": ["-rf", "/"]}`` shape). Never raises.
+    """
+    head: str | None = None
+    for key in ("command", "cmd", "script"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            head = value
+            break
+        if isinstance(value, (list, tuple)) and value:
+            head = shlex.join(str(v) for v in value)
+            break
+
+    args_value = arguments.get("args")
+    args_line: str | None = None
+    if isinstance(args_value, (list, tuple)) and args_value:
+        args_line = shlex.join(str(v) for v in args_value)
+
+    if head is not None and args_line is not None:
+        return f"{head} {args_line}"
+    return head if head is not None else args_line
+
+
 def _raw_command_payload(ctx: EvalContext) -> str | None:
     """Extract a command-shaped string from the un-redacted raw arguments, if any."""
     raw_arguments = ctx.metadata.get("raw_arguments") if isinstance(ctx.metadata, dict) else None
     if isinstance(raw_arguments, dict):
-        for key in ("command", "cmd", "script", "args"):
-            value = raw_arguments.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-            if isinstance(value, (list, tuple)) and value:
-                return " ".join(str(v) for v in value)
+        return command_line_from_arguments(raw_arguments)
     return None
 
 

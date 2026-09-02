@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from doberman.canonical import canonicalize
-from doberman.engine.rules.commands import walk_command
+from doberman.engine.rules.commands import command_line_from_arguments, walk_command
 from doberman.engine.rules.destinations import _parse_host
 from doberman.engine.rules.secrets import candidate_secret_fingerprints, contains_strong_secret
 from doberman.models import ActionType, ReasonCode, Risk, SecurityObject, SourceContext
@@ -248,13 +248,7 @@ def _redact_args(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _command_text(arguments: dict[str, Any]) -> str | None:
-    for key in ("command", "cmd", "script", "args"):
-        value = arguments.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-        if isinstance(value, (list, tuple)) and value:
-            return " ".join(str(part) for part in value)
-    return None
+    return command_line_from_arguments(arguments)
 
 
 def _command_name(token: str) -> str:
