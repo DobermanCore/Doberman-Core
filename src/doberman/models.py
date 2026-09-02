@@ -358,6 +358,15 @@ class ReasonCode(StrEnum):
     verification_bypass_flag = "verification_bypass_flag"
     test_file_removal = "test_file_removal"
 
+    # C3 — dependency admission gate (v1, offline, name-only): parses
+    # package-manager install commands and raises on the package NAME alone,
+    # against two bundled static lists. Zero filesystem/network access.
+    dependency_known_malicious = "dependency_known_malicious"
+    # Edit-distance-1-from-popular AND not itself popular — the only
+    # statistical signal in this rule; capped at AUTH by construction and
+    # never promoted to BLOCK (a probability score never earns a BLOCK).
+    dependency_name_typosquat = "dependency_name_typosquat"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).
