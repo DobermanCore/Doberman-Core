@@ -33,6 +33,21 @@ from doberman.auth.gui_prompter import (
     PrompterUnavailableError,
 )
 
+# CI hardening (round 7 follow-up): a real Tk ``mainloop()`` blocked under a
+# WM-less Xvfb (no window manager to ever map/focus the window) does not
+# reliably yield to CI's global ``--timeout=300`` signal-based kill -- a
+# stuck Tcl event loop can swallow or never observe the Python-level signal
+# while it blocks in its own C-level wait, which is exactly how a prior run
+# rode a Linux/Xvfb leg to its 20-minute job cap with no test name in the
+# log. ``method="thread"`` spawns a separate killer thread that dumps every
+# thread's stack and hard-exits the process regardless of what the main
+# thread is blocked on -- this is the one method that actually interrupts a
+# hung Tcl loop. 120s is comfortably above this file's real worst case (the
+# full serial run here takes well under 30s) and tight enough that a hang
+# fails fast, naming the offending test, instead of silently eating the
+# whole job's time budget.
+pytestmark = pytest.mark.timeout(120, method="thread")
+
 # --- GuiPrompter: answers ----------------------------------------------------------
 
 
@@ -201,12 +216,101 @@ def test_outcome_display_ms_is_three_seconds():
 
 
 def test_outcome_window_title_names_the_outcome_for_screen_readers(monkeypatch, fake_root):
-    """Item 3: the title becomes "Doberman - <outcome text>" -- a title
-    change is what most screen readers actually announce, so a human who
-    isn't looking at the screen still hears the outcome."""
+    """Item 3: the title becomes "Doberman - <outcome>" -- a title change is
+    what most screen readers actually announce, so a human who isn't looking
+    at the screen still hears the outcome.
+
+    Round 7 (P1 item 2): the title uses the short outcome KEY, never the
+    long descriptive ``text`` (for "expired" that embeds the whole
+    configured timeout and can run long enough to clip in a narrow title
+    bar/taskbar preview) -- ``"Doberman - expired"``, not
+    ``"Doberman - Denied - no answer in 2:00"``.
+    """
     monkeypatch.setattr(gui_prompter, "_populate_outcome_notice", lambda *_a, **_kw: None)
-    gui_prompter._show_outcome_window("Approved", "approved")
-    assert fake_root.titles[-1] == "Doberman - Approved"
+    gui_prompter._show_outcome_window("Denied - no answer in 2:00", "expired")
+    assert fake_root.titles[-1] == "Doberman - expired"
+
+
+@pytest.mark.parametrize("outcome", ["expired", "code_rejected"])
+def test_persistent_outcomes_never_schedule_the_brief_auto_close(monkeypatch, fake_root, outcome):
+    """Round 7, P1 item 2: expired/code_rejected must never close themselves
+    on the brief 3s schedule -- the human may well not have been watching
+    for exactly these two outcomes, so only an explicit dismissal (Escape,
+    click, or the Close button) should end it that fast."""
+    monkeypatch.setattr(gui_prompter, "_populate_outcome_notice", lambda *_a, **_kw: None)
+    gui_prompter._show_outcome_window("some text", outcome)
+    assert gui_prompter._OUTCOME_DISPLAY_MS not in fake_root.scheduled
+
+
+@pytest.mark.parametrize("outcome", ["expired", "code_rejected"])
+def test_persistent_outcomes_still_have_a_hard_ceiling(monkeypatch, fake_root, outcome):
+    """CI-hardening follow-up: "never auto-close" must never mean "block
+    forever" -- a persistent notice is purely cosmetic (the auth decision is
+    already final), so it must still schedule SOME eventual close
+    (:data:`gui_prompter._PERSISTENT_OUTCOME_MAX_MS`, 10 minutes in
+    production) rather than pin a mainloop/thread open with no bound at all
+    if a human never comes back to dismiss it."""
+    monkeypatch.setattr(gui_prompter, "_populate_outcome_notice", lambda *_a, **_kw: None)
+    gui_prompter._show_outcome_window("some text", outcome)
+    assert gui_prompter._PERSISTENT_OUTCOME_MAX_MS in fake_root.scheduled
+
+
+@pytest.mark.parametrize("outcome", ["expired", "code_rejected"])
+def test_persistent_outcome_ceiling_is_overridable(monkeypatch, fake_root, outcome):
+    """Tests (and any caller that wants a tighter bound) can override the
+    10-minute production ceiling via ``max_wait_ms`` -- this is exactly what
+    keeps a real (non-fake_root) dialog test from ever waiting minutes for a
+    timer that exists only as a safety net."""
+    monkeypatch.setattr(gui_prompter, "_populate_outcome_notice", lambda *_a, **_kw: None)
+    gui_prompter._show_outcome_window("some text", outcome, max_wait_ms=50)
+    assert 50 in fake_root.scheduled
+    assert gui_prompter._PERSISTENT_OUTCOME_MAX_MS not in fake_root.scheduled
+
+
+@pytest.mark.parametrize("outcome", ["approved", "denied"])
+def test_non_persistent_outcomes_still_auto_close(monkeypatch, fake_root, outcome):
+    """approved/denied are things a human just watched happen live in the
+    auth dialog -- they keep the original brief auto-close."""
+    monkeypatch.setattr(gui_prompter, "_populate_outcome_notice", lambda *_a, **_kw: None)
+    gui_prompter._show_outcome_window("some text", outcome)
+    assert gui_prompter._OUTCOME_DISPLAY_MS in fake_root.scheduled
+
+
+@pytest.mark.parametrize("outcome", ["expired", "code_rejected"])
+def test_persistent_outcome_notice_gets_a_real_close_button(real_root, outcome):
+    """The only way to dismiss a persistent notice besides Escape/click is a
+    real, focusable Close button -- verified on the real widget tree, and
+    that clicking it actually ends the (fake, recorded) mainloop wait."""
+    root = real_root
+    quit_calls: list[bool] = []
+    root.quit = lambda: quit_calls.append(True)
+    gui_prompter._populate_outcome_notice(root, "some text", outcome)
+    root.update()
+
+    import tkinter
+
+    close_btn = next(
+        w
+        for w in _walk_widgets(root)
+        if isinstance(w, tkinter.Button) and w.cget("text") == "Close"
+    )
+    close_btn.invoke()
+    assert quit_calls == [True]
+
+
+@pytest.mark.parametrize("outcome", ["approved", "denied"])
+def test_non_persistent_outcome_notice_has_no_close_button(real_root, outcome):
+    """approved/denied auto-close on schedule -- they must not grow an extra
+    Close button that isn't needed for anything."""
+    root = real_root
+    gui_prompter._populate_outcome_notice(root, "some text", outcome)
+    root.update()
+
+    import tkinter
+
+    assert not any(
+        isinstance(w, tkinter.Button) and w.cget("text") == "Close" for w in _walk_widgets(root)
+    )
 
 
 def test_outcome_window_dismisses_early_on_escape_or_click(monkeypatch, fake_root):
@@ -1163,16 +1267,34 @@ def test_countdown_ticks_then_denies_on_expiry(real_root):
     assert label.cget("text") == "Denied - no answer in 2:00"
 
 
-def test_countdown_adopts_severity_ramp_as_time_runs_low(real_root):
-    """The countdown label turns amber under 30s and bold BLOCK-red under
-    10s -- the same visual language the risk severity chip uses."""
+def test_countdown_turns_amber_under_30s_never_the_severity_red(real_root):
+    """Round 7, P1 item 1: the countdown turns amber-bold under 30s and stays
+    amber-bold under 10s (with a leading "!") -- it must NEVER borrow the
+    chip/risk-sentence's severity BLOCK-red, so time-urgency and action-
+    severity read as two distinct signals instead of one shared red wash."""
+    root = real_root
+    scheduled: list[object] = []
+    root.after = lambda _delay_ms, callback: scheduled.append(callback)  # type: ignore[method-assign]
+
+    label = gui_prompter._build_countdown(root, root, 25.0, on_expire=lambda: None)
+    assert label.cget("fg") == gui_prompter._APPROVE
+    assert "bold" in label.cget("font")
+    assert not label.cget("text").startswith("!")  # no "!" prefix at >= 10s
+
+
+def test_countdown_under_10s_is_amber_with_bang_prefix_never_red(real_root):
+    """Round 7, P1 item 1: under 10s adds a "!" prefix but the colour stays
+    amber -- never :data:`gui_prompter._SEV_CRITICAL`, which stays reserved
+    for the chip, risk sentence, and the final expiry flash."""
     root = real_root
     scheduled: list[object] = []
     root.after = lambda _delay_ms, callback: scheduled.append(callback)  # type: ignore[method-assign]
 
     label = gui_prompter._build_countdown(root, root, 8.0, on_expire=lambda: None)
-    assert label.cget("fg") == gui_prompter._SEV_CRITICAL  # under 10s from the very first paint
+    assert label.cget("fg") == gui_prompter._APPROVE  # amber, never red, even under 10s
+    assert label.cget("fg") != gui_prompter._SEV_CRITICAL
     assert "bold" in label.cget("font")
+    assert label.cget("text").startswith("!")
 
 
 def test_more_time_button_extends_the_countdown_up_to_ten_times(real_root):
@@ -2235,7 +2357,11 @@ def test_critical_approve_label_pure_formatting():
     assert gui_prompter._critical_approve_label("Approve", -1.0) == "Approve"
 
 
-def test_critical_severity_headline_uses_block_red(real_root):
+def test_critical_severity_headline_stays_fg_bold_never_red(real_root):
+    """Round 7, P1 item 1: a CRITICAL dialog no longer colours the headline
+    the same BLOCK-red as the chip/risk sentence/countdown -- severity now
+    speaks only through the chip and risk sentence, so a CRITICAL dialog
+    never shows more than two red elements at once."""
     root = real_root
     answer: dict = {}
     parts = dict(_SAMPLE_PARTS, risk="Risk: critical - this needs your code")
@@ -2243,25 +2369,7 @@ def test_critical_severity_headline_uses_block_red(real_root):
     root.update()
 
     import tkinter
-
-    headline = next(
-        w
-        for w in _walk_widgets(root)
-        if isinstance(w, tkinter.Label) and w.cget("text") == parts["headline"]
-    )
-    assert headline.cget("fg") == gui_prompter._SEV_CRITICAL
-
-
-def test_high_severity_headline_stays_the_body_colour(real_root):
-    """Only CRITICAL gets the coloured headline -- high stays the default;
-    the escalation is deliberately ABOVE high, not AT it."""
-    root = real_root
-    answer: dict = {}
-    parts = dict(_SAMPLE_PARTS, risk="Risk: high - this needs your code")
-    gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
-    root.update()
-
-    import tkinter
+    import tkinter.font as tkfont
 
     headline = next(
         w
@@ -2269,6 +2377,61 @@ def test_high_severity_headline_stays_the_body_colour(real_root):
         if isinstance(w, tkinter.Label) and w.cget("text") == parts["headline"]
     )
     assert headline.cget("fg") == gui_prompter._FG
+    assert headline.cget("fg") != gui_prompter._SEV_CRITICAL
+    assert tkfont.Font(root=root, font=headline.cget("font")).actual()["weight"] == "bold"
+
+
+def test_high_severity_headline_stays_fg_bold_too(real_root):
+    """The headline's colour/weight never varies by severity at all (round 7,
+    P1 item 1) -- high gets the exact same _FG/bold treatment as critical."""
+    root = real_root
+    answer: dict = {}
+    parts = dict(_SAMPLE_PARTS, risk="Risk: high - this needs your code")
+    gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
+    root.update()
+
+    import tkinter
+    import tkinter.font as tkfont
+
+    headline = next(
+        w
+        for w in _walk_widgets(root)
+        if isinstance(w, tkinter.Label) and w.cget("text") == parts["headline"]
+    )
+    assert headline.cget("fg") == gui_prompter._FG
+    assert tkfont.Font(root=root, font=headline.cget("font")).actual()["weight"] == "bold"
+
+
+def test_critical_under_10s_shows_at_most_two_red_elements(real_root):
+    """Round 7, P1 item 1's actual point: at CRITICAL severity with the
+    countdown under 10s, only the chip and the risk sentence may be
+    BLOCK-red -- the headline (now _FG/bold) and the countdown (now
+    amber-bold with a "!" prefix) must never add a third/fourth red element.
+
+    The chip itself is a FILLED red box (bg=_SEV_CRITICAL, dark text) rather
+    than red text on a dark background, so a widget counts as "red" here if
+    EITHER its fill or its text uses the severity color -- either one reads
+    as a red element to a human looking at the dialog.
+    """
+    root = real_root
+    answer: dict = {}
+    parts = dict(_SAMPLE_PARTS, risk="Risk: critical - this needs your code")
+    gui_prompter._populate_confirm_parts(root, parts, answer, 8.0)
+    root.update()
+
+    import tkinter
+
+    red_labels = [
+        w
+        for w in _walk_widgets(root)
+        if isinstance(w, tkinter.Label)
+        and gui_prompter._SEV_CRITICAL in (w.cget("fg"), w.cget("bg"))
+    ]
+    # The chip ("CRITICAL", a filled red box) and the risk sentence -- nothing else.
+    assert len(red_labels) == 2
+    texts = {label.cget("text").strip() for label in red_labels}
+    assert "CRITICAL" in texts
+    assert any("critical" in text.lower() for text in texts if text != "CRITICAL")
 
 
 def test_critical_approve_button_starts_disabled_and_ticks_down(real_root):

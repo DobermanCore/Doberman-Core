@@ -146,6 +146,16 @@ _QUESTION = "Approve this exact action?"
 #: _BODY_FONT/regular); bold is the ONLY thing distinguishing them, so this is
 #: _BODY_FONT plus a bold weight, nothing else.
 _QUESTION_FONT = (_BODY_FONT[0], _BODY_FONT[1], "bold")
+#: Round 7 (P1 item 1): the headline stays _FG at EVERY severity, including
+#: CRITICAL -- bold is the only thing that ever distinguishes it from
+#: ordinary body text. A CRITICAL dialog used to also paint the headline in
+#: the same BLOCK-red as the risk chip, the risk sentence, AND the sub-10s
+#: countdown -- four elements sharing one hue meant "this is severe" and
+#: "you are almost out of time" read as the SAME signal. Severity now lives
+#: only in the chip + risk sentence (see :func:`_chip_style`/
+#: :func:`_severity_ramp`); urgency lives only in the countdown
+#: (:func:`_build_countdown`'s own amber ramp) -- never both at once.
+_HEADLINE_FONT = (_BODY_FONT[0], _BODY_FONT[1], "bold")
 _HINT = "Tab/Arrows: move - Enter: use the focused button - Esc: deny"
 _HINT_CODE = "Enter: submit code - Tab: buttons - Esc: deny"
 _CODE_PROMPT = "Enter the 6-digit code from your authenticator app to approve:"
@@ -1232,10 +1242,14 @@ def _build_countdown(
 ) -> Any:
     """A ticking "auto-denies in M:SS" label, plus a "More time" control
     (WCAG 2.2.1 — a human actually present must be able to ask for more
-    time). The label adopts the same severity ramp risk uses as time runs
-    low — amber under 30s, bold BLOCK-red under 10s — so an urgent countdown
-    reads as urgent the same way an urgent risk does; at zero, a brief
-    "Denied" flash, then close.
+    time). Round 7 (P1 item 1): the label ramps muted -> amber-bold under
+    30s -> amber-bold with a leading "!" under 10s — deliberately NEVER the
+    chip/risk-sentence's severity BLOCK-red, so time-urgency and action-
+    severity stay two independently legible signals instead of one shared
+    red wash (a CRITICAL action with under 10s left used to paint the
+    headline, the chip, the risk sentence, AND this countdown all the same
+    red at once). At zero, a brief "Denied" flash — an actual denial, not
+    mere urgency — DOES use BLOCK-red, then the dialog closes.
 
     At zero, ``on_expire`` runs FIRST and SYNCHRONOUSLY, before this function
     ever shows the flash or schedules the window's close: it must resolve the
@@ -1264,14 +1278,17 @@ def _build_countdown(
     extended = {"used": 0}
 
     def _paint(secs: int) -> None:
-        if secs < 10:
-            color, bold = _SEV_CRITICAL, True
-        elif secs < 30:
-            color, bold = _APPROVE, False
+        text = deadline_note_mmss(secs)
+        if secs < 30:
+            # Amber-bold, never the severity BLOCK-red -- urgency is its own
+            # signal, distinct from how risky the action itself is (P1 item 1).
+            color, bold = _APPROVE, True
+            if secs < 10:
+                text = f"! {text}"
         else:
             color, bold = _MUTED, False
         font = (_DEADLINE_FONT[0], _DEADLINE_FONT[1], "bold") if bold else _DEADLINE_FONT
-        label.configure(text=deadline_note_mmss(secs), fg=color, font=font)
+        label.configure(text=text, fg=color, font=font)
 
     def _extend() -> None:
         if extended["used"] >= _MAX_EXTENSIONS:
@@ -1562,8 +1579,12 @@ def _populate_confirm_parts(root: Any, parts: dict, answer: dict, timeout_s: flo
     ``"Action: <verb>"`` line so the verb (missing from the structured
     technical rendering before) is still visible. The GUI's own headline
     label strips the technical tone's "[RISK: HIGH]" bracket (the chip already
-    says it — item 11); CRITICAL additionally colours the headline text
-    itself in the same BLOCK-red the chip uses (item 2).
+    says it — item 11). Round 7 (P1 item 1): the headline stays ``_FG``/bold
+    at EVERY severity, including CRITICAL — a prior round additionally
+    coloured a CRITICAL headline the same BLOCK-red as the chip, which meant
+    the headline, the chip, the risk sentence, AND the sub-10s countdown all
+    shared one hue; severity now speaks only through the chip and risk
+    sentence (:func:`_build_risk_line`).
 
     Layout (item 6): the target panel, the approval-memory notice (moved to
     AFTER it — "read after the action", styled as a muted note, not the
@@ -1606,7 +1627,7 @@ def _populate_confirm_parts(root: Any, parts: dict, answer: dict, timeout_s: flo
         headline_text = parts["headline"]
         if parts.get("tone") == "technical":
             headline_text = _headline_without_risk_bracket(headline_text)
-        _build_line(frame, headline_text, fg=_SEV_CRITICAL if risk_word == "critical" else _FG)
+        _build_line(frame, headline_text, font=_HEADLINE_FONT, fg=_FG)
     if parts.get("tone") == "technical":
         _build_line(frame, f"Action: {parts['verb']}", font=_SMALL_FONT, fg=_MUTED)
     _build_target_panel(root, frame, parts["target"], toggle_label=_toggle_expand_label(parts))
@@ -1926,6 +1947,28 @@ _OUTCOME_NEXT_STEP = {
     "expired": "Ask your agent to retry the action.",
 }
 
+#: Round 7 (P1 item 2): these two outcomes describe something a human may
+#: well NOT have been watching for -- "expired" (nobody answered in time)
+#: and "code_rejected" (a wrong code was entered, deliberately or not) --
+#: so the notice must never auto-close unseen. Only these two skip
+#: :func:`_show_outcome_window`'s auto-close timer and get a real Close
+#: button (:func:`_populate_outcome_notice`); "approved"/"denied" are things
+#: a human just watched happen live in the auth dialog itself, so they keep
+#: the original brief auto-close.
+_PERSISTENT_OUTCOMES = frozenset({"expired", "code_rejected"})
+
+#: Hard ceiling on how long a :data:`_PERSISTENT_OUTCOMES` notice can wait
+#: for a dismissal in production before closing itself anyway. "Never
+#: auto-close" must not mean "block forever": the auth decision is already
+#: final by the time this cosmetic notice shows, so eventually closing it
+#: unattended is harmless, and a `doberman serve` process must never be left
+#: with a zombie Tk mainloop (and the daemon thread pinned to it) because a
+#: human never got back to a machine. :func:`_show_outcome_window`'s
+#: ``max_wait_ms`` overrides this -- tests pass a small value so nothing in
+#: the suite can ever wait minutes for a timer that exists only as a safety
+#: net.
+_PERSISTENT_OUTCOME_MAX_MS = 10 * 60 * 1000  # 10 minutes
+
 
 def _outcome_style(outcome: str) -> str:
     """The notice's text/border colour (item 5): the same PASS-ish amber the
@@ -1941,6 +1984,15 @@ def _populate_outcome_notice(root: Any, text: str, outcome: str = "denied") -> N
     """Brand mark + wordmark (so the notice is recognisably Doberman, not a
     bare unlabeled toast), the outcome text in its severity colour, and — for
     outcomes with one — a one-line next step in the muted note style.
+
+    Round 7 (P1 item 2): a :data:`_PERSISTENT_OUTCOMES` outcome (expired,
+    code_rejected) gets a real, focusable Close button instead of the plain
+    bottom-padding frame — :func:`_show_outcome_window` never schedules its
+    auto-close for these, so without an explicit control the window would sit
+    there with no way to dismiss it beyond Escape/click. A bare ``tk.Button``
+    (never ``ttk``): this window never runs :func:`_apply_ttk_style`, so a
+    ttk widget here would need its own style wiring for no visual benefit —
+    the button styles itself to match the panel directly.
     """
     import tkinter as tk
 
@@ -1966,32 +2018,70 @@ def _populate_outcome_notice(root: Any, text: str, outcome: str = "denied") -> N
         tk.Label(panel, text=next_step, fg=_MUTED, bg=_PANEL, font=_SMALL_FONT, padx=20).pack(
             pady=(0, 4)
         )
-    tk.Frame(panel, bg=_PANEL, height=10).pack()  # symmetric bottom padding either way
+    if outcome in _PERSISTENT_OUTCOMES:
+        close_btn = tk.Button(
+            panel,
+            text="Close",
+            command=root.quit,
+            bg=_PANEL,
+            fg=_BRAND,
+            activebackground=_PANEL,
+            activeforeground=_APPROVE_ACTIVE,
+            relief="flat",
+            bd=0,
+            font=_SMALL_FONT,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=_RULE,
+            highlightcolor=_BRAND,
+        )
+        close_btn.pack(pady=(4, 12))
+        close_btn.focus_set()  # a sensible default focus target -- never focus_force()
+    else:
+        tk.Frame(panel, bg=_PANEL, height=10).pack()  # symmetric bottom padding either way
 
 
-def _show_outcome_window(text: str, outcome: str = "denied") -> None:
-    """A small, topmost, non-focus-stealing notice: shows ``text`` for
-    :data:`_OUTCOME_DISPLAY_MS` then closes itself — no answer required, and
-    it must never block longer than that or raise into the caller (a
-    post-decision notice is purely cosmetic, never a decision path).
+def _show_outcome_window(
+    text: str, outcome: str = "denied", *, max_wait_ms: int | None = None
+) -> None:
+    """A small, topmost, non-focus-stealing notice: shows ``text``, then
+    closes itself — no answer required, and it must never block forever or
+    raise into the caller (a post-decision notice is purely cosmetic, never a
+    decision path).
 
     Round 6 (item 3): this window keeps NORMAL window-manager chrome (never
     ``overrideredirect`` — the previous chrome-less "toast" trick drops the
     title bar, and with it the one channel — a title change — most screen
     readers actually announce) and titles itself ``"Doberman - <outcome>"``
-    so a human who isn't looking at the screen still hears what happened.
-    It stays non-focus-stealing through ``-topmost`` ALONE — never
+    (the short outcome KEY, e.g. ``"Doberman - expired"`` — never the long
+    descriptive ``text``, which for "expired" embeds the whole configured
+    timeout and can run long enough to clip in a narrow title bar/taskbar
+    preview) so a human who isn't looking at the screen still hears what
+    happened. It stays non-focus-stealing through ``-topmost`` ALONE — never
     ``focus_force()`` — and can be dismissed the instant it's noticed, via
-    Escape or a click, rather than only ever waiting out the full display
-    time. Reuses :func:`_open_root` (and so the macOS main-thread guard, and
+    Escape, a click, or (see :func:`_populate_outcome_notice`) a real Close
+    button. Reuses :func:`_open_root` (and so the macOS main-thread guard, and
     the no-display case) rather than calling ``tkinter.Tk()`` directly.
+
+    Round 7 (P1 item 2): :data:`_OUTCOME_DISPLAY_MS`'s auto-close is skipped
+    entirely for a :data:`_PERSISTENT_OUTCOMES` outcome (expired,
+    code_rejected) — an unanswered challenge or a rejected code must never
+    close itself unseen just because a human happened to be looking
+    elsewhere when it appeared; it now waits for an explicit dismissal.
+    "Never auto-close" still must never mean "block forever" though: a hard
+    ceiling (:data:`_PERSISTENT_OUTCOME_MAX_MS`, 10 minutes) closes it
+    anyway if nobody ever dismisses it — this is purely a cosmetic notice,
+    so eventually closing it unattended is harmless, and nothing here may
+    pin a background thread's Tk mainloop open forever. ``max_wait_ms``
+    overrides that ceiling — tests pass a small value so nothing in the
+    suite can wait minutes for what is only ever a safety net.
     """
     try:
         root = _open_root()
     except PrompterUnavailableError:
         return
     try:
-        root.title(f"Doberman - {text}")
+        root.title(f"Doberman - {outcome}")
         root.configure(bg=_BG)
         root.resizable(False, False)
         root.attributes("-topmost", True)
@@ -2006,7 +2096,12 @@ def _show_outcome_window(text: str, outcome: str = "denied") -> None:
         # screen exactly as :func:`_center_on_screen` always has.
         monitor = _monitor_rect_for(_hmonitor_for_foreground_window() or _hmonitor_under_cursor())
         _center_on_screen(root, monitor=monitor)
-        root.after(_OUTCOME_DISPLAY_MS, root.quit)
+        if outcome in _PERSISTENT_OUTCOMES:
+            root.after(
+                _PERSISTENT_OUTCOME_MAX_MS if max_wait_ms is None else max_wait_ms, root.quit
+            )
+        else:
+            root.after(_OUTCOME_DISPLAY_MS, root.quit)
         root.mainloop()
     except Exception:  # noqa: S110 — cosmetic only, must never affect the decided outcome
         pass
@@ -2180,9 +2275,12 @@ class GuiPrompter:
 
     def notify_outcome(self, parts: dict, outcome: str) -> None:  # noqa: ARG002 — parts unused here
         """Post-decision notice (item 4): a small topmost window shows
-        approved/denied/code_rejected/expired for ~3s then closes — a
-        wrong-but-well-formed code (or any other non-approval) no longer just
-        silently closes the window. Never raises; purely cosmetic.
+        approved/denied/code_rejected/expired — a wrong-but-well-formed code
+        (or any other non-approval) no longer just silently closes the
+        window. approved/denied close themselves after ~3s; expired and
+        code_rejected (round 7, P1 item 2) stay open until the human
+        dismisses them — those two are exactly the outcomes a human may not
+        have been watching for. Never raises; purely cosmetic.
 
         "expired" names the REAL configured timeout (item 3), read from this
         instance's own ``_timeout_s`` — the same value the dialog's own
