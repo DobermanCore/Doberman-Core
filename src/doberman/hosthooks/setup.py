@@ -101,11 +101,16 @@ def detect_hosts(project_root: str, home: Path) -> set[str]:
 
 
 def host_menu_lines(detected: set[str]) -> list[str]:
-    """Return formatted menu lines for the four hosts, marking detected ones."""
+    """Return formatted menu lines for the four hosts, marking detected ones.
+
+    Labels are padded to the widest one so every ``<- detected`` tag lines up
+    in a column, regardless of which host it's marking.
+    """
+    width = max(len(host.label) for host in HOSTS)
     lines: list[str] = []
     for i, host in enumerate(HOSTS, start=1):
         tag = "   <- detected" if host.key in detected else ""
-        lines.append(f"  [{i}] {host.label}{tag}")
+        lines.append(f"  [{i}] {host.label:<{width}}{tag}")
     return lines
 
 

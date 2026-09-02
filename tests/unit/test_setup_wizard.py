@@ -145,6 +145,34 @@ def test_yes_saves_preferences(tmp_path: Path) -> None:
     assert prefs.reversibility == pytest.approx(0.7)
 
 
+def test_yes_refuses_to_lower_mode_without_prompting(tmp_path: Path) -> None:
+    """``--yes`` then ``--yes --mode light`` never opens a prompt and refuses the lowering."""
+    first = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+
+    result = runner.invoke(app, ["setup", "--yes", "--mode", "light", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "[y/N]" not in result.output
+    assert "Reason:" not in result.output
+    assert "not lowered" in result.output
+    assert "Mode:       balanced (requested light; not lowered)" in result.output
+    assert load_mode(str(tmp_path)) == "balanced"
+    prefs = load_preferences(str(tmp_path))
+    assert prefs.confidentiality == pytest.approx(0.5)
+
+
+def test_yes_raise_over_existing_policy_applies_free(tmp_path: Path) -> None:
+    """A raise (``--yes --mode strict`` over an existing balanced policy) applies with no gate."""
+    first = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+
+    result = runner.invoke(app, ["setup", "--yes", "--mode", "strict", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert load_mode(str(tmp_path)) == "strict"
+    prefs = load_preferences(str(tmp_path))
+    assert prefs.confidentiality == pytest.approx(0.7)
+
+
 # ---------------------------------------------------------------------------
 # Interactive path (via CliRunner input=)
 # ---------------------------------------------------------------------------
@@ -159,11 +187,12 @@ def test_interactive_balanced_project_scope(tmp_path: Path) -> None:
     - telemetry consent: "n"
     - tune prefs: "n"
     - global install: "n"
+    - see it work? (demo offer): "n"
     """
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="\nbalanced\nn\nn\nn\n",
+        input="\nbalanced\nn\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     assert "Agent profile" not in result.output
@@ -180,7 +209,7 @@ def test_interactive_numeric_mode_choice(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="\n3\nn\nn\nn\n",
+        input="\n3\nn\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     assert load_mode(str(tmp_path)) == "strict"
@@ -193,7 +222,7 @@ def test_interactive_tune_prefs(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input=f"\nbalanced\nn\ny\n{weight_inputs}\nn\n",
+        input=f"\nbalanced\nn\ny\n{weight_inputs}\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     prefs = load_preferences(str(tmp_path))
@@ -205,12 +234,37 @@ def test_setup_reprompts_on_bad_mode(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="\nblanced\nbalanced\nn\nn\nn\n",
+        input="\nblanced\nbalanced\nn\nn\nn\nn\n",
     )
 
     assert result.exit_code == 0, result.output
     assert "unknown mode" in result.output
     assert "try again" in result.output
+
+
+def test_interactive_demo_offer_declined_by_default(tmp_path: Path) -> None:
+    """Answering 'n' to the closing demo offer runs nothing extra and still exits 0."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "See it work?" in result.output
+    assert "BLOCK" not in result.output
+
+
+def test_interactive_demo_offer_accepted_runs_real_engine(tmp_path: Path) -> None:
+    """Answering 'y' to the closing demo offer runs the real scripted attack reel
+    in-process and shows a real BLOCK verdict from it."""
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        input="\nbalanced\nn\nn\nn\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "See it work?" in result.output
+    assert "BLOCK" in result.output
 
 
 def test_setup_explains_each_tuned_dimension(tmp_path: Path) -> None:
@@ -234,7 +288,7 @@ def test_setup_explains_each_tuned_dimension(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input=f"\nbalanced\nn\ny\n{weight_inputs}\nn\n",
+        input=f"\nbalanced\nn\ny\n{weight_inputs}\nn\nn\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -285,7 +339,7 @@ def test_interactive_telemetry_yes_persists_and_emits_setup_event(
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="\nbalanced\ny\nn\nn\n",
+        input="\nbalanced\ny\nn\nn\nn\n",
     )
 
     assert result.exit_code == 0, result.output
@@ -311,7 +365,7 @@ def test_interactive_telemetry_default_yes_records_the_choice(tmp_path: Path) ->
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="\nbalanced\n\nn\nn\n",
+        input="\nbalanced\n\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     state = telemetry.status()
@@ -325,7 +379,7 @@ def test_interactive_telemetry_no_persists_disabled(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="\nbalanced\nn\nn\nn\n",
+        input="\nbalanced\nn\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     assert telemetry.status().enabled is False
@@ -395,7 +449,7 @@ def test_interactive_hosts_1_2_wires_both(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["setup", "--path", str(tmp_path)],
-        input="1,2\nbalanced\nn\nn\nn\nn\n",
+        input="1,2\nbalanced\nn\nn\nn\nn\nn\n",
     )
     assert result.exit_code == 0, result.output
     s = _settings(tmp_path)
@@ -419,6 +473,30 @@ def test_yes_host_openclaw_prints_pointer(tmp_path: Path) -> None:
     assert "adapters/openclaw/README.md" in result.output
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / ".codex").exists()
+
+
+def test_yes_host_mcp_doctor_scoped_and_shows_canary(tmp_path: Path) -> None:
+    """MCP-only: the hooks-only doctor checks are scoped out, and the summary
+    gets its own end state + canary instead of the hooks restart banner."""
+    result = runner.invoke(app, ["setup", "--yes", "--host", "mcp", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "  - Host hooks" not in result.output
+    assert "  - Hook command" not in result.output
+    assert "hooks n/a" in result.output
+    assert (
+        "Verify it's live: ask your agent to read .env and confirm it is blocked." in result.output
+    )
+    assert "activates when you restart" not in result.output
+
+
+def test_yes_host_openclaw_doctor_scoped(tmp_path: Path) -> None:
+    """OpenClaw-only: same doctor scoping as MCP-only (no hooks-kind host wired)."""
+    result = runner.invoke(app, ["setup", "--yes", "--host", "openclaw", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "  - Host hooks" not in result.output
+    assert "  - Hook command" not in result.output
+    assert "hooks n/a" in result.output
+    assert "activates when you restart" not in result.output
 
 
 def test_invalid_host_exits_2_naming_valid_hosts(tmp_path: Path) -> None:
@@ -449,11 +527,57 @@ def test_output_contains_restart_activation_hint(tmp_path: Path) -> None:
     assert "activates when you restart" in result.output
 
 
+def test_doctor_remediation_detail_shown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A remaining critical is printed as '- <name>: <detail>' using doctor's own text."""
+    from doberman.cli import doctor as doctor_mod
+
+    def _fake_run_checks(path: str) -> list:
+        return [
+            doctor_mod.CheckResult(
+                "Config",
+                doctor_mod.CheckStatus.FAIL,
+                "no policy saved - run `doberman setup`",
+                critical=True,
+            )
+        ]
+
+    monkeypatch.setattr(doctor_mod, "run_checks", _fake_run_checks)
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "  - Config: no policy saved - run `doberman setup`" in result.output
+
+
+def test_doctor_crash_falls_back_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from doberman.cli import doctor as doctor_mod
+
+    def _boom(path: str) -> list:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(doctor_mod, "run_checks", _boom)
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Doctor: could not run here; verify with `doberman doctor`" in result.output
+
+
 def test_password_set_is_the_first_next_step(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     idx = result.output.index("Next step:")
     assert "password set" in result.output[idx : idx + 60]
+
+
+def test_enrolled_password_replaces_next_step_with_possession_factor(tmp_path: Path) -> None:
+    """With a possession factor already enrolled, the password nudge is gone and
+    the summary says so instead."""
+    from doberman.auth import password as password_mod
+
+    password_mod.enroll("correct horse battery staple")
+
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Next step:" not in result.output
+    assert "password set" not in result.output
+    assert "Possession factor: set (password)." in result.output
 
 
 # ---------------------------------------------------------------------------

@@ -124,3 +124,39 @@ def test_dashboard_alias_is_hidden_from_root_help():
 
     assert root_command.commands["session-summary"].hidden is False
     assert root_command.commands["dashboard"].hidden is True
+
+
+def test_getting_started_panel_leads_with_setup_then_demo():
+    """`setup` (the guided path) leads "Getting started", `demo` (the best
+    onboarding asset) follows it - both ahead of doctor/install-hooks/update."""
+    root_output = _normalize_help_output(
+        runner.invoke(app, ["--help"], env={"FORCE_COLOR": "1"}).output
+    )
+    ordered_names = ["setup", "demo", "doctor", "install-hooks", "update"]
+    positions = [root_output.index(name) for name in ordered_names]
+
+    assert positions == sorted(positions)
+
+
+def test_demo_is_filed_under_getting_started():
+    demo_panel = next(
+        c.rich_help_panel for c in app.registered_commands if c.callback.__name__ == "demo"
+    )
+
+    assert demo_panel == "Getting started"
+
+
+def test_removal_commands_get_their_own_leaving_panel():
+    panels_by_name = {
+        (c.name or c.callback.__name__.replace("_", "-")): c.rich_help_panel
+        for c in app.registered_commands
+    }
+
+    assert panels_by_name["uninstall-hooks"] == "Leaving"
+    assert panels_by_name["uninstall"] == "Leaving"
+
+
+def test_install_hooks_help_points_back_to_setup():
+    result = runner.invoke(app, ["install-hooks", "--help"], env={"FORCE_COLOR": "1"})
+
+    assert "doberman setup" in _normalize_help_output(result.output)
