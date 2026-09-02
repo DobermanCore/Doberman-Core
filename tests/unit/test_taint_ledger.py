@@ -6,8 +6,11 @@ HK.5.2 consumes it. These tests cover the storage API, the additive schema
 migration, and redaction (a scope never carries a raw path).
 """
 
+from datetime import datetime, timedelta, timezone
+
 import aiosqlite
 
+from doberman.storage import taint as taint_module
 from doberman.storage.db import db_path, open_db
 from doberman.storage.taint import (
     TAINT_SECRET_ACCESS,
@@ -157,6 +160,46 @@ async def test_record_untrusted_values_drops_empty_scopes_and_fingerprints(tmp_p
 
 async def test_match_untrusted_value_fails_closed_when_no_db(tmp_path):
     assert await match_untrusted_value(str(tmp_path), "sess-1", ["hmac:abc"]) is None
+
+
+# --- eviction bounds (C1 reviewer follow-up) ---
+
+
+async def test_record_untrusted_values_evicts_stale_rows_past_ttl(tmp_path):
+    # A fingerprint recorded more than _TTL_DAYS before a later write in the same
+    # scope is evicted on that write; a fresh one recorded in the same write
+    # still matches.
+    root = str(tmp_path)
+    old = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    await record_untrusted_values(root, ["sess-1"], ["hmac:stale"], "WebFetch", now=old)
+
+    later = old + timedelta(days=taint_module._TTL_DAYS + 1)
+    await record_untrusted_values(root, ["sess-1"], ["hmac:fresh"], "WebFetch", now=later)
+
+    assert await match_untrusted_value(root, "sess-1", ["hmac:stale"]) is None
+    assert await match_untrusted_value(root, "sess-1", ["hmac:fresh"]) == "WebFetch"
+
+
+async def test_record_untrusted_values_overflow_keeps_newest_rows_by_first_seen(
+    tmp_path, monkeypatch
+):
+    # Recording more than _MAX_ROWS_PER_SCOPE fingerprints in one scope keeps
+    # exactly the newest _MAX_ROWS_PER_SCOPE rows (pins the ORDER BY ... DESC
+    # direction in _EVICT_OVERFLOW_UNTRUSTED). Monkeypatch the cap down so the
+    # test stays fast instead of writing 5000+ real rows.
+    monkeypatch.setattr(taint_module, "_MAX_ROWS_PER_SCOPE", 3)
+    root = str(tmp_path)
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    fps = [f"hmac:{i}" for i in range(5)]
+    for i, fp in enumerate(fps):
+        await record_untrusted_values(
+            root, ["sess-1"], [fp], "WebFetch", now=base + timedelta(seconds=i)
+        )
+
+    for fp in fps[:2]:  # oldest two, evicted by the row cap
+        assert await match_untrusted_value(root, "sess-1", [fp]) is None
+    for fp in fps[2:]:  # newest three, retained
+        assert await match_untrusted_value(root, "sess-1", [fp]) == "WebFetch"
 
 
 async def test_clear_taint_now_returns_three_counts_and_clears_all_three_tables(tmp_path):
