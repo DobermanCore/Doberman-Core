@@ -43,7 +43,7 @@ def test_page_title_carries_the_project_name(tmp_path):
     project_dir = tmp_path / "widget-service"
     project_dir.mkdir()
     html = _index_html(str(project_dir))
-    assert "<title>widget-service — Doberman Dashboard</title>" in html
+    assert "<title>widget-service - Doberman Dashboard</title>" in html
 
 
 def test_topbar_carries_the_project_name(tmp_path):
@@ -57,9 +57,10 @@ def test_js_title_update_uses_the_project_qualified_title_not_the_old_hardcode(t
     project_dir = tmp_path / "widget-service"
     project_dir.mkdir()
     html = _index_html(str(project_dir))
-    # The em dash is outside ASCII, so json.dumps's default ensure_ascii
-    # renders it as — here, unlike the literal char used in <title>.
-    assert '"widget-service \\u2014 Doberman Dashboard"' in html
+    # ASCII hyphen throughout (round 5 - the served shell must carry no
+    # U+2014, see test_dash_round5.py::test_served_shell_has_no_em_dash), so
+    # there's no ensure_ascii escaping to account for here either.
+    assert '"widget-service - Doberman Dashboard"' in html
     assert (
         'document.title = (rows.length ? "(" + rows.length + ") " : "") + DASH_BASE_TITLE;' in html
     )
@@ -74,8 +75,8 @@ def test_two_different_projects_render_different_titles(tmp_path):
     b.mkdir()
     html_a = _index_html(str(a))
     html_b = _index_html(str(b))
-    assert "<title>project-a — Doberman Dashboard</title>" in html_a
-    assert "<title>project-b — Doberman Dashboard</title>" in html_b
+    assert "<title>project-a - Doberman Dashboard</title>" in html_a
+    assert "<title>project-b - Doberman Dashboard</title>" in html_b
 
 
 def test_project_name_with_html_special_characters_is_escaped(tmp_path):
@@ -88,8 +89,8 @@ def test_project_name_with_html_special_characters_is_escaped(tmp_path):
     # HTML-escaped markup nor the JS string (which unicode-escapes <, >, &
     # so an embedded "</script>" can never close the enclosing script tag).
     assert "<cool>" not in html
-    assert "my &lt;cool&gt; &amp; co — Doberman Dashboard" in html
-    assert '"my \\u003ccool\\u003e \\u0026 co \\u2014 Doberman Dashboard"' in html
+    assert "my &lt;cool&gt; &amp; co - Doberman Dashboard" in html
+    assert '"my \\u003ccool\\u003e \\u0026 co - Doberman Dashboard"' in html
 
 
 def test_project_name_with_quotes_is_safe_inside_the_js_string(tmp_path):
@@ -100,7 +101,7 @@ def test_project_name_with_quotes_is_safe_inside_the_js_string(tmp_path):
     html = _index_html(str(project_dir))
     # json.dumps escapes the embedded quote, so the JS string literal stays
     # well-formed instead of terminating early.
-    assert '"weird\\"name \\u2014 Doberman Dashboard"' in html
+    assert '"weird\\"name - Doberman Dashboard"' in html
 
 
 def test_js_string_literal_cannot_close_the_enclosing_script_tag():
