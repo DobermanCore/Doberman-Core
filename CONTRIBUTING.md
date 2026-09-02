@@ -38,7 +38,8 @@ python -m tools.parity.generate_parity --check
 
 CI runs exactly these: the lint, boundary, link, and parity checks once on Linux; the
 test suite on Linux 3.11–3.13 and Windows 3.12 (coverage is measured on the Linux 3.12 leg;
-every test has a 5-minute timeout); a wheel smoke test on Linux and Windows; and a
+every test has a 5-minute timeout; the Windows leg runs the benchmark/gate modules with the fast
+test-size half-space trees, the Linux legs and the nightly at production size); a wheel smoke test on Linux and Windows; and a
 full-history secret scan. A nightly deep run adds Windows 3.11/3.13, macOS, Python 3.14,
 random test order, warnings-as-errors, production-size half-space trees, and a dependency
 vulnerability audit — a red nightly is a bug in the suite or a dependency, not a rerun. The optional extras `explain` (Anthropic SDK) and `winhello`
