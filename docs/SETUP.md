@@ -393,22 +393,98 @@ fresh, single-use token for that run; open the printed URL to connect, since eve
 authenticated with that token. `--path` selects the repo to report on (default: the current
 directory).
 
-It shows a summary stats line (verdict counts, top reason codes, current mode, effective
-enforcement) and a live decision feed that backfills recent decisions, then streams new ones. Both
-are read-only and serve only already-redacted fields, never a raw target, argument, or secret.
+It shows a summary stats line, led by one focal number (the pending count while something needs a
+human, else the recent-window BLOCK count), then `decisions` (total + a freshness timestamp, `updated
+HH:MM:SS (local)`), `verdicts (all time)` (the three badges, plus a recent-window breakdown when it
+differs from the all-time counts), and `top reasons (all time)` - every count explicitly labeled with
+its window so none can be confused with another - and a live decision feed that backfills recent
+decisions, then streams new ones, newest first. Both are read-only and serve only already-redacted fields, never
+a raw target, argument, or secret. Each feed row's timestamp is a client-computed relative age
+(`3m ago`, `2h ago`, `yesterday 11:00`, refreshed every 30s) rather than a bare UTC clock, with the
+absolute local time and the explicitly-labeled UTC value in a hover `title`. Verdict filter chips
+default to `Needs attention` (BLOCK + AUTH) rather than `All` - a fresh dashboard leads with what
+needs a human, not PASS noise - with `All`/`BLOCK`/`AUTH`/`PASS` one click away and the choice
+persisted per browser; at <=640px the chips collapse into one `<select>` and a `N of M shown` count
+sits next to it, updating live as rows stream in. A text filter (matching the visible explanation
+and reason-code gloss text too, not just the raw codes) sits alongside it, moving behind a
+collapsible `Filters` disclosure at <=640px along with the `Announce new rows` toggle so the first
+feed row still starts within budget on a narrow screen; a dropped live connection or a failed
+refresh is always shown in the UI (never silently), with a retry control.
 
 An `AUTH` challenge can be answered from the dashboard instead of the terminal: it lists pending
 approvals and resolves one at a time, a single-use transition, so two concurrent resolves of the
-same row can never both win. The dashboard never verifies a TOTP code itself; it relays the
-human's decision (and, for tiers that need one, the code) to the same auth-challenge machinery
-already running in the decision path. This channel engages only while the dashboard's own
-heartbeat is fresh; a stale heartbeat or an unanswered approval falls back to the next channel
-(MCP elicitation, then GUI dialog, then terminal) with no added latency.
+same row can never both win. Each pending card points at the channel that can actually answer -
+`d` denies the action outright, it does not send it anywhere, so the note reads `The raw command
+stays in your terminal. To read it before deciding, leave this card alone - it moves there in
+M:SS.` with a live countdown - and shows the same live countdown in the row header (`answerable
+here for M:SS, then it moves to your terminal`) - at 0 the challenge has genuinely moved to the
+terminal/GUI channel (not been denied), independent of the approval row's own longer DB TTL. Both
+Approve and Deny need the same
+two-step arm-then-confirm gesture (a 5s countdown) before they submit. The dashboard never verifies
+a TOTP code itself; a tier that needs one gets a real, visible "6-digit code" label above the field,
+and the code rides opaquely to the same auth-challenge machinery already running in the decision
+path. This channel engages only while the dashboard's own heartbeat is fresh; a stale heartbeat or
+an unanswered approval falls back to the next channel (MCP elicitation, then GUI dialog, then
+terminal) with no added latency.
+
+Every `BLOCK`/`AUTH` row in the recent-decisions feed (and every pending card) leads with a one-line
+human explanation, with its reason codes glossed via a hover tooltip. Expanding a row (click, tap,
+or Enter/Space) reveals the same gloss text as a muted list, so keyboard and touch users reach it
+too, not only a mouse hovering - pending cards, which are never collapsed, just show that list
+always. A row's explanation itself expands by click or tap as well as Enter/Space.
+
+Keyboard shortcuts (`/` to filter, `Esc` to clear it or close whichever popover/panel is topmost,
+arrow keys/Home/End to move the active feed row, Enter/Space to expand its explanation, `r` to
+refresh, `a`/`d` to arm-then-confirm Approve/Deny on the first pending item, `?` for the full list)
+work from anywhere on the page; a `Shortcuts: on/off` toggle in that same panel turns off the five
+single-character bindings (`/ r ? a d`) specifically - Escape, the roving-focus keys, and the
+on-screen buttons keep working regardless - and persists per browser. A manual light/dark toggle also persists per browser regardless of the OS
+theme, and the browser tab's favicon tints amber while an approval is pending.
 
 You can also switch Light/Balanced/Strict/Paranoid from the dashboard. It goes through the same
-gate as `doberman mode`: raising applies immediately, and lowering prompts for the same possession
-factor; with neither enrolled it fails closed. Every attempt lands in the same append-only
-ledger (`doberman policy-history`).
+gate as `doberman mode`: raising applies immediately with a single click; lowering restyles Save to
+a warning color, states a factual one-line consequence of the mode you picked (derived from that
+mode's real step-up thresholds - the floor hard blocks never change), and needs the same two-step
+arm-then-confirm gesture (a 5s countdown) as approving a pending action, plus the same possession
+factor; with neither enrolled it fails closed. Dismissing the popover (Escape or an outside click)
+with a change still pending keeps it open instead of silently discarding it (it now visibly shakes and
+states so, since a silent no-op looked identical to a closed popover) - that warning stays put across a
+background stats poll too, clearing only on Save, Cancel, or a new mode selection; Cancel always discards. While the
+popover is open the rest of the page sits behind a scrim and is genuinely `inert` (not just visually
+dimmed), and the popover itself carries a visible "Security mode" title and a small tail pointing at its
+trigger. Every attempt lands in the same append-only ledger (`doberman policy-history`).
+
+Each `BLOCK`/`AUTH` feed row leads with a short, reason-first headline (e.g. "Recursive delete blocked -
+shell_exec" or "Secret file read blocked - .env class") instead of the full explanation sentence, so a run
+of consecutive BLOCKs no longer all read identically until expanded; expanding a row keeps that headline
+visible and reveals the full sentence underneath it (never repeating the reason codes the row's own gloss
+list already shows). An absent or literally-`"unknown"` agent role reads as "an agent", never the bare
+word `unknown`. The feed itself
+is `role="log"` with `aria-live="off"` (a bare `role="log"` was silently announcing every arriving row one
+at a time) - a `Announce new rows: on/off` toggle next to the filter controls an ARIA summary instead,
+debounced to one announcement per 2s (e.g. "3 new decisions: 2 BLOCK, 1 PASS"). A pending card that crosses
+the dashboard's 90s answer window announces "Approval moved to your terminal" once; two tabs open on the
+same dashboard both catch up immediately on `visibilitychange` instead of waiting out the poll interval.
+
+At <=640px the topbar folds to one row (brand, connection chip, guard pill) plus a single joined
+`posture: <mode> - <word>` badge and the `change` control; the theme toggle moves into the shortcuts
+panel (opened via the `?` button, which stays put) to make room. `enforcement:` now reads a single word
+(`enforcing`/`monitoring`/`off`, the raw dial name is still in its `title`), and the "connected" chip is a
+plain rectangular tag (a dot inside it) rather than a second pill, so it no longer looks like a duplicate
+of the guard pill. The topbar stays pinned to the top of the page while scrolling (with a hairline/shadow
+that appears once actually scrolled), so the connection/posture controls and the mode-change trigger stay
+reachable against a long feed.
+
+The feed itself renders newest-first (a fresh dashboard opens on the latest activity, not the oldest
+backfilled row); at <=640px it drops its own inner scroller in favor of page scroll so there's no nested
+scroll trap on a touch device. Escape from a no-match filter (and `Clear filters`/`Show all`) return focus
+to the first visible row, or the feed container itself if the filter still leaves nothing visible. The
+`Needs attention` chip carries a `title` defining it (`BLOCK + AUTH - what Doberman stopped or escalated`),
+repeated in the `?` shortcuts panel for anyone who can't hover it; the no-match empty state says "these
+filters" once both the verdict filter and the text query are narrowing the list together. `r` (and the
+Refresh button) announce `Refreshed - N decisions, M pending`. A manual light/dark choice now also sets
+`color-scheme` explicitly, so native form controls and scrollbars match it rather than following the OS
+preference alone.
 
 ### Run the demo
 
