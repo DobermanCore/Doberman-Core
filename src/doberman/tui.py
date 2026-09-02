@@ -57,11 +57,12 @@ from doberman.storage.log import read_decisions
 
 #: Column order + header labels, all plain words (never the raw schema name).
 _HEADERS: tuple[str, ...] = ("verdict", "time", "risk", "auth", "action", "target", "why")
-#: Fixed content width per column, sized so the whole table fits an 80-column
+#: Minimum content width per column, sized so the whole table fits an 80-column
 #: terminal without horizontal scroll (undiscoverable at 80x24 - see the design
 #: critique). Target class and reason codes ("why") are the two columns this
-#: browser is willing to shorten with a trailing "..."; the full value for both
-#: always remains reachable in the why panel / full-screen why screen.
+#: browser is willing to shorten with a trailing "..." - and the two that grow
+#: to absorb any width a wider terminal offers (see ``_widths_for``); the full
+#: value for both always remains reachable in the why panel / full-screen why.
 _WIDTHS: dict[str, int] = {
     "verdict": 7,
     "time": 8,
@@ -74,6 +75,25 @@ _WIDTHS: dict[str, int] = {
 #: ASCII-only verdict glyphs (no Unicode - the CLI must stay cp1252-safe on
 #: Windows). The glyph alone carries meaning even if color is unavailable.
 _VERDICT_GLYPHS: dict[str, str] = {"BLOCK": "X", "AUTH": "?", "PASS": "."}
+
+#: Per-column cell padding DataTable adds around content (one space each side).
+_CELL_PADDING = 2
+
+
+def _widths_for(terminal_width: int) -> dict[str, int]:
+    """Column widths for ``terminal_width``: the minimums, plus spare width
+    split between ``target`` (1/3) and ``why`` (2/3) - reason codes are what a
+    reviewer scans for, so they get the larger share of any room a wide
+    terminal offers. Never narrower than the minimums."""
+    widths = dict(_WIDTHS)
+    used = sum(widths.values()) + _CELL_PADDING * len(widths)
+    spare = max(0, terminal_width - used - 1)
+    if spare:
+        extra_target = spare // 3
+        widths["target"] += extra_target
+        widths["why"] += spare - extra_target
+    return widths
+
 
 _MSG_NO_ROWS = "Doberman is running here but hasn't decided anything yet."
 _MSG_NO_MATCH = "(no rows match the filter)"
@@ -147,16 +167,17 @@ def _verdict_cell(verdict_str: str) -> Text:
     return Text(label, style=style)
 
 
-def _row_cells(row: dict) -> tuple[Text, ...]:
+def _row_cells(row: dict, widths: dict[str, int] | None = None) -> tuple[Text, ...]:
+    widths = widths or _WIDTHS
     verdict_str = str(row.get("final_verdict") or "-")
     return (
         _verdict_cell(verdict_str),
         Text(_time_cell(row)),
-        Text(_truncate(str(row.get("risk") or "-"), _WIDTHS["risk"])),
-        Text(_truncate(str(row.get("auth_result") or "-"), _WIDTHS["auth"])),
-        Text(_truncate(str(row.get("action_type") or "-"), _WIDTHS["action"])),
-        Text(_truncate(str(row.get("target_path_class") or "-"), _WIDTHS["target"])),
-        Text(_truncate(_reason_codes_text(row), _WIDTHS["why"])),
+        Text(_truncate(str(row.get("risk") or "-"), widths["risk"])),
+        Text(_truncate(str(row.get("auth_result") or "-"), widths["auth"])),
+        Text(_truncate(str(row.get("action_type") or "-"), widths["action"])),
+        Text(_truncate(str(row.get("target_path_class") or "-"), widths["target"])),
+        Text(_truncate(_reason_codes_text(row), widths["why"])),
     )
 
 
@@ -299,6 +320,8 @@ class DecisionExplainerApp(App[None]):
         self._explain_cache: dict[str, str] = {}
         self._explain_timer = None
         self._load_worker: Worker[None] | None = None
+        self._widths: dict[str, int] = dict(_WIDTHS)
+        self._columns_ready = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -317,8 +340,10 @@ class DecisionExplainerApp(App[None]):
 
     async def on_mount(self) -> None:
         table = self.query_one("#decisions", _DecisionTable)
+        self._widths = _widths_for(self.size.width)
         for header in _HEADERS:
-            table.add_column(header, width=_WIDTHS[header], key=header)
+            table.add_column(header, width=self._widths[header], key=header)
+        self._columns_ready = True
         self.query_one("#filter", Input).display = False
         self.query_one("#loading", LoadingIndicator).display = False
         self._update_subtitle()
@@ -351,6 +376,22 @@ class DecisionExplainerApp(App[None]):
             self._apply_filter()
         finally:
             loading.display = False
+
+    def on_resize(self) -> None:
+        """Re-fit the columns: spare width goes to target/why, never a scrollbar."""
+        widths = _widths_for(self.size.width)
+        if widths == self._widths or not self._columns_ready:
+            # The first layout resize lands before on_mount adds the columns;
+            # on_mount reads the size itself, so there is nothing to re-fit yet.
+            self._widths = widths if self._columns_ready else self._widths
+            return
+        self._widths = widths
+        table = self.query_one("#decisions", _DecisionTable)
+        for header in _HEADERS:
+            table.remove_column(header)
+        for header in _HEADERS:
+            table.add_column(header, width=widths[header], key=header)
+        self._rebuild_table()
 
     def _reset_to_empty(self, message: str) -> None:
         self._visible_rows = []
@@ -385,6 +426,9 @@ class DecisionExplainerApp(App[None]):
         haystacks = (
             str(row.get("final_verdict") or ""),
             str(row.get("target_path_class") or ""),
+            str(row.get("action_type") or ""),
+            # auth_result is deliberately NOT searched: "block" would otherwise
+            # match every row whose auth outcome is "blocked", not the verdict.
             _reason_codes_text(row),
         )
         return any(text in haystack.lower() for haystack in haystacks)
@@ -408,7 +452,7 @@ class DecisionExplainerApp(App[None]):
                 self._set_panel(_MSG_NO_MATCH)
             return
         for row in self._visible_rows:
-            table.add_row(*_row_cells(row), key=_row_key(row))
+            table.add_row(*_row_cells(row, self._widths), key=_row_key(row))
         table.move_cursor(row=0)
         self._show_explanation(0)
 
@@ -542,7 +586,8 @@ class DecisionExplainerApp(App[None]):
         if not action_id:
             return
         self.copy_to_clipboard(action_id)
-        self.notify(f"copied {action_id}")
+        # markup=False: the id is row-derived text and must render literally.
+        self.notify(f"copied {action_id}", markup=False)
 
 
 def run_tui(repo_root: str, *, last: int = 500) -> None:
