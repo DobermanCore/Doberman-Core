@@ -43,6 +43,41 @@ _RICH_VERDICT_STYLES: dict[Verdict, str] = {
     for verdict, style in _VERDICT_STYLES.items()
 }
 
+#: Inverse "chip" styles for BLOCK/AUTH (measured contrast finding: Textual's
+#: default theme renders `bright_red` foreground-on-row at 3.57:1 - and 2.90:1
+#: on the cursor row - both below the 4.5:1 floor). Solid-colored background
+#: with pure-black (#000000, NOT the named "black", which this theme renders
+#: as #1a1a1a - only ~4.15:1 on bright_red, still short of the floor) text
+#: clears 4.5:1 in both states and keeps the color on the cursor row (see
+#: `cursor_background_priority="renderable"` in tui.py). PASS is not a
+#: warning, so it keeps its plain colored-text style, no chip.
+_CHIP_VERDICT_STYLES: dict[Verdict, str] = {
+    Verdict.BLOCK: "bold #000000 on bright_red",
+    Verdict.AUTH: "bold #000000 on yellow",
+    Verdict.PASS: _RICH_VERDICT_STYLES[Verdict.PASS],
+}
+
+#: Rich style per risk level for a redacted row's `risk` column - color is a
+#: second signal alongside the plain-word label, never a replacement for it.
+_RISK_STYLES: dict[str, str] = {
+    "critical": "bold bright_red",
+    "high": "bold red",
+    "medium": "yellow",
+    "low": "",
+}
+
+#: Plain-English labels for a decision row's raw `auth_result` value, shared by
+#: `doberman log` and the `tui` browser's auth column so the two views can
+#: never drift. Deliberately small: an unrecognized/future value (a raw
+#: auth-tier/method name like "totp", or a corrupt row) falls back to a
+#: humanized form of the value itself rather than needing to be listed here.
+_AUTH_RESULT_LABELS: dict[str, str] = {
+    "executed": "ran",
+    "blocked": "blocked",
+    "denied": "denied",
+    "soft_confirm+memory": "confirmed (memory)",
+}
+
 _MIN_WRAP_WIDTH = 60
 _MAX_WRAP_WIDTH = 120
 
@@ -103,7 +138,7 @@ def verdict_label_str(value: str) -> str:
         return f"{value:<{_LABEL_WIDTH}}"
 
 
-def verdict_rich_style(verdict: Verdict) -> str:
+def verdict_rich_style(verdict: Verdict, *, chip: bool = False) -> str:
     """Rich style string for `verdict` (e.g. `rich.text.Text(..., style=...)`).
 
     Same palette `verdict_label` uses, just expressed for Rich instead of
@@ -111,8 +146,39 @@ def verdict_rich_style(verdict: Verdict) -> str:
     browser) should call rather than keeping a second copy of the colors.
     An unrecognized value returns "" (no style) rather than raising, matching
     :func:`verdict_label_str`'s fail-safe behavior on a corrupt/future value.
+
+    ``chip=True`` returns the inverse "chip" variant (bold black text on a
+    solid colored background) for BLOCK/AUTH — measured to clear a 4.5:1
+    contrast floor where the plain foreground-only style does not, including
+    on the cursor row. PASS is unaffected by ``chip`` (it isn't a warning).
     """
-    return _RICH_VERDICT_STYLES.get(verdict, "")
+    styles = _CHIP_VERDICT_STYLES if chip else _RICH_VERDICT_STYLES
+    return styles.get(verdict, "")
+
+
+def risk_rich_style(risk: str) -> str:
+    """Rich style string for a redacted row's `risk` value.
+
+    Beside :func:`verdict_rich_style` — same fail-safe shape: an unrecognized
+    value (corrupt row, future risk level) returns "" rather than raising, and
+    the plain-word label is always kept alongside the color, never replaced
+    by it (risk severity must be visible with or without color).
+    """
+    return _RISK_STYLES.get(risk, "")
+
+
+def humanize_auth_result(auth_result: str | None) -> str:
+    """Plain-English label for a decision row's raw `auth_result` value.
+
+    Shared by `doberman log` and the `tui` browser's auth column so the two
+    views can never drift apart. ``None``/empty (still-pending AUTH) renders
+    as "-". An unrecognized/future value (a raw auth-tier/method name, or a
+    corrupt row) falls back to the value itself with underscores turned to
+    spaces — never raises, never invents a meaning it wasn't told.
+    """
+    if not auth_result:
+        return "-"
+    return _AUTH_RESULT_LABELS.get(auth_result, auth_result.replace("_", " "))
 
 
 def wrap_detail(text: str, indent: int = 4, width: int | None = None) -> list[str]:

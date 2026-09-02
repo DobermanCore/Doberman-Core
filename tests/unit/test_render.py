@@ -109,6 +109,52 @@ def test_verdict_rich_style_on_an_unrecognized_value_is_empty_not_a_raise():
     assert render.verdict_rich_style("not-a-verdict") == ""  # type: ignore[arg-type]
 
 
+def test_verdict_rich_style_chip_is_black_on_a_solid_background_for_block_and_auth():
+    # Inverse "chip" style (design critique item 14): pure black (#000000, not
+    # the named "black", which this theme renders too dark to clear 4.5:1 on
+    # bright_red) text on a solid background - never the plain foreground-only
+    # style default (chip=False) uses.
+    assert render.verdict_rich_style(Verdict.BLOCK, chip=True) == "bold #000000 on bright_red"
+    assert render.verdict_rich_style(Verdict.AUTH, chip=True) == "bold #000000 on yellow"
+
+
+def test_verdict_rich_style_chip_leaves_pass_as_plain_colored_text():
+    # PASS isn't a warning - it keeps its ordinary style, chip or not.
+    assert render.verdict_rich_style(Verdict.PASS, chip=True) == render.verdict_rich_style(
+        Verdict.PASS
+    )
+
+
+def test_risk_rich_style_known_levels():
+    assert render.risk_rich_style("critical") == "bold bright_red"
+    assert render.risk_rich_style("high") == "bold red"
+    assert render.risk_rich_style("medium") == "yellow"
+    assert render.risk_rich_style("low") == ""
+
+
+def test_risk_rich_style_unrecognized_value_is_empty_not_a_raise():
+    assert render.risk_rich_style("not-a-risk") == ""
+
+
+def test_humanize_auth_result_known_values():
+    assert render.humanize_auth_result("executed") == "ran"
+    assert render.humanize_auth_result("blocked") == "blocked"
+    assert render.humanize_auth_result("denied") == "denied"
+    assert render.humanize_auth_result("soft_confirm+memory") == "confirmed (memory)"
+
+
+def test_humanize_auth_result_none_or_empty_is_a_dash():
+    assert render.humanize_auth_result(None) == "-"
+    assert render.humanize_auth_result("") == "-"
+
+
+def test_humanize_auth_result_unrecognized_value_falls_back_to_humanized_raw():
+    # A raw auth-tier/method name not in the small explicit map (e.g. "totp",
+    # a future value) must never raise - it's shown with underscores as spaces.
+    assert render.humanize_auth_result("async_timeout") == "async timeout"
+    assert render.humanize_auth_result("totp") == "totp"
+
+
 def test_a_242_char_line_wraps_into_multiple_lines():
     phrase = "Shell, package, or git egress requires authentication because "
     text = (phrase * 4)[:242]

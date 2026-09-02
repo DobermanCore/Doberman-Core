@@ -71,7 +71,7 @@ from doberman.policy.drift import (
 from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
-from doberman.render import style_text, verdict_label, verdict_label_str
+from doberman.render import humanize_auth_result, style_text, verdict_label, verdict_label_str
 from doberman.storage.approval_memory import clear as clear_approval_memory
 from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
@@ -1702,10 +1702,7 @@ def log(
     for row in rows:
         target = row["target_path_class"] or "-"
         reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
-        if row["auth_result"] == "soft_confirm+memory":
-            auth = "; approved via 5-minute memory (soft_confirm)"
-        else:
-            auth = f"; auth={row['auth_result']}" if row["auth_result"] else ""
+        auth = f"; auth={humanize_auth_result(row['auth_result'])}" if row["auth_result"] else ""
         typer.echo(
             f"{row['ts']}  {verdict_label_str(row['final_verdict'])} {row['action_type']:<{_ACTION_WIDTH}} "
             f"{target}  [{reasons}]{auth}"
@@ -1715,7 +1712,7 @@ def log(
 @app.command(rich_help_panel="Daily")
 def tui(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
-    last: int = typer.Option(500, "--last", "-n", help="Load the most recent N decisions."),
+    last: int = typer.Option(500, "--last", "-n", min=1, help="Load the most recent N decisions."),
 ) -> None:
     """Browse the redacted decision log interactively, with a plain-language "why" panel.
 
@@ -1726,8 +1723,12 @@ def tui(
     `doberman log --last`); the header shows how many rows are loaded versus how
     many currently match the in-app filter.
     """
-    if not Path(path).is_dir():
-        typer.echo(f"error: --path {path!r} does not exist", err=True)
+    target = Path(path)
+    if not target.exists():
+        typer.echo(f"error: --path {path} does not exist", err=True)
+        raise typer.Exit(code=2)
+    if not target.is_dir():
+        typer.echo(f"error: --path {path} is not a directory", err=True)
         raise typer.Exit(code=2)
     if importlib.util.find_spec("textual") is None:
         typer.echo(
@@ -1738,7 +1739,7 @@ def tui(
         raise typer.Exit(code=1)
     from doberman.tui import run_tui
 
-    run_tui(path, last=max(0, last))
+    run_tui(path, last=last)
 
 
 _DASH_HOST = "127.0.0.1"

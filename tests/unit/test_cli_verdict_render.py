@@ -52,7 +52,9 @@ def test_tui_verdict_cell_uses_renders_palette_for_every_verdict():
 
     for verdict in Verdict:
         cell = _verdict_cell(verdict.value)
-        assert cell.style == render.verdict_rich_style(verdict)
+        # BLOCK/AUTH render as the inverse "chip" style (contrast fix); PASS
+        # keeps its plain colored-text style (it isn't a warning).
+        assert cell.style == render.verdict_rich_style(verdict, chip=True)
         assert cell.style  # every real verdict has a non-empty color
 
     # A corrupt/future verdict value never raises and gets no style.

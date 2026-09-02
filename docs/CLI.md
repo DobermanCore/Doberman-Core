@@ -189,7 +189,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `revoke` | `1` | Elevation id not found, or revoke failed. |
 | `policy-versions` | `2` | `--show` given something that is not a `pv1:` id or at least 8 hex characters. |
 | `policy-versions` | `1` | `--show` matched nothing or was ambiguous; `--verify` found `mismatch` or `drift`. |
-| `tui` | `2` | `--path` does not exist. |
+| `tui` | `2` | `--path` does not exist, exists but is not a directory, or `--last` is less than 1. |
 | `tui` | `1` | The optional `textual` extra is not installed. |
 | `dash` | `1` | The optional `dash` extra is not installed. |
 | `demo` | `1` | Invalid mode name, or a scenario did not match its expected outcome. |

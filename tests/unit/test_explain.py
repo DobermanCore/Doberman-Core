@@ -418,3 +418,23 @@ def test_tui_command_with_missing_path_exits_2_before_the_textual_check(tmp_path
     result = runner.invoke(app, ["tui", "--path", str(missing)])
     assert result.exit_code == 2
     assert "does not exist" in result.output
+    # The path prints plainly - no `!r` repr quoting around it.
+    assert f"'{missing}'" not in result.output
+    assert str(missing) in result.output
+
+
+def test_tui_command_with_a_file_path_says_not_a_directory(tmp_path):
+    # Distinct from "does not exist" (design critique item 8): the path is
+    # real, it's just the wrong kind of thing.
+    a_file = tmp_path / "some-file.txt"
+    a_file.write_text("not a directory", encoding="utf-8")
+    result = runner.invoke(app, ["tui", "--path", str(a_file)])
+    assert result.exit_code == 2
+    assert "is not a directory" in result.output
+    assert "does not exist" not in result.output
+    assert f"'{a_file}'" not in result.output
+
+
+def test_tui_command_rejects_last_below_one(tmp_path):
+    result = runner.invoke(app, ["tui", "--path", str(tmp_path), "--last", "0"])
+    assert result.exit_code == 2
