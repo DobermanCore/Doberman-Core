@@ -836,7 +836,7 @@ def _render_status_text(payload: dict) -> None:
         # Matches the sentinel doberman.__version__ falls back to when the
         # package metadata can't be found (running straight from a source
         # checkout, no install) - "0.0.0+unknown" reads as a broken install.
-        typer.echo("Version:    unknown (source checkout)")
+        typer.echo("Version: unknown (source checkout)")
     else:
         typer.echo(f"Version: {doberman_version}")
     typer.echo("")

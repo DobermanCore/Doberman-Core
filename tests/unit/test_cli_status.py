@@ -75,7 +75,7 @@ def test_status_shows_installed_version(tmp_path):
     if __version__ == "0.0.0+unknown":
         # Running from a source checkout with no `doberman-core` install -
         # see test_status_shows_unknown_version_as_source_checkout below.
-        assert "Version:    unknown (source checkout)" in result.stdout
+        assert "Version: unknown (source checkout)" in result.stdout
     else:
         assert f"Version: {__version__}" in result.stdout
 
@@ -87,7 +87,7 @@ def test_status_shows_unknown_version_as_source_checkout(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, "__version__", "0.0.0+unknown")
     result = runner.invoke(app, ["status", "--path", str(tmp_path)])
     assert result.exit_code == 0
-    assert "Version:    unknown (source checkout)" in result.stdout
+    assert "Version: unknown (source checkout)" in result.stdout
     assert "0.0.0+unknown" not in result.stdout
 
 
