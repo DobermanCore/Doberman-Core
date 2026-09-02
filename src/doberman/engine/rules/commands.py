@@ -2,8 +2,8 @@
 
 Blocks catastrophic shell/git commands and steps up authentication on
 risky-but-recoverable ones. Command parsing is treated as **adversarial**: a
-single command string may chain many commands with ``;``, ``&&``, ``||``, or
-pipes, hide work in ``$(...)``/backtick substitutions, or carry an opaque
+single command string may chain many commands with ``;``, ``&``, ``&&``, ``||``,
+or pipes, hide work in ``$(...)``/backtick substitutions, or carry an opaque
 payload (``bash -c "<base64>"``). We therefore:
 
 * split the command line into segments on the shell operators, and recurse into
@@ -202,7 +202,9 @@ def _split_segments(command: str) -> list[str]:
             continue
 
         operator_width = 2 if command[index : index + 2] in {"&&", "||"} else 0
-        if operator_width or char in {"|", ";", "\n"}:
+        # A single ``&`` separates commands too: cmd.exe runs both sides
+        # unconditionally and POSIX shells background the left and run the right.
+        if operator_width or char in {"|", ";", "&", "\n"}:
             segment = "".join(current).strip()
             if segment:
                 segments.append(segment)

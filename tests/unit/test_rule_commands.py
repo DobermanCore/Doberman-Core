@@ -72,6 +72,17 @@ def test_chained_destructive_segment_blocks():
     # A benign first command followed by a catastrophic one must still BLOCK.
     assert _cmd("echo hi && rm -rf /").verdict is Verdict.BLOCK
     assert _cmd("ls; rm -rf ~").verdict is Verdict.BLOCK
+    # A single ``&`` separates commands too (cmd.exe unconditionally, POSIX as a
+    # background job) — it must never hide the right-hand side.
+    assert _cmd("echo hi & rm -rf /").verdict is Verdict.BLOCK
+    assert _cmd("echo hi &rm -rf /").verdict is Verdict.BLOCK
+    assert _cmd("echo hi & rm -rf ~ & echo done").verdict is Verdict.BLOCK
+
+
+def test_ampersand_in_redirection_or_quotes_is_not_a_chain():
+    assert _cmd("ls 2>&1").verdict is Verdict.PASS
+    assert _cmd("ls &> out.txt").verdict is Verdict.PASS
+    assert _cmd('echo "a & b"').verdict is Verdict.PASS
 
 
 def test_destructive_inside_command_substitution_blocks():
