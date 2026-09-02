@@ -35,7 +35,9 @@ it must never raise into a caller and never emit a partial/guessed
 
 from __future__ import annotations
 
+import concurrent.futures
 import importlib.util
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -135,13 +137,51 @@ def _recommend(unambiguous: bool, high_impact: bool, current: GuardrailResult) -
     )
 
 
+def _call_judge(features: Mapping[str, Any]) -> dict[str, bool]:
+    """Ask the judge model for the two booleans. Raises on ANY anomaly (bad
+    JSON, missing/non-bool field, empty response, SDK error) - the caller
+    treats every exception as abstain. Lazy import: reached only after the
+    opt-in gate has already passed, so an installed-but-disabled extra never
+    imports ``anthropic``.
+    """
+    import anthropic  # lazy - see module docstring
+
+    client = anthropic.Anthropic()
+    message = client.messages.create(
+        model=_JUDGE_MODEL,
+        max_tokens=_JUDGE_MAX_TOKENS,
+        timeout=_JUDGE_TIMEOUT_S,
+        system=[
+            {
+                "type": "text",
+                "text": _JUDGE_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=[{"role": "user", "content": json.dumps(dict(features), sort_keys=True)}],
+    )
+    text = "".join(
+        block.text for block in message.content if getattr(block, "type", None) == "text"
+    )
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("judge response is not a JSON object")
+    unambiguous = parsed["unambiguous"]
+    high_impact = parsed["high_impact"]
+    if not isinstance(unambiguous, bool) or not isinstance(high_impact, bool):
+        raise TypeError("judge response fields must be JSON booleans")
+    return {"unambiguous": unambiguous, "high_impact": high_impact}
+
+
 class HaikuJudgeAdjudicator:
     """Structural ``Adjudicator`` implementation backed by Claude Haiku.
 
-    SHADOW-ONLY, OFFLINE-ONLY (see module docstring). ``adjudicate`` never
-    raises into a caller. Network call handling (lazy import, hard timeout,
-    response parsing) is added in the next task; for now the gate + Protocol
-    shape land first so they can be tested in isolation.
+    SHADOW-ONLY, OFFLINE-ONLY (see module docstring): nothing in core
+    registers or calls this in the live decision path today. ``adjudicate``
+    never raises and never blocks longer than :data:`_JUDGE_TIMEOUT_S` (wall
+    clock), even against a test double that ignores the SDK's own ``timeout=``
+    kwarg - the bound is enforced here via a single-worker
+    ``ThreadPoolExecutor``, not left to the SDK alone.
     """
 
     def adjudicate(
@@ -149,4 +189,13 @@ class HaikuJudgeAdjudicator:
     ) -> GuardrailResult | None:
         if not _judge_enabled():
             return None
-        raise NotImplementedError  # completed in Task 2
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = executor.submit(_call_judge, features)
+            parsed = future.result(timeout=_JUDGE_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 - any failure/timeout is an abstain
+            logger.debug("judge: adjudicate failed or timed out; abstaining", exc_info=True)
+            return None
+        finally:
+            executor.shutdown(wait=False)
+        return _recommend(parsed["unambiguous"], parsed["high_impact"], current)

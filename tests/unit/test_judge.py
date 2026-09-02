@@ -7,21 +7,26 @@ optional `[judge]` extra.
 """
 
 import importlib.machinery
-import importlib.util
 import itertools
+import json
 import sys
+import time
 import types
+from datetime import datetime, timezone
 
 import pytest
 
-from doberman.engine.adjudicator import Adjudicator
+from doberman.engine.adjudicator import Adjudicator, redacted_features
 from doberman.judge import HaikuJudgeAdjudicator, _recommend, judge_enabled
 from doberman.models import (
     RISK_ORDER,
     VERDICT_ORDER,
+    ActionType,
     GuardrailResult,
     ReasonCode,
     Risk,
+    SecurityObject,
+    SourceContext,
     Verdict,
 )
 
@@ -168,3 +173,113 @@ def test_judge_enabled_mirrors_the_gate(monkeypatch):
     monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
     _install_fake_anthropic(monkeypatch, _never_called)
     assert judge_enabled() is True
+
+
+@pytest.mark.parametrize(
+    "response_text",
+    [
+        "not json at all",
+        json.dumps({"unambiguous": True}),  # missing high_impact
+        json.dumps({"high_impact": False}),  # missing unambiguous
+        json.dumps({"unambiguous": "yes", "high_impact": False}),  # wrong type
+        json.dumps({"unambiguous": True, "high_impact": 1}),  # wrong type
+        "",  # empty
+        json.dumps([True, False]),  # not an object
+    ],
+)
+def test_malformed_response_abstains_never_raises(monkeypatch, response_text):
+    _install_fake_anthropic(monkeypatch, lambda kwargs: _FakeMessage(response_text))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
+    judge = HaikuJudgeAdjudicator()
+    result = judge.adjudicate({"action_type": "file_read"}, _PASS)
+    assert result is None
+
+
+def test_client_raising_abstains(monkeypatch):
+    def _boom(_kwargs):
+        raise RuntimeError("network error")
+
+    _install_fake_anthropic(monkeypatch, _boom)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
+    judge = HaikuJudgeAdjudicator()
+    result = judge.adjudicate({"action_type": "file_read"}, _PASS)
+    assert result is None
+
+
+def test_valid_response_maps_to_a_recommendation(monkeypatch):
+    _install_fake_anthropic(
+        monkeypatch,
+        lambda kwargs: _FakeMessage(json.dumps({"unambiguous": True, "high_impact": False})),
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
+    judge = HaikuJudgeAdjudicator()
+    result = judge.adjudicate({"action_type": "file_read"}, _PASS)
+    assert result == _recommend(True, False, _PASS)
+
+
+def test_hard_timeout_returns_none_within_bound(monkeypatch):
+    import doberman.judge as judge_module
+
+    monkeypatch.setattr(judge_module, "_JUDGE_TIMEOUT_S", 0.05)
+
+    def _slow(_kwargs):
+        time.sleep(0.3)
+        return _FakeMessage(json.dumps({"unambiguous": True, "high_impact": False}))
+
+    _install_fake_anthropic(monkeypatch, _slow)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
+    judge = HaikuJudgeAdjudicator()
+    start = time.monotonic()
+    result = judge.adjudicate({"action_type": "file_read"}, _PASS)
+    elapsed = time.monotonic() - start
+    assert result is None
+    assert elapsed < 0.2  # well under the fake client's 0.3s block
+
+
+def test_judge_request_never_leaks_beyond_redacted_features(monkeypatch):
+    secret = "SYNTHETIC-SECRET-AKIA0000TEST"  # noqa: S105 - synthetic fixture, not a real key
+    action = SecurityObject(
+        id="t1",
+        ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        agent_role="cli",
+        action_type=ActionType.file_read,
+        tool_name="cat",
+        target="/etc/secrets/prod.key",
+        external_destination="evil.example.com",
+        source_context=SourceContext.user,
+    )
+    # The secret rides only in `current.explanation` here, on purpose: this proves
+    # the judge sends `features` alone and never touches `current` for the payload,
+    # even though `current` is a required Protocol argument.
+    current = GuardrailResult(
+        verdict=Verdict.AUTH,
+        risk=Risk.high,
+        reason_codes=[ReasonCode.sensitive_secret_access],
+        explanation=f"leaked if forwarded: {secret}",
+    )
+    features = redacted_features(action, current)
+
+    seen: dict = {}
+
+    def _capture(kwargs):
+        seen.update(kwargs)
+        return _FakeMessage(json.dumps({"unambiguous": True, "high_impact": False}))
+
+    _install_fake_anthropic(monkeypatch, _capture)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
+
+    judge = HaikuJudgeAdjudicator()
+    result = judge.adjudicate(features, current)
+
+    assert result is not None
+    sent = json.dumps(seen, default=str)
+    assert secret not in sent
+    assert "/etc/secrets/prod.key" not in sent
+    assert "evil.example.com" not in sent
+    payload_keys = set(json.loads(seen["messages"][0]["content"]))
+    assert payload_keys <= set(features.keys())
