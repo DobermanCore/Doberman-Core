@@ -193,6 +193,9 @@ def test_feed_row_renders_source_context(tmp_path):
 def test_recent_decisions_header_has_a_refresh_button(tmp_path):
     html = _index_html(tmp_path)
     assert '<button type="button" id="refresh-btn">Refresh</button>' in html
-    assert 'document.getElementById("refresh-btn").addEventListener' in html
+    # The click and the `r` shortcut share one handler that shows "Refreshing..."
+    # while the two fetches run - a silent refresh reads as a dead button.
+    assert 'refreshBtn.addEventListener("click", manualRefresh)' in html
+    assert 'refreshBtn.textContent = "Refreshing..."' in html
     assert "refreshStats();" in html
     assert "refreshPending();" in html

@@ -248,9 +248,12 @@ _HTML_SHELL = """<!doctype html>
   .status-pill.alert .pip { animation: pulse 1.6s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) { .status-pill.alert .pip { animation: none; } }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  /* Ghost buttons: the theme and shortcuts toggles are conveniences, so they
+     carry no border - the one control that changes the security posture
+     (#mode-edit-btn) is the bordered one in the topbar. */
   #theme-toggle-btn, #shortcuts-btn, #shortcuts-close-btn {
     font-family: var(--font); font-size: var(--fs-1); font-weight: 600; padding: .35rem .8rem;
-    border: 1px solid var(--rule); background: transparent; color: var(--fg-2);
+    border: 1px solid transparent; background: transparent; color: var(--fg-3);
   }
   #theme-toggle-btn:hover, #shortcuts-btn:hover, #shortcuts-close-btn:hover {
     border-color: var(--tan-hi); color: var(--tan-hi);
@@ -356,6 +359,10 @@ _HTML_SHELL = """<!doctype html>
     font-size: var(--fs-2); font-family: var(--mono);
     transition: background-color var(--d);
   }
+  /* The filter hides rows with the `hidden` attribute; an author `display`
+     on the same element outranks the UA's [hidden] rule, so restate it here
+     (the mode form had exactly this bug). */
+  #feed li[hidden] { display: none; }
   #feed li:last-child { border-bottom: none; }
   #feed li:hover { background: var(--ink-2); }
   #feed li .detail { color: var(--fg-3); overflow-wrap: anywhere; }
@@ -365,9 +372,10 @@ _HTML_SHELL = """<!doctype html>
   }
   #mode-edit-btn {
     font-size: var(--fs-1); font-weight: 600; padding: .35rem .7rem;
-    border: 1px solid var(--rule); border-radius: 4px; background: transparent;
-    color: var(--fg-3);
+    border: 1px solid var(--fg-3); border-radius: 4px; background: transparent;
+    color: var(--fg-2);
   }
+  #mode-edit-btn[aria-expanded="true"] { background: var(--neutral-bg); color: var(--fg); }
   #mode-edit-btn:hover { background: var(--neutral-bg); color: var(--fg); }
   #mode-form:not([hidden]) {
     display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
@@ -394,9 +402,12 @@ _HTML_SHELL = """<!doctype html>
   #mode-error { color: var(--block); font-family: var(--mono); font-size: var(--fs-1); }
   #shortcuts-panel {
     position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 20; max-width: 20rem;
-    padding: 1rem 1.25rem; border: 1px solid var(--rule); border-radius: var(--r-lg);
+    padding: 1rem 1.25rem; border-radius: var(--r-lg);
     background: var(--ink-1); box-shadow: var(--shadow-card); font-size: var(--fs-2);
   }
+  #shortcuts-panel:focus { outline: none; }
+  #feed-count { color: var(--fg-3); font-size: var(--fs-1); align-self: center; }
+  .row-done { color: var(--pass); font-weight: 600; margin-top: .4rem; }
   #shortcuts-panel h2 { margin-top: 0; }
   #shortcuts-panel dl { display: grid; grid-template-columns: auto 1fr; gap: .3rem .8rem; margin: .5rem 0 .8rem; }
   #shortcuts-panel dt { font-family: var(--mono); color: var(--tan-hi); }
@@ -427,7 +438,7 @@ _HTML_SHELL = """<!doctype html>
     <div class="topbar-right">
       <span class="chip" id="status"><span class="dot" id="dot"></span><span id="label">connecting...</span></span>
       <span class="badge badge-neutral" id="mode-badge">mode: -</span>
-      <button type="button" id="mode-edit-btn">change</button>
+      <button type="button" id="mode-edit-btn" aria-expanded="false" aria-controls="mode-form">change</button>
       <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
       <span class="status-pill ok" id="guard-status"><span class="pip" id="guard-pip" aria-hidden="true">●</span><span id="guard-label">ON GUARD</span></span>
       <button type="button" id="theme-toggle-btn">Switch to light theme</button>
@@ -435,22 +446,24 @@ _HTML_SHELL = """<!doctype html>
     </div>
   </header>
   <main>
+    <h1 class="sr-only">Doberman local dashboard</h1>
     <div id="mode-form" hidden>
       <p class="mode-form-note">Raising is immediate; lowering needs your code.</p>
       <select id="mode-select" aria-label="Security mode"></select>
+      <label class="sr-only" for="mode-code">2FA code or password, only needed to lower strictness</label>
       <input id="mode-code" type="password" autocomplete="off"
-        placeholder="2FA code or password (only needed to lower strictness)">
+        placeholder="code (to lower strictness)">
       <div class="mode-form-actions">
         <button type="button" id="mode-save-btn">Save</button>
         <button type="button" id="mode-cancel-btn">Cancel</button>
       </div>
       <span id="mode-success"></span>
-      <span id="mode-error"></span>
+      <span id="mode-error" role="alert"></span>
     </div>
     <div id="stats">stats loading...</div>
     <section aria-labelledby="pending-heading">
       <h2 id="pending-heading">Pending approvals</h2>
-      <ul id="pending-list" aria-live="polite"></ul>
+      <ul id="pending-list"></ul>
       <div id="pending-empty" class="empty-state">Nothing pending. Doberman's watching.</div>
     </section>
     <section aria-labelledby="feed-heading">
@@ -467,18 +480,20 @@ _HTML_SHELL = """<!doctype html>
         </div>
         <label class="sr-only" for="feed-filter">Filter recent decisions by text</label>
         <input type="search" id="feed-filter" placeholder="Filter (press / to focus)">
+        <span id="feed-count" aria-live="polite"></span>
       </div>
       <ul id="feed" role="log" tabindex="0" aria-label="Recent decisions"></ul>
       <div id="feed-empty" class="empty-state">No decisions yet. Doberman's watching quietly.</div>
+      <div id="feed-nomatch" class="empty-state" hidden>No decisions match this filter.</div>
       <div id="feed-truncated" class="feed-note" hidden>older rows not shown - see doberman log</div>
     </section>
   </main>
-  <div id="shortcuts-panel" hidden role="region" aria-label="Keyboard shortcuts">
+  <div id="shortcuts-panel" hidden role="region" aria-label="Keyboard shortcuts" tabindex="-1">
     <h2>Shortcuts</h2>
     <dl>
       <dt>/</dt><dd>Focus the decisions filter</dd>
       <dt>r</dt><dd>Refresh stats + pending</dd>
-      <dt>a</dt><dd>Approve the first pending item (press twice to confirm)</dd>
+      <dt>a</dt><dd>Arm Approve on the first pending item, then Enter to confirm</dd>
       <dt>d</dt><dd>Deny the first pending item</dd>
       <dt>?</dt><dd>Toggle this panel</dd>
       <dt>Esc</dt><dd>Close this panel or the mode form</dd>
@@ -746,7 +761,10 @@ _HTML_SHELL = """<!doctype html>
           }).join(", ");
           statsEl.appendChild(topReasons);
         }
-        if (s.recent_verdict_counts) {
+        var totalDecisions = s.total_decisions != null ? s.total_decisions : s.total;
+        // The recent line only earns its place when it says something the
+        // all-time badges above it don't (a window smaller than the log).
+        if (s.recent_verdict_counts && (totalDecisions == null || totalDecisions > s.recent_window)) {
           var recent = document.createElement("span");
           recent.className = "detail";
           var recentParts = ["PASS", "AUTH", "BLOCK"].map(function (verdict) {
@@ -834,14 +852,21 @@ _HTML_SHELL = """<!doctype html>
         modeSuccessEl.textContent = "";
         modeCodeInput.value = "";
         modeForm.hidden = false;
+        modeEditBtn.setAttribute("aria-expanded", "true");
+        // Focus follows the disclosure: the next Tab must not land on the
+        // theme/shortcuts buttons that sit between the trigger and the form.
+        setTimeout(function () { modeSelect.focus(); }, 0);
       }
 
       function closeModeForm() {
+        var wasOpen = !modeForm.hidden;
         modeEditing = false;
         modeForm.hidden = true;
         modeCodeInput.value = "";
         modeErrorEl.textContent = "";
         modeSuccessEl.textContent = "";
+        modeEditBtn.setAttribute("aria-expanded", "false");
+        if (wasOpen) { modeEditBtn.focus(); }
       }
 
       modeEditBtn.addEventListener("click", function () {
@@ -914,7 +939,20 @@ _HTML_SHELL = """<!doctype html>
         var now = Date.now();
         pendingList.querySelectorAll(".countdown[data-deadline]").forEach(function (node) {
           var remaining = Number(node.dataset.deadline) - now;
-          node.textContent = remaining > 0 ? formatCountdown(remaining) : "auto-denies any moment now";
+          if (remaining > 0) {
+            node.textContent = formatCountdown(remaining);
+            return;
+          }
+          // Past the dashboard's authority horizon the challenge has fallen
+          // through to the terminal/GUI channel: say so and stop offering
+          // buttons that would only 409. The next poll removes the card.
+          node.textContent = "no longer answerable here - check your terminal";
+          var expiredCard = node.closest("li");
+          if (expiredCard) {
+            expiredCard.querySelectorAll("button.approve, button.deny").forEach(function (b) {
+              b.disabled = true;
+            });
+          }
         });
       }
       setInterval(tickCountdowns, 1000);
@@ -934,7 +972,16 @@ _HTML_SHELL = """<!doctype html>
           body: JSON.stringify(body)
         }).then(function (res) {
           if (res.ok) {
-            card.remove();
+            // Say what happened before the card goes: a screen-reader user
+            // otherwise only hears the next poll's "Nothing pending".
+            var done = document.createElement("div");
+            done.className = "row-done";
+            done.textContent = decision === "approved"
+              ? "Approved - released to the agent."
+              : "Denied - the action was blocked.";
+            card.appendChild(done);
+            announce(done.textContent);
+            setTimeout(function () { card.remove(); lastPendingKey = null; }, 1500);
             return null;
           }
           return res.json().catch(function () { return {}; }).then(function (data) {
@@ -1047,7 +1094,7 @@ _HTML_SHELL = """<!doctype html>
               return;
             }
             approveBtn.dataset.armed = "1";
-            var remaining = 3;
+            var remaining = 5;
             approveBtn.textContent = "Confirm approve (" + remaining + ")";
             armTimer = setInterval(function () {
               remaining -= 1;
@@ -1151,10 +1198,18 @@ _HTML_SHELL = """<!doctype html>
 
       // Manual refresh for the stats + pending views; both functions are safe
       // to call at any time and no new endpoint is involved.
-      document.getElementById("refresh-btn").addEventListener("click", function () {
+      var refreshBtn = document.getElementById("refresh-btn");
+      function manualRefresh() {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = "Refreshing...";
         refreshStats();
         refreshPending();
-      });
+        setTimeout(function () {
+          refreshBtn.disabled = false;
+          refreshBtn.textContent = "Refresh";
+        }, 600);
+      }
+      refreshBtn.addEventListener("click", manualRefresh);
 
       // Find a BLOCK: verdict chips + a text filter over what's already on
       // screen (no new endpoint - the feed is already fully client-side).
@@ -1167,8 +1222,20 @@ _HTML_SHELL = """<!doctype html>
         if (activeQuery && entry.searchText.indexOf(activeQuery) === -1) { return false; }
         return true;
       }
+      var feedCountEl = document.getElementById("feed-count");
+      var feedNoMatchEl = document.getElementById("feed-nomatch");
       function applyFeedFilter() {
-        feedEntries.forEach(function (entry) { entry.li.hidden = !matchesFilter(entry); });
+        var shown = 0;
+        feedEntries.forEach(function (entry) {
+          var match = matchesFilter(entry);
+          entry.li.hidden = !match;
+          if (match) { shown += 1; }
+        });
+        var filtering = Boolean(activeVerdict || activeQuery);
+        feedCountEl.textContent = filtering && feedEntries.length
+          ? shown + " of " + feedEntries.length + " shown"
+          : "";
+        feedNoMatchEl.hidden = !(filtering && feedEntries.length > 0 && shown === 0);
       }
 
       var filterChips = document.querySelectorAll(".filter-chip");
@@ -1198,10 +1265,13 @@ _HTML_SHELL = """<!doctype html>
       function openShortcuts() {
         shortcutsPanel.hidden = false;
         shortcutsBtn.setAttribute("aria-expanded", "true");
+        shortcutsPanel.focus();
       }
       function closeShortcuts() {
+        var wasOpen = !shortcutsPanel.hidden;
         shortcutsPanel.hidden = true;
         shortcutsBtn.setAttribute("aria-expanded", "false");
+        if (wasOpen) { shortcutsBtn.focus(); }
       }
       shortcutsBtn.addEventListener("click", function () {
         if (shortcutsPanel.hidden) { openShortcuts(); } else { closeShortcuts(); }
@@ -1224,8 +1294,7 @@ _HTML_SHELL = """<!doctype html>
           e.preventDefault();
           feedFilterInput.focus();
         } else if (e.key === "r") {
-          refreshStats();
-          refreshPending();
+          manualRefresh();
         } else if (e.key === "?") {
           if (shortcutsPanel.hidden) { openShortcuts(); } else { closeShortcuts(); }
         } else if (e.key === "a" || e.key === "d") {
