@@ -1,6 +1,6 @@
 # Reason codes
 
-Every non-`PASS` Doberman decision carries one or more `ReasonCode` values plus a human explanation. This page catalogues every member of `ReasonCode` in `src/doberman/models.py`, the module where it is actually attached to a decision, and what it means in plain language. The enum currently defines 59 codes. `doberman log` and `doberman tune --json` (see [CLI reference](CLI.md)) both surface these values directly, so matching on the name here is the stable way to script against a decision.
+Every non-`PASS` Doberman decision carries one or more `ReasonCode` values plus a human explanation. This page catalogues every member of `ReasonCode` in `src/doberman/models.py`, the module where it is actually attached to a decision, and what it means in plain language. The enum currently defines 61 codes. `doberman log` and `doberman tune --json` (see [CLI reference](CLI.md)) both surface these values directly, so matching on the name here is the stable way to script against a decision.
 
 | Code | Group | Raised in | Meaning |
 |------|-------|-----------|---------|
@@ -63,6 +63,8 @@ Every non-`PASS` Doberman decision carries one or more `ReasonCode` values plus 
 | `correlated_trifecta` | Session correlator | `engine/correlator.py` | This session's recent decision history shows an untrusted-provenance ingress and a sensitive or secret read as separate earlier calls, and the current action is an external egress: a lethal trifecta assembled across calls rather than within one. |
 | `correlated_destructive_flow` | Session correlator | `engine/correlator.py` | This session's recent decision history shows a broad read or enumeration and a shell command as separate earlier calls, and the current action is an external egress: a possible archive-then-exfiltrate flow. |
 | `raw_socket_channel` | Objective guardrail | `engine/rules/commands.py` | A shell command opens a raw network channel outside the normal HTTP/tool egress path: a `/dev/tcp`/`/dev/udp` redirection target, netcat/ncat/socat used in its exec-on-connect (reverse/bind-shell) form, or any `openssl s_client` invocation (a TLS client connection, whatever flag names the target). Detection reasons about command shape only, is deliberately narrow to keep the false-positive rate near zero, and only ever raises to `AUTH`, never `BLOCK`. |
+| `verification_bypass_flag` | Verification integrity | `engine/rules/commands.py` | A `git commit` command carries `--no-verify`, `--no-gpg-sign`, or the short alias `-n` (including combined short flags like `-an`), skipping the commit's pre-commit/pre-push hooks or its cryptographic signature. This is a narrower, dedicated code — never `destructive_command` — so it can never sit on the mode-independent hard-block floor. |
+| `test_file_removal` | Verification integrity | _(reserved, enum only — wired in a later C4 task)_ | Reserved for a check that flags a command deleting or renaming a test file, another shape of an agent quietly disabling its own safety net rather than fixing what it flags. Not yet wired to a raise site. |
 
 ## Notes
 

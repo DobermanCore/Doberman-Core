@@ -94,6 +94,15 @@ _COMMAND_ACTION_TYPES = frozenset(
 #: Branch names whose history is protected — a force-push here is catastrophic.
 DEFAULT_PROTECTED_BRANCHES: tuple[str, ...] = ("main", "master", "release", "develop")
 
+#: git commit flags that skip hooks or signing (C4). Pre-commit/pre-push hooks
+#: often run tests/lint, and a commit signature vouches for authorship — an
+#: agent quietly disabling either is stepping around a safety net it is
+#: supposed to satisfy, not a catastrophic/irreversible act on its own, so this
+#: is AUTH with its OWN reason code — never ReasonCode.destructive_command,
+#: which sits on FLOOR_HARD_BLOCKS (policy/modes.py) and would silently turn
+#: every skip into a mode-independent hard BLOCK.
+_VERIFICATION_BYPASS_LONG_FLAGS = {"--no-verify", "--no-gpg-sign"}
+
 # Command-substitution bodies: $(...) and `...`. We recurse into these so a
 # destructive command hidden inside a substitution is still evaluated.
 _SUBSTITUTION = re.compile(r"\$\((?P<paren>[^()]*)\)|`(?P<backtick>[^`]*)`")
@@ -769,6 +778,12 @@ def _segment_verdict(
             ReasonCode.destructive_command,
             "Git history rewrite / hard reset; authentication required.",
         )
+    if cmd == "git" and _git_commit_bypasses_verification(tokens):
+        return _auth(
+            ReasonCode.verification_bypass_flag,
+            "Git commit bypasses its pre-commit hooks or signature verification; "
+            "authentication required.",
+        )
     if _is_pipe_to_shell(tokens):
         return _auth(
             ReasonCode.destructive_command,
@@ -798,6 +813,24 @@ def _git_is_history_rewrite(tokens: list[str]) -> bool:
         return True
     # ``git clean -f`` permanently removes untracked files.
     return "clean" in tokens and any(t.startswith("-") and "f" in t for t in tokens)
+
+
+def _git_commit_bypasses_verification(tokens: list[str]) -> bool:
+    """``git commit`` with ``--no-verify``/``-n``/``--no-gpg-sign`` (skips hooks or
+    signing). ``-n`` is git's short alias for ``--no-verify`` and combines with
+    other short commit flags (``-an``, ``-nm``), so any single-dash token
+    containing the letter ``n`` counts. Only a ``-m``'s VALUE (a separate,
+    non-``-``-prefixed token) can contain the literal text "no-verify", and that
+    token is never scanned here, so a commit message is never misread as the
+    flag."""
+    if not tokens or tokens[0] != "git" or "commit" not in tokens:
+        return False
+    for token in tokens[1:]:
+        if token in _VERIFICATION_BYPASS_LONG_FLAGS:
+            return True
+        if token.startswith("-") and not token.startswith("--") and "n" in token[1:]:
+            return True
+    return False
 
 
 def _is_pipe_to_shell(tokens: list[str]) -> bool:

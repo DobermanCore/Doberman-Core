@@ -350,6 +350,14 @@ class ReasonCode(StrEnum):
     # (see engine/rules/commands.py) and AUTH-only — it never reaches BLOCK.
     raw_socket_channel = "raw_socket_channel"
 
+    # C4 — verification-integrity rule pack: narrow, stateless checks over argv
+    # and path class (never file content, diffs, or session state) that catch an
+    # agent quietly disabling its own safety net rather than fixing what it
+    # flags. Both are AUTH-only by construction — neither ever reaches BLOCK, so
+    # neither belongs on policy.modes.FLOOR_HARD_BLOCKS.
+    verification_bypass_flag = "verification_bypass_flag"
+    test_file_removal = "test_file_removal"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).

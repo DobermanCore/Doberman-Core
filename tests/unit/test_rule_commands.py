@@ -638,3 +638,40 @@ def test_inline_create_connection_requires_auth():
     result = _cmd("python -c \"import socket as k;k.create_connection(('h',443))\"")
     assert result.verdict is Verdict.AUTH
     assert ReasonCode.opaque_command in result.reason_codes
+
+
+# --- C4 — verification-bypass flag on git commit -----------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit --no-verify",
+        "git commit -n -m x",
+        "git commit --no-gpg-sign",
+        "git commit -an -m 'wip'",  # combined short flags (-a and -n glommed)
+    ],
+)
+def test_git_commit_verification_bypass_flags_require_auth(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.verification_bypass_flag in result.reason_codes
+
+
+def test_git_commit_message_text_no_verify_is_not_flagged():
+    # The literal string must be a -m VALUE (not itself a flag token) to avoid
+    # matching — this is the negative control for the flag-detection heuristic.
+    result = _cmd("git commit -m 'no-verify'", action_type=ActionType.git_op)
+    assert ReasonCode.verification_bypass_flag not in result.reason_codes
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_verification_bypass_flag_is_never_a_floor_hard_block():
+    from doberman.policy.modes import FLOOR_HARD_BLOCKS
+
+    # Structural guarantee, not a per-mode probe: this reason code must never be
+    # reachable from the destructive_command floor-block branch, so it can never
+    # be a mode-independent hard BLOCK the way destructive_command is.
+    assert ReasonCode.verification_bypass_flag not in FLOOR_HARD_BLOCKS
+    result = _cmd("git commit --no-verify", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
