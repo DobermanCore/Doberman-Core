@@ -395,6 +395,15 @@ class DecisionExplainerApp(App[None]):
     ]
 
     CSS = """
+    /* A dark cursor row instead of Textual's blue: every foreground colour
+       (PASS green, the plain risk/auth cells) keeps its contrast under the
+       cursor; the BLOCK/AUTH/critical/high chips carry their own background. */
+    DataTable > .datatable--cursor {
+        background: #3a3a3a;
+    }
+    DataTable:focus > .datatable--cursor {
+        background: #4a4a4a;
+    }
     #date-bar {
         height: 1;
         color: $text-muted;

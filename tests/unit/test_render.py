@@ -126,8 +126,8 @@ def test_verdict_rich_style_chip_leaves_pass_as_plain_colored_text():
 
 
 def test_risk_rich_style_known_levels():
-    assert render.risk_rich_style("critical") == "bold bright_red"
-    assert render.risk_rich_style("high") == "bold red"
+    assert render.risk_rich_style("critical") == "bold #000000 on bright_red"
+    assert render.risk_rich_style("high") == "bold #000000 on red"
     assert render.risk_rich_style("medium") == "yellow"
     assert render.risk_rich_style("low") == ""
 

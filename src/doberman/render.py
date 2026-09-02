@@ -60,8 +60,11 @@ _CHIP_VERDICT_STYLES: dict[Verdict, str] = {
 #: Rich style per risk level for a redacted row's `risk` column - color is a
 #: second signal alongside the plain-word label, never a replacement for it.
 _RISK_STYLES: dict[str, str] = {
-    "critical": "bold bright_red",
-    "high": "bold red",
+    # critical/high are inverse chips like the BLOCK/AUTH verdict cells: under
+    # Textual's default theme `bright_red` text is only 3.57:1 on the row
+    # background, and a chip keeps its own background under the cursor row.
+    "critical": "bold #000000 on bright_red",
+    "high": "bold #000000 on red",
     "medium": "yellow",
     "low": "",
 }
