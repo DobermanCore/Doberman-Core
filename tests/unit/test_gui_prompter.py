@@ -19,6 +19,7 @@ The tkinter machinery is monkeypatched at module seams (mirroring how the TTY te
 fake ``_open_tty``) so everything here runs headless and deterministically.
 """
 
+import gc
 import re
 import sys
 import threading
@@ -869,6 +870,19 @@ def _press(widget, sequence):
     widget.tk.call(funcid, *(["0"] * 19))
 
 
+@pytest.fixture(autouse=True)
+def _collect_tk_garbage_on_this_thread():
+    """Collect every Tk object this test left in a reference cycle NOW, on the
+    thread that created it. Otherwise the cyclic GC runs on whatever thread
+    allocates next - on CI that was an aiosqlite connector thread in a later
+    test - and deleting a Tk object off its Tcl thread aborts the process
+    (``Tcl_AsyncDelete: async handler deleted by the wrong thread``, seen as
+    "Fatal Python error: Aborted ... Garbage-collecting" in an xdist worker).
+    """
+    yield
+    gc.collect()
+
+
 @pytest.fixture
 def real_root():
     """A real, mapped (not withdrawn) Tk root -- focus tracking needs a mapped
@@ -1379,7 +1393,10 @@ def test_more_time_button_is_never_the_default_focus(real_root):
     root.update()
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
-    assert root.focus_get() is buttons["Deny"]
+    focused = root.focus_get()
+    if focused is None:
+        pytest.skip("the runner granted this window no input focus (headless CI)")
+    assert focused is buttons["Deny"]
 
 
 def test_code_entry_rejects_non_digit_input(real_root):
@@ -2814,7 +2831,10 @@ def test_help_affordance_is_never_the_default_focus(real_root):
     import tkinter.ttk as ttk
 
     buttons = {w.cget("text"): w for w in _walk_widgets(root) if isinstance(w, ttk.Button)}
-    assert root.focus_get() is buttons["Deny"]
+    focused = root.focus_get()
+    if focused is None:
+        pytest.skip("the runner granted this window no input focus (headless CI)")
+    assert focused is buttons["Deny"]
 
 
 # --- item 11: technical tone prints HIGH once (headline OR chip) ---------------------

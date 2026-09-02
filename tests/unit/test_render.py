@@ -74,7 +74,7 @@ def test_wrap_detail_never_exceeds_an_explicit_clamped_width():
     assert all(len(line) <= 60 for line in below_min)
 
     above_max = render.wrap_detail(text, indent=4, width=500)
-    assert all(len(line) <= 120 for line in above_max)
+    assert all(len(line) <= 78 for line in above_max)
 
 
 def test_wrap_detail_clamps_the_real_terminal_size_too(monkeypatch):
@@ -84,7 +84,7 @@ def test_wrap_detail_clamps_the_real_terminal_size_too(monkeypatch):
 
     monkeypatch.setattr(render.shutil, "get_terminal_size", lambda fallback=(100, 24): (300, 24))
     lines = render.wrap_detail("word " * 40, indent=4)
-    assert all(len(line) <= 120 for line in lines)
+    assert all(len(line) <= 78 for line in lines)
 
 
 def test_a_242_char_line_wraps_into_multiple_lines():
@@ -94,4 +94,25 @@ def test_a_242_char_line_wraps_into_multiple_lines():
 
     lines = render.wrap_detail(text, indent=4, width=100)
     assert len(lines) > 1
-    assert all(len(line) <= 100 for line in lines)
+    assert all(len(line) <= 78 for line in lines)
+
+
+def test_wrap_detail_hang_indents_continuation_past_a_marker():
+    """A `"- name: "`-style caller can ask for continuation lines to land
+    under the text, not under the marker."""
+    text = "- Config: " + ("detail word " * 20)
+    lines = render.wrap_detail(text, indent=2, width=40, hang=2)
+    assert len(lines) > 1
+    assert lines[0].startswith("  - Config:")
+    for line in lines[1:]:
+        assert line.startswith("    ")  # indent(2) + hang(2)
+        assert not line.startswith("     ")  # exactly 4, not more
+
+
+def test_wrap_detail_never_breaks_inside_a_path_token():
+    windows_path = "C:\\Users\\someone\\AppData\\Local\\Doberman\\policies-with-a-long-name.yaml"
+    text = f"present but failed to load: {windows_path} (corrupt?)"
+    lines = render.wrap_detail(text, indent=0, width=40)
+    # The path is far longer than width=40; it must still land whole on one
+    # line rather than being force-split mid-directory-name.
+    assert any(windows_path in line for line in lines)

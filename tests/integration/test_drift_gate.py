@@ -6,10 +6,11 @@ from datetime import datetime, timezone
 import pyotp
 import pytest
 
-from doberman.auth import totp
+from doberman.auth import password, totp
 from doberman.policy.drift import Classification, apply_change
 
 _NOW = datetime(2026, 6, 8, tzinfo=timezone.utc)
+_PASSWORD = "correct horse battery staple"  # noqa: S105 — synthetic test credential
 
 
 class ScriptedPrompter:
@@ -52,6 +53,12 @@ async def test_weaken_requires_2fa_and_shows_a_diff(tmp_path):
 
 
 async def test_weaken_denied_when_confirmation_refused(tmp_path):
+    # Round 6 item 9: with no factor enrolled the precondition now denies
+    # before the confirm step is even reached (`method` would read
+    # "no_factor_enrolled" instead) - enroll one so this test still exercises
+    # an explicitly REFUSED confirmation specifically (mirrors
+    # test_drift_preferences_gate.py's equivalent fix).
+    password.enroll(_PASSWORD)
     outcome = await apply_change(
         {"r": "block"},
         {"r": "allow"},
@@ -62,6 +69,25 @@ async def test_weaken_denied_when_confirmation_refused(tmp_path):
     )
     assert outcome.approved is False
     assert outcome.method == "denied"
+
+
+async def test_weaken_denied_when_nothing_enrolled(tmp_path):
+    """The precondition-first gate (round 6 item 9): with NEITHER TOTP nor a
+    password enrolled, a weaken is denied on the enrollment check alone - the
+    confirm step is never even reached, so a confirm=True prompter still gets
+    denied with reason "no_factor_enrolled", not "denied"."""
+    prompter = ScriptedPrompter(confirm=True, code="123456")
+    outcome = await apply_change(
+        {"r": "block"},
+        {"r": "allow"},
+        "loosen",
+        repo_root=str(tmp_path),
+        prompter=prompter,
+        now=_NOW,
+    )
+    assert outcome.approved is False
+    assert outcome.method == "no_factor_enrolled"
+    assert prompter.diffs == []  # confirm() was never called
 
 
 async def test_weaken_denied_on_wrong_2fa_code(tmp_path):
@@ -78,6 +104,7 @@ async def test_weaken_denied_on_wrong_2fa_code(tmp_path):
 
 
 async def test_weaken_denied_on_prompter_failure(tmp_path):
+    totp.enroll()  # a factor must be enrolled for the raise to actually happen
     outcome = await apply_change(
         {"r": "block"},
         {"r": "allow"},

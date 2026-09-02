@@ -23,6 +23,8 @@ import os
 import shutil
 import sqlite3
 import stat
+import sys
+import sysconfig
 from dataclasses import dataclass
 from enum import Enum
 from importlib.util import find_spec
@@ -68,19 +70,48 @@ def _safe_check(name: str, critical: bool, fn):
 
 
 def _check_hooks(path: str) -> CheckResult:
-    from doberman.hosthooks.install import hook_install_states
-    from doberman.hosthooks.install_codex import codex_hook_install_states
+    from doberman.hosthooks.install_codex import codex_hook_install_states, protection_state
 
-    installed = [scope for scope, _p, ok in hook_install_states(path) if ok]
-    installed += [f"codex:{scope}" for scope, _p, ok in codex_hook_install_states(path) if ok]
+    # Round 8 item P0: sourced from the shared predicate (also used by
+    # `status`) so this listing can never drift out of sync with it; the
+    # plugin scope isn't part of that predicate (see its docstring), so it's
+    # still probed and appended here directly, same as before.
+    _protected, _reason, hooks = protection_state(path)
+    installed = [scope for scope, _p, ok in hooks if ok]
+    installed += [
+        f"codex:{scope}"
+        for scope, _p, ok in codex_hook_install_states(path)
+        if scope == "plugin" and ok
+    ]
     if installed:
         return CheckResult("Host hooks", CheckStatus.OK, f"installed ({', '.join(installed)})")
     return CheckResult(
         "Host hooks",
         CheckStatus.FAIL,
-        "not installed in any scope — run `doberman install-hooks` (add `--host codex` for Codex)",
+        "not installed in any scope - run `doberman install-hooks` (add `--host codex` for Codex)",
         critical=True,
     )
+
+
+def _bin_dir_hint() -> str:
+    """Best-effort directory this Python environment installs console scripts
+    into, so the PATH remedy below can name a concrete directory instead of a
+    generic "check your PATH" (item 8). ``sys.executable``'s own directory IS
+    that directory in every common layout (venv, pipx venv, `--user`, conda) -
+    an entry-point script installs alongside the interpreter that runs it.
+    Falls back to ``sysconfig.get_path('scripts')`` if that directory doesn't
+    look like a script dir for some reason; never raises.
+    """
+    try:
+        exe_dir = Path(sys.executable).resolve().parent
+        if exe_dir.name.lower() in ("bin", "scripts"):
+            return str(exe_dir)
+    except Exception:  # noqa: BLE001, S110 — a diagnostic hint must never crash doctor
+        pass
+    try:
+        return sysconfig.get_path("scripts")
+    except Exception:  # noqa: BLE001 — same
+        return "your Python install's script directory"
 
 
 def _check_hook_command(path: str) -> CheckResult:
@@ -94,16 +125,16 @@ def _check_hook_command(path: str) -> CheckResult:
     happens on *this* process's PATH, which can differ from the host's, so the
     detail says so.
     """
-    from doberman.hosthooks.install import hook_install_states
-    from doberman.hosthooks.install_codex import codex_hook_install_states
+    from doberman.hosthooks.install_codex import protection_state
 
     resolved = shutil.which("doberman")
     if resolved:
         return CheckResult("Hook command", CheckStatus.OK, f"`doberman` resolves to {resolved}")
-    installed = any(ok for _scope, _p, ok in hook_install_states(path)) or any(
-        ok for scope, _p, ok in codex_hook_install_states(path) if scope != "plugin"
-    )
-    if not installed:
+    # Round 8 item P0: same shared predicate as `_check_hooks`/`status` - its
+    # "no_hooks" reason is exactly "nothing installed in any scope that
+    # counts here" (Claude's three scopes + Codex user/repo, plugin excluded).
+    _protected, reason, _hooks = protection_state(path)
+    if reason == "no_hooks":
         return CheckResult(
             "Hook command",
             CheckStatus.WARN,
@@ -113,8 +144,8 @@ def _check_hook_command(path: str) -> CheckResult:
         "Hook command",
         CheckStatus.FAIL,
         "hooks call `doberman`, which is not on PATH (checked from this shell): the host cannot run "
-        "them, so tool calls go unmediated. Put the install's bin dir on PATH (or `pipx install "
-        "doberman-core`), or strip the dangling entries with `doberman uninstall-hooks` "
+        f"them, so tool calls go unmediated. Add {_bin_dir_hint()} to PATH, or `pipx install "
+        "doberman-core`, or strip the dangling entries with `doberman uninstall-hooks` "
         "(`--global` for the user-wide ones)",
         critical=True,
     )
@@ -171,7 +202,7 @@ def _check_codex_version() -> CheckResult:
     return CheckResult(
         "Codex CLI",
         CheckStatus.WARN,
-        f"{version} outside tested range [{low}, {high}) — adapter may need an update",
+        f"{version} outside tested range [{low}, {high}) - adapter may need an update",
     )
 
 
@@ -222,7 +253,7 @@ def _check_config(path: str) -> CheckResult:
     return CheckResult(
         "Config",
         CheckStatus.FAIL,
-        "no policy saved — run `doberman setup` or `doberman review --yes`",
+        "no policy saved - run `doberman setup` or `doberman review --yes`",
         critical=True,
     )
 
@@ -239,7 +270,7 @@ def _check_db(path: str) -> CheckResult:
         return CheckResult(
             "Decision DB",
             CheckStatus.WARN,
-            "not created yet — appears on the first gated decision",
+            "not created yet - appears on the first gated decision",
         )
     # Read-only probe: open in SQLite `mode=ro` so we never create or migrate.
     try:
@@ -267,7 +298,7 @@ def _check_enforcement(path: str) -> CheckResult:
         return CheckResult("Enforcement", CheckStatus.OK, detail)
     # monitor / off: Doberman is not blocking. Surface it loudly (still not a
     # critical *health* failure — it is an intentional, human-gated dial).
-    return CheckResult("Enforcement", CheckStatus.WARN, f"{detail} — NOT blocking (advisory only)")
+    return CheckResult("Enforcement", CheckStatus.WARN, f"{detail} - NOT blocking (advisory only)")
 
 
 def _check_policy_versions(path: str) -> CheckResult:
@@ -306,7 +337,7 @@ def _check_2fa() -> CheckResult:
     if totp.is_enrolled():
         return CheckResult("2FA", CheckStatus.OK, "enrolled")
     return CheckResult(
-        "2FA", CheckStatus.WARN, "not enrolled (optional) — run `doberman 2fa setup`"
+        "2FA", CheckStatus.WARN, "not enrolled (optional) - run `doberman 2fa setup`"
     )
 
 
@@ -316,7 +347,7 @@ def _check_password() -> CheckResult:
     if password.is_enrolled():
         return CheckResult("Password", CheckStatus.OK, "set")
     return CheckResult(
-        "Password", CheckStatus.WARN, "not set (optional) — run `doberman password set`"
+        "Password", CheckStatus.WARN, "not set (optional) - run `doberman password set`"
     )
 
 
@@ -329,10 +360,12 @@ def _check_fingerprint_key() -> CheckResult:
             "Fingerprint key", CheckStatus.WARN, "not yet created (generated on first use)"
         )
     if os.name == "nt":
-        # POSIX mode bits are meaningless on Windows ACLs — can't verify, so warn
-        # rather than claim a false OK.
+        # POSIX mode bits are meaningless on Windows ACLs, so permissions
+        # can't be verified here - but the key genuinely IS present, and
+        # there is nothing actionable for the user to fix about an OS
+        # limitation (round 6 item 11: this is an OK fact, not a warning).
         return CheckResult(
-            "Fingerprint key", CheckStatus.WARN, "present (permissions not verifiable on Windows)"
+            "Fingerprint key", CheckStatus.OK, "present (permissions not verifiable on Windows)"
         )
     mode = stat.S_IMODE(p.stat().st_mode)
     if mode & 0o077:

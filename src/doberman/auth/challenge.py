@@ -113,14 +113,23 @@ def _memory_excluded(decision: Decision, action: SecurityObject) -> bool:
     )
 
 
+#: Upper bound on one approval-memory storage round-trip from the sync seam.
+#: Approval memory is a convenience; a lookup that does not answer in time
+#: fails to the stricter full-tier prompt. The bound is a loop *timer*, so it
+#: also wakes an event loop whose thread-safe wake-up was lost (seen on the
+#: Windows Proactor loop under xdist: the aiosqlite thread had exited and the
+#: loop sat in `_poll` forever, a 20-minute CI stall).
+_MEMORY_IO_TIMEOUT_S = 5.0
+
+
 def _run_memory_io(call: Callable[[], Any]) -> Any:
     """Run one async storage call from this synchronous seam, or fail to no-memory."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         try:
-            return asyncio.run(call())
-        except Exception:  # noqa: BLE001 - storage failure means full-tier prompting
+            return asyncio.run(asyncio.wait_for(call(), timeout=_MEMORY_IO_TIMEOUT_S))
+        except Exception:  # noqa: BLE001 - storage failure/timeout means full-tier prompting
             logger.warning("approval-memory storage unavailable; using full auth tier")
             return None
     logger.warning("approval-memory sync bridge called on an event loop; using full auth tier")
