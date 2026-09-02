@@ -275,6 +275,22 @@ def test_setup_reprompts_on_bad_mode(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "unknown mode" in result.output
     assert "try again" in result.output
+    # item 8: the re-prompt error gets an "error: " prefix, on stderr - not
+    # glued to the prompt text with no marker.
+    assert "error: unknown mode" in result.stderr
+    assert "error: unknown mode" not in result.stdout
+
+
+def test_host_reprompt_error_gets_error_prefix_on_stderr(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["setup", "--path", str(tmp_path)],
+        # hosts: an invalid choice, then a valid one; rest as usual.
+        input="bogus-host\n\nbalanced\nn\nn\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "error: unknown host" in result.stderr
+    assert "try again" in result.stderr
 
 
 def test_demo_prompt_eof_never_fails_a_succeeded_setup(tmp_path: Path) -> None:
@@ -624,6 +640,19 @@ def test_output_contains_restart_activation_hint(tmp_path: Path) -> None:
     assert "activates when you restart" in result.output
 
 
+def test_restart_your_session_sentence_never_repeats_with_two_hosts(tmp_path: Path) -> None:
+    """item 10: with both claude and codex wired, "restart your ... session"
+    prints exactly once - the per-host restart_hint no longer duplicates it."""
+    result = runner.invoke(
+        app,
+        ["setup", "--yes", "--host", "claude", "--host", "codex", "--path", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    assert result.output.count("restart your") == 1
+    assert "Restart your Claude Code session." not in result.output
+    assert "Restart your Codex CLI session." not in result.output
+
+
 def test_doctor_remediation_detail_shown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A remaining critical is printed as '- <name>: <detail>' using doctor's own text."""
     from doberman.cli import doctor as doctor_mod
@@ -903,6 +932,33 @@ def test_global_interactive_declined_falls_back_to_project_scope(
     assert "Write to your real home directory now?" in result.output
     assert not fake_home_settings.exists()
     assert (tmp_path / ".claude" / "settings.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Telemetry gets its own section, after hosts are wired (item 4)
+# ---------------------------------------------------------------------------
+
+
+def test_telemetry_gets_its_own_section_after_hosts_before_doctor(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "-- Telemetry --" in result.output
+    settings_path = tmp_path / ".claude" / "settings.json"
+    wired_idx = result.output.index(f"wrote {settings_path}")
+    telemetry_idx = result.output.index("-- Telemetry --")
+    doctor_idx = result.output.index("-- Doctor --")
+    assert wired_idx < telemetry_idx < doctor_idx
+
+
+def test_telemetry_explanation_shows_even_under_yes(tmp_path: Path) -> None:
+    """The one-line "what is sent" explanation prints even under --yes, which
+    never asks the confirm question."""
+    result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert (
+        "Counts and command names only. Never paths, prompts, secrets, or reason payloads."
+        in result.output
+    )
 
 
 # ---------------------------------------------------------------------------
