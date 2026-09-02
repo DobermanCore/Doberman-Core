@@ -150,6 +150,30 @@ CICD_CONFIG_GLOBS: tuple[str, ...] = (
     "**/azure-pipelines.yaml",
 )
 
+#: Repo governance + lint/type-check configuration whose silent edit can hide a
+#: bad change from review (CODEOWNERS routing) or from CI (a loosened/disabled
+#: lint or type rule). Path-class detection cannot tell a legitimate config
+#: tune from a silencing one, so — exactly like CICD_CONFIG_GLOBS above — every
+#: edit steps up to AUTH (raise-only). Deliberately excludes pyproject.toml
+#: itself: it is edited constantly for routine dependency bumps, and flagging
+#: the whole file for a [tool.ruff]-section-only concern would need to read
+#: file content, which this rule never does — see README's known-limitations.
+VERIFICATION_CONFIG_GLOBS: tuple[str, ...] = (
+    "codeowners",
+    "**/codeowners",
+    ".github/codeowners",
+    "ruff.toml",
+    ".ruff.toml",
+    "**/ruff.toml",
+    "mypy.ini",
+    ".mypy.ini",
+    "**/mypy.ini",
+    ".eslintrc",
+    ".eslintrc.*",
+    "eslint.config.*",
+    "**/.eslintrc*",
+)
+
 #: Paths that are sensitive: allowed, but only after authentication.
 DEFAULT_SENSITIVE_GLOBS: tuple[str, ...] = (
     "backend/auth/**",
@@ -157,6 +181,7 @@ DEFAULT_SENSITIVE_GLOBS: tuple[str, ...] = (
     "infra/**",
     "**/infra/**",
     *CICD_CONFIG_GLOBS,
+    *VERIFICATION_CONFIG_GLOBS,
     "migrations/**",
     "**/migrations/**",
     "**/*.tfstate",

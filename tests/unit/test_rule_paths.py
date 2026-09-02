@@ -145,6 +145,39 @@ def test_cicd_config_requires_auth(tmp_path, cicd_path):
     assert ReasonCode.sensitive_path_access in result.reason_codes
 
 
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        "CODEOWNERS",
+        ".github/CODEOWNERS",
+        "docs/CODEOWNERS",
+        "ruff.toml",
+        ".ruff.toml",
+        "sub/ruff.toml",
+        "mypy.ini",
+        ".mypy.ini",
+        "sub/mypy.ini",
+        ".eslintrc",
+        ".eslintrc.json",
+        "eslint.config.js",
+        "sub/.eslintrc.yml",
+    ],
+)
+def test_verification_config_requires_auth(tmp_path, config_path):
+    result = RULE.evaluate(_action(config_path), _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_path_access in result.reason_codes
+
+
+def test_pyproject_toml_is_not_flagged(tmp_path):
+    # Deliberately excluded from VERIFICATION_CONFIG_GLOBS: edited constantly
+    # for routine dependency bumps; flagging the whole file would be a
+    # guaranteed high-FPR mistake (a [tool.ruff]-section-only check would need
+    # to read file content, which this rule never does).
+    result = RULE.evaluate(_action("pyproject.toml"), _ctx(tmp_path))
+    assert result.verdict is Verdict.PASS
+
+
 def test_cicd_config_step_up_is_raise_only_over_benign_lookalikes(tmp_path):
     # The globs are specific enough not to swallow ordinary source: a file that
     # merely mentions a CI tool's name in an unrelated path still passes.
