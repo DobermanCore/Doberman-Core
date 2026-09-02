@@ -2996,7 +2996,7 @@ def setup(
         if warnings:
             line += f", {len(warnings)} warning(s) (`doberman doctor` shows them)"
         if critical:
-            line += f", {len(critical)} critical — needs attention:"
+            line += f", {len(critical)} critical - needs attention:"
         typer.echo(line)
         for r in critical:
             typer.echo(f"  - {r.name}")
@@ -3035,7 +3035,7 @@ def setup(
         chosen_mode.value, [h for h, _ in wired], claude_scope, yes
     )
     typer.echo(
-        "Next step: `doberman password set` — later lowerings need a possession factor "
+        "Next step: `doberman password set` - later lowerings need a possession factor "
         "(a 2FA code if enrolled, otherwise this password)."
     )
     typer.echo("Also: `doberman 2fa setup` (optional)  |  `doberman status`  |  `doberman doctor`")
