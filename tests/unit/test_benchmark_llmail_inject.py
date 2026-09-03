@@ -15,9 +15,16 @@ import pathlib
 
 import pytest
 
-from doberman.models import ActionType, SourceContext
+from doberman.models import ActionType, ReasonCode, SourceContext, Verdict
 from tests.benchmarks.adapter import SuiteAdapter
-from tests.benchmarks.suites.llmail_inject import ATTACKER_EMAIL, DATA_DIR_ENV, LlmailInjectAdapter
+from tests.benchmarks.mapping import to_eval_context, to_security_object
+from tests.benchmarks.profiles import build_pipeline
+from tests.benchmarks.suites.llmail_inject import (
+    ATTACKER_EMAIL,
+    BENIGN_SEND_DESTINATION,
+    DATA_DIR_ENV,
+    LlmailInjectAdapter,
+)
 
 PAYLOAD_MARKER = "LLMAIL_PAYLOAD_MARKER_DO_NOT_LEAK"
 
@@ -80,9 +87,42 @@ def test_load_filters_to_api_triggered_and_builds_two_action_cases(tmp_path):
     assert case.actions[1].raw_arguments == {"to": ATTACKER_EMAIL, "body": "confirmation"}
 
     benign_cases = [c for c in cases if c.label == "benign"]
-    assert len(benign_cases) == 1
-    assert len(benign_cases[0].actions) == 1
-    assert benign_cases[0].actions[0].action_type is ActionType.file_read
+    # A2: one read-only case (unchanged) PLUS one synthetic benign SEND variant
+    # per fp email (the dataset carries no sender addresses, so the recipient
+    # is a fixed, clearly-synthetic constant).
+    assert len(benign_cases) == 2
+    read_case = next(c for c in benign_cases if c.case_id == "llmail-benign-00000")
+    assert len(read_case.actions) == 1
+    assert read_case.actions[0].action_type is ActionType.file_read
+
+    send_case = next(c for c in benign_cases if c.case_id == "llmail-benign-send-00000")
+    assert len(send_case.actions) == 1
+    send_action = send_case.actions[0]
+    assert send_action.action_type is ActionType.network_request
+    assert send_action.tool_name == "send_email"
+    assert send_action.external_destination == BENIGN_SEND_DESTINATION
+    assert send_action.source_context is SourceContext.email
+    assert send_case.attacker_goal_index is None
+
+
+def test_benign_send_variant_shows_honest_auth_friction_never_a_hard_block(tmp_path):
+    """A2 (LLMail-Inject review carry-forward): the synthetic benign SEND
+    variant must not be tuned away. It is a bare `user@host` destination, so
+    the real objective destination rule AUTHs it (embedded-credentials smell,
+    `unknown_external_destination`) in every mode -- never a hard BLOCK. Report
+    both honestly rather than trimming the benign set to avoid the friction."""
+    root = _write_dataset(tmp_path)
+    cases = list(LlmailInjectAdapter(data_dir=root, sample_size=10).load())
+    send_case = next(c for c in cases if c.case_id == "llmail-benign-send-00000")
+    action = send_case.actions[0]
+
+    pipeline = build_pipeline(load_plugins=False)
+    decision = pipeline.decide(
+        to_security_object("probe:llmail-benign-send", action), to_eval_context(action)
+    )
+
+    assert decision.final_verdict is Verdict.AUTH
+    assert ReasonCode.unknown_external_destination in decision.reason_codes
 
 
 def test_sample_size_and_seed_are_deterministic(tmp_path):

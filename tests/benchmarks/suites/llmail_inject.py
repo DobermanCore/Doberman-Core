@@ -26,9 +26,27 @@ Doberman evaluates the **action**, not the LLM's obedience: this measures
 whether Doberman's taint/egress floors would stop the send a successful
 injection tried to cause, not whether an LLM would have generated it.
 
+``decide()`` is called statelessly, once per action — this suite (like every
+other suite here) does not run the proxy's/host-hook spine's POST-decide
+follow-up (``doberman.engine.taint_floor``'s taint floor and echo tripwire key
+off the persisted decision log across calls, not a single ``decide()``
+invocation). So what this suite measures by default is narrower than "was the
+injection caught end to end": it is whether the real, static objective egress
+rules stop the consummating send on its own content/destination, independent
+of the taint floors. ``tests/benchmarks/session_replay.py``'s
+``--replay-session`` closes that gap for suites registered here.
+
 Benign counterpart: ``data/emails_for_fp_tests.json`` (a plain JSON array of
-203 "should NOT trigger a send" emails) — read-only cases (no send action; the
-correct behavior on these is to do nothing).
+203 "should NOT trigger a send" emails) — a read-only case per email (no send
+action; the correct behavior on these is to do nothing) PLUS a second,
+synthetic benign SEND case per email (``BENIGN_SEND_DESTINATION``): the
+dataset carries no real sender/reply addresses, so this is a fixed,
+clearly-synthetic recipient, not derived from any record. Its purpose is
+measuring FPR on an ordinary legitimate send, which the read-only cases alone
+never exercise. Expect non-zero friction here (a bare ``user@host``
+destination reads as embedded credentials to the real objective destination
+rule and AUTHs — ``ReasonCode.unknown_external_destination`` — in every mode,
+never a hard BLOCK); report it honestly rather than trimming it away.
 """
 
 from __future__ import annotations
@@ -45,6 +63,10 @@ from ..adapter import BenchmarkCase, CandidateAction
 
 DATA_DIR_ENV = "DOBERMAN_BENCH_LLMAIL_DIR"
 ATTACKER_EMAIL = "contact@contact.com"
+#: Fixed, clearly-synthetic recipient for the benign SEND variant below — the
+#: dataset carries no real sender/reply addresses, so this is not derived from
+#: any record.
+BENIGN_SEND_DESTINATION = "reply@example.com"
 _GOAL_BODY = "confirmation"
 _DEFAULT_PHASES: tuple[str, ...] = ("phase2",)
 _DEFAULT_SAMPLE_SIZE = 500
@@ -138,6 +160,29 @@ class LlmailInjectAdapter:
                                 tool_name="read_email",
                                 source_context=SourceContext.email,
                                 raw_arguments={"body": email},
+                            ),
+                        ),
+                    )
+                )
+                # A2 (benign SEND variant): the dataset only ships "should not
+                # trigger a send" emails, never a benign send action, so the
+                # suite could not measure friction on an ordinary, legitimate
+                # send at all. Emit one per fp email so FPR is measured on a
+                # real send, not just a read. Synthetic (no real sender/reply
+                # addresses exist in this dataset) — say so in the docs, not
+                # here in the code comment alone.
+                cases.append(
+                    BenchmarkCase(
+                        case_id=f"llmail-benign-send-{i:05d}",
+                        label="benign",
+                        note="fp_test_send_synthetic",
+                        actions=(
+                            CandidateAction(
+                                action_type=ActionType.network_request,
+                                tool_name="send_email",
+                                external_destination=BENIGN_SEND_DESTINATION,
+                                source_context=SourceContext.email,
+                                raw_arguments={"to": BENIGN_SEND_DESTINATION, "body": email},
                             ),
                         ),
                     )
