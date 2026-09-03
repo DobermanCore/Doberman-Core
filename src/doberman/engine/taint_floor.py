@@ -12,6 +12,7 @@ running event loop``, so the two are deliberately not interchangeable.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -202,26 +203,51 @@ def _cap_match_fingerprints(dest_fps: set[str], arg_fps: set[str]) -> set[str]:
     return capped
 
 
+def _walk_string_leaves(value: Any, visit: Callable[[str], None]) -> None:
+    """Depth-first walk of a nested dict/list/tuple/str `value`, calling
+    `visit(leaf)` for every string leaf. Shared by both outbound-fingerprint
+    walks below so their traversal can't drift between the secret and
+    untrusted-value legs — they must mirror each other exactly.
+
+    Deliberately UNCAPPED: raise-only forbids silently dropping a leaf on the
+    walk. The secret-side caller feeds `_outbound_matches_recorded_secret`,
+    whose match is an unconditional hard BLOCK (`confirmed_exfil`) in EVERY
+    mode — a leaf cap here would let an attacker pad enough leaves ahead of
+    the real secret to walk it out of scan range entirely and defeat that
+    BLOCK, a silent loosening (`secret_exfiltration`, the sibling objective
+    rule in rules.secrets, is a FLOOR_HARD_BLOCK signal for the same reason).
+    The per-string candidate cap (`_MAX_FINGERPRINTS` in rules.secrets /
+    `_MAX_VALUES` in provenance_values.py) already bounds work per leaf, the
+    HMAC key is process-cached (storage.fingerprint._load_or_create_key), and
+    :data:`_MAX_MATCH_FPS` bounds the final SQL query — so this walk is linear
+    in payload bytes, which is acceptable bounded work; only the SET it feeds
+    must be capped, never the SCAN that builds it."""
+
+    def _go(node: Any) -> None:
+        if isinstance(node, str):
+            visit(node)
+        elif isinstance(node, dict):
+            for item in node.values():
+                _go(item)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                _go(item)
+
+    _go(value)
+
+
 def _outbound_secret_fingerprints(args: dict[str, Any], dest: str | None) -> set[str]:
     """Keyed-HMAC fingerprints of secret-candidate tokens anywhere in the outbound
     payload (the call's arguments + its external destination). Light + best-effort;
-    the plaintext is never stored or logged. Aggregate-capped (see
-    :data:`_MAX_MATCH_FPS`) with the destination's own fingerprints kept first."""
+    the plaintext is never stored or logged. The args walk itself visits every
+    string leaf (see :func:`_walk_string_leaves` for why it is deliberately
+    uncapped — raise-only forbids silently walking a secret out of scan range);
+    only the resulting SET is aggregate-capped (see :data:`_MAX_MATCH_FPS`),
+    with the destination's own fingerprints kept first."""
     from doberman.engine.rules.secrets import candidate_secret_fingerprints
 
     arg_fps: set[str] = set()
-
-    def _walk(value: Any) -> None:
-        if isinstance(value, str):
-            arg_fps.update(candidate_secret_fingerprints(value))
-        elif isinstance(value, dict):
-            for item in value.values():
-                _walk(item)
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                _walk(item)
-
-    _walk(args)
+    _walk_string_leaves(args, lambda s: arg_fps.update(candidate_secret_fingerprints(s)))
     dest_fps = candidate_secret_fingerprints(dest) if dest else set()
     return _cap_match_fingerprints(dest_fps, arg_fps)
 
@@ -266,23 +292,17 @@ def _outbound_untrusted_value_fingerprints(
     Mirrors ``_outbound_secret_fingerprints``'s walk exactly, swapping in the
     C1 host/URL/email extractor. ``excluded_hosts`` (see :func:`_excluded_hosts`)
     is forwarded so a trusted/task-named host's value is dropped BEFORE
-    fingerprinting, not subtracted after. Aggregate-capped (see
-    :data:`_MAX_MATCH_FPS`) with the destination's own fingerprints kept first."""
+    fingerprinting, not subtracted after. The args walk itself visits every
+    string leaf (see :func:`_walk_string_leaves`); only the resulting SET is
+    aggregate-capped (see :data:`_MAX_MATCH_FPS`), with the destination's own
+    fingerprints kept first."""
     from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
 
     arg_fps: set[str] = set()
-
-    def _walk(value: Any) -> None:
-        if isinstance(value, str):
-            arg_fps.update(untrusted_value_fingerprints(value, excluded_hosts=excluded_hosts))
-        elif isinstance(value, dict):
-            for item in value.values():
-                _walk(item)
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                _walk(item)
-
-    _walk(args)
+    _walk_string_leaves(
+        args,
+        lambda s: arg_fps.update(untrusted_value_fingerprints(s, excluded_hosts=excluded_hosts)),
+    )
     dest_fps = untrusted_value_fingerprints(dest, excluded_hosts=excluded_hosts) if dest else set()
     return _cap_match_fingerprints(dest_fps, arg_fps)
 

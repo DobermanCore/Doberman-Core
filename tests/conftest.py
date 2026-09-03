@@ -18,6 +18,7 @@ from typer.testing import Result
 
 from doberman.auth.password import PASSWORD_FILE_ENV
 from doberman.auth.totp import TOTP_FILE_ENV
+from doberman.storage import fingerprint as _fingerprint_module
 from doberman.storage.device_metrics import HOME_ENV
 from doberman.storage.fingerprint import KEY_FILE_ENV
 
@@ -30,9 +31,18 @@ def isolated_fingerprint_key(tmp_path, monkeypatch):
     Returns the key path so tests that exercise key generation/rotation can use
     it directly (there is exactly ONE setter of the env var — this fixture — so
     the key path is deterministic and free of fixture-ordering races).
+
+    ``_load_or_create_key`` is process-cached (``lru_cache(maxsize=1)``, keyed
+    by nothing — one process, one key) for hot-path speed; without clearing it
+    here, every test after the first would silently reuse the FIRST test's
+    key/path instead of its own fresh ``tmp_path``, breaking isolation across
+    the whole suite (not just within one test). A test that rotates the key
+    file mid-test (a second ``monkeypatch.setenv(KEY_FILE_ENV, ...)`` of its
+    own) must clear the cache again itself after that second ``setenv``.
     """
     key_path = tmp_path / "doberman-fingerprint.key"
     monkeypatch.setenv(KEY_FILE_ENV, str(key_path))
+    _fingerprint_module._load_or_create_key.cache_clear()
     return key_path
 
 

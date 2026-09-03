@@ -48,7 +48,11 @@ def test_different_keys_produce_different_fingerprints(tmp_path, monkeypatch):
     monkeypatch.setenv(KEY_FILE_ENV, str(tmp_path / "k1.key"))
     first = fingerprint(FAKE_SECRET)
     # Rotate to a brand-new key file → the same secret fingerprints differently.
+    # The loader is process-cached (see test_load_or_create_key_is_cached_across_calls
+    # below), so a mid-process rotation like this one must clear it explicitly —
+    # otherwise the second fingerprint() call would silently reuse the k1 key.
     monkeypatch.setenv(KEY_FILE_ENV, str(tmp_path / "k2.key"))
+    fp_mod._load_or_create_key.cache_clear()
     second = fingerprint(FAKE_SECRET)
     assert first != second
 
@@ -103,6 +107,38 @@ def test_key_is_reused_across_calls(key_path):
     key_after_first = key_path.read_bytes()
     fingerprint("something-else")
     assert key_path.read_bytes() == key_after_first  # not regenerated
+
+
+def test_load_or_create_key_is_cached_across_many_fingerprint_calls(key_path):
+    # Finding, IMPORTANT: _load_or_create_key had no in-process cache, so every
+    # fingerprint() call re-read the key file from disk — O(calls) disk I/O on
+    # the padded-args hook path (~20s measured for 60k calls). It is now
+    # lru_cache(maxsize=1)'d; the real loader must run exactly once no matter
+    # how many fingerprint() calls follow.
+    fp_mod._load_or_create_key.cache_clear()
+
+    for _ in range(1000):
+        fingerprint(FAKE_SECRET)
+
+    info = fp_mod._load_or_create_key.cache_info()
+    assert info.misses == 1  # the real (disk-touching) loader ran exactly once
+    assert info.hits == 999  # every other call was served from the process cache
+
+
+def test_load_or_create_key_cache_survives_but_a_raised_error_is_never_cached(
+    tmp_path, monkeypatch
+):
+    # lru_cache only memoizes successful returns — a corrupt key must keep
+    # raising on every call (never silently "cache" a failure into a
+    # permanent block, and never cache a stale success from before corruption).
+    monkeypatch.setenv(KEY_FILE_ENV, str(tmp_path / "corrupt.key"))
+    fp_mod._load_or_create_key.cache_clear()
+    (tmp_path / "corrupt.key").write_bytes(b"too-short")
+
+    with pytest.raises(RuntimeError):
+        fingerprint(FAKE_SECRET)
+    with pytest.raises(RuntimeError):
+        fingerprint(FAKE_SECRET)
 
 
 def test_default_key_path_is_outside_any_repo(monkeypatch):
