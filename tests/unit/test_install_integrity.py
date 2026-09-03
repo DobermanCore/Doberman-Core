@@ -130,6 +130,10 @@ def test_missing_key_never_raises_from_verify(
         "DOBERMAN_KEY_FILE",
         str(tmp_path / "missing" / "dir" / "that" / "cannot" / "be" / "made" / "\0bad"),
     )
+    # The key is process-cached; drop it so verify must reload from the bad path.
+    from doberman.storage.fingerprint import _load_or_create_key
+
+    _load_or_create_key.cache_clear()
     status = integrity.verify_install("claude", "project", settings, GROUPS)
     assert status.state == "absent"
 
