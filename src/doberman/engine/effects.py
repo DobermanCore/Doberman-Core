@@ -154,19 +154,26 @@ def compute_delete_effects(
             # toward unknown here, before any path work starts.
             if "\x00" in operand:
                 return _unknown(hits_git, hits_outside_repo)
-            # Check the RAW, unresolved operand for symlink-ness before it is
-            # canonicalized: canonicalize()/Path.resolve() resolve symlinks, so an
+            # Confinement FIRST (I1, C2 final review): os.path.join(root, operand)
+            # passes an absolute or UNC operand through UNCHANGED (os.path.join
+            # drops the root when the second argument is itself absolute), so an
+            # os.path.islink() call on that raw join BEFORE escapes_root is
+            # checked could reach an attacker-controlled path (e.g. a UNC host,
+            # \\evil-host\share\x) straight from the decision path. Only a
+            # CONFINED operand reaches the islink() call below.
+            canon = canonicalize(operand, root=repo_root)
+            if canon.escapes_root:
+                hits_outside_repo = True
+                continue  # never walk outside the confined root
+            # Check the RAW, unresolved (but now confirmed-confined) operand for
+            # symlink-ness: canonicalize()/Path.resolve() resolve symlinks, so an
             # in-repo symlink target (rm -rf link, link -> real_dir/, both inside
             # the repo) would otherwise sail past an is_symlink() check performed
             # on the already-resolved path and have its TARGET walked and counted
             # — but `rm` removes the link entry, never the target's contents
             # (Task 3 review fix, ADR 0094). Confinement still goes through the
-            # one shared canonicalizer below (no second path resolver).
+            # one shared canonicalizer above (no second path resolver).
             is_link_operand = os.path.islink(os.path.join(root, operand))
-            canon = canonicalize(operand, root=repo_root)
-            if canon.escapes_root:
-                hits_outside_repo = True
-                continue  # never walk outside the confined root
             if is_link_operand:
                 # A symlink operand is exactly one filesystem entry — never
                 # descended, and never reported under the resolved target's

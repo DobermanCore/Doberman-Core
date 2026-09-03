@@ -74,6 +74,35 @@ def test_operand_outside_repo_root_sets_hits_outside_repo_and_is_not_walked(tmp_
         shutil.rmtree(outside, ignore_errors=True)
 
 
+def test_absolute_outside_root_operand_never_reaches_islink_before_confinement(
+    tmp_path, monkeypatch
+):
+    # I1 (C2 final review): os.path.islink() on the raw, unconfined operand
+    # used to run BEFORE canonicalize()/escapes_root. os.path.join(root, op)
+    # passes an absolute or UNC operand through UNCHANGED (os.path.join drops
+    # the root when the second argument is itself absolute), so an islink()
+    # call before confinement is checked could reach an attacker-controlled
+    # path (e.g. a UNC host) straight from the decision path. Confinement
+    # must be checked first; islink() must never even be attempted on an
+    # operand that escapes the repo root.
+    import doberman.engine.effects as effects_module
+
+    calls = []
+    real_islink = os.path.islink
+
+    def _spy_islink(path):
+        calls.append(path)
+        return real_islink(path)
+
+    monkeypatch.setattr(effects_module.os.path, "islink", _spy_islink)
+    outside = tmp_path.parent / f"outside-abs-{tmp_path.name}"
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)  # see note in the sibling outside-root test above
+    effects = compute_delete_effects([str(outside)], str(repo))
+    assert effects.hits_outside_repo is True
+    assert calls == []
+
+
 def test_symlink_operand_itself_is_not_followed(tmp_path):
     if sys.platform == "win32":
         pytest.skip("symlink creation needs elevation on Windows")
