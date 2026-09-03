@@ -294,9 +294,12 @@ def _destructive() -> list[CorpusRow]:
         for i, (at, cmd, note) in enumerate(cmds)
     ]
     # C4 — verification-integrity checks (argv/path-class, not command-shaped).
+    # IDs derive from len(rows), not a hardcoded number — the raw-socket rows
+    # above were folded into ``cmds`` after these were first written, and a
+    # fixed "des-0010"/"des-0011" silently collided with two of them.
     rows.append(
         _row(
-            id_="des-0010",
+            id_=f"des-{len(rows):04d}",
             kind="destructive",
             surfaces={"action_type": "git_op", "tool_name": "run", "mode": "balanced"},
             is_attack=True,
@@ -306,7 +309,7 @@ def _destructive() -> list[CorpusRow]:
     )
     rows.append(
         _row(
-            id_="des-0011",
+            id_=f"des-{len(rows):04d}",
             kind="destructive",
             surfaces={
                 "action_type": "file_delete",
