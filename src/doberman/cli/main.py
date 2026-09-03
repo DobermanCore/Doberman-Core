@@ -1331,6 +1331,7 @@ def doctor(
     section_for = {
         "Host hooks": "Hooks",
         "Hook command": "Hooks",
+        "Hook integrity": "Hooks",
         "Config": "Policy",
         "Enforcement": "Policy",
         "Policy version": "Policy",
@@ -2540,6 +2541,34 @@ def decision_log_prune(
     typer.echo(f"Decision log pruned: {deleted} row(s).")
 
 
+def _record_manifest(host: str, scope: str, settings_path: Path, groups: dict) -> None:
+    """Record the install manifest entry; a failure is reported, never fatal."""
+    from doberman.hosthooks.integrity import record_install
+
+    try:
+        record_install(host, scope, settings_path, groups)
+    except Exception as exc:  # noqa: BLE001 - tracking must never break an install
+        typer.echo(
+            f"warning: could not record the hook install manifest ({type(exc).__name__}); "
+            "`doberman doctor` will report the hook integrity as untracked.",
+            err=True,
+        )
+
+
+def _clear_manifest(host: str, scope: str, settings_path: Path) -> None:
+    """Forget the manifest entry BEFORE removing hooks; a failure is reported, never fatal."""
+    from doberman.hosthooks.integrity import clear_install
+
+    try:
+        clear_install(host, scope, settings_path)
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(
+            f"warning: could not clear the hook install manifest ({type(exc).__name__}); "
+            "`doberman doctor` may report a divergence until you re-run install-hooks.",
+            err=True,
+        )
+
+
 @app.command("install-hooks", rich_help_panel="Getting started")
 def install_hooks(
     global_: bool = typer.Option(
@@ -2579,6 +2608,7 @@ def install_hooks(
         raise typer.Exit(2)
 
     from doberman.hosthooks.install import (
+        doberman_groups,
         load_settings,
         merge_doberman_hooks,
         resolve_settings_path,
@@ -2609,6 +2639,7 @@ def install_hooks(
     else:
         write_settings(settings_path, merged)
         typer.echo(f"wrote {settings_path}")
+    _record_manifest("claude", scope, settings_path, doberman_groups(merged))
     typer.echo("Doberman will now gate every tool call in this project.")
     typer.echo("The session dashboard will print at the start of every session.")
     if remove_exclusion(path):
@@ -2631,7 +2662,11 @@ def _write_codex_hook(scope: str, path: str, *, show_verify: bool = True) -> tup
     "cat .env" text otherwise duplicated it.
     """
     from doberman.hosthooks.install import load_settings, write_settings
-    from doberman.hosthooks.install_codex import merge_codex_hooks, resolve_codex_hooks_path
+    from doberman.hosthooks.install_codex import (
+        codex_doberman_groups,
+        merge_codex_hooks,
+        resolve_codex_hooks_path,
+    )
 
     hooks_path = resolve_codex_hooks_path(scope, path)
 
@@ -2648,6 +2683,7 @@ def _write_codex_hook(scope: str, path: str, *, show_verify: bool = True) -> tup
     else:
         write_settings(hooks_path, merged)
         typer.echo(style_text(f"wrote {hooks_path}", bold=True))
+    _record_manifest("codex", scope, hooks_path, codex_doberman_groups(merged))
     if remove_exclusion(path):
         typer.echo("This project is no longer excluded from global hooks.")
     typer.echo("")
@@ -2724,6 +2760,7 @@ def _uninstall_codex(*, global_: bool, local: bool, path: str, dry_run: bool) ->
         typer.echo("[dry-run] would remove:  PreToolUse -> doberman hook codex-pre")
         return
 
+    _clear_manifest("codex", scope, hooks_path)
     write_settings(hooks_path, cleaned)
     typer.echo(f"wrote {hooks_path}")
     typer.echo("Doberman Codex hooks removed.")
@@ -2803,6 +2840,7 @@ def uninstall_hooks(
         typer.echo(f"  SessionStart -> {DASHBOARD_COMMAND}")
         return
 
+    _clear_manifest("claude", scope, settings_path)
     write_settings(settings_path, cleaned)
     typer.echo(f"wrote {settings_path}")
     typer.echo("Doberman hooks removed.")
@@ -2992,7 +3030,9 @@ def _uninstall_global(path: str, yes: bool, dry_run: bool, keep_package: bool) -
             continue
         target = resolve_settings_path(scope, path)
         try:
-            write_settings(target, remove_doberman_hooks(load_settings(target)))
+            current = load_settings(target)
+            _clear_manifest("claude", scope, target)
+            write_settings(target, remove_doberman_hooks(current))
         except (ValueError, OSError) as exc:
             errors.append(f"{target}: {exc}")
 
@@ -3006,7 +3046,9 @@ def _uninstall_global(path: str, yes: bool, dry_run: bool, keep_package: bool) -
             continue
         target = resolve_codex_hooks_path(scope, path)
         try:
-            write_settings(target, remove_codex_hooks(load_settings(target)))
+            current = load_settings(target)
+            _clear_manifest("codex", scope, target)
+            write_settings(target, remove_codex_hooks(current))
         except (ValueError, OSError) as exc:
             errors.append(f"{target}: {exc}")
 
@@ -3171,6 +3213,7 @@ def uninstall(
             continue
         try:
             current = load_settings(resolve_settings_path(scope, path))
+            _clear_manifest("claude", scope, resolve_settings_path(scope, path))
             write_settings(resolve_settings_path(scope, path), remove_doberman_hooks(current))
         except (ValueError, OSError) as exc:
             errors.append(f"{settings_path}: {exc}")
@@ -3180,6 +3223,7 @@ def uninstall(
             continue
         try:
             current = load_settings(resolve_codex_hooks_path(scope, path))
+            _clear_manifest("codex", scope, resolve_codex_hooks_path(scope, path))
             write_settings(resolve_codex_hooks_path(scope, path), remove_codex_hooks(current))
         except (ValueError, OSError) as exc:
             errors.append(f"{hooks_path}: {exc}")
@@ -3259,6 +3303,7 @@ def setup(
     """
     from doberman.hosthooks import setup as hosthooks_setup
     from doberman.hosthooks.install import (
+        doberman_groups,
         load_settings,
         merge_doberman_hooks,
         resolve_settings_path,
@@ -3822,6 +3867,7 @@ def setup(
                 raise typer.Exit(1) from exc
             typer.echo(style_text(f"wrote {settings_path}", bold=True))
             wired_state["claude"] = "wrote"
+        _record_manifest("claude", claude_scope, settings_path, doberman_groups(merged))
         wired.append(("claude", str(settings_path)))
         _mark_content()  # item 11: no header under --yes/flags, but real content just printed
 

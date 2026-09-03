@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from typing import TYPE_CHECKING, Any
 
 from doberman.config import load_message_tone
@@ -223,4 +224,16 @@ def run_codex_pre(stdin_text: str) -> str | None:
     out = evaluate_pre(payload)
     text = json.dumps(out) if out is not None else None
     singleflight.record(key, text)
+
+    try:  # #239: warn on stderr when Doberman's own registration diverged.
+        from doberman.hosthooks.integrity import hook_warning
+
+        cwd = payload.get("cwd")
+        if not spine.is_excluded(cwd):
+            warning = hook_warning(spine.resolve_root_and_mode(cwd)[0])
+            if warning:
+                print(warning, file=sys.stderr)
+    except Exception:  # noqa: BLE001,S110 — warning-only
+        pass
+
     return text

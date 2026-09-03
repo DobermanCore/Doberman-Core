@@ -266,6 +266,30 @@ def _record_pre_history(
         pass
 
 
+def _attach_integrity_warning(
+    out: dict[str, Any] | None, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Add a ``systemMessage`` when Doberman's own registration diverged (#239).
+
+    Warning-only: never changes ``hookSpecificOutput``; an excluded project is a
+    true no-op; any failure returns *out* unchanged.
+    """
+    try:
+        cwd = payload.get("cwd")
+        if spine.is_excluded(cwd):
+            return out
+        from doberman.hosthooks.integrity import hook_warning
+
+        warning = hook_warning(spine.resolve_root_and_mode(cwd)[0])
+    except Exception:  # noqa: BLE001 — the guard must never alter a decision
+        return out
+    if warning is None:
+        return out
+    merged = dict(out or {})
+    merged["systemMessage"] = warning
+    return merged
+
+
 def run_pre_hook(stdin_text: str) -> str | None:
     """Parse the hook stdin, evaluate, and return the JSON string to print to
     stdout — or ``None`` to abstain (print nothing).
@@ -279,7 +303,7 @@ def run_pre_hook(stdin_text: str) -> str | None:
         return json.dumps(_deny())
     if not isinstance(payload, dict):
         return json.dumps(_deny())
-    out = evaluate_pre(payload)
+    out = _attach_integrity_warning(evaluate_pre(payload), payload)
     return json.dumps(out) if out is not None else None
 
 
@@ -641,5 +665,5 @@ def run_post_hook(stdin_text: str) -> str | None:
         return json.dumps(_post_block(_POST_FAILSAFE_REASON))
     if not isinstance(payload, dict):
         return json.dumps(_post_block(_POST_FAILSAFE_REASON))
-    out = evaluate_post(payload)
+    out = _attach_integrity_warning(evaluate_post(payload), payload)
     return json.dumps(out) if out is not None else None

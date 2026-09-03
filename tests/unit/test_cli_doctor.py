@@ -13,6 +13,7 @@ test ever touches real per-user state.
 """
 
 import asyncio
+import json as _json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ from doberman.cli import doctor as doctor_mod
 from doberman.cli.doctor import CheckStatus, run_checks
 from doberman.cli.main import app
 from doberman.config import save_policy
+from doberman.hosthooks import integrity
 from doberman.hosthooks.install import (
     merge_doberman_hooks,
     resolve_settings_path,
@@ -566,3 +568,84 @@ def test_doctor_wraps_with_a_hanging_indent_at_columns_60(tmp_path: Path) -> Non
     continuation = lines[idx + 1]
     assert continuation.startswith("       ")  # 7-space hang, never column 0
     assert continuation.strip()  # sanity: this line actually has wrapped text
+
+
+# ---------------------------------------------------------------------------
+# Hook integrity (#239): doctor reports intact / diverged / untracked
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def integrity_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("DOBERMAN_KEY_FILE", str(tmp_path / "fp.key"))
+    monkeypatch.setenv(integrity.MANIFEST_ENV, str(tmp_path / "manifest.json"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)  # isolated_executor_repo_root already creates this dir
+    return repo
+
+
+def _integrity(results: list[doctor_mod.CheckResult]) -> doctor_mod.CheckResult:
+    return next(r for r in results if r.name == "Hook integrity")
+
+
+def test_doctor_integrity_intact(integrity_env: Path) -> None:
+    assert CliRunner().invoke(app, ["install-hooks", "--path", str(integrity_env)]).exit_code == 0
+    r = _integrity(run_checks(str(integrity_env)))
+    assert r.status is CheckStatus.OK
+    assert "claude project" in r.detail
+
+
+def test_doctor_integrity_critical_divergence(integrity_env: Path) -> None:
+    assert CliRunner().invoke(app, ["install-hooks", "--path", str(integrity_env)]).exit_code == 0
+    settings_path = resolve_settings_path("project", str(integrity_env))
+    data = _json.loads(settings_path.read_text(encoding="utf-8"))
+    data["hooks"].pop("PreToolUse")
+    settings_path.write_text(_json.dumps(data), encoding="utf-8")
+    r = _integrity(run_checks(str(integrity_env)))
+    assert r.status is CheckStatus.FAIL
+    assert r.critical is True
+    assert "PreToolUse" in r.detail
+    assert str(integrity_env) not in r.detail
+
+
+def test_doctor_integrity_sessionstart_only_warns(integrity_env: Path) -> None:
+    assert CliRunner().invoke(app, ["install-hooks", "--path", str(integrity_env)]).exit_code == 0
+    settings_path = resolve_settings_path("project", str(integrity_env))
+    data = _json.loads(settings_path.read_text(encoding="utf-8"))
+    data["hooks"].pop("SessionStart")
+    settings_path.write_text(_json.dumps(data), encoding="utf-8")
+    r = _integrity(run_checks(str(integrity_env)))
+    assert r.status is CheckStatus.WARN
+    assert r.critical is False
+
+
+def test_doctor_integrity_untracked_install_warns(integrity_env: Path, tmp_path: Path) -> None:
+    assert CliRunner().invoke(app, ["install-hooks", "--path", str(integrity_env)]).exit_code == 0
+    (tmp_path / "manifest.json").unlink()
+    r = _integrity(run_checks(str(integrity_env)))
+    assert r.status is CheckStatus.WARN
+    assert "untracked" in r.detail
+
+
+def test_doctor_integrity_nothing_installed_is_ok(integrity_env: Path) -> None:
+    r = _integrity(run_checks(str(integrity_env)))
+    assert r.status is CheckStatus.OK
+
+
+def test_doctor_integrity_plugin_only_codex_is_ok(
+    integrity_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plugin-only Codex install has no writable hooks.json to manifest -
+    doctor must not permanently WARN "untracked" for it (round follow-up on #239)."""
+    import doberman.hosthooks.install_codex as install_codex_mod
+
+    monkeypatch.setattr(
+        install_codex_mod,
+        "codex_hook_install_states",
+        lambda path: [("plugin", str(Path(path) / "plugin-hooks.json"), True)],
+    )
+    r = _integrity(run_checks(str(integrity_env)))
+    assert r.status is CheckStatus.OK
+    assert r.detail == "nothing to verify (no hooks installed)"
