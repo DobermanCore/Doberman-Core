@@ -105,6 +105,12 @@ filterwarnings = [
     # Starlette's test client prefers httpx2; moving the dev extra is a dependency
     # follow-up (#518), not a suite defect.
     "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+    # anyio 4.15 deprecates the `anyio.abc.BlockingPortal` alias that the installed
+    # starlette test client still imports at module load; under `error` that
+    # import-time DeprecationWarning fails collection of every dash test and the
+    # parity generator (CI 2026-09-03). Upstream fix is a starlette bump; until the
+    # dash extra moves, keep it a visible warning, not a collection error.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
 ]
 markers = [
     "guarantee(name, host): claims a parity-matrix cell; collected by tools/parity (docs/PARITY.md)",
