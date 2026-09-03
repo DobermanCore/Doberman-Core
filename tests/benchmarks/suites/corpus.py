@@ -48,7 +48,9 @@ _VERDICT_RANK: dict[Verdict, int] = {Verdict.PASS: 0, Verdict.AUTH: 1, Verdict.B
 
 #: Categories a row may carry (``kind``). ``benign`` is the FPR bucket; the rest
 #: are attack buckets whose detection rate is the TPR.
-KINDS = frozenset({"injection", "exfiltration", "secrets", "destructive", "encoded", "benign"})
+KINDS = frozenset(
+    {"injection", "exfiltration", "secrets", "destructive", "encoded", "dependency", "benign"}
+)
 
 #: Keys the built-in rules read a payload from (``commands`` reads ``command``;
 #: ``secrets``/``token_channels`` scan every string). Shell/git payloads must land

@@ -18,6 +18,8 @@ from typer.testing import Result
 
 from doberman.auth.password import PASSWORD_FILE_ENV
 from doberman.auth.totp import TOTP_FILE_ENV
+from doberman.hosthooks.integrity import MANIFEST_ENV
+from doberman.storage import fingerprint as _fingerprint_module
 from doberman.storage.device_metrics import HOME_ENV
 from doberman.storage.fingerprint import KEY_FILE_ENV
 
@@ -30,10 +32,28 @@ def isolated_fingerprint_key(tmp_path, monkeypatch):
     Returns the key path so tests that exercise key generation/rotation can use
     it directly (there is exactly ONE setter of the env var — this fixture — so
     the key path is deterministic and free of fixture-ordering races).
+
+    ``_load_or_create_key`` is process-cached (``lru_cache(maxsize=1)``, keyed
+    by nothing — one process, one key) for hot-path speed; without clearing it
+    here, every test after the first would silently reuse the FIRST test's
+    key/path instead of its own fresh ``tmp_path``, breaking isolation across
+    the whole suite (not just within one test). A test that rotates the key
+    file mid-test (a second ``monkeypatch.setenv(KEY_FILE_ENV, ...)`` of its
+    own) must clear the cache again itself after that second ``setenv``.
     """
     key_path = tmp_path / "doberman-fingerprint.key"
     monkeypatch.setenv(KEY_FILE_ENV, str(key_path))
+    _fingerprint_module._load_or_create_key.cache_clear()
     return key_path
+
+
+@pytest.fixture(autouse=True)
+def isolated_install_manifest(tmp_path, monkeypatch):
+    """Point the hook install manifest (#239) at a per-test temp file so CLI
+    tests that run install-hooks never write to the real per-user manifest."""
+    manifest_path = tmp_path / "doberman-install-manifest.json"
+    monkeypatch.setenv(MANIFEST_ENV, str(manifest_path))
+    return manifest_path
 
 
 @pytest.fixture(autouse=True)
@@ -135,7 +155,7 @@ def _neutralize_hosthook_auth_prompter(monkeypatch):
     isn't just a coverage gap: any of that module's tests that reach an AUTH-tier decision
     without injecting their own fake prompter falls through to
     ``hookio._default_auth_prompter()``, which opens a REAL GUI dialog (blocking up to
-    ``DEFAULT_CHALLENGE_TIMEOUT_S`` = 20 minutes) on any machine with an active desktop
+    ``DEFAULT_CHALLENGE_TIMEOUT_S`` = 10 minutes) on any machine with an active desktop
     session — this previously happened to ``codex.AUTH_PROMPTER`` before it was added below.
     """
     from doberman.auth.gui_prompter import PrompterUnavailableError
@@ -323,3 +343,38 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 @pytest.hookimpl(trylast=True)
 def pytest_runtest_teardown(item: pytest.Item) -> None:
     _apply_hst_size(*_HST_PRODUCTION)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Auto-mark every test that uses the GUI prompter tests' ``real_root``
+    fixture ``real_display`` (item 12 of the round-4 GUI dialog critique).
+
+    A fixture can't add its own marker in time for ``-m``/``-k`` selection --
+    by the time a fixture runs, mark-based deselection has already happened at
+    collection. Fixture NAMES, though, are already known at collection time
+    (``item.fixturenames``), so this hook adds the marker from there instead
+    of hand-maintaining a list of test names. Lets a local coverage run
+    approximate the headless Linux CI runner (which skips every real-Tk test)
+    via ``-m "not real_display"`` without a real display test actually
+    needing one to be deselected.
+    """
+    for item in items:
+        if "real_root" in getattr(item, "fixturenames", ()):
+            item.add_marker(pytest.mark.real_display)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Arm a shutdown watchdog on every process (xdist workers included).
+
+    An interpreter that cannot exit -- a non-daemon thread left behind by a
+    test, an event loop that never woke -- otherwise stalls the whole job in
+    silence at 99 % until the runner's timeout kills it (45 minutes on the
+    Windows leg, three times on 2026-09-02, never with a traceback: the
+    per-test ``--timeout`` cannot fire once the last test has finished).
+    faulthandler's watchdog is a C thread that needs no GIL: after 120 s it
+    dumps every thread's stack to stderr and exits hard, so the log names the
+    culprit and the job ends. A normal exit cancels it.
+    """
+    import faulthandler
+
+    faulthandler.dump_traceback_later(timeout=120, exit=True)

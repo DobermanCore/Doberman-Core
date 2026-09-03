@@ -16,6 +16,9 @@ dist/
 build/
 *.egg-info/
 
+# Local ad-hoc test-run output (redirected long logs) — never committed.
+test-logs/
+
 # Node / JS tooling (the demo video project pulls a large node_modules tree).
 node_modules/
 

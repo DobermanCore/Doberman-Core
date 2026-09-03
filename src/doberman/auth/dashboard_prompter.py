@@ -28,7 +28,7 @@ import asyncio
 import threading
 from datetime import datetime, timezone
 
-from doberman.auth.challenge import current_challenge
+from doberman.auth.challenge import EFFECT_SET_LABEL, current_challenge, format_effect_set
 from doberman.auth.gui_prompter import PrompterUnavailableError
 from doberman.storage import approvals
 from doberman.storage.heartbeat import DEFAULT_HEARTBEAT_MAX_AGE_S, heartbeat_is_fresh
@@ -84,6 +84,22 @@ class DashboardPrompter:
             raise PrompterUnavailableError("no active challenge context for the dashboard")
         decision, action, tier = challenge
 
+        # ADR 0094: the same shared blast-radius display string every other
+        # prompter renders (doberman.auth.challenge.format_effect_set),
+        # appended to the explanation -- pending_approvals has no dedicated
+        # column for it (a schema migration is a named follow-up, not this
+        # slice's scope), and explanation is already free, redaction-safe
+        # text the dash UI shows verbatim (as prose, not preformatted, so a
+        # single space -- not a blank line -- is what the row actually
+        # renders). None (a non-delete-class AUTH, or no effects) leaves the
+        # explanation exactly as it was.
+        effects_line = format_effect_set(decision.effects)
+        explanation = (
+            f"{decision.explanation} {EFFECT_SET_LABEL}: {effects_line}"
+            if effects_line
+            else decision.explanation
+        )
+
         approval_id = asyncio.run(
             approvals.create_pending(
                 decision.action_id,
@@ -91,7 +107,7 @@ class DashboardPrompter:
                 action_type=action.action_type.value,
                 risk=decision.final_risk.value,
                 reason_codes=[rc.value for rc in decision.reason_codes],
-                explanation=decision.explanation,
+                explanation=explanation,
                 target_path_class=path_class(action),
                 repo_root=self._repo_root,
             )

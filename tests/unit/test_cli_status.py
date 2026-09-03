@@ -91,6 +91,20 @@ def test_status_shows_unknown_version_as_source_checkout(tmp_path, monkeypatch):
     assert "0.0.0+unknown" not in result.stdout
 
 
+def test_status_version_line_moves_below_protected_into_policy(tmp_path):
+    """round 5 item 9: `Version:` no longer sits right under the "Protected:
+    ..." headline/ASCII-art title - it moves down into the `-- Policy --`
+    section, right after `Policy version:`, its closest kin."""
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    protected_idx = result.stdout.index("Protected:")
+    policy_idx = result.stdout.index("-- Policy --")
+    policy_version_idx = result.stdout.index("Policy version:")
+    version_idx = result.stdout.index("Version:")
+    auth_idx = result.stdout.index("-- Auth --")
+    assert protected_idx < policy_idx < policy_version_idx < version_idx < auth_idx
+
+
 def test_status_reports_hook_install_state_per_scope(tmp_path):
     root = str(tmp_path)
     local_path = resolve_settings_path("local", root)
@@ -98,7 +112,7 @@ def test_status_reports_hook_install_state_per_scope(tmp_path):
 
     result = runner.invoke(app, ["status", "--path", root])
     assert result.exit_code == 0
-    assert "Hooks:" in result.stdout
+    assert "-- Hooks --" in result.stdout  # round 4 item 2: section grammar
     assert "project" in result.stdout
     assert "global" in result.stdout
     assert "local" in result.stdout
@@ -194,6 +208,7 @@ _EXPECTED_STATUS_KEYS = {
     "prefs",
     "prefs_preset",
     "policy",
+    "policy_version",
     "twofa",
     "password",
     "elevations",
@@ -241,19 +256,166 @@ def test_status_reports_excluded_from_global(tmp_path):
 
 
 def test_status_text_has_blank_line_section_breaks(tmp_path):
+    """Round 4 item 2: `status` adopts the wizard's `_section` grammar - one
+    blank line before each of the four sections, in order, and "Recent
+    decisions:" trails them (activity history, not a section itself)."""
     result = runner.invoke(app, ["status", "--path", str(tmp_path)])
     assert result.exit_code == 0
-    # Each major block is separated by a blank line so the dump scans as sections.
-    assert "\n\nRole:" in result.stdout
-    assert "\n\nMode:" in result.stdout
-    assert "\n\nPrefs:" in result.stdout
-    assert "\n\nPolicy:" in result.stdout
-    assert "\n\n2FA:" in result.stdout
-    assert "\n\nPassword:" in result.stdout
-    assert "\n\nElevations:" in result.stdout
-    assert "\n\nTaint:" in result.stdout
-    assert "\n\nHooks:" in result.stdout
+    assert "\n\n-- Hooks --" in result.stdout
+    assert "\n\n-- Policy --" in result.stdout
+    assert "\n\n-- Auth --" in result.stdout
+    assert "\n\n-- Health --" in result.stdout
     assert "\n\nRecent decisions:" in result.stdout
+
+    hooks_idx = result.stdout.index("-- Hooks --")
+    policy_idx = result.stdout.index("-- Policy --")
+    auth_idx = result.stdout.index("-- Auth --")
+    health_idx = result.stdout.index("-- Health --")
+    recent_idx = result.stdout.index("Recent decisions:")
+    assert hooks_idx < policy_idx < auth_idx < health_idx < recent_idx
+
+    assert "Mode:" in result.stdout[policy_idx:auth_idx]
+    assert "Prefs:" in result.stdout[policy_idx:auth_idx]
+    assert "Policy:" in result.stdout[policy_idx:auth_idx]
+    assert "Policy version:" in result.stdout[policy_idx:auth_idx]
+    assert "2FA:" in result.stdout[auth_idx:health_idx]
+    assert "Password:" in result.stdout[auth_idx:health_idx]
+    assert "Elevations:" in result.stdout[auth_idx:health_idx]
+    assert "Taint:" in result.stdout[auth_idx:health_idx]
+    assert "doberman doctor" in result.stdout[health_idx:recent_idx]
+
+
+def test_status_policy_version_shortened_in_text_full_in_json(tmp_path):
+    """Round 4 item 2: the text view shortens the policy version to
+    `pv1:` + 8 hex chars; `--json` carries the full `pv1:<sha256>` id."""
+    root = str(tmp_path)
+    text_result = runner.invoke(app, ["status", "--path", root])
+    assert text_result.exit_code == 0, text_result.output
+    assert "Policy version: pv1:" in text_result.stdout
+
+    json_result = runner.invoke(app, ["status", "--path", root, "--json"])
+    payload = json.loads(json_result.stdout)
+    full = payload["policy_version"]
+    assert full is not None
+    assert full.startswith("pv1:")
+    assert len(full) > 20  # a real sha256-derived id, not the shortened form
+
+    short_line = next(
+        line for line in text_result.stdout.splitlines() if line.startswith("Policy version:")
+    )
+    assert full not in short_line
+    assert short_line.split("Policy version: ")[1].startswith(full[:12])
+
+
+# ---------------------------------------------------------------------------
+# Headline verdict (item 9)
+# ---------------------------------------------------------------------------
+
+
+def test_status_headline_protected_no_when_nothing_installed(tmp_path, monkeypatch):
+    # The "global" scope reads the real machine's `~/.claude/settings.json`,
+    # which this dev box may have genuinely wired - force every scope to
+    # "not installed" so this assertion is deterministic regardless of host.
+    monkeypatch.setattr(
+        cli_main,
+        "_hook_install_states",
+        lambda path: [("project", "x", False), ("global", "y", False), ("local", "z", False)],
+    )
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[0] == "Protected: no - no hooks installed for any host (run `doberman setup`)"
+
+
+def test_status_headline_protected_yes_when_installed_and_on_path(tmp_path, monkeypatch):
+    import shutil
+
+    root = str(tmp_path)
+    local_path = resolve_settings_path("local", root)
+    write_settings(local_path, merge_doberman_hooks({}))
+    monkeypatch.setattr(
+        shutil, "which", lambda name, *a, **k: "/venv/bin/doberman" if name == "doberman" else None
+    )
+
+    result = runner.invoke(app, ["status", "--path", root])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[0] == "Protected: yes"
+
+
+def test_status_headline_protected_no_when_installed_but_not_on_path(tmp_path, monkeypatch):
+    import shutil
+
+    root = str(tmp_path)
+    local_path = resolve_settings_path("local", root)
+    write_settings(local_path, merge_doberman_hooks({}))
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: None)
+
+    result = runner.invoke(app, ["status", "--path", root])
+    assert result.exit_code == 0, result.output
+    first_line = result.stdout.splitlines()[0]
+    assert first_line.startswith("Protected: no - ")
+    assert "not on PATH" in first_line
+
+
+def test_status_not_on_path_headline_names_the_fixing_command(tmp_path, monkeypatch):
+    """item 9: `status` exits 0 even when unprotected, so its first line must
+    be self-sufficient - it names the fix, not just the diagnosis."""
+    import shutil
+
+    root = str(tmp_path)
+    local_path = resolve_settings_path("local", root)
+    write_settings(local_path, merge_doberman_hooks({}))
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: None)
+
+    result = runner.invoke(app, ["status", "--path", root])
+    assert result.exit_code == 0, result.output
+    first_line = result.stdout.splitlines()[0]
+    assert "doberman doctor" in first_line
+
+
+# ---------------------------------------------------------------------------
+# Round 8 item P0: one shared protection predicate with `doctor` - a
+# Codex-only wired repo must read as protected here too, not only there.
+# ---------------------------------------------------------------------------
+
+
+def test_status_protected_reflects_codex_only_wiring(tmp_path, monkeypatch):
+    """`--host codex` wires only the Codex hook (no Claude settings.json at
+    all) - `status` used to source its "Protected: ..." headline and Hooks
+    section from Claude's ``hook_install_states`` alone, so this used to read
+    as unprotected even though `doctor`'s "Host hooks" check already knew
+    better."""
+    import shutil
+
+    root = str(tmp_path)
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: "/venv/bin/doberman" if name == "doberman" else None,
+    )
+
+    before = runner.invoke(app, ["status", "--path", root])
+    assert before.exit_code == 0, before.output
+    assert before.stdout.splitlines()[0] == (
+        "Protected: no - no hooks installed for any host (run `doberman setup`)"
+    )
+
+    installed = runner.invoke(app, ["install-hooks", "--host", "codex", "--path", root])
+    assert installed.exit_code == 0, installed.output
+
+    after = runner.invoke(app, ["status", "--path", root])
+    assert after.exit_code == 0, after.output
+    assert after.stdout.splitlines()[0] == "Protected: yes"
+    hooks_idx = after.stdout.index("-- Hooks --")
+    policy_idx = after.stdout.index("-- Policy --")
+    hooks_section = after.stdout[hooks_idx:policy_idx]
+    assert "codex:repo" in hooks_section
+    assert "[installed]" in hooks_section
+
+    json_result = runner.invoke(app, ["status", "--path", root, "--json"])
+    payload = json.loads(json_result.stdout)
+    codex_hooks = [h for h in payload["hooks"] if h["scope"] == "codex:repo"]
+    assert codex_hooks and codex_hooks[0]["installed"] is True
 
 
 def test_status_never_leaks_enrolled_secret_in_either_view(tmp_path):

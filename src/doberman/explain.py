@@ -97,9 +97,14 @@ REASON_DESCRIPTIONS: dict[str, str] = {
     ),
     "unclassified_action": "the action could not be classified by the subjective layer",
     "smuggled_token_channel": "the payload appeared to smuggle tokens through an unexpected channel",
+    "raw_socket_channel": "the command opens a raw network socket or TLS client connection outside the normal HTTP tooling",
     "anomalous_token_pattern": "the token pattern in the payload was anomalous",
     "multi_step_exfil": "this action is part of a multi-step pattern that looks like exfiltration",
     "confirmed_exfil": ("a secret read earlier in this session reappeared in an outbound payload"),
+    "untrusted_value_echo": (
+        "a destination in this call matches a value first seen in untrusted content "
+        "read earlier in this session"
+    ),
     "egress_route_divergence": (
         "this entity recently connected to a destination its static egress classification "
         "did not predict"
@@ -134,6 +139,10 @@ REASON_DESCRIPTIONS: dict[str, str] = {
     ),
     "single_use_elevation_unclaimable": (
         "the one-time elevation covering this action was already spent or could not be claimed"
+    ),
+    "effect_set_diverged": (
+        "the recomputed blast radius for this delete no longer matches what was shown "
+        "at approval time"
     ),
     "correlated_trifecta": (
         "this action, combined with earlier ones in the session, adds up to the "
@@ -172,6 +181,18 @@ REASON_DESCRIPTIONS: dict[str, str] = {
     "turn_blocked_repeatedly": (
         "repeated resubmission of a blocked request locked this session out for the cooldown window"
     ),
+    "verification_bypass_flag": (
+        "the git commit skips its pre-commit/pre-push hooks or signature check "
+        "(--no-verify, -n, or --no-gpg-sign)"
+    ),
+    "test_file_removal": "a test file is being deleted or renamed, not just edited",
+    "dependency_known_malicious": (
+        "the package name in this install command is on a bundled known-malicious list"
+    ),
+    "dependency_name_typosquat": (
+        "the package name in this install command is one character away from a popular "
+        "package name and is not itself recognized (possible typosquat)"
+    ),
 }
 
 # Fail at import time if a ReasonCode is ever added without a description - a
@@ -181,6 +202,24 @@ if _MISSING_REASON_DESCRIPTIONS:  # pragma: no cover - reminder, not a hard fail
     logger.debug(
         "explain: no description for reason codes %s", sorted(_MISSING_REASON_DESCRIPTIONS)
     )
+
+# Plain-words phrasing for `decided_layer` (see storage/log.py's `_decided_layer`:
+# "objective" | "combined") for the trailing "(Checked by: ...)" sentence
+# (round 6 design critique item 10 - was "(Decided by: the objective
+# guardrail layer.)"/"...the objective and subjective guardrail layers
+# together.)"; the technical layer-identity phrasing read as jargon next to
+# the rest of the plain-language body, so this now says what was checked, in
+# the same words `_layer_checked_clause` already uses for `first_sentence`).
+# Anything unrecognized falls back to a humanized form of the raw value, same
+# defensive pattern as `_describe_reason`.
+_LAYER_CHECKED_BY: dict[str, str] = {
+    "objective": "the rules",
+    "combined": "the rules and the behaviour baseline",
+}
+
+
+def _describe_checked_by(layer: str) -> str:
+    return _LAYER_CHECKED_BY.get(layer, layer.replace("_", " "))
 
 
 def build_explanation_payload(row: dict) -> dict:
@@ -209,26 +248,36 @@ def _describe_reason(code: str) -> str:
     return REASON_DESCRIPTIONS.get(code, code.replace("_", " "))
 
 
-def _describe_layer(layer: str) -> str:
-    """Plain-words gloss of ``decided_layer`` for the primary sentence.
-
-    ``decided_layer`` is only ever ``"objective"`` or ``"combined"`` (see
-    ``doberman.storage.log._decided_layer``) - "combined" means the
-    subjective/behavioral-baseline guardrail also weighed in, never that it
-    ran alone. The raw technical value stays available elsewhere on the row
-    (and to any caller that wants it) - this is only the human-facing words.
-    """
+def _layer_checked_clause(layer: str) -> str:
+    """What Doberman checked, in plain words (round 4 design critique item 6):
+    "checking the rules" for the objective layer alone, or "...and the
+    behaviour baseline" once the subjective layer weighed in too (``layer ==
+    "combined"``)."""
     if layer == "combined":
-        return "the rules and the behaviour baseline"
-    return "the rules"
+        return "checking the rules and the behaviour baseline"
+    return "checking the rules"
 
 
-def template_explanation(row: dict, *, with_reasons: bool = True) -> str:
-    """Deterministic, offline "why" for a decision row. Always available, never raises.
+def first_sentence(row: dict) -> str:
+    """The one-line plain-language summary of a decision row: the verdict plus
+    what was checked. Deliberately :func:`template_explanation`'s FIRST
+    sentence (see below) - `doberman log --why` reuses this for a compact
+    one-line "why" without repeating the reason codes `doberman log`'s own row
+    already shows.
+    """
+    verdict = row.get("final_verdict") or "UNKNOWN"
+    layer = row.get("decided_layer") or "objective"
+    return f"Doberman decided {verdict} after {_layer_checked_clause(layer)}."
 
-    ``with_reasons=False`` omits the "Reasons: ..." clause (and its no-codes
-    fallback sentence) entirely - for a caller that already renders the reason
-    codes some other way (the dash feed's glossed ``gloss-list``, see
+
+def _body_sentences(row: dict, *, with_reasons: bool = True) -> list[str]:
+    """Every sentence of :func:`template_explanation` EXCEPT the trailing
+    "(Checked by: ...)" one - shared by :func:`template_explanation` (which
+    appends that sentence) and :func:`why_body` (which deliberately doesn't).
+
+    ``with_reasons=False`` omits the "Reasons: ..." clause (and its no-codes /
+    PASS fallback sentence) entirely - for a caller that already renders the
+    reason codes some other way (the dash feed's glossed ``gloss-list``, see
     ``doberman.dash.app._feed_row``) so the sentence isn't said twice.
     """
     role = row.get("agent_role")
@@ -236,25 +285,31 @@ def template_explanation(row: dict, *, with_reasons: bool = True) -> str:
     # rendering it literally read as "unknown attempted shell_exec.", which
     # looks like a bug rather than a deliberate "we don't know" statement.
     if not role or role == "unknown":
-        role = "an agent"
+        role = "An agent"  # capitalised: this sentence follows `first_sentence`
     action_type = row.get("action_type") or "an action"
     target = row.get("target_path_class")
     verdict = row.get("final_verdict") or "UNKNOWN"
-    layer = row.get("decided_layer") or "objective"
     reason_codes = _parse_reason_codes(row.get("reason_codes_json"))
 
     what = f"{role} attempted {action_type}"
     if target:
         what += f" on {target}"
-    sentences = [
-        f"{what}.",
-        f"Doberman decided {verdict} after checking {_describe_layer(layer)}.",
-    ]
+
+    # Plain-language summary leads - the verdict and what was checked - then
+    # the attempted action, then (optionally) the reasons; the technical
+    # layer identity lives in the trailing "(Checked by: ...)" sentence that
+    # `template_explanation` appends.
+    sentences = [first_sentence(row), f"{what}."]
 
     if with_reasons:
         if reason_codes:
             reasons_text = "; ".join(_describe_reason(c) for c in reason_codes)
             sentences.append(f"Reasons: {reasons_text}.")
+        elif verdict == "PASS":
+            sentences.append(
+                "Nothing was flagged: the action was checked against the built-in "
+                "guardrails and found clean."
+            )
         else:
             sentences.append("No specific reason codes were recorded for this decision.")
 
@@ -271,7 +326,33 @@ def template_explanation(row: dict, *, with_reasons: bool = True) -> str:
             "change, not by re-authenticating."
         )
 
+    return sentences
+
+
+def template_explanation(row: dict, *, with_reasons: bool = True) -> str:
+    """Deterministic, offline "why" for a decision row. Always available, never raises.
+
+    ``with_reasons=False`` omits the "Reasons: ..." clause (see
+    :func:`_body_sentences`) for a caller that renders the codes itself.
+    """
+    layer = row.get("decided_layer") or "objective"
+    sentences = [
+        *_body_sentences(row, with_reasons=with_reasons),
+        f"(Checked by: {_describe_checked_by(layer)}.)",
+    ]
     return " ".join(sentences)
+
+
+def why_body(row: dict) -> str:
+    """`template_explanation` minus the trailing "(Checked by: ...)" sentence -
+    what `doberman log --why` prints under a BLOCK/AUTH row (round 6 design
+    critique item 7). `doberman log`'s own row already shows the raw reason
+    codes and the decided verdict, so the OLD one-line `first_sentence` alone
+    ("Doberman decided BLOCK after checking the rules.") added nothing beyond
+    what was already on screen; this adds the "what was attempted" and
+    "Reasons: ..." sentences too, so `--why` earns its name.
+    """
+    return " ".join(_body_sentences(row))
 
 
 #: Verdict -> the word :func:`headline` uses for what happened. Deliberately
@@ -295,11 +376,13 @@ _HEADLINE_FACTS: dict[str, str] = {
     "secret_exfiltration": "Secret exfiltration attempt",
     "confirmed_exfil": "Confirmed secret exfiltration",
     "multi_step_exfil": "Multi-step exfiltration pattern",
+    "untrusted_value_echo": "Untrusted-value echo",
     "sensitive_secret_access": "Secret file read",
     "possible_high_entropy_secret": "Possible secret in payload",
     "pii_data_class_egress": "Personal-data egress",
     "encoded_exfiltration": "Encoded exfiltration attempt",
     "smuggled_token_channel": "Smuggled token channel",
+    "raw_socket_channel": "Raw socket channel",
     "destructive_command": "Recursive delete",
     "protected_path_blocked": "Protected-path write",
     "sensitive_path_access": "Sensitive-path access",
@@ -333,6 +416,11 @@ _HEADLINE_FACTS: dict[str, str] = {
     "tool_schema_changed": "Tool contract changed",
     "environment_dump_command": "Environment dump",
     "single_use_elevation_unclaimable": "Elevation already spent",
+    "verification_bypass_flag": "Verification bypass",
+    "test_file_removal": "Test file removal",
+    "dependency_known_malicious": "Known-malicious package name",
+    "dependency_name_typosquat": "Possible package typosquat",
+    "effect_set_diverged": "Blast radius changed since approval",
 }
 
 #: Reason codes whose headline reads better with the TARGET PATH CLASS as the
@@ -413,6 +501,36 @@ def _llm_explain(payload: dict) -> str:
     return text
 
 
+def llm_enrichment_enabled() -> bool:
+    """Public check: would `explain_decision` attempt LLM enrichment right now?
+
+    Same three-way gate as :func:`explain_decision` (dep installed AND key AND
+    env flag) — exposed so a caller (the `tui` decision browser) can decide up
+    front whether to even schedule an enrichment attempt, without duplicating
+    the gate logic itself.
+    """
+    return _llm_enrichment_enabled()
+
+
+def explain_decision_with_source(row: dict, *, use_llm: bool | None = None) -> tuple[str, str]:
+    """Like :func:`explain_decision`, but also reports where the text came from.
+
+    Returns ``(text, source)`` where ``source`` is ``"llm"`` (successfully
+    narrated) or ``"template"`` (LLM disabled, or enabled but failed and fell
+    back) — lets a caller distinguish "never attempted" from "attempted and
+    fell back" for its own display, without this function ever raising.
+    """
+    enabled = use_llm is not False and _llm_enrichment_enabled()
+    if not enabled:
+        return template_explanation(row), "template"
+
+    try:
+        return _llm_explain(build_explanation_payload(row)), "llm"
+    except Exception:  # noqa: BLE001 — LLM enrichment is best-effort, never fatal
+        logger.debug("explain: LLM enrichment failed, falling back to template", exc_info=True)
+        return template_explanation(row), "template"
+
+
 def explain_decision(row: dict, *, use_llm: bool | None = None) -> str:
     """Plain-language "why" for a redacted decision row.
 
@@ -423,12 +541,5 @@ def explain_decision(row: dict, *, use_llm: bool | None = None) -> str:
     in the LLM path - missing dep, no key, network, timeout, bad response -
     falls back to :func:`template_explanation`; this function never raises.
     """
-    enabled = use_llm is not False and _llm_enrichment_enabled()
-    if not enabled:
-        return template_explanation(row)
-
-    try:
-        return _llm_explain(build_explanation_payload(row))
-    except Exception:  # noqa: BLE001 - LLM enrichment is best-effort, never fatal
-        logger.debug("explain: LLM enrichment failed, falling back to template", exc_info=True)
-        return template_explanation(row)
+    text, _source = explain_decision_with_source(row, use_llm=use_llm)
+    return text

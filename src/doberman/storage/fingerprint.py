@@ -30,6 +30,7 @@ import hmac
 import os
 import secrets
 import unicodedata
+from functools import lru_cache
 from pathlib import Path
 
 #: Environment variable that overrides the key-file location (used by tests to
@@ -50,15 +51,23 @@ _MAX_INPUT_CHARS = 8192
 _PREFIX = "hmac:"
 
 
-def _default_key_path() -> Path:
-    """Per-user key path OUTSIDE any repository (never committed)."""
+def user_config_dir() -> Path:
+    """Per-user Doberman config directory OUTSIDE any repository (never committed).
+
+    Holds the fingerprint key and the hook install manifest.
+    """
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.path.join(
             os.path.expanduser("~"), "AppData", "Local"
         )
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    return Path(base) / "doberman" / "fingerprint.key"
+    return Path(base) / "doberman"
+
+
+def _default_key_path() -> Path:
+    """Per-user key path OUTSIDE any repository (never committed)."""
+    return user_config_dir() / "fingerprint.key"
 
 
 def _key_path() -> Path:
@@ -71,12 +80,24 @@ def resolve_path() -> Path:
     return _key_path()
 
 
+@lru_cache(maxsize=1)
 def _load_or_create_key() -> bytes:
     """Return the local HMAC key, generating it on first use.
 
     Fails closed: any inability to create/read a usable key raises. We never
     fall back to an unkeyed hash (that would defeat the offline-attack defense)
     and never return the key to the caller.
+
+    Cached for the life of the process (``lru_cache(maxsize=1)``): the key
+    never changes within a process, so re-reading it from disk on every
+    ``fingerprint()`` call is pure overhead — measured ~20s of disk I/O for
+    60k calls on a padded-args hook path (see ``engine/taint_floor.py``'s
+    aggregate fingerprint cap). A raised exception is never cached (lru_cache
+    only memoizes successful returns), so a transient failure still retries on
+    the next call. Tests that rotate ``$DOBERMAN_KEY_FILE`` mid-process (key
+    generation/rotation tests) must call ``_load_or_create_key.cache_clear()``
+    after changing the env var — the isolated_fingerprint_key autouse fixture
+    (tests/conftest.py) already does this between tests.
     """
     path = _key_path()
     try:

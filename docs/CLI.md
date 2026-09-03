@@ -10,21 +10,21 @@ Day-to-day posture, status, and review commands.
 |---------|---------|-----------|
 | `doberman scan` | Read-only risk map of the repo's capabilities and sensitive surface. | `--path`/`-p`, `--quiet`/`-q`, `--json`, `--mcp` |
 | `doberman review` | Show the recommended policy checklist; save it with `--yes`. | `--path`/`-p`, `--yes`/`-y` |
-| `doberman mode [NAME]` | Show or set the security strength mode (light/balanced/strict/paranoid). | `--path`/`-p` |
+| `doberman mode [NAME]` | Show or set the security strength mode (light/balanced/strict/paranoid). With no argument on a repo with no saved policy yet, prints the fallback default tagged `(default)` rather than a bare name, since nothing has actually been chosen. | `--path`/`-p` |
 | `doberman enforcement [STATE]` | Show or set the enforcement dial (enforce/monitor/off). | `--path`/`-p` |
 | `doberman prefs [DIMENSION] [VALUE]` | Show or set the subjective preference vector. | `--path`/`-p` |
 | `doberman egress-velocity [KNOB] [VALUE]` | Show or set the egress-velocity thresholds (`burst`, `volume-bytes`, `fanout`). Lowering a threshold is frictionless; raising one is gated. | `--path`/`-p` |
 | `doberman message-tone [TONE]` | Show or set the AUTH challenge tone (human/technical). Cosmetic display only; it changes nothing about what is evaluated or logged. | `--path`/`-p` |
 | `doberman role enable-default` | Turn on the built-in, opt-in least-privilege default role. | `--path`/`-p` |
 | `doberman role disable-default` | Turn the default role off. A weaken, so it is gated. | `--path`/`-p` |
-| `doberman status` | Active role, mode, policy summary, hook install state, taint state, and recent decisions. | `--path`/`-p`, `--json` |
-| `doberman doctor` | Read-only health self-check; exits non-zero if a critical check fails. | `--path`/`-p`, `--json` |
+| `doberman status` | Leads with a `Protected: yes` / `Protected: no - <reason>` headline, then role, and four sections — Hooks, Policy (mode, prefs, policy version, installed Doberman version), Auth (2FA, password, elevations, taint), Health (a one-line pointer to `doberman doctor`) — followed by recent decisions. | `--path`/`-p`, `--json` |
+| `doberman doctor` | Read-only health self-check, grouped into the same Hooks/Policy/Auth/Health sections `status` uses; exits non-zero if a critical check fails, naming every failing check on the closing line. | `--path`/`-p`, `--json` |
 | `doberman update` | Check PyPI for a newer Doberman and print the upgrade command (never installs). Off under `DO_NOT_TRACK`/`CI`/`DOBERMAN_UPDATE_CHECK=off`. | — |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
 | `doberman policy-versions` | Every policy version that has been in force (newest first); `--show` prints one snapshot, `--verify` checks the catalogue. | `--show`, `--verify`, `--path`/`-p`, `--json` |
-| `doberman log` | Recent redacted decision log, newest first. | `--last`/`-n`, `--path`/`-p`, `--jsonl` |
+| `doberman log` | Recent redacted decision log, newest first. Its timestamp column reads `YYYY-MM-DD HH:MM:SS UTC` (no microseconds, matching the `tui`'s why panel); `--jsonl` keeps the raw stored `ts` value unchanged. | `--last`/`-n`, `--path`/`-p`, `--jsonl`, `--why` |
 | `doberman decision-log-prune` | Delete resolved decisions by age and/or retained-row budget. Never touches pending AUTH rows or the policy-change ledger. | `--older-than-days`, `--max-rows`, `--path`/`-p` |
-| `doberman tui` | Interactive decision log with a plain-language "why" panel. Needs the `tui` extra. | `--path`/`-p` |
+| `doberman tui` | Interactive decision log with a plain-language "why" panel. Keys: `?` help (lists every binding, including the arrow keys/page up/page down that come from the table itself; a proper modal - it never stacks, other keys are inert while it's open, and it also opens from inside the full-screen why view), `/` filter, `b`/`B`/`a` next/prev BLOCK or next AUTH (says "no other ... rows in view" rather than silently re-selecting the row you're already on when it's the only match), `w`/`enter` full-screen why, `tab` switch focus, `y` copy id, `home`/`end`, `r` reload, `q` quit. The footer always shows the same 6 bindings (`w`/`/`/`b`/`?`/`q`/`r`) at any width; `B`/`a`/`y` are keyboard-only, documented in `?`. `risk`/`auth` drop out of the table below 100 terminal columns (both are already restated in the why panel/full-screen why); the header reads `showing N of M (filtered) - X BLOCK / Y AUTH / Z PASS loaded` so it's clear which count is which. Times show in your local zone (`HH:MM:SS`, or date-qualified `MM-DD HH:MM` across a multi-day window); the why panel's border carries the row's absolute UTC instant plus a relative age ("2m ago", with a `[focus]` cue appended while it has focus) and, when its content overflows, a muted "(scroll for more)" cue in its border subtitle - the panel body itself always starts with the explanation. An empty log, a filtered-to-zero view, or a missing decision log replaces the table (not the why panel) with the message, in the table's own area. Below 76x16 the app shows a one-line "resize" notice instead of the browser, and its own footer then shows only `q`/"quit" (every key still works, just hidden). Needs the `tui` extra. | `--path`/`-p`, `--last`/`-n` |
 | `doberman dash` | Localhost-only dashboard: live decision feed, stats, and an AUTH approve/deny queue. Needs the `dash` extra. | `--port`, `--path`/`-p` |
 | `doberman demo` | Scripted attack reel through the real decision engine. Nothing runs against a real tool or downstream server. | `--path`/`-p`, `--mode`, `--fast`, `--quiet`/`-q` |
 | `doberman revoke ELEVATION_ID` | Revoke an active role elevation by id (see `doberman status`). | `--path`/`-p` |
@@ -33,10 +33,11 @@ Day-to-day posture, status, and review commands.
 | `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
 | `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
-| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable), `--path`/`-p` |
+| `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host and ask for telemetry consent (its default mirrors the current on-disk state, so a prior opt-out isn't silently reversed by a bare Enter). Every menu prompt (hosts, mode, weight tuning) and every yes/no confirm (telemetry, global scope, weight tuning, the closing demo offer) accepts `q`/`quit` to abort cleanly — except the closing demo offer, where `q` only declines the demo since setup has already succeeded by then. Exits non-zero (`!! Setup incomplete !!`) if the closing doctor pass finds a critical; a host-kind-free run (mcp/openclaw only) prints `!! Setup pending !!` and a MIXED run (some hooks-kind host wired, some still manual) prints `!! Setup partly pending !!` — both exit `3`. A refused `--mode <lower>` request still exits `0` — the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`); exit `0` means the run completed, not that the requested mode was applied. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable; also accepts `all`), `--path`/`-p`, `--dry-run`, `--no-telemetry` |
+| `doberman telemetry` | With no subcommand, prints the same status line `telemetry status` does (symmetric with bare `doberman mode`). | none |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
-| `doberman telemetry off` | Opt out after one final best-effort disabled event. | none |
-| `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches. | none |
+| `doberman telemetry off` | Opt out. Sends one final best-effort disabled event only if telemetry had already minted an id (nothing to send, and no id minted, if this is the very first choice made on a fresh install). | none |
+| `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches; a disabled reading names `doberman telemetry on` to opt back in, symmetric with the default-on reading's own `doberman telemetry off` pointer. | none |
 | `doberman session-summary` | Print the device-global session-guard summary and exit. Always exits 0; never blocks a session. | none |
 | `doberman serve` | Run Doberman as an MCP proxy in front of a downstream MCP tool server. | `--path`/`-p` |
 | `doberman version` | Print the installed Doberman version. `doberman --version` / `-V` does the same. | none |
@@ -138,6 +139,14 @@ Emits `{version, path, ok, checks[], critical_failures[]}`. `ok` is `true` only 
 
 One redacted JSON object per decision line, newest first. Fields are an allowlist of already-redacted data: `ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id`, `agent_role`, and `risk` when present. Empty stdout when there are no rows.
 
+### `doberman log --why`
+
+Under each `BLOCK`/`AUTH` row (only), prints an indented, terminal-width-wrapped plain-language block plus the same "Next:" remedy step the `tui` browser's why panel shows. The block is `doberman.explain`'s deterministic template (offline) minus its trailing technical "(Checked by: ...)" aside: a "Doberman decided BLOCK after checking the rules." summary, what was attempted (e.g. "cli attempted shell_exec on \*.sh."), and the human-readable reason description(s) (e.g. "Reasons: the command looked destructive (e.g. a recursive delete)."), not just the raw reason code the row above already shows in brackets. Default output (and `--jsonl`) is unchanged; `--why` only adds these extra lines to the human-readable view. The `tui` browser's own full-screen why panel prints this same "Next:" step without the "press w for detail" hint that only makes sense inside the `tui` (the docked `#next-line` widget in the main browser view keeps that hint - the affordance and the remedy stay two different lines).
+
+An `AUTH` row with no answer yet shows `auth=pending - not yet answered` (the `tui`'s narrow auth column: `pending`) rather than the plain `-` a `PASS`/`BLOCK` row (which never had an auth step at all) shows - a still-open question must never look identical to "not applicable."
+
+Over a window with no `BLOCK`/`AUTH` row at all, `--why` prints one extra line after the rows: `(no BLOCK or AUTH rows in this window - nothing to explain)` - so a reviewer scanning for whether `--why` did anything here doesn't have to infer "no" from an absence.
+
 ### `doberman policy-history --json` schema
 
 A JSON array of policy-change rows in newest-first order: each element carries the change timestamp, the changed key, the previous and new values, and the actor. No raw policy content, secret, or file path appears.
@@ -152,15 +161,16 @@ Emits `{version, decisions, sessions, unsessioned_decisions, interventions, inte
 
 ## Exit codes
 
-Every command follows a two-value convention: the same code always means the same class of failure, regardless of which command raises it.
+Every command follows the same small convention: the same code always means the same class of outcome, regardless of which command raises it.
 
 | Code | Meaning |
 |------|---------|
 | `0` | The command completed normally. |
 | `1` | A gate denied the change, a runtime error occurred, a required optional extra is missing, or the operation finished with errors. |
 | `2` | Bad input: an argument or option value is invalid before any state is touched. |
+| `3` | Pending: a manual step still stands between here and protection (`setup` only — see its row below). |
 
-Code `2` is reserved for input-validation failures that could be caught before any I/O or gate check runs, so a script can branch on "bad flag" versus "gate denied." Code `1` covers everything else: auth denials, runtime errors, missing optional extras, and partial-success failures.
+Code `2` is reserved for input-validation failures that could be caught before any I/O or gate check runs, so a script can branch on "bad flag" versus "gate denied." Code `1` covers everything else: auth denials, runtime errors, missing optional extras, and partial-success failures. Code `3` is narrower still — today only `setup`'s pending case uses it, so a script can tell "nothing runs yet, but nothing is broken either" apart from both `0` (fully live) and `1` (broken).
 
 ### Per-command detail
 
@@ -169,7 +179,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `serve` | `2` | No downstream server command given after `--`. |
 | `serve` | `1` | MCP proxy runtime error. |
 | `mode` | `2` | Invalid mode name. |
-| `mode` | `1` | Mode change denied by the possession-factor gate. |
+| `mode` | `1` | A lowering was denied by the possession-factor gate. With nothing enrolled: `error: lowering needs a possession factor: run 'doberman password set', then 'doberman mode <name>'`. With a factor already enrolled (the prompt was declined or failed): `error: lowering needs a possession factor - run 'doberman password set' first, then retry`. |
 | `enforcement` | `2` | Unknown enforcement state (must be `enforce`, `monitor`, or `off`). |
 | `enforcement` | `1` | Enforcement change denied by the gate. |
 | `role disable-default` | `1` | Disable denied by the gate. |
@@ -178,6 +188,9 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `egress-velocity` | `2` | Unknown knob, missing value, or a non-positive value. |
 | `egress-velocity` | `1` | Threshold change denied by the gate. |
 | `doctor` | `1` | One or more critical checks failed. |
+| `setup` | `0` | The run completed as designed — this is NOT the same claim as "you got the mode you asked for". A `--mode <lower>` request the raise-only gate refuses still exits `0`; the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`) and the `Mode:` line repeats the reason. |
+| `setup` | `1` | The closing doctor pass found a critical (e.g. hooks call `doberman`, which is not on PATH) — printed as `!! Setup incomplete !!`, never `complete`. |
+| `setup` | `3` | A run that wired ONLY `mcp`/`openclaw` (no hooks-based host at all) — printed as `!! Setup pending !!`; a MIXED run (some hooks-kind host wired, some still manual) — printed as `!! Setup partly pending !!`. Not an error either way: a manual paste-and-restart step still stands between here and protection, so both are distinguished from a fully-live `0` and a broken `1`. |
 | `password set` | `1` | Passwords did not match, or enrollment failed. |
 | `2fa setup` | `1` | TOTP enrollment failed. |
 | `2fa remove` | `1` | Not enrolled, confirmation declined, or unenroll failed. |
@@ -189,6 +202,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `revoke` | `1` | Elevation id not found, or revoke failed. |
 | `policy-versions` | `2` | `--show` given something that is not a `pv1:` id or at least 8 hex characters. |
 | `policy-versions` | `1` | `--show` matched nothing or was ambiguous; `--verify` found `mismatch` or `drift`. |
+| `tui` | `2` | `--path` does not exist, exists but is not a directory, or `--last` is less than 1. |
 | `tui` | `1` | The optional `textual` extra is not installed. |
 | `dash` | `1` | The optional `dash` extra is not installed. |
 | `demo` | `1` | Invalid mode name, or a scenario did not match its expected outcome. |
@@ -198,11 +212,11 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `decision-log-prune` | `1` | The DB prune operation failed. |
 | `uninstall` | `1` | No possession factor enrolled, confirmation declined, name mismatch, gate denied, or some items were not removed. |
 
-Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `setup`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.
+Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.
 
 ### Collision audit
 
-`grep -n "typer.Exit(code=" src/doberman/cli/main.py` returns 45 call sites: 6 use `code=2` (all input-validation rejections, checked before any gate runs) and 39 use `code=1`. No command uses both codes for the same logical condition, and no two commands use the same code for contradictory meanings. This section documents the count; it changes no exit-code value.
+`grep -c "typer.Exit(code=" src/doberman/cli/main.py` returns 67 call sites: 11 use `code=2` (all input-validation rejections, checked before any gate runs), 55 use `code=1`, and 1 uses `code=3` (`setup`'s pending case). No command uses two different codes for the same logical condition, and no two commands use the same code for contradictory meanings. This section documents the count; it changes no exit-code value.
 
 ## Examples
 

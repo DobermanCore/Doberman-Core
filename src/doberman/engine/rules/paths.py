@@ -24,10 +24,12 @@ rejected at construction so a misconfiguration can never make everything match
 """
 
 import fnmatch
+import re
 from collections.abc import Iterable, Sequence
 
 from doberman.canonical import canonicalize
 from doberman.models import (
+    ActionType,
     EvalContext,
     GuardrailResult,
     ReasonCode,
@@ -150,7 +152,47 @@ CICD_CONFIG_GLOBS: tuple[str, ...] = (
     "**/azure-pipelines.yaml",
 )
 
+#: Repo governance + lint/type-check configuration whose silent edit can hide a
+#: bad change from review (CODEOWNERS routing) or from CI (a loosened/disabled
+#: lint or type rule). Path-class detection cannot tell a legitimate config
+#: tune from a silencing one, so every MUTATION (write or delete) steps up to
+#: AUTH (raise-only). Unlike CICD_CONFIG_GLOBS above, this set is deliberately
+#: NOT folded into DEFAULT_SENSITIVE_GLOBS — agents read CODEOWNERS and lint
+#: config constantly for routine lookups, and gating reads too would be an
+#: approval-fatigue source with no security value (only a silent EDIT can hide
+#: a bad change; a read reveals nothing an attacker couldn't already see).
+#: ProtectedPathRule matches this set separately and only for
+#: ProtectedPathRule.MUTATION_ACTION_TYPES — see its evaluate(). Deliberately
+#: excludes pyproject.toml itself: it is edited constantly for routine
+#: dependency bumps, and flagging the whole file for a [tool.ruff]-section-only
+#: concern would need to read file content, which this rule never does — see
+#: README's known-limitations.
+VERIFICATION_CONFIG_GLOBS: tuple[str, ...] = (
+    "codeowners",
+    "**/codeowners",
+    ".github/codeowners",
+    "ruff.toml",
+    ".ruff.toml",
+    "**/ruff.toml",
+    "mypy.ini",
+    ".mypy.ini",
+    "**/mypy.ini",
+    ".eslintrc",
+    ".eslintrc.*",
+    "eslint.config.*",
+    "**/.eslintrc*",
+    "**/eslint.config.*",
+    "**/.ruff.toml",
+    "**/.mypy.ini",
+)
+
 #: Paths that are sensitive: allowed, but only after authentication.
+#: VERIFICATION_CONFIG_GLOBS is deliberately NOT included here — it is
+#: matched separately by ProtectedPathRule, scoped to mutation action types
+#: only (see VERIFICATION_CONFIG_GLOBS' docstring above and
+#: ProtectedPathRule.MUTATION_ACTION_TYPES). Every glob set in THIS tuple
+#: stays action-type-agnostic: a read is just as informative as a write for
+#: e.g. backend/auth/** or a CI/CD pipeline definition.
 DEFAULT_SENSITIVE_GLOBS: tuple[str, ...] = (
     "backend/auth/**",
     "**/backend/auth/**",
@@ -202,6 +244,51 @@ def _matches_any(relposix: str, globs: Sequence[str]) -> bool:
 
 
 _CONTROL_PLANE = _sanitize_globs(CONTROL_PLANE_GLOBS)
+
+#: Test files/dirs across the common Python/JS/TS conventions. Deleting or
+#: renaming one is a distinct signal from writing to one — the branch below
+#: gates on ACTION TYPE, not this glob table, deliberately: adding these as a
+#: sensitive glob would AUTH every ordinary test edit (constant traffic, would
+#: blow the corpus FPR gate). No file-content reads: this catches a delete/
+#: rename of a file that matches by name/path only — it cannot see a
+#: pytest.mark.skip marker inserted into a KEPT test (see README).
+TEST_FILE_GLOBS: tuple[str, ...] = (
+    "test_*.py",
+    "**/test_*.py",
+    "*_test.py",
+    "**/*_test.py",
+    "tests/**",
+    "**/tests/**",
+    "**/*.test.[jt]s",
+    "**/*.spec.[jt]s",
+    "**/*.test.[jt]sx",
+    "**/*.spec.[jt]sx",
+    "**/*.test.mjs",
+    "**/*.spec.mjs",
+)
+
+_TEST_FILE_PATTERNS = _sanitize_globs(TEST_FILE_GLOBS)
+
+#: Heuristic for "this tool call is a rename/move". ActionType has no dedicated
+#: rename member (normalize.py has no rename-verb -> ActionType mapping, and
+#: subjective/infer.py's own Capability classifier already buckets
+#: rename/move under the same "mutate" verb group as an ordinary write), so a
+#: rename is recognized here by TOOL NAME instead. Known ceiling (documented in
+#: README): a `git mv`/shell `mv` routes through DestructiveCommandRule, not
+#: this path-target rule, and is invisible here; a rename tool that doesn't
+#: name itself rename/move is also invisible here.
+_RENAME_TOOL_HINT = re.compile(r"(?i)rename|move")
+
+
+def _is_delete_or_rename(action_type: ActionType, tool_name: str) -> bool:
+    if action_type is ActionType.file_delete:
+        return True
+    # The tool-name hint is a MUTATION signal, not an action-type-agnostic
+    # one: a file_read whose tool merely happens to be named "rename_file"
+    # (e.g. a dry-run/preview call) is not a rename in progress.
+    return action_type in ProtectedPathRule.MUTATION_ACTION_TYPES and bool(
+        _RENAME_TOOL_HINT.search(tool_name or "")
+    )
 
 
 def names_control_plane(raw_path: str, root: str = _DEFAULT_ROOT) -> bool:
@@ -294,13 +381,26 @@ def raw_path_candidates(raw_arguments: dict, keys: tuple[str, ...] = _RAW_PATH_K
 class ProtectedPathRule:
     """Enforce blocked/sensitive path policy on canonicalized targets."""
 
+    #: Action types treated as a mutation for glob sets that are scoped to
+    #: mutations only (currently just ``mutation_sensitive_globs`` /
+    #: VERIFICATION_CONFIG_GLOBS — see its docstring). Reads a governance/lint
+    #: config file constantly for routine lookups carry no risk on their own;
+    #: only a write or delete can silently hide a bad change. Every OTHER
+    #: glob set on this rule (``blocked_globs``, ``sensitive_globs``) stays
+    #: action-type-agnostic and is not gated by this set.
+    MUTATION_ACTION_TYPES: frozenset[ActionType] = frozenset(
+        {ActionType.file_write, ActionType.file_delete}
+    )
+
     def __init__(
         self,
         blocked_globs: Iterable[str] = DEFAULT_BLOCKED_GLOBS,
         sensitive_globs: Iterable[str] = DEFAULT_SENSITIVE_GLOBS,
+        mutation_sensitive_globs: Iterable[str] = VERIFICATION_CONFIG_GLOBS,
     ) -> None:
         self._blocked = _sanitize_globs(blocked_globs)
         self._sensitive = _sanitize_globs(sensitive_globs)
+        self._mutation_sensitive = _sanitize_globs(mutation_sensitive_globs)
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         root = _DEFAULT_ROOT
@@ -318,16 +418,26 @@ class ProtectedPathRule:
         if not paths:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
+        is_mutation = action.action_type in self.MUTATION_ACTION_TYPES
         worst = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
         for raw_path in paths:
-            result = self._evaluate_one(raw_path, root)
+            result = self._evaluate_one(
+                raw_path, root, action.action_type, action.tool_name, is_mutation
+            )
             if _is_more_severe(result, worst):
                 worst = result
             if worst.verdict is Verdict.BLOCK:
                 break  # cannot get worse than a hard block
         return worst
 
-    def _evaluate_one(self, raw_path: str, root: str) -> GuardrailResult:
+    def _evaluate_one(
+        self,
+        raw_path: str,
+        root: str,
+        action_type: ActionType,
+        tool_name: str,
+        is_mutation: bool,
+    ) -> GuardrailResult:
         canonical = canonicalize(raw_path, root=root)
 
         # A path that resolves outside the repo root is out of scope and unsafe
@@ -351,7 +461,35 @@ class ProtectedPathRule:
                 explanation="Target is a protected path; blocked by policy.",
             )
 
+        # Checked BEFORE the test-file branch below: a path can match both
+        # (e.g. ".github/workflows/tests/ci.yml" matches "**/tests/**" too) —
+        # a CI/CD-pipeline or other sensitive-path delete keeps its own stable
+        # reason code, rather than being relabeled test_file_removal just
+        # because "tests" happens to appear in the path.
         if _matches_any(canonical.relposix, self._sensitive):
+            return GuardrailResult(
+                verdict=Verdict.AUTH,
+                risk=Risk.medium,
+                reason_codes=[ReasonCode.sensitive_path_access],
+                explanation=(
+                    "Target is a sensitive path; authentication required before proceeding."
+                ),
+            )
+
+        if _is_delete_or_rename(action_type, tool_name) and _matches_any(
+            canonical.relposix, _TEST_FILE_PATTERNS
+        ):
+            return GuardrailResult(
+                verdict=Verdict.AUTH,
+                risk=Risk.medium,
+                reason_codes=[ReasonCode.test_file_removal],
+                explanation=(
+                    "Target is a test file being deleted or renamed; "
+                    "authentication required before proceeding."
+                ),
+            )
+
+        if is_mutation and _matches_any(canonical.relposix, self._mutation_sensitive):
             return GuardrailResult(
                 verdict=Verdict.AUTH,
                 risk=Risk.medium,

@@ -49,10 +49,10 @@ command), see the [PATH appendix](#appendix-a-stale-doberman-on-path). Maintaine
 
 One command does the whole job on any host. An interactive wizard detects which agents you have
 installed (Claude Code, Codex CLI, an MCP client, OpenClaw), asks which ones to guard, picks your
-alertness mode, asks whether to send anonymous usage stats, tunes your guardrails, and wires each
-chosen host — finishing with a doctor pass and, if you wired a hooks-based host (Claude Code or
-Codex), an offer to run a scripted attack through the real engine right there so you can watch it
-work:
+security mode, tunes your guardrails, and wires each chosen host, then asks whether to send
+anonymous usage stats — finishing with a doctor pass and, if you wired a hooks-based host (Claude
+Code or Codex), an offer to run a scripted attack through the real engine right there so you can
+watch it work:
 
 ```bash
 doberman setup
@@ -64,9 +64,40 @@ doberman setup --yes
 
 `--yes` accepts the defaults (detected hosts, or Claude Code if nothing is detected; balanced mode)
 with no prompts, useful for CI or scripting. Pass `--host` (repeatable) to pick hosts explicitly,
-e.g. `doberman setup --yes --host claude --host codex`. Either way, basic protection works
-immediately. When the wizard finishes, [set a possession factor](#4-set-a-password-and-2fa) — it's
-the first line of `doberman setup`'s own next steps.
+e.g. `doberman setup --yes --host claude --host codex`, or `--host all` to wire all four at once.
+Pass `--dry-run` to preview the mode, the preference weights, and every file it would write, with
+nothing persisted (mirrors `install-hooks --dry-run`); `--global` writes your real home directory
+(hooks install for EVERY project on the machine, not just this repo — the prompt says so), so
+without `--yes` it asks to confirm first, and with `--yes` it prints the exact path before writing.
+Pass `--no-telemetry` to opt out for good without answering the telemetry question (same as
+`doberman telemetry off`, just one-step) — aborting the telemetry question itself (`q`, or a closed
+stdin) is not consent either and also leaves it off; the question's own default always mirrors
+whatever is currently on disk, so a prior opt-out shows `[y/N]` and a bare Enter re-affirms "off"
+instead of silently reversing it, and `--yes` never re-enables a persisted opt-out on its own. Every
+prompt in the wizard — menus (which hosts, which mode, each tuning weight) and yes/no confirms
+(telemetry, global scope, weight tuning, the closing demo offer) alike — accepts `q` or `quit` to
+abort cleanly instead of writing anything (menus print `(q to quit)` right in the prompt); the one
+exception is the closing demo offer, reached only after setup has already fully succeeded, where
+`q` just declines the demo (printing the same "Aborted - ..." wording) without turning a successful
+run into a failure. Either way, basic protection works immediately. The closing doctor pass is not
+cosmetic: if it finds a critical (most commonly the `doberman` command not being on PATH yet — the
+remedy now names the exact directory to add), the wizard prints `!! Setup incomplete !!` and exits
+`1` instead of claiming success — re-run `doberman doctor` for the fix, then `doberman setup` again.
+A run that wired ONLY `mcp` and/or `openclaw` (no hooks-based host at all) prints `!! Setup pending
+!!` instead of `-- Setup complete --`; a MIXED run (e.g. `--host claude --host mcp`, where claude is
+live but mcp still needs its manual paste-and-restart step) prints `!! Setup partly pending !!`
+instead — both non-`complete` headers use a second `!!` marker (not just color) so they're
+distinguishable in a piped/`NO_COLOR` transcript too, and both exit `3` (not `0` — something still
+needs a manual step, but nothing is broken either, so a script can tell either apart from both a
+fully-live run and a broken one) — the `Hosts:` block in the summary names, per host, which one is
+done and which still needs the manual step. **Exit `0` means the run completed as designed — it
+does not mean you got the mode you asked for.** A `--mode <lower>` request the raise-only gate
+refuses (run `doberman mode <name>` interactively to actually lower it) still exits `0`: the closing
+header itself names the refusal right alongside the outcome, e.g. `-- Setup complete (mode kept:
+balanced; light refused) --`, and the `Mode:` line below it repeats the same reason. When the wizard
+finishes, [set a possession factor](#4-set-a-password-and-2fa) — `doberman doctor`, one of the
+pointers in `doberman setup`'s own closing `Also:` line, already flags an unset one and names the
+same command.
 
 On a different host, or want to see exactly what gets wired? The next section covers each path by
 hand.
@@ -76,7 +107,7 @@ hand.
 | Your host | How Doberman attaches | Where |
 |---|---|---|
 | Claude Code | Hooks: gate every built-in and MCP tool call (recommended) | [`doberman setup`](#2-run-doberman-setup) or [Claude Code hooks](#claude-code-hooks) |
-| Codex CLI | Hooks | `doberman setup --host codex` or `doberman install-hooks --host codex`, see [Claude Code hooks](#claude-code-hooks) |
+| Codex CLI | Hooks | `doberman setup --host codex` or `doberman install-hooks --host codex`, see [Codex CLI](#codex-cli) |
 | Claude Desktop, Cursor, any MCP client | MCP proxy: wrap your tool server | `doberman setup` prints the config; see [MCP proxy](#mcp-proxy) |
 | OpenClaw | Native plugin adapter | `doberman setup` prints the pointer; see [OpenClaw](#openclaw) |
 
@@ -104,9 +135,12 @@ doberman install-hooks --host codex
 
 `install-hooks` writes `.claude/settings.json` for this project by default, `--global` writes
 `~/.claude/settings.json` for every project, and `--host codex` wires `doberman hook codex-pre`
-into a Codex CLI `hooks.json` instead. Add `--dry-run` to see what would change without writing
-anything. Remove hooks with `doberman uninstall-hooks` (same `--global` / `--host` flags); it
-strips only Doberman's entries and leaves your other hooks untouched.
+into a Codex CLI `hooks.json` instead. `--host` here is `claude` or `codex` only, since mcp and
+openclaw don't write a hook file — `doberman setup --host mcp`/`--host openclaw` prints the pointer
+for those instead. Add `--dry-run` to see what would change without writing anything; a re-run
+whose merged hooks are unchanged prints `already wired: <path>` rather than `wrote <path>`. Remove
+hooks with `doberman uninstall-hooks` (same `--global` / `--host` flags); it strips only Doberman's
+entries and leaves your other hooks untouched.
 
 `install-hooks` is idempotent, safe to re-run, and backs up an existing `settings.json` before
 writing. `doberman setup` runs it for you.
@@ -179,8 +213,12 @@ is a hard `deny` in every mode, even light.
 
 Both handlers fail closed and stay import-light, so they add minimal latency to each call. Every
 decision lands in the same local, redacted history: `doberman log` shows PreToolUse AUTH/BLOCK
-outcomes alongside PostToolUse ones, and `doberman status` reports the installed version, which
-settings file(s) carry the hooks, and the last five decisions.
+outcomes alongside PostToolUse ones, and `doberman status` leads with a one-line `Protected: yes`
+/ `Protected: no - <reason>` verdict (hooks installed for at least one host and `doberman`
+resolvable on PATH), then four sections — Hooks (which settings file(s) carry the hooks), Policy
+(mode, preferences, policy version, then the installed Doberman version), Auth (2FA, password,
+elevations, taint), and Health (a one-line pointer to `doberman doctor`) — followed by the last
+five decisions.
 
 **Doberman protects its own hooks.** Once installed, the agent can't quietly remove them. A write
 or edit to `.claude/settings.json` is blocked, and other `.claude/` changes require
@@ -191,6 +229,34 @@ shell too: a Bash command that writes or deletes the config, or runs `doberman u
 posture- and auth-mutating verb (`mode`, `prefs`, `enforcement`, `2fa`, `password`, `revoke`,
 `taint`, `uninstall`), while read/utility verbs (`status`, `doctor`, `log`, `scan`, `review`) stay
 allowed.
+
+### Codex CLI
+
+`--host codex` wires a single `PreToolUse` hook (`doberman hook codex-pre`) into Codex's own
+`hooks.json`, not Claude's `settings.json` — everything else about `install-hooks` (idempotent,
+`--dry-run`, `already wired: <path>` on a no-op re-run, `uninstall-hooks --host codex` to remove it)
+works the same way:
+
+```bash
+doberman install-hooks --host codex
+```
+
+```bash
+doberman install-hooks --host codex --global
+```
+
+The default (no `--global`) writes `<repo>/.codex/hooks.json`, wired for this project only;
+`--global` writes `~/.codex/hooks.json`, wired for every project Codex runs in. `--local` has no
+Codex equivalent — there's no per-project-untracked scope the way Claude Code has one.
+
+**Trust it once.** Codex asks you to trust a new hook the first time it actually *runs*, not at
+install time: run a Codex command and approve the hook when prompted, or launch with
+`--dangerously-bypass-hook-trust` only if you already vet the hook source yourself. Until you trust
+it the hook is wired but inert — Codex skips it rather than gating the call. Once trusted, Doberman
+gates every tool call in that scope from then on; unlike Claude Code's hooks, there's no session
+restart to wait for.
+
+Verify it's live: ask Codex to `cat .env` and confirm it is blocked.
 
 ### MCP proxy
 
@@ -346,7 +412,10 @@ never break a session start.
 
 `doberman log` prints the raw redacted rows; `doberman tui` browses the same rows interactively
 and adds a plain-language "why" for whichever row is highlighted, built only from that row's
-already-redacted verdict, layer, and reason codes. Arrow keys navigate, `r` reloads, `q` quits:
+already-redacted verdict, layer, and reason codes. Arrow keys navigate; press `?` first for the
+full keyboard reference (`/` filter, `b`/`B`/`a` jump to the next/previous BLOCK or next AUTH,
+`w`/`enter` full-screen why, `tab` switch focus, `y` copy the action id, `home`/`end`, `r` reload,
+`q` quit):
 
 ```bash
 pip install "doberman-core[tui]"
@@ -374,6 +443,11 @@ redacted metadata above, and it can never change a decision. It's strictly opt-i
 keyed, and flagged, all three), and any failure (missing key, no network, timeout, bad response)
 silently falls back to the offline template. There is no `doberman explain` command; the TUI and
 `doberman log` are the only surfaces for this.
+
+A separate `[judge]` extra installs the same `anthropic` dependency for an unrelated,
+experimental use: a constrained BYO-model second opinion evaluated offline against the labeled
+corpus, not a CLI feature. See [`docs/BENCHMARKS.md`](BENCHMARKS.md#judge-agreement-offline-experimental)
+- there is no live wiring and nothing here to run against a real session.
 
 ### Dashboard
 

@@ -40,14 +40,26 @@ from typing import Any, Protocol
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from doberman.models import ActionType, Decision, ReasonCode, Risk, SecurityObject, Verdict
+from doberman.models import (
+    ActionType,
+    Decision,
+    EffectSet,
+    ReasonCode,
+    Risk,
+    SecurityObject,
+    Verdict,
+)
 
 logger = logging.getLogger("doberman.auth.challenge")
 
 #: Hard wall-clock ceiling on ONE challenge, whichever channel it runs on.
 #:
-#: Sized above the worst-case *legitimate* fallback chain (dashboard 90s →
-#: elicitation 300s → GUI 120s → terminal) run **twice**, because a
+#: Ten minutes: an unanswered approval must not sit approvable for longer than
+#: that, whichever channels it fell through. Sized above the worst-case
+#: *legitimate* pass: the dashboard window (90s, falls through when unanswered)
+#: plus ONE human channel — the first open one answers or expires, and its
+#: expiry is final (elicitation 180s or GUI 120s; the terminal shares this
+#: deadline) — so 270s per pass, run **twice** (540s), because a
 #: ``two_factor``/``role_elevation`` tier dispatches the whole chain once for
 #: ``confirm()`` and again for ``read_code()``
 #: (:meth:`~doberman.auth.provider.LocalAuthProvider._run_tier`) under this one
@@ -56,8 +68,9 @@ logger = logging.getLogger("doberman.auth.challenge")
 #: of an action someone was actively approving, on the highest-risk tiers.
 #: It therefore bites only when nobody answers anywhere, where denying is the
 #: correct outcome regardless. ``test_the_default_deadline_exceeds_the_worst_case_channel_chain``
-#: pins the arithmetic.
-DEFAULT_CHALLENGE_TIMEOUT_S = 1200.0
+#: pins the arithmetic and ``test_an_unanswered_challenge_expires_within_ten_minutes``
+#: pins the ceiling, so a channel budget cannot grow past it unnoticed.
+DEFAULT_CHALLENGE_TIMEOUT_S = 600.0
 
 #: :attr:`AuthResult.method` (and the decision log's ``auth_result``) when the
 #: deadline expired. Deliberately distinct from ``"denied"`` (a human said no)
@@ -113,14 +126,23 @@ def _memory_excluded(decision: Decision, action: SecurityObject) -> bool:
     )
 
 
+#: Upper bound on one approval-memory storage round-trip from the sync seam.
+#: Approval memory is a convenience; a lookup that does not answer in time
+#: fails to the stricter full-tier prompt. The bound is a loop *timer*, so it
+#: also wakes an event loop whose thread-safe wake-up was lost (seen on the
+#: Windows Proactor loop under xdist: the aiosqlite thread had exited and the
+#: loop sat in `_poll` forever, a 20-minute CI stall).
+_MEMORY_IO_TIMEOUT_S = 5.0
+
+
 def _run_memory_io(call: Callable[[], Any]) -> Any:
     """Run one async storage call from this synchronous seam, or fail to no-memory."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         try:
-            return asyncio.run(call())
-        except Exception:  # noqa: BLE001 - storage failure means full-tier prompting
+            return asyncio.run(asyncio.wait_for(call(), timeout=_MEMORY_IO_TIMEOUT_S))
+        except Exception:  # noqa: BLE001 - storage failure/timeout means full-tier prompting
             logger.warning("approval-memory storage unavailable; using full auth tier")
             return None
     logger.warning("approval-memory sync bridge called on an event loop; using full auth tier")
@@ -282,6 +304,57 @@ def current_challenge() -> tuple[Decision, SecurityObject, AuthTier] | None:
     return _current_challenge.get()
 
 
+#: The shared "Blast radius" label every prompter puts in front of
+#: format_effect_set()'s string (ADR 0094) — hoisted to one constant so the
+#: four hand-written call sites (provider.py's two tones, gui_prompter,
+#: dashboard_prompter) cannot drift on the wording (C2 final review, prefix
+#: hoist). The technical tone lower-cases it to match its other lower-case
+#: field labels; the word choice itself stays identical everywhere.
+EFFECT_SET_LABEL = "Blast radius"
+
+
+def _effect_set_flags_suffix(effects: EffectSet) -> str:
+    """ ", includes .git" / ", reaches outside the repo" / both — ASCII only.
+
+    I2 (C2 final review): ``hits_git``/``hits_outside_repo`` were computed and
+    carried on ``EffectSet`` but never rendered by this, the ONE formatter
+    every prompter uses. Classes, not paths — no location is named.
+    """
+    flags = []
+    if effects.hits_git:
+        flags.append("includes .git")
+    if effects.hits_outside_repo:
+        flags.append("reaches outside the repo")
+    return f", {', '.join(flags)}" if flags else ""
+
+
+def format_effect_set(effects: EffectSet | None) -> str | None:
+    """The ONE redaction-safe display string for a delete-class AUTH's
+    blast-radius preview (ADR 0094) — every prompter (dashboard, GUI,
+    terminal, elicitation, the pending-approval row) must render this exact
+    string so the channels cannot drift. ``None`` when there is nothing to
+    show — a non-delete-class AUTH, or ``effects`` itself is ``None``.
+
+    Built from counts and booleans only; never a path (there is no path
+    field on ``EffectSet`` to leak). The ``hits_git``/``hits_outside_repo``
+    flags (I2) are appended, ASCII only, in every shade — known count, cap
+    hit, and hard unknown alike.
+    """
+    if effects is None:
+        return None
+    flags = _effect_set_flags_suffix(effects)
+    if effects.capped:
+        if effects.file_count is None:
+            return "unknown - count unavailable" + flags
+        return f"{effects.file_count:,}+ files" + flags
+    file_word = "file" if effects.file_count == 1 else "files"
+    files = f"{effects.file_count:,} {file_word}"
+    if effects.dir_count:
+        dir_word = "directory" if effects.dir_count == 1 else "directories"
+        return f"{files} in {effects.dir_count:,} {dir_word}" + flags
+    return files + flags
+
+
 def _run_with_deadline(
     call: Callable[[], AuthResult],
     *,
@@ -425,7 +498,7 @@ def run_auth_challenge(
                 "metadata": {
                     **action.metadata,
                     "approval_memory_notice": (
-                        f"You approved this exact action {minutes} min ago — confirm again."
+                        f"You approved this exact action {minutes} min ago - confirm again."
                     ),
                 }
             }

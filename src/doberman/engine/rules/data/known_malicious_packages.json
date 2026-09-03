@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-09-02",
+  "pypi": [],
+  "npm": [
+    "crossenv",
+    "cross-env.js",
+    "d3.js",
+    "fabric-js",
+    "mongose",
+    "nodesass",
+    "nodesqlite",
+    "jquery.js",
+    "openssl.js",
+    "babelcli"
+  ],
+  "cargo": [],
+  "rubygems": [],
+  "go": []
+}

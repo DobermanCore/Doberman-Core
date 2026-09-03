@@ -46,6 +46,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-xdist", "pytest-timeout", "ruff>=0.15,<0.16", "import-linter", "textual", "hypothesis", "starlette", "uvicorn", "httpx"]
 explain = ["anthropic"]
+judge = ["anthropic"]
 tui = ["textual"]
 dash = ["starlette", "uvicorn"]
 sbom = ["pip-audit"]
@@ -105,12 +106,19 @@ filterwarnings = [
     # Starlette's test client prefers httpx2; moving the dev extra is a dependency
     # follow-up (#518), not a suite defect.
     "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+    # anyio 4.15 deprecates the `anyio.abc.BlockingPortal` alias that the installed
+    # starlette test client still imports at module load; under `error` that
+    # import-time DeprecationWarning fails collection of every dash test and the
+    # parity generator (CI 2026-09-03). Upstream fix is a starlette bump; until the
+    # dash extra moves, keep it a visible warning, not a collection error.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
 ]
 markers = [
     "guarantee(name, host): claims a parity-matrix cell; collected by tools/parity (docs/PARITY.md)",
     "real_hst: build the production-size half-space trees (25 × height 15) instead of the fast test default",
     "timeout(seconds): per-item ceiling honoured by pytest-timeout (CI passes --timeout); registered here so --strict-markers accepts it without the plugin",
     "xdist_group(name): pytest-xdist scheduling group (CI passes --dist loadgroup); registered here so --strict-markers accepts it without the plugin",
+    "real_display: needs a real Tk display (auto-applied by the GUI prompter tests' real_root fixture); deselect with -m 'not real_display' to approximate a headless Linux CI runner locally",
 ]
 
 [tool.coverage.run]

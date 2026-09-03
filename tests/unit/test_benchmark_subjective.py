@@ -186,3 +186,37 @@ def test_slashless_case_id_groups_under_adapter_suite_name(noslash_report):
 def test_both_arms_present_and_honest_arm_named(fx_report):
     assert fx_report["honest_arm"] == "provenance_free"
     assert set(fx_report["arms"]) == {"provenance_free", "with_provenance"}
+
+
+# --- 7b. with_provenance can be skipped (halves SQLite-backed work for a ----
+# caller that never reads it — devsession's tests are the motivating case,
+# issue #560) -----------------------------------------------------------------
+def test_with_provenance_can_be_omitted_by_request():
+    report = run_subjective_eval(_Fx(), include_with_provenance=False)
+    assert report["honest_arm"] == "provenance_free"
+    assert set(report["arms"]) == {"provenance_free"}
+    assert report["arms"]["provenance_free"]["per_suite"]["fixture"]["n_warm_observations"] > 0
+
+
+# --- 8. held-out FPR + warm-sufficiency constants (C11) ---------------------
+def test_report_carries_warm_sufficiency_constants(fx_report):
+    from doberman.subjective.baseline import HST_WARMUP
+    from doberman.subjective.drift import K_OBSERVATIONS
+    from tests.benchmarks.subjective_runner import FPR_QUANTILE
+
+    assert fx_report["constants"] == {
+        "k_observations": K_OBSERVATIONS,
+        "hst_warmup": HST_WARMUP,
+        "fpr_quantile": FPR_QUANTILE,
+    }
+
+
+def test_held_out_fpr_reported_alongside_auc(fx_report):
+    per_suite = fx_report["arms"]["provenance_free"]["per_suite"]["fixture"]
+    assert "held_out_fpr" in per_suite
+    assert "warm_score_threshold" in per_suite
+    if per_suite["held_out_fpr"] is not None:
+        assert 0.0 <= per_suite["held_out_fpr"] <= 1.0
+    pooled = fx_report["arms"]["provenance_free"]["pooled"]
+    assert "held_out_fpr" in pooled
+    assert "warm_score_threshold" in pooled

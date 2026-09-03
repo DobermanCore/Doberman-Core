@@ -280,6 +280,12 @@ class ReasonCode(StrEnum):
     # fingerprint) in an outbound payload: a confirmed read-then-send exfiltration.
     confirmed_exfil = "confirmed_exfil"
 
+    # C1 — the untrusted-value echo tripwire: a host/URL/email that entered
+    # this session's context from an untrusted read (WebFetch/WebSearch, an
+    # issue/PR body) reappeared as a later call's egress destination. Whole-
+    # value match only (no flow analysis); AUTH-capped in every mode (v1).
+    untrusted_value_echo = "untrusted_value_echo"
+
     # C3.1 — the session correlator (doberman.engine.correlator): catches
     # individually-safe actions that combine into exfiltration across a
     # session's decision history. Raised post-decide, in the async executor —
@@ -342,6 +348,36 @@ class ReasonCode(StrEnum):
     # forward is denied rather than risk two concurrent calls both releasing
     # on the one grant.
     single_use_elevation_unclaimable = "single_use_elevation_unclaimable"
+
+    # HK.5.6 — a shell command opens a raw network channel outside the
+    # normal HTTP/tool egress path: a `/dev/tcp`/`/dev/udp` redirection target,
+    # netcat/ncat/socat used in exec-on-connect (reverse/bind-shell) form, or
+    # an `openssl s_client -connect` TLS handshake. Detection is shape-based
+    # (see engine/rules/commands.py) and AUTH-only — it never reaches BLOCK.
+    raw_socket_channel = "raw_socket_channel"
+
+    # C4 — verification-integrity rule pack: narrow, stateless checks over argv
+    # and path class (never file content, diffs, or session state) that catch an
+    # agent quietly disabling its own safety net rather than fixing what it
+    # flags. Both are AUTH-only by construction — neither ever reaches BLOCK, so
+    # neither belongs on policy.modes.FLOOR_HARD_BLOCKS.
+    verification_bypass_flag = "verification_bypass_flag"
+    test_file_removal = "test_file_removal"
+
+    # C3 — dependency admission gate (v1, offline, name-only): parses
+    # package-manager install commands and raises on the package NAME alone,
+    # against two bundled static lists. Zero filesystem/network access.
+    dependency_known_malicious = "dependency_known_malicious"
+    # Edit-distance-1-from-popular AND not itself popular — the only
+    # statistical signal in this rule; capped at AUTH by construction and
+    # never promoted to BLOCK (a probability score never earns a BLOCK).
+    dependency_name_typosquat = "dependency_name_typosquat"
+
+    # C2 — the proxy's post-approval TOCTOU re-check (ADR 0094) found the
+    # recomputed delete-class blast-radius effect set disagrees with what was
+    # shown at approval time: the filesystem changed (in either direction), or
+    # a previously-known count became unknown. Synthetic BLOCK, never released.
+    effect_set_diverged = "effect_set_diverged"
 
 
 class GuardrailResult(BaseModel):
@@ -432,6 +468,35 @@ class SecurityObject(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class EffectSet(BaseModel):
+    """A bounded, offline snapshot of what a delete-class command's operands
+    would remove (ADR 0094). Computed by
+    :func:`doberman.engine.effects.compute_delete_effects`; attached to
+    :attr:`Decision.effects`.
+
+    ``file_count``/``dir_count`` are ``None`` only in the hard-failure shade of
+    the non-authoritative state (an OS error, a wall-clock timeout, or an
+    unresolved glob-shaped operand) — no lower bound at all. Hitting the entry
+    cap is the OTHER non-authoritative shade: ``capped=True`` too, but
+    ``file_count`` reports the cap itself as a known lower bound ("at least
+    this many"). Never render either shade as an exact, reassuring number.
+
+    ``digest`` is a stable hash of the sorted matched relative-path set (or a
+    fixed sentinel shared by both non-authoritative shades) — never a raw path
+    itself. Used only to detect drift between an AUTH preview and execution
+    (the proxy's TOCTOU re-check in ``proxy/executor.py``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    file_count: int | None
+    dir_count: int | None
+    capped: bool
+    hits_git: bool
+    hits_outside_repo: bool
+    digest: str
+
+
 class Decision(BaseModel):
     """The engine's final, immutable answer for one action.
 
@@ -467,6 +532,11 @@ class Decision(BaseModel):
     decided_at: AwareDatetime
     #: Shadow-only second opinion; never affects final_verdict/final_risk.
     shadow: GuardrailResult | None = None
+    #: Bounded, offline blast-radius preview for a delete-class command
+    #: (ADR 0094) — display/audit only, same structural isolation as
+    #: ``shadow``: no validator relates it to final_verdict/final_risk, and no
+    #: rule or floor reads it. ``None`` for every non-delete-class decision.
+    effects: EffectSet | None = None
 
     @model_validator(mode="after")
     def _non_pass_must_be_explained(self) -> "Decision":
