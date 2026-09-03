@@ -473,6 +473,35 @@ async def test_filtered_to_zero_matches_is_distinct_from_no_data(tmp_path):
         assert app.query_one("#empty-message").display is False
 
 
+async def test_why_panel_missing_is_a_no_op_not_a_crash(tmp_path):
+    """Regression for the CI-only flake: `textual.css.query.NoMatches` on
+    `#explanation-scroll`, seen on the Ubuntu 3.11 CI leg (never locally) on
+    two unrelated PRs. Under load, a query for the docked why panel can lose
+    a race with the panel's own mount/rebuild and raise instead of finding
+    it. `_why_panel()` must return `None` rather than raise when the panel
+    isn't in the DOM, and every call site that uses it (`_show_empty_message`,
+    `_show_explanation`, `_refresh_why_panel_scroll_cue`) must no-op instead
+    of crashing the app.
+    """
+    root = str(tmp_path)
+    await _seed_block(root)
+    app = DecisionExplainerApp(root)
+    async with app.run_test() as pilot:
+        await _wait_loaded(pilot, app)
+        why_panel = app.query_one("#explanation-scroll")
+        await why_panel.remove()
+        await pilot.pause()
+
+        assert app._why_panel() is None
+
+        # None of these may raise `NoMatches` now that the panel is gone -
+        # they must silently no-op instead of crashing the app, same as a
+        # query that loses the mount/rebuild race under CI load.
+        app._refresh_why_panel_scroll_cue()
+        app._show_empty_message("(no rows match the filter - press esc to clear it)")
+        app._show_explanation(0)
+
+
 # --- bounded load / subtitle --------------------------------------------------
 
 
