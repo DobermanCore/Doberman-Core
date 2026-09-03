@@ -94,6 +94,58 @@ _COMMAND_ACTION_TYPES = frozenset(
 #: Branch names whose history is protected — a force-push here is catastrophic.
 DEFAULT_PROTECTED_BRANCHES: tuple[str, ...] = ("main", "master", "release", "develop")
 
+#: git commit flags that skip hooks or signing (C4). Pre-commit/pre-push hooks
+#: often run tests/lint, and a commit signature vouches for authorship — an
+#: agent quietly disabling either is stepping around a safety net it is
+#: supposed to satisfy, not a catastrophic/irreversible act on its own, so this
+#: is AUTH with its OWN reason code — never ReasonCode.destructive_command,
+#: which sits on FLOOR_HARD_BLOCKS (policy/modes.py) and would silently turn
+#: every skip into a mode-independent hard BLOCK.
+_VERIFICATION_BYPASS_LONG_FLAGS = {"--no-verify", "--no-gpg-sign"}
+
+#: git config keys that can reproduce --no-verify/--no-gpg-sign's effect at
+#: the CONFIG level (``-c key=value`` / ``--config-env=key=envvar`` BEFORE the
+#: subcommand) instead of as a flag ON ``commit`` itself — same evasion class,
+#: different syntax, so the flag-only scan above misses it entirely.
+#: ``core.hooksPath`` repoints (or empties, e.g. ``/dev/null``) the hooks
+#: directory for the WHOLE invocation regardless of value: an override is
+#: suspicious on its own, and a ``--config-env=`` indirection through an
+#: environment variable can't be resolved statically either, so presence
+#: alone is enough to raise. ``commit.gpgsign`` only bypasses signing when set
+#: to a git-boolean-false value.
+_GIT_HOOKS_PATH_CONFIG_KEY = "core.hookspath"
+_GIT_GPGSIGN_CONFIG_KEY = "commit.gpgsign"
+_GIT_FALSY_CONFIG_VALUES = {"false", "no", "off", "0"}
+
+#: git global options that take their value as a SEPARATE following token
+#: (``-C <path>``, ``-c <k=v>``) — both the option and its value token must be
+#: skipped when hunting for the actual subcommand. Every other global option
+#: (``--git-dir=...``, ``--work-tree=...``, ``--no-pager``, ``-p``,
+#: ``--paginate``, ...) either carries its value in the same token (``=``) or
+#: takes none, so a generic "any other leading -/-- token" skip covers it.
+_GIT_GLOBAL_OPTIONS_WITH_VALUE = {"-C", "-c"}
+
+#: git commit short options that take a MANDATORY value — either as the rest
+#: of their own cluster (``-mFixBug``) or, when the cluster ends exactly at
+#: the option letter (bare ``-m``), as the following token. Once one of these
+#: is seen, the remainder of that cluster is the option's value, and — for
+#: the bare form — so is the whole next token; neither is ever scanned for
+#: further flags.
+_GIT_COMMIT_MANDATORY_VALUE_SHORT_OPTIONS = set("mFCct")
+
+#: git commit short options whose value is OPTIONAL, and — critically — when
+#: present is ONLY ever attached in the SAME token. ``-S[<keyid>]`` (GPG-sign)
+#: and ``-u[<mode>]`` (``--untracked-files[=<mode>]``) are git's two such
+#: commit options: ``-Skeyid``/``-uno`` carry their value attached, but a bare
+#: ``-S``/``-u`` never consumes the next token — unlike the mandatory-value
+#: options above. Seeing one of these still ends the cluster scan (the rest of
+#: the token, if any, is its value), but must NEVER set skip_next — doing so
+#: would swallow the next flag token whole (e.g. ``-S --no-verify`` would
+#: silently skip ``--no-verify``), a fail-open bug. Without ``"u"`` here,
+#: ``-uno``/``-unormal``/``-uall`` were misread by the generic per-char scan:
+#: the "n" in "no"/"normal" was mistaken for the ``-n`` bypass flag.
+_GIT_COMMIT_OPTIONAL_VALUE_SHORT_OPTIONS = set("Su")
+
 # Command-substitution bodies: $(...) and `...`. We recurse into these so a
 # destructive command hidden inside a substitution is still evaluated.
 _SUBSTITUTION = re.compile(r"\$\((?P<paren>[^()]*)\)|`(?P<backtick>[^`]*)`")
@@ -769,6 +821,12 @@ def _segment_verdict(
             ReasonCode.destructive_command,
             "Git history rewrite / hard reset; authentication required.",
         )
+    if cmd == "git" and _git_commit_bypasses_verification(tokens):
+        return _auth(
+            ReasonCode.verification_bypass_flag,
+            "Git commit bypasses its pre-commit hooks or signature verification; "
+            "authentication required.",
+        )
     if _is_pipe_to_shell(tokens):
         return _auth(
             ReasonCode.destructive_command,
@@ -798,6 +856,100 @@ def _git_is_history_rewrite(tokens: list[str]) -> bool:
         return True
     # ``git clean -f`` permanently removes untracked files.
     return "clean" in tokens and any(t.startswith("-") and "f" in t for t in tokens)
+
+
+def _git_leading_globals(tokens: list[str]) -> tuple[list[str], list[str]]:
+    """``(subcommand_argv, config_assignments)`` — walk git's leading global
+    options ONCE so the subcommand locator and the config-level
+    verification-bypass check share one skip-loop. Skips ``-C <path>``/
+    ``-c <k=v>`` (and their value token), ``--git-dir=...``/``--work-tree=...``,
+    ``--no-pager``, ``-p``/``--paginate``, and any other leading ``-``/``--``
+    token — so ``git -C repo commit ...`` still locates ``commit``, and a
+    non-commit verb (``log``, ``tag``, ``shortlog``) that merely mentions
+    "commit" among its own arguments is never mistaken for it. Along the way,
+    every ``-c <k=v>`` value token and every ``--config-env=k=v`` token's
+    ``k=v`` is collected into ``config_assignments`` — these never appear as a
+    flag ON the subcommand, so nothing downstream would otherwise see them."""
+    if not tokens or tokens[0] != "git":
+        return [], []
+    rest = tokens[1:]
+    i = 0
+    assignments: list[str] = []
+    while i < len(rest) and rest[i].startswith("-"):
+        token = rest[i]
+        if token == "-c":  # noqa: S105 — git's -c <k=v> option flag, not a secret
+            if i + 1 < len(rest):
+                assignments.append(rest[i + 1])
+            i += 2
+            continue
+        if token.startswith("--config-env="):
+            assignments.append(token[len("--config-env=") :])
+            i += 1
+            continue
+        i += 2 if token in _GIT_GLOBAL_OPTIONS_WITH_VALUE else 1
+    return rest[i:], assignments
+
+
+def _git_config_bypasses_verification(assignments: Iterable[str]) -> bool:
+    """True if a leading ``-c``/``--config-env=`` assignment (see
+    :func:`_git_leading_globals`) reproduces ``--no-verify``/``--no-gpg-sign``'s
+    effect at the config level: see ``_GIT_HOOKS_PATH_CONFIG_KEY`` /
+    ``_GIT_GPGSIGN_CONFIG_KEY`` above."""
+    for assignment in assignments:
+        key, sep, value = assignment.partition("=")
+        if not sep:
+            continue
+        key = key.strip().lower()
+        if key == _GIT_HOOKS_PATH_CONFIG_KEY:
+            return True
+        if key == _GIT_GPGSIGN_CONFIG_KEY and value.strip().lower() in _GIT_FALSY_CONFIG_VALUES:
+            return True
+    return False
+
+
+def _git_commit_bypasses_verification(tokens: list[str]) -> bool:
+    """``git commit`` with ``--no-verify``/``-n``/``--no-gpg-sign`` (skips hooks or
+    signing). ``-n`` is git's short alias for ``--no-verify`` and combines with
+    other short commit flags (``-an``, ``-nm``), so any single-dash token
+    containing the letter ``n`` counts — UNLESS that ``n`` sits inside a
+    value-taking short option's attached value (``-mnote``), in which case the
+    rest of that token is the option's VALUE and never scanned as flags —
+    and, for a bare MANDATORY-value option (``-m``, ``-F``, ...), so is the
+    whole next token. ``-S`` (GPG-sign) takes only an OPTIONAL, same-token
+    value (``-Skeyid``); a bare ``-S`` never consumes the next token, so
+    ``-S --no-verify`` and ``-S -n`` still resolve to bypass. A bare ``--``
+    ends option parsing (git convention), so nothing after it is scanned as a
+    flag. This also means a commit message is never misread as a flag.
+
+    Also checks for a CONFIG-level bypass (``git -c core.hooksPath=... commit``
+    / ``git -c commit.gpgsign=false commit`` / ``git --config-env=core.hooksPath=...
+    commit``) — see :func:`_git_config_bypasses_verification`. Same evasion
+    class, but the assignment never appears as a flag on ``commit`` itself."""
+    argv, assignments = _git_leading_globals(tokens)
+    if not argv or argv[0] != "commit":
+        return False
+    if _git_config_bypasses_verification(assignments):
+        return True
+    skip_next = False
+    for token in argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "--":  # noqa: S105 — the git "end of options" marker, not a secret
+            break  # end of options; remaining tokens are positional, never flags
+        if token in _VERIFICATION_BYPASS_LONG_FLAGS:
+            return True
+        if not (token.startswith("-") and not token.startswith("--")):
+            continue
+        for i, ch in enumerate(token[1:], start=1):
+            if ch == "n":
+                return True
+            if ch in _GIT_COMMIT_MANDATORY_VALUE_SHORT_OPTIONS:
+                skip_next = len(token) == i + 1  # bare "-m": value is the NEXT token
+                break
+            if ch in _GIT_COMMIT_OPTIONAL_VALUE_SHORT_OPTIONS:
+                break  # "-S"/"-Skeyid": value (if any) is never a separate token
+    return False
 
 
 def _is_pipe_to_shell(tokens: list[str]) -> bool:

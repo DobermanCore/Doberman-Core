@@ -638,3 +638,211 @@ def test_inline_create_connection_requires_auth():
     result = _cmd("python -c \"import socket as k;k.create_connection(('h',443))\"")
     assert result.verdict is Verdict.AUTH
     assert ReasonCode.opaque_command in result.reason_codes
+
+
+# --- C4 — verification-bypass flag on git commit -----------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit --no-verify",
+        "git commit -n -m x",
+        "git commit --no-gpg-sign",
+        "git commit -an -m 'wip'",  # combined short flags (-a and -n glommed)
+    ],
+)
+def test_git_commit_verification_bypass_flags_require_auth(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.verification_bypass_flag in result.reason_codes
+
+
+def test_git_commit_message_text_no_verify_is_not_flagged():
+    # The literal string must be a -m VALUE (not itself a flag token) to avoid
+    # matching — this is the negative control for the flag-detection heuristic.
+    result = _cmd("git commit -m 'no-verify'", action_type=ActionType.git_op)
+    assert ReasonCode.verification_bypass_flag not in result.reason_codes
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_verification_bypass_flag_is_never_a_floor_hard_block():
+    from doberman.policy.modes import FLOOR_HARD_BLOCKS
+
+    # Structural guarantee, not a per-mode probe: this reason code must never be
+    # reachable from the destructive_command floor-block branch, so it can never
+    # be a mode-independent hard BLOCK the way destructive_command is.
+    assert ReasonCode.verification_bypass_flag not in FLOOR_HARD_BLOCKS
+    result = _cmd("git commit --no-verify", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+
+
+def test_test_file_removal_is_never_a_floor_hard_block():
+    from doberman.policy.modes import FLOOR_HARD_BLOCKS
+
+    # Same structural guarantee as verification_bypass_flag above, for
+    # test_file_removal (paths.py): never reachable from the
+    # protected_path_blocked floor-block branch, so it can never be a
+    # mode-independent hard BLOCK.
+    assert ReasonCode.test_file_removal not in FLOOR_HARD_BLOCKS
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # "commit" appears somewhere in argv, but the actual git subcommand
+        # is not "commit" — must never be classified as a commit-verification
+        # bypass.
+        "git log --grep commit -n 5",
+        "git tag -n commit",
+        "git log commit -n 5",
+        "git shortlog -n commit",
+        # Real `git commit`, but the "n" is inside a value-taking short
+        # option's attached value, not a standalone -n/-xn flag.
+        "git commit -mnote",
+        "git commit -a -mFixBugInParser",
+    ],
+)
+def test_non_bypass_commands_pass(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.verification_bypass_flag not in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -C repo commit -n -m x",  # -C global option must not shift subcommand detection
+        "git commit -an -m x",
+        "git commit --no-verify -m x",
+        "git commit -a --no-gpg-sign",
+    ],
+)
+def test_real_git_commit_bypass_variants_require_auth(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.verification_bypass_flag in result.reason_codes
+
+
+def test_plain_git_commit_with_message_passes():
+    # Explicit positive control: a normal, non-bypassing commit must PASS
+    # outright, not merely avoid BLOCK.
+    result = _cmd('git commit -m "fix parser"', action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # git's "-S[<keyid>]" takes an OPTIONAL value that is only ever
+        # attached in the same token; a bare "-S" must never swallow the
+        # NEXT token as its value the way a mandatory-value option (-m) does
+        # — doing so would silently skip a real bypass flag right after it.
+        "git commit -S --no-verify",
+        "git commit -S -n",
+    ],
+)
+def test_git_commit_bare_optional_value_flag_does_not_swallow_next_flag(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.verification_bypass_flag in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -S",  # bare -S, no bypass flag anywhere else: no bypass
+        "git commit -Sabc123 -m x",  # -S's value is attached to its own token
+    ],
+)
+def test_git_commit_optional_value_flag_alone_passes(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.verification_bypass_flag not in result.reason_codes
+
+
+def test_git_commit_end_of_options_marker_stops_flag_scan():
+    # A bare "--" ends option parsing (git convention); anything after it is
+    # a positional argument (e.g. a pathspec), never a flag.
+    result = _cmd("git commit -- -n", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.verification_bypass_flag not in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -uno -m x",
+        "git commit -unormal -m x",
+        "git commit -uall -m x",
+        "git commit -un -m x",
+    ],
+)
+def test_git_commit_untracked_files_short_flag_is_not_a_bypass(command):
+    # "-u[<mode>]" (--untracked-files[=<mode>]) is git's OTHER attached-
+    # -optional-value short commit option, alongside "-S" — its value ("no"/
+    # "normal"/"all"/bare "n") is glued to the same token and must never be
+    # scanned for a glommed "-n". Previously any "u" fell through to the
+    # generic per-char scan, so "-uno"'s "n" was misread as -n and false-
+    # -positived to AUTH.
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.verification_bypass_flag not in result.reason_codes
+
+
+def test_git_commit_an_short_flag_is_still_a_bypass():
+    # Negative control for the fix above: "-an" ("-a" then "-n") must still be
+    # caught — "a" is not an optional/mandatory-value option, so the scan
+    # keeps walking and reaches the real "-n".
+    result = _cmd("git commit -an -m x", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.verification_bypass_flag in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -c core.hooksPath=/dev/null commit -m x",
+        "git -c commit.gpgsign=false commit -m x",
+        "git --config-env=core.hooksPath=X commit -m x",
+    ],
+)
+def test_git_config_level_verification_bypass_requires_auth(command):
+    # A config-level override before the subcommand reproduces --no-verify/
+    # --no-gpg-sign's effect without ever appearing as a flag ON `commit`:
+    # `-c core.hooksPath=...` repoints (or empties) the hooks dir for the
+    # whole invocation, and `-c commit.gpgsign=false` disables signing the
+    # same way `--no-gpg-sign` does. `--config-env=` is the same evasion via
+    # an environment-variable indirection we cannot resolve statically, so
+    # its mere presence for core.hooksPath is enough to raise.
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.verification_bypass_flag in result.reason_codes
+
+
+def test_git_config_unrelated_key_is_not_a_bypass():
+    # Negative control: an ordinary -c override of an unrelated key must
+    # never be mistaken for a verification bypass.
+    result = _cmd("git -c core.editor=vim commit -m x", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+    assert ReasonCode.verification_bypass_flag not in result.reason_codes
+
+
+# --- Known-gap characterization: shell-level test-file deletion -------------
+# ProtectedPathRule.test_file_removal (paths.py) only ever sees a file_delete/
+# rename TOOL action; a shell `rm`/`git rm` of a test file is a COMMAND LINE,
+# evaluated only by this rule (DestructiveCommandRule), which has no test-file
+# concept at all. These lock in the documented gap (README's Known
+# limitations) as PASS, rather than assert coverage this rule doesn't have.
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm tests/unit/test_auth.py",
+        "rm -rf tests/",
+        "git rm tests/unit/test_auth.py",
+    ],
+)
+def test_shell_deletion_of_a_test_file_is_invisible_to_this_rule(command):
+    action_type = ActionType.git_op if command.startswith("git ") else ActionType.shell_exec
+    result = _cmd(command, action_type=action_type)
+    assert result.verdict is Verdict.PASS

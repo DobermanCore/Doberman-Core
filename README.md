@@ -274,6 +274,40 @@ Doberman is **defense-in-depth, not airtight**: no single rule is a guarantee. T
   see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). Wiring any judge into a live decision needs its
   own ADR (raise-only governs the verdict *direction*, not whether the architecture becomes
   network-dependent) and has not happened.
+- **Verification-integrity checks are path-class and argv-shape only, not content- or session-aware.**
+  A `git commit --no-verify`/`-n`/`--no-gpg-sign` requires authentication, as does deleting or renaming a
+  file that matches a test-file name/path pattern (`test_*.py`, `*_test.py`, `tests/**`,
+  `*.test.js`/`*.spec.ts`/`*.test.jsx`/`*.test.tsx`/`*.spec.jsx`/`*.spec.tsx`/`*.test.mjs`/`*.spec.mjs`),
+  and editing `CODEOWNERS` or
+  a lint/type-check config (`ruff.toml`, `mypy.ini`, `.eslintrc*`, `eslint.config.*`, including nested
+  copies in a subdirectory or monorepo package) alongside the CI-pipeline configs already covered above.
+  All three are raise-only and cannot tell a legitimate edit from a silencing one, so a routine `ruff.toml`
+  tune or a test rename during a genuine refactor steps up exactly the same as an attempt to hide a broken
+  test or a disabled lint rule — that is a deliberate false-positive cost, not a bug. The `-n` scoping
+  follows git's own argv grammar (it combines with other short commit flags such as `-an`, and can be
+  swallowed as another option's attached value, e.g. `-uno`/`-Skeyid`) rather than a bare substring match,
+  so a commit message or flag value that happens to contain the letter `n` is not mistaken for the bypass.
+  The same bypass is also caught at the CONFIG level, not just as a commit flag: `git -c
+  core.hooksPath=... commit` (repoints or empties the hooks dir for the whole invocation), `git -c
+  commit.gpgsign=false commit`, and the `--config-env=core.hooksPath=...` environment-variable
+  indirection (which can't be resolved statically, so its mere presence is enough to raise) all require
+  authentication the same as `--no-verify`. A repo-root `conftest.py` is not test-classed: the glob table
+  matches `test_*.py`/`*_test.py`/`tests/**` shapes only, not pytest's own discovery conventions, so
+  deleting or renaming a root-level `conftest.py` is invisible to this check. Rename detection is a
+  tool-name heuristic only ("rename"/"move" in the tool's name, gated to a `file_write`/`file_delete`
+  action so a mere read from a tool named e.g. "rename_file" doesn't count): a `git mv` or shell `mv` is a
+  command, not a path-target action, and is invisible to this check (`DestructiveCommandRule` does not
+  special-case it either); a rename tool that names itself something else is also invisible. The same gap
+  applies to an outright shell-level delete: `rm tests/unit/test_auth.py`, `rm -rf tests/`, and `git rm
+  tests/unit/test_auth.py` are command lines evaluated only by `DestructiveCommandRule`, which has no
+  test-file concept at all, so all three pass with no step-up — `test_file_removal` only ever sees a
+  `file_delete`/rename **tool** action, never a shell command that happens to target a test file.
+  Deliberately out of scope: detecting a `pytest.mark.skip`/`xfail`/`it.skip` marker inserted into a
+  *kept* test, a lowered `--cov-fail-under` threshold, a `pyproject.toml [tool.ruff]`-section-only edit,
+  and any cross-session "an assertion was edited in the same session as a non-test change" correlation —
+  all four need file content, an old-vs-new diff, or session history this rule never reads;
+  `pyproject.toml` itself is left unflagged for the same reason (constant, routine dependency-bump
+  traffic).
 
 ---
 

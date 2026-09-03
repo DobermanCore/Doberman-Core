@@ -91,7 +91,7 @@ unusual actions.
 
 The synthetic suite is a 3-attack smoke gate; the AgentDojo run measures coverage
 but needs an operator-supplied package. The **detection corpus** fills the gap
-between them: a deterministic, in-repo, ~137-row labeled fixture
+between them: a deterministic, in-repo, ~141-row labeled fixture
 (`tests/corpus/detection_corpus.jsonl`) that measures detection *quality* per
 category (the false-positive rate that drives approval fatigue, and the
 true-positive rate per attack class) with **no external dependency**.
@@ -263,21 +263,21 @@ the protection is exactly as strong as the human answering the prompt (`deny-all
 stops everything; `approve-all` stops nothing). This is a smoke gate, not a
 coverage claim.
 
-### Detection corpus (deterministic, n = 112 attack / 25 benign)
+### Detection corpus (deterministic, n = 114 attack / 27 benign)
 
-Run: `python -m tests.benchmarks.run --suite corpus --corpus` (2026-08-13, doberman-core built-ins only, balanced mode unless noted).
+Run: `python -m tests.benchmarks.run --suite corpus --corpus` (2026-09-02, doberman-core built-ins only, balanced mode unless noted).
 
 | Category | n (attack) | TPR (AUTH∪BLOCK) | tpr_strict (BLOCK) | FPR |
 |---|---|---|---|---|
 | secrets | 7 | **1.00** | 0.43 | — |
-| destructive | 10 | 0.80 | 0.60 | — |
+| destructive | 12 | 0.83 | 0.50 | — |
 | encoded / smuggling | 79 | 0.82 | 0.00 | — |
 | exfiltration (balanced) | 8 | 0.375 | 0.00 | — |
 | exfiltration (**strict**) | 8 | **1.00** | 0.00 | — |
 | injection (natural-language) | 8 | **0.00** *(documented gap)* | 0.00 | — |
-| benign | — (25) | — | — | **0.00** |
-| **Overall (balanced)** | 112 | 0.74 | 0.08 | 0.00 |
-| **Overall (strict)** | 112 | 0.79 | 0.39 | 0.00 |
+| benign | — (27) | — | — | **0.00** |
+| **Overall (balanced)** | 114 | 0.75 | 0.08 | 0.00 |
+| **Overall (strict)** | 114 | 0.79 | 0.39 | 0.00 |
 
 Read honestly: precision is **1.00** and benign FPR **0.00** (the objective layer
 does not over-block legitimate traffic here), but `tpr_strict` **0.08** in balanced
