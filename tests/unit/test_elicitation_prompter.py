@@ -103,6 +103,18 @@ def test_decline_and_cancel_deny(loop, action):
     assert _prompter(session, loop).confirm(_CHALLENGE) is False
 
 
+def test_confirm_forwards_the_blast_radius_line_verbatim(loop):
+    """ADR 0094: this channel builds no message of its own -- whatever
+    doberman.auth.provider._message_from_parts produced (the shared
+    blast-radius display string included) must reach the client UNCHANGED,
+    the same "exact challenge text reaches the human" contract every other
+    ``confirm`` call on this channel already proves."""
+    message = _CHALLENGE + "\n\nBlast radius: 3 files in 1 directory"
+    session = _FakeSession(action="accept")
+    assert _prompter(session, loop).confirm(message) is True
+    assert session.messages == [message]
+
+
 def test_no_form_fields_are_requested(loop):
     """Buttons only: the schema must request zero properties — nothing transits the client."""
     session = _FakeSession(action="accept")

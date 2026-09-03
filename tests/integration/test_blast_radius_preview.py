@@ -258,3 +258,76 @@ async def test_static_delete_operand_reports_a_confirmed_count(
     assert seen["effects"].file_count == 1
     assert seen["effects"].dir_count == 1
     assert seen["effects"].capped is False
+
+
+async def test_root_delete_still_hard_blocks_and_never_reaches_the_effect_computer(
+    monkeypatch, isolated_executor_repo_root
+):
+    # Uses the REAL objective guardrail (not a StaticGuardrail stub) so this
+    # is a genuine regression test of _rm_is_catastrophic's BLOCK, not a
+    # test of the stub. `_handle_auth` is only reached `if acted is
+    # Verdict.AUTH` (executor.py's decide_and_execute) — BLOCK never gets
+    # there, so the effect computer must never even be called.
+    spy = Mock(side_effect=executor.compute_delete_effects)
+    monkeypatch.setattr(executor, "compute_delete_effects", spy)
+    async with proxied_session() as (fake, agent):
+        result = await agent.call_tool("shell_exec", {"command": "rm -rf ~"})
+    assert result.isError
+    assert "blocked by policy" in result.content[0].text
+    assert fake.calls == []
+    spy.assert_not_called()
+
+
+async def test_redaction_no_matched_path_in_challenge_decision_or_audit_row(
+    monkeypatch, isolated_executor_repo_root
+):
+    target = isolated_executor_repo_root / "fixture"
+    target.mkdir()
+    (target / "very-distinctive-secret-filename.txt").write_text("x", encoding="utf-8")
+
+    seen = {}
+
+    def approve_and_capture(decision, action, **kwargs):
+        # `executor.run_auth_challenge` is replaced wholesale by THIS function,
+        # so the real run_auth_challenge (the only thing that ever sets the
+        # current_challenge() contextvar) never runs here -- current_challenge()
+        # would see nothing. `decision` is the exact same object a real
+        # prompter reads via current_challenge()[0] in production (it's what
+        # executor.py passes into run_auth_challenge in the first place), so
+        # capturing it directly checks the identical redaction property.
+        seen["decision"] = decision
+        return AuthResult(
+            approved=True,
+            tier=AuthTier.local_auth,
+            method="test",
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    from doberman.engine.decision_engine import StaticGuardrail
+    from doberman.models import GuardrailResult, Risk, Verdict
+
+    monkeypatch.setattr(
+        executor,
+        "DEFAULT_OBJECTIVE",
+        StaticGuardrail(
+            GuardrailResult(
+                verdict=Verdict.AUTH,
+                risk=Risk.high,
+                reason_codes=[ReasonCode.destructive_command],
+                explanation="test auth",
+            )
+        ),
+    )
+    monkeypatch.setattr(executor, "run_auth_challenge", approve_and_capture)
+    async with proxied_session() as (fake, agent):
+        result = await agent.call_tool("shell_exec", {"command": "rm -rf fixture"})
+    assert not result.isError
+
+    marker = "very-distinctive-secret-filename"
+    assert marker not in result.content[0].text
+    assert marker not in repr(seen["decision"])
+    assert marker not in str(seen["decision"].model_dump())
+
+    rows = await read_decisions(executor.REPO_ROOT)
+    assert all(marker not in str(row) for row in rows)
