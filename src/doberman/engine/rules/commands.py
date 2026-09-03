@@ -134,6 +134,41 @@ _DESTRUCTIVE_INTERPRETER_OP = re.compile(
     re.IGNORECASE,
 )
 
+# HK.5.6 — raw-socket / bare-TCP egress shapes the destructive-command walk
+# does not otherwise see: a shell redirection into /dev/tcp or /dev/udp
+# (bash's built-in TCP/UDP pseudo-device), netcat/ncat used in exec-on-connect
+# (reverse/bind-shell) form, socat's EXEC:/SYSTEM: address type (socat's
+# equivalent of `nc -e`), and openssl's TLS client mode. AUTH-only, never
+# BLOCK: a routine port probe (`nc -zv host port`) and DNS-label exfil
+# (`dig`/`nslookup`) must stay indistinguishable from ordinary DevOps without
+# an entropy/calibration signal this module doesn't have (out of scope for
+# this slice — see docs/REASON_CODES.md and the README known-limitations
+# entry for `raw_socket_channel`).
+_DEV_TCP_UDP_RE = re.compile(r"/dev/(?:tcp|udp)/")
+_NC_LIKE_COMMANDS = {"nc", "ncat", "netcat"}
+# The exec-on-connect flags that turn a network tool into a reverse/bind
+# shell: `-e`/`--exec` (classic netcat/ncat), ncat's `-c`/`--sh-exec` (runs
+# the command via /bin/sh -c). A bare port probe (`-zv`) never sets these.
+_NC_EXEC_FLAGS = {"-e", "--exec", "-c", "--sh-exec"}
+# socat's EXEC:/SYSTEM: address types spawn a subprocess wired to the socket
+# (socat's equivalent of `nc -e`) — not socat's routine port-forwarding use.
+_SOCAT_EXEC_ADDRESS_RE = re.compile(r"(?i)\b(?:exec|system):")
+# Best-effort shape match over an inline interpreter payload's source text
+# (paired with _INTERPRETERS/_INLINE_CODE_FLAGS above): a socket/network-
+# client call assembled directly in a `python -c`/`node -e` one-liner. Layered
+# on top of the existing opaque-payload AUTH, not static analysis — misses an
+# obfuscated variant (string concatenation, getattr, a base64-decoded module
+# name); see the README known-limitations entry for `raw_socket_channel`.
+# `urllib` is narrowed to `urllib.request`/`urlopen` (bare `\burllib\b` matched
+# the non-network `urllib.parse` too); bare `connect(` stays broad on purpose
+# (spec-mandated) even though it also matches a non-network `sqlite3.connect(`
+# — see the README known-limitations entry.
+_INLINE_SOCKET_OP = re.compile(
+    r"\bsocket\.|\bconnect\(|\bcreate_connection\(|\bhttp\.client\b|\brequests\.|"
+    r"\burllib\.request\b|\burlopen\b|\bnet\.Socket\b|\bfetch\(",
+    re.IGNORECASE,
+)
+
 # Shared work bound for every static command walk. Exhaustion is ambiguity,
 # never silent success.
 _MAX_COMMAND_SEGMENTS = 256
@@ -583,6 +618,11 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
             )
     if any(_DESTRUCTIVE_INTERPRETER_OP.search(payload) for payload in payloads):
         return _block("Interpreter inline payload contains a destructive filesystem operation.")
+    if any(_INLINE_SOCKET_OP.search(payload) for payload in payloads):
+        return _auth(
+            ReasonCode.opaque_command,
+            "Interpreter inline payload opens a network socket directly; authentication required.",
+        )
     return None
 
 
@@ -658,6 +698,14 @@ def _environment_dump_auth() -> GuardrailResult:
     )
 
 
+def _dev_tcp_udp_auth() -> GuardrailResult:
+    return _auth(
+        ReasonCode.raw_socket_channel,
+        "Command opens a raw network channel outside the normal tool path "
+        "(bare-TCP/UDP device redirection); authentication required.",
+    )
+
+
 def _segment_verdict(
     tokens: list[str], protected_branches: Iterable[str], bulk_threshold: int, root: str
 ) -> GuardrailResult | None:
@@ -726,6 +774,13 @@ def _segment_verdict(
             ReasonCode.destructive_command,
             "Piping a downloaded payload into a shell; authentication required.",
         )
+    channel = _raw_socket_channel_explanation(tokens)
+    if channel is not None:
+        return _auth(
+            ReasonCode.raw_socket_channel,
+            f"Command opens a raw network channel outside the normal tool path ({channel}); "
+            "authentication required.",
+        )
     return None
 
 
@@ -756,6 +811,55 @@ def _is_pipe_to_shell(tokens: list[str]) -> bool:
     if tokens[0] not in {"curl", "wget"}:
         return False
     return any(part in _SHELLS for part in tokens[1:])
+
+
+def _nc_has_exec_flag(tokens: list[str]) -> bool:
+    """True if a netcat/ncat argv (past the command name) requests exec-on-
+    connect: an exact flag (``_NC_EXEC_FLAGS``), an attached-value long flag
+    (``--exec=...``/``--sh-exec=...``), or a clustered/glued short flag
+    bundling ``e``/``c`` with other single-char flags or its own operand
+    (``-lve``, ``-nve``, ``-le``, ``-e/bin/sh``). A bare port probe (``-zv``)
+    has neither letter and stays unmatched."""
+    for token in tokens:
+        if token in _NC_EXEC_FLAGS or token.startswith(("--exec=", "--sh-exec=")):
+            return True
+        if (
+            len(token) > 1
+            and token[0] == "-"
+            and token[1] != "-"
+            and any(c in token[1:] for c in "ec")
+        ):
+            return True
+    return False
+
+
+def _raw_socket_channel_explanation(tokens: list[str]) -> str | None:
+    """Explanation fragment for a raw-socket/bare-TCP egress shape, or ``None``.
+
+    Shapes: a ``/dev/tcp``/``/dev/udp`` redirection target (checked across
+    every token, not just ``tokens[0]``, since bash writes it as a redirect
+    operand anywhere in the segment); ``nc``/``ncat``/``socat`` used in
+    exec-on-connect (reverse/bind-shell) form; or
+    any ``openssl s_client`` invocation. Deliberately narrow (HK.5.6) so a routine
+    port probe (``nc -zv host port``) or an unrelated ``openssl`` subcommand
+    stays ``PASS``. Returns a small fixed string, never the matched token, so
+    the caller's explanation never echoes a host/port/payload.
+    """
+    if any(_DEV_TCP_UDP_RE.search(token) for token in tokens):
+        return "bare-TCP/UDP device redirection"
+    cmd = tokens[0]
+    if cmd in _NC_LIKE_COMMANDS and _nc_has_exec_flag(tokens[1:]):
+        return "an exec-on-connect listener"
+    if cmd == "socat" and any(_SOCAT_EXEC_ADDRESS_RE.search(t) for t in tokens[1:]):
+        return "an exec-on-connect listener"
+    if cmd == "openssl" and len(tokens) > 1 and tokens[1] == "s_client":
+        # Match on the subcommand alone: s_client's only job is to open a TLS
+        # client connection, and even a bare `openssl s_client` dials its
+        # default target (localhost:4433), so every flag spelling that names a
+        # target (-connect/--connect/-host/-port/-proxy/-unix/...) is covered
+        # without enumerating them.
+        return "a direct TLS client connection"
+    return None
 
 
 def _is_powershell_command_flag(token: str) -> bool:
@@ -933,6 +1037,12 @@ class DestructiveCommandRule:
         while pending and processed < _MAX_COMMAND_SEGMENTS:
             processed += 1
             raw_segment = pending.pop()
+            # Checked on the RAW segment, before _argv_from_tokens strips
+            # env-assignment/wrapper prefixes: `D=/dev/tcp/...; cat f > $D` or
+            # `TARGET=/dev/tcp/... cat f` carry the /dev/tcp path only in the
+            # env-assignment token, which the stripped argv below never sees.
+            if any(_DEV_TCP_UDP_RE.search(t) for t in raw_segment):
+                worst = _max_result(worst, _dev_tcp_udp_auth())
             if _is_environment_dump_segment(raw_segment):
                 worst = _max_result(worst, _environment_dump_auth())
                 continue
