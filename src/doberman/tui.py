@@ -1536,11 +1536,17 @@ class DecisionExplainerApp(App[None]):
     def _why_panel(self) -> _WhyPanel | None:
         """Best-effort `#explanation-scroll` accessor: `None` instead of
         raising `NoMatches` when the panel isn't (yet, or any longer)
-        mounted. `on_mount` itself may assume the panel exists (compose
-        already put it there by then), but every OTHER call site races a
-        filter edit's `_rebuild_table`/`_show_empty_message` swap under CI
-        load and must no-op via this instead of crashing the app - the CI
-        flake this guards against (`NoMatches` on `#explanation-scroll`)."""
+        mounted. Root cause (the CI flake this guards against, reproduced
+        locally): a mount-timing race, not a filter-driven swap - the very
+        first `DataTable.RowHighlighted`, posted by the initial load's own
+        `table.move_cursor()`, can be pumped through
+        `on_data_table_row_highlighted` -> `_show_explanation` before every
+        sibling widget composed alongside this one is queryable yet.
+        `on_mount` itself is exempt (compose has already placed the panel by
+        then); every other call site must no-op via this instead of
+        crashing the app. `_update_date_bar`/`_update_next_line` guard the
+        same race on their own sibling widgets (`#date-bar`/`#next-line`)
+        the same way."""
         try:
             return self.query_one("#explanation-scroll", _WhyPanel)
         except NoMatches:
@@ -1598,8 +1604,14 @@ class DecisionExplainerApp(App[None]):
         layout, not "no data". The why panel itself goes blank (nothing to
         explain) and loses its time-line border title.
         """
-        self.query_one("#decisions", _DecisionTable).display = False
-        empty = self.query_one("#empty-message", Static)
+        # Same mount-timing race as `_why_panel`/`_update_gutter`: this can
+        # run inside the initial load, before `#decisions`/`#empty-message`
+        # are queryable yet - no-op the swap rather than crash the app.
+        try:
+            self.query_one("#decisions", _DecisionTable).display = False
+            empty = self.query_one("#empty-message", Static)
+        except NoMatches:
+            return
         empty.update(message)
         empty.display = True
         why_panel = self._why_panel()
@@ -1616,7 +1628,14 @@ class DecisionExplainerApp(App[None]):
         # applies here too (round 5 design critique item 9): the glyphs
         # aren't worth explaining for a browser with zero rows in it.
         text = _date_bar_text(row) if self._rows else ""
-        self.query_one("#date-bar", Static).update(text)
+        try:
+            # Same mount-timing race as `_why_panel`: the initial
+            # `move_cursor`'s `RowHighlighted` can be pumped through
+            # `on_data_table_row_highlighted` before this sibling widget is
+            # queryable - no-op rather than crash the app.
+            self.query_one("#date-bar", Static).update(text)
+        except NoMatches:
+            pass
 
     def _update_next_line(self, row: dict | None) -> None:
         # Docked separately from the panel body (round 3 design critique item
@@ -1625,7 +1644,10 @@ class DecisionExplainerApp(App[None]):
         # detail" affordance; the full-screen why (`full_why_text`) is the
         # detail itself and must not repeat it (round 5 design critique item 1).
         next_line = render.next_step_line(row.get("final_verdict")) if row is not None else None
-        widget = self.query_one("#next-line", Static)
+        try:
+            widget = self.query_one("#next-line", Static)  # same race, see `_update_date_bar`
+        except NoMatches:
+            return
         widget.update(_next_line_text(next_line) if next_line else "")
 
     def _update_gutter(self, index: int) -> None:
@@ -1633,7 +1655,14 @@ class DecisionExplainerApp(App[None]):
         # previous mark (if any) and mark the new cursor row with ">" - kept
         # independent of Textual's own cursor-row background, which measured
         # too low-contrast on its own to read as "selected".
-        table = self.query_one("#decisions", _DecisionTable)
+        try:
+            # Same mount-timing race as `_why_panel`/`_update_date_bar`: this
+            # fires from `on_data_table_row_highlighted`, a fresh query for
+            # `#decisions` posted by that same table's own cursor move - it
+            # can still lose the race before the table is queryable again.
+            table = self.query_one("#decisions", _DecisionTable)
+        except NoMatches:
+            return
         if self._gutter_row is not None and self._gutter_row != index:
             try:
                 table.update_cell_at(Coordinate(self._gutter_row, 0), Text(""), update_width=False)

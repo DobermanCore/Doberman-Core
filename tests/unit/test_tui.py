@@ -475,13 +475,23 @@ async def test_filtered_to_zero_matches_is_distinct_from_no_data(tmp_path):
 
 async def test_why_panel_missing_is_a_no_op_not_a_crash(tmp_path):
     """Regression for the CI-only flake: `textual.css.query.NoMatches` on
-    `#explanation-scroll`, seen on the Ubuntu 3.11 CI leg (never locally) on
-    two unrelated PRs. Under load, a query for the docked why panel can lose
-    a race with the panel's own mount/rebuild and raise instead of finding
-    it. `_why_panel()` must return `None` rather than raise when the panel
-    isn't in the DOM, and every call site that uses it (`_show_empty_message`,
-    `_show_explanation`, `_refresh_why_panel_scroll_cue`) must no-op instead
-    of crashing the app.
+    `#explanation-scroll` (and siblings `#date-bar`/`#next-line`/`#decisions`/
+    `#empty-message`), seen on the Ubuntu 3.11 CI leg on two unrelated PRs,
+    and reproduced locally (~1 in 6-15 runs of
+    `test_filtered_to_zero_matches_is_distinct_from_no_data`) with the
+    identical traceback for each id. Root cause: a mount-timing race, not a
+    filter-driven swap - the very first `DataTable.RowHighlighted`, posted by
+    the initial load's own `table.move_cursor()`, can be pumped through
+    `on_data_table_row_highlighted` -> `_show_explanation` before a sibling
+    widget composed alongside the table is queryable yet - `#decisions`
+    itself included, since `_update_gutter` re-queries it fresh rather than
+    holding the event's own table reference. Each racy widget's
+    accessor/query (`_why_panel()` for `#explanation-scroll`; the guarded
+    queries in `_update_date_bar`, `_update_next_line`, `_update_gutter`,
+    `_show_empty_message` for `#date-bar`/`#next-line`/`#decisions`/
+    `#empty-message`) must no-op instead of raising, and every call site that
+    uses them (`_show_empty_message`, `_show_explanation`,
+    `_refresh_why_panel_scroll_cue`) must no-op instead of crashing the app.
     """
     root = str(tmp_path)
     await _seed_block(root)
@@ -489,15 +499,26 @@ async def test_why_panel_missing_is_a_no_op_not_a_crash(tmp_path):
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
         why_panel = app.query_one("#explanation-scroll")
+        date_bar = app.query_one("#date-bar")
+        next_line = app.query_one("#next-line")
+        decisions = app.query_one("#decisions")
+        empty_message = app.query_one("#empty-message")
         await why_panel.remove()
+        await date_bar.remove()
+        await next_line.remove()
+        await decisions.remove()
+        await empty_message.remove()
         await pilot.pause()
 
         assert app._why_panel() is None
 
-        # None of these may raise `NoMatches` now that the panel is gone -
+        # None of these may raise `NoMatches` now that the widgets are gone -
         # they must silently no-op instead of crashing the app, same as a
-        # query that loses the mount/rebuild race under CI load.
+        # query that loses the initial-load mount race under CI load.
         app._refresh_why_panel_scroll_cue()
+        app._update_date_bar(None)
+        app._update_next_line(None)
+        app._update_gutter(0)
         app._show_empty_message("(no rows match the filter - press esc to clear it)")
         app._show_explanation(0)
 
