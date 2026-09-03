@@ -36,7 +36,7 @@ JSON document on stdin and writes one on stdout. [1]
 | File edit | `afterFileEdit` | old and new contents | none (observe only) | Post-hoc. Not a gate; `preToolUse` on `Write` is the gate. |
 
 Response shape on every gating hook: `{"permission": "allow" | "deny" | "ask", "user_message": ...,
-"agent_message": ...}`. Exit code 2 also blocks, independent of the JSON. [1][2]
+"agent_message": ...}`. Exit code 2 also blocks, independent of the JSON. [1], [2]
 
 **Ask-the-human.** Not expressible through Cursor. Since November 2025 a hook's `ask` on an
 allow-listed command auto-runs and its `allow` on a non-listed command still prompts ("Only 'deny'
@@ -66,7 +66,7 @@ does an uninstalled or failed state ever read as an explicit allow?
 | Hook crashes, exits non-zero, or times out | **Fail-open by default.** With `failClosed: true` on the registration, crash and timeout block instead. [2] | Pass only with `failClosed: true`; the installer must set it and the manifest must pin it. |
 | Hook prints invalid JSON, or the binary is missing | Fail-open by default; whether `failClosed` covers these two cases is not stated. [2] | Mitigation: the hook always exits 2 on any internal failure before it can print a malformed document, so the exit-code path blocks regardless. |
 | Windows CLI prefixes stdin with a UTF-8 BOM, JSON parse fails | Fails open silently on `cursor-agent` for Windows; staff-confirmed, no fix ETA (2026-08-14). [7] | The adapter strips a leading BOM before parsing. Turns a fail-open into a working hook. |
-| Hooks intermittently do not fire (several Windows reports) | Cursor has no built-in self-check. [7][8] | A `sessionStart` hook writes a per-session heartbeat; `doberman doctor` reports a Cursor project whose session never called back. |
+| Hooks intermittently do not fire (several Windows reports) | Cursor has no built-in self-check. [7], [8] | A `sessionStart` hook writes a per-session heartbeat; `doberman doctor` reports a Cursor project whose session never called back. |
 | hooks.json edited or removed | Cursor runs its own approval flow, as if Doberman were never installed | Same class as Claude Code and Codex. The install-integrity manifest (#239) covers `.cursor/hooks.json`, including the `failClosed` field, so a stripped or weakened registration is reported at the next surviving hook and by `doctor`. |
 | Hook says `allow` | Cursor may still prompt (allow-list, MCP approvals) | Stricter than Doberman, never weaker. Pass. |
 
