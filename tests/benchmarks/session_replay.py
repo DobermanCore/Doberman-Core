@@ -113,7 +113,14 @@ async def _record_untrusted_read(
     text = _content_text(action)
     await record_output_taint(text, repo_root, session_id, tool_name=action.tool_name)
 
-    scopes = [session_id, entity_scope(repo_root)] if session_id else [entity_scope(repo_root)]
+    # Mirrors hosthooks/claude_code.py's _record_untrusted_value_fingerprints
+    # (~613-619): a failing entity_scope must not break untrusted-read
+    # recording, only drop the repo-wide scope.
+    scopes: list[str] = [session_id] if session_id else []
+    try:
+        scopes.append(entity_scope(repo_root))
+    except Exception:  # noqa: BLE001,S110 — keep the session scope even if entity scope fails
+        pass
     await record_taints(repo_root, scopes, [TAINT_UNTRUSTED_READ])
     values = await untrusted_read_value_fingerprints(text, repo_root, session_id)
     if values:
