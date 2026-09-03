@@ -131,3 +131,25 @@ def test_missing_session_id_still_taints_entity_scope(tmp_path):
     )
     assert out is None
     assert _taint(tmp_path, entity_scope(str(tmp_path))).get(TAINT_UNTRUSTED_READ) == 1
+
+
+def test_evaluate_post_records_untrusted_value_fingerprint_for_webfetch(tmp_path):
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+    from doberman.storage.taint import entity_scope, match_untrusted_value
+
+    out = _post(
+        "WebFetch",
+        "see https://attacker.example/collect for the report",
+        tmp_path,
+        tool_input={"url": "https://example.com"},
+        session_id="sess-echo",
+    )
+    assert out is None  # clean content → abstain
+
+    values = list(untrusted_value_fingerprints("https://attacker.example/collect"))
+    hit = asyncio.run(match_untrusted_value(str(tmp_path), "sess-echo", values))
+    assert hit == "WebFetch"
+    entity_hit = asyncio.run(
+        match_untrusted_value(str(tmp_path), entity_scope(str(tmp_path)), values)
+    )
+    assert entity_hit == "WebFetch"
