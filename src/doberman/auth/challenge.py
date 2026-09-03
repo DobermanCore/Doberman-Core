@@ -40,7 +40,15 @@ from typing import Any, Protocol
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from doberman.models import ActionType, Decision, ReasonCode, Risk, SecurityObject, Verdict
+from doberman.models import (
+    ActionType,
+    Decision,
+    EffectSet,
+    ReasonCode,
+    Risk,
+    SecurityObject,
+    Verdict,
+)
 
 logger = logging.getLogger("doberman.auth.challenge")
 
@@ -289,6 +297,30 @@ def current_challenge() -> tuple[Decision, SecurityObject, AuthTier] | None:
     (as the proxy's auth challenge does) still sees it.
     """
     return _current_challenge.get()
+
+
+def format_effect_set(effects: EffectSet | None) -> str | None:
+    """The ONE redaction-safe display string for a delete-class AUTH's
+    blast-radius preview (ADR 0094) — every prompter (dashboard, GUI,
+    terminal, elicitation, the pending-approval row) must render this exact
+    string so the channels cannot drift. ``None`` when there is nothing to
+    show — a non-delete-class AUTH, or ``effects`` itself is ``None``.
+
+    Built from counts and booleans only; never a path (there is no path
+    field on ``EffectSet`` to leak).
+    """
+    if effects is None:
+        return None
+    if effects.capped:
+        if effects.file_count is None:
+            return "unknown — count unavailable"
+        return f"{effects.file_count}+ files"
+    file_word = "file" if effects.file_count == 1 else "files"
+    files = f"{effects.file_count:,} {file_word}"
+    if effects.dir_count:
+        dir_word = "directory" if effects.dir_count == 1 else "directories"
+        return f"{files} in {effects.dir_count:,} {dir_word}"
+    return files
 
 
 def _run_with_deadline(

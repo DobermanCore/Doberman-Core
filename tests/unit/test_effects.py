@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from doberman.auth.challenge import format_effect_set
 from doberman.engine.effects import compute_delete_effects
+from doberman.models import EffectSet
 
 
 def _touch(path: Path, content: str = "x") -> None:
@@ -215,3 +217,81 @@ def test_unknown_and_cap_hit_share_the_same_sentinel_digest(tmp_path):
     cap_hit = compute_delete_effects(["target"], str(tmp_path), cap=2)
     unknown = compute_delete_effects(["*.log"], str(tmp_path))
     assert cap_hit.digest == unknown.digest
+
+
+def test_nul_byte_operand_yields_unknown_never_raises(tmp_path):
+    # A NUL byte in an adversarial operand makes os.path.islink()/os.path.join()
+    # raise ValueError before the pre-existing try/except OSError even starts —
+    # compute_delete_effects's contract is "never raises; failure => unknown"
+    # (ADR 0094 clause 3), so this must degrade to unknown, not propagate.
+    effects = compute_delete_effects(["evil\x00operand"], str(tmp_path))
+    assert effects.capped is True
+    assert effects.file_count is None
+
+
+def test_format_effect_set_none_is_none():
+    assert format_effect_set(None) is None
+
+
+def test_format_effect_set_normal_counts():
+    effects = EffectSet(
+        file_count=4812,
+        dir_count=37,
+        capped=False,
+        hits_git=False,
+        hits_outside_repo=False,
+        digest="d",
+    )
+    assert format_effect_set(effects) == "4,812 files in 37 directories"
+
+
+def test_format_effect_set_single_file_no_directories():
+    effects = EffectSet(
+        file_count=1,
+        dir_count=0,
+        capped=False,
+        hits_git=False,
+        hits_outside_repo=False,
+        digest="d",
+    )
+    assert format_effect_set(effects) == "1 file"
+
+
+def test_format_effect_set_cap_hit():
+    effects = EffectSet(
+        file_count=1000,
+        dir_count=None,
+        capped=True,
+        hits_git=False,
+        hits_outside_repo=False,
+        digest="d",
+    )
+    assert format_effect_set(effects) == "1000+ files"
+
+
+def test_format_effect_set_hard_unknown():
+    effects = EffectSet(
+        file_count=None,
+        dir_count=None,
+        capped=True,
+        hits_git=False,
+        hits_outside_repo=False,
+        digest="d",
+    )
+    assert format_effect_set(effects) == "unknown — count unavailable"
+
+
+def test_format_effect_set_never_contains_a_path():
+    # Redaction smoke test: whatever the formatter emits, it can only be
+    # built from counts/booleans — there is no path field to leak.
+    effects = EffectSet(
+        file_count=3,
+        dir_count=1,
+        capped=False,
+        hits_git=True,
+        hits_outside_repo=False,
+        digest="d",
+    )
+    rendered = format_effect_set(effects)
+    assert "/" not in rendered
+    assert "\\" not in rendered
