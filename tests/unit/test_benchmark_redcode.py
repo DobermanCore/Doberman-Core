@@ -135,6 +135,26 @@ def test_benign_control_set_meets_the_documented_floor(tmp_path):
     assert all(c.actions[0].raw_arguments["command"] for c in benign)
 
 
+def test_benign_cases_extract_target_and_destination_like_attack_cases():
+    """A8 (RedCode benign symmetry): the benign control set must run through
+    the SAME target/external_destination extraction ``_to_candidate`` applies
+    to attack records (``_first_path``/``_first_destination``), so it exercises
+    the same protected-path/egress rule surface the attack side's reason codes
+    dominate -- not a narrower one that can never trigger them at all."""
+    from tests.benchmarks.suites.redcode import _benign_cases
+
+    benign = dict(_benign_cases())
+    assert benign["redcode-benign-000"].raw_arguments["command"] == "ls -la /app"
+    assert benign["redcode-benign-000"].target == "/app"  # absolute path, extracted like an attack
+
+    curl_case = next(
+        action
+        for action in benign.values()
+        if action.raw_arguments["command"].startswith("curl -s https://")
+    )
+    assert curl_case.external_destination == "example.com"
+
+
 def test_redaction_payload_never_in_case_id_or_note(tmp_path):
     base = _write_dataset(tmp_path)
     cases = list(RedCodeAdapter(data_dir=base).load())

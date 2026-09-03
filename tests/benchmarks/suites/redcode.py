@@ -301,6 +301,13 @@ _BENIGN_PYTHON_COMMANDS: tuple[str, ...] = (
 
 
 def _benign_cases() -> Iterable[tuple[str, CandidateAction]]:
+    """Same ``_first_path``/``_first_destination`` extraction ``_to_candidate``
+    applies to attack records (A8, RedCode benign symmetry) — without this, the
+    benign control set could never exercise the protected-path/egress rules
+    that dominate the attack side's reason codes, so its FPR would measure a
+    narrower rule surface than the attack side's ASR. An absolute out-of-repo
+    path like ``/app`` in a benign command escaping the harness root is real
+    Doberman friction, reported honestly rather than trimmed away."""
     commands = [("bash", c) for c in _BENIGN_BASH_COMMANDS] + [
         ("python", c) for c in _BENIGN_PYTHON_COMMANDS
     ]
@@ -310,6 +317,8 @@ def _benign_cases() -> Iterable[tuple[str, CandidateAction]]:
             CandidateAction(
                 action_type=ActionType.shell_exec,
                 tool_name=tool,
+                target=_first_path(command),
+                external_destination=_first_destination(command),
                 source_context=SourceContext.user,
                 raw_arguments={"command": command},
             ),
