@@ -202,6 +202,35 @@ async def test_record_untrusted_values_overflow_keeps_newest_rows_by_first_seen(
         assert await match_untrusted_value(root, "sess-1", [fp]) == "WebFetch"
 
 
+# --- final review, CRITICAL: a hard cap on the `IN (...)` query so it can ---
+# never itself raise `sqlite3.OperationalError: too many SQL variables`
+# (defense-in-depth backstop, independent of any caller-side aggregate cap).
+# Synthetic (non-HMAC) fingerprint strings keep this fast — the point is the
+# QUERY layer's own size safety, not the extraction pipeline.
+
+
+async def test_match_secret_fingerprint_survives_a_fingerprint_list_past_the_sqlite_variable_limit(
+    tmp_path,
+):
+    root = str(tmp_path)
+    await record_secret_fingerprints(root, ["sess-1"], ["hmac:real-secret"])
+    # This box's measured SQLite variable limit is 32766 (default since
+    # 3.32.0); comfortably exceed it with cheap synthetic strings.
+    huge = ["hmac:real-secret", *(f"hmac:pad{i:06d}" for i in range(40_000))]
+
+    assert await match_secret_fingerprint(root, "sess-1", huge) is True
+
+
+async def test_match_untrusted_value_survives_a_fingerprint_list_past_the_sqlite_variable_limit(
+    tmp_path,
+):
+    root = str(tmp_path)
+    await record_untrusted_values(root, ["sess-1"], ["hmac:real-value"], "WebFetch")
+    huge = ["hmac:real-value", *(f"hmac:pad{i:06d}" for i in range(40_000))]
+
+    assert await match_untrusted_value(root, "sess-1", huge) == "WebFetch"
+
+
 async def test_clear_taint_now_returns_three_counts_and_clears_all_three_tables(tmp_path):
     root = str(tmp_path)
     await record_taint(root, "sess-1", TAINT_SECRET_ACCESS)

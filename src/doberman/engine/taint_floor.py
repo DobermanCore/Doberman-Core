@@ -169,17 +169,51 @@ async def _session_holds_secret(repo_root: str, session_id: str | None) -> bool:
         return False
 
 
+#: Aggregate cap on fingerprints handed to a single match query (a few hundred
+#: is generous for a real payload's real destination). Final review, CRITICAL:
+#: without this, a per-string extraction cap alone is not enough — 16 secret-
+#: shaped tokens/string (engine.rules.secrets._MAX_FINGERPRINTS) or 200
+#: untrusted-value tokens/string (engine.rules.provenance_values._MAX_VALUES)
+#: still multiplies unbounded across every string in a padded args walk.
+#: Hundreds of padded strings each near their per-string cap produce tens of
+#: thousands of fingerprints, which blows SQLite's `IN (...)` parameter limit;
+#: storage.taint's match_* helpers fail closed to no-match on that
+#: `sqlite3.OperationalError`, so an attacker can pad a call's OTHER arguments
+#: to silently defeat confirmed_exfil / untrusted_value_echo on the one real
+#: destination in the same call. dest-derived fingerprints (the call's actual
+#: egress target, ``action.external_destination``) are always kept — padding
+#: elsewhere in the same call's arguments can never be the reason the real
+#: destination's fingerprint gets trimmed away.
+_MAX_MATCH_FPS = 300
+
+
+def _cap_match_fingerprints(dest_fps: set[str], arg_fps: set[str]) -> set[str]:
+    """Cap the union of ``dest_fps`` and ``arg_fps`` at :data:`_MAX_MATCH_FPS`.
+
+    Every ``dest_fps`` entry survives (there are only ever a handful, all
+    derived from the one destination string); the remaining budget is filled
+    from the args walk. See :data:`_MAX_MATCH_FPS` for why this cap exists.
+    """
+    capped = set(dest_fps)
+    for fp in arg_fps:
+        if len(capped) >= _MAX_MATCH_FPS:
+            break
+        capped.add(fp)
+    return capped
+
+
 def _outbound_secret_fingerprints(args: dict[str, Any], dest: str | None) -> set[str]:
     """Keyed-HMAC fingerprints of secret-candidate tokens anywhere in the outbound
     payload (the call's arguments + its external destination). Light + best-effort;
-    the plaintext is never stored or logged."""
+    the plaintext is never stored or logged. Aggregate-capped (see
+    :data:`_MAX_MATCH_FPS`) with the destination's own fingerprints kept first."""
     from doberman.engine.rules.secrets import candidate_secret_fingerprints
 
-    fps: set[str] = set()
+    arg_fps: set[str] = set()
 
     def _walk(value: Any) -> None:
         if isinstance(value, str):
-            fps.update(candidate_secret_fingerprints(value))
+            arg_fps.update(candidate_secret_fingerprints(value))
         elif isinstance(value, dict):
             for item in value.values():
                 _walk(item)
@@ -188,9 +222,8 @@ def _outbound_secret_fingerprints(args: dict[str, Any], dest: str | None) -> set
                 _walk(item)
 
     _walk(args)
-    if dest:
-        fps.update(candidate_secret_fingerprints(dest))
-    return fps
+    dest_fps = candidate_secret_fingerprints(dest) if dest else set()
+    return _cap_match_fingerprints(dest_fps, arg_fps)
 
 
 async def _outbound_matches_recorded_secret(
@@ -233,14 +266,15 @@ def _outbound_untrusted_value_fingerprints(
     Mirrors ``_outbound_secret_fingerprints``'s walk exactly, swapping in the
     C1 host/URL/email extractor. ``excluded_hosts`` (see :func:`_excluded_hosts`)
     is forwarded so a trusted/task-named host's value is dropped BEFORE
-    fingerprinting, not subtracted after."""
+    fingerprinting, not subtracted after. Aggregate-capped (see
+    :data:`_MAX_MATCH_FPS`) with the destination's own fingerprints kept first."""
     from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
 
-    fps: set[str] = set()
+    arg_fps: set[str] = set()
 
     def _walk(value: Any) -> None:
         if isinstance(value, str):
-            fps.update(untrusted_value_fingerprints(value, excluded_hosts=excluded_hosts))
+            arg_fps.update(untrusted_value_fingerprints(value, excluded_hosts=excluded_hosts))
         elif isinstance(value, dict):
             for item in value.values():
                 _walk(item)
@@ -249,9 +283,8 @@ def _outbound_untrusted_value_fingerprints(
                 _walk(item)
 
     _walk(args)
-    if dest:
-        fps.update(untrusted_value_fingerprints(dest, excluded_hosts=excluded_hosts))
-    return fps
+    dest_fps = untrusted_value_fingerprints(dest, excluded_hosts=excluded_hosts) if dest else set()
+    return _cap_match_fingerprints(dest_fps, arg_fps)
 
 
 async def _excluded_hosts(repo_root: str, session_id: str | None) -> set[str]:

@@ -23,8 +23,20 @@ _SCAN_MAX_CHARS = 100_000
 _MAX_VALUES = 200
 
 #: A scheme-explicit URL. Length-bounded so a pathological input cannot force a
-#: slow/unbounded match.
+#: slow/unbounded match. "]" is deliberately excluded from the character class
+#: so a URL wrapped in markdown ("[text](url)") doesn't over-consume the
+#: wrapper — which also means this can never match a bracketed-IPv6 URL's own
+#: "]"; that shape is handled separately by _IPV6_URL_RE below.
 _URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]{1,2048}", re.IGNORECASE)
+
+#: A scheme-explicit URL whose authority is a bracketed IPv6 literal
+#: (``http://[2001:db8::1]/x``). _URL_RE's "]"-exclusion above means it always
+#: hands urlsplit() a truncated prefix for this shape (stopping right before
+#: the host's own closing bracket), which urlsplit() then rejects as
+#: ``ValueError: Invalid IPv6 URL`` — silently dropping the whole match. Final
+#: review, MINOR: handled as its own pattern so a bracketed-IPv6 URL and a
+#: bare IPv6 mention (see _IP_LITERAL_RE) fingerprint the same host.
+_IPV6_URL_RE = re.compile(r"https?://\[[0-9a-fA-F:]+\](?::\d{1,5})?[^\s<>\"'\)\]]*", re.IGNORECASE)
 
 #: A bare, dot-shaped hostname (no scheme) — evil.com, www.evil.com. Requires an
 #: alpha-only 2-24 char final label so it doesn't match IP-only strings or
@@ -32,6 +44,15 @@ _URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]{1,2048}", re.IGNORECASE)
 _BARE_HOST_RE = re.compile(
     r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}[a-z]{2,24}\b", re.IGNORECASE
 )
+
+#: A bare (schemeless) IPv4 dotted-quad literal. _BARE_HOST_RE above requires
+#: an alpha-only final label (a TLD shape), so a bare IP address like
+#: "192.0.2.1" mentioned with no scheme is otherwise invisible to it — without
+#: this, a bare-IP mention and a later http://192.0.2.1/ egress would not
+#: fingerprint as the same value. Shape-matched here; validated for real (not
+#: just 4 dotted groups — a version string like "1.2.3.400" is not an IP) via
+#: destinations._is_ip_literal before use.
+_IP_LITERAL_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 #: An RFC-shaped email address, bounded.
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}\b")
@@ -81,11 +102,22 @@ _NON_TLD_LABELS = frozenset(
 
 
 def _normalize_host(host: str) -> str:
-    """Lowercase, strip a trailing dot, strip a leading ``www.``."""
+    """Lowercase, strip a trailing dot, strip a leading ``www.``, then
+    IDNA-decode (punycode <-> unicode canonicalization) through the SAME
+    decoder :class:`~doberman.engine.rules.destinations.ExternalDestinationRule`
+    uses (``destinations._decode_host``) — never a second, drifting decoder.
+
+    Final review, MINOR: without this last step, a punycode-encoded host
+    (``xn--caf-dma.example``) and the identical unicode host it decodes to
+    (``café.example``) fingerprinted as two UNRELATED values, so a homoglyph/
+    punycode-disguised repeat host slipped past the echo tripwire.
+    """
+    from doberman.engine.rules.destinations import _decode_host
+
     cleaned = host.strip().rstrip(".").lower()
     if cleaned.startswith("www."):
         cleaned = cleaned[4:]
-    return cleaned
+    return _decode_host(cleaned)
 
 
 def _looks_like_host(candidate: str) -> bool:
@@ -108,11 +140,26 @@ def untrusted_value_fingerprints(
     a caller holding only a host allowlist has no way to derive the fingerprint
     of a whole URL it never saw, so subtracting fingerprints *after* the fact
     (as callers used to) can only ever drop the bare-host form.
+
+    Final review, IMPORTANT 1: a candidate's host is excluded by REGISTERED-
+    DOMAIN SUFFIX match (host == an excluded host, or a dotted subdomain of
+    one) — the SAME semantics
+    :func:`~doberman.engine.rules.destinations._registered_match` uses for
+    ``TRUSTED_HOSTS``, never a second, drifting definition of "trusted".
+    Exact membership would miss e.g. ``api.github.com`` as a subdomain of the
+    trusted ``github.com``.
     """
     if not text:
         return set()
     sample = text[:_SCAN_MAX_CHARS]
     excluded = excluded_hosts or ()
+
+    def _is_excluded(host: str) -> bool:
+        if not excluded:
+            return False
+        from doberman.engine.rules.destinations import _registered_match
+
+        return _registered_match(host, excluded)
 
     values: set[str] = set()
 
@@ -124,24 +171,53 @@ def untrusted_value_fingerprints(
         except ValueError:
             continue
         host = _normalize_host(parts.hostname or "")
-        if not host or host in excluded:
+        if not host or _is_excluded(host):
             continue
         values.add(host)
         # Whole-URL value (scheme + host + path, query stripped) — an exact
         # fetch-URL reuse, not just the host.
         values.add(f"{parts.scheme.lower()}://{host}{parts.path}")
 
+    for match in _IPV6_URL_RE.finditer(sample):
+        if len(values) >= _MAX_VALUES:
+            break
+        try:
+            parts = urlsplit(match.group(0))
+        except ValueError:
+            continue
+        host = _normalize_host(parts.hostname or "")
+        if not host or _is_excluded(host):
+            continue
+        values.add(host)
+        values.add(f"{parts.scheme.lower()}://[{host}]{parts.path}")
+
     for match in _BARE_HOST_RE.finditer(sample):
         if len(values) >= _MAX_VALUES:
             break
         host = _normalize_host(match.group(0))
-        if host and _looks_like_host(host) and host not in excluded:
+        if host and _looks_like_host(host) and not _is_excluded(host):
+            values.add(host)
+
+    for match in _IP_LITERAL_RE.finditer(sample):
+        if len(values) >= _MAX_VALUES:
+            break
+        from doberman.engine.rules.destinations import _is_ip_literal
+
+        candidate = match.group(0)
+        if not _is_ip_literal(candidate):
+            continue
+        host = _normalize_host(candidate)
+        if host and not _is_excluded(host):
             values.add(host)
 
     for match in _EMAIL_RE.finditer(sample):
         if len(values) >= _MAX_VALUES:
             break
-        values.add(match.group(0).lower())
+        email = match.group(0).lower()
+        domain = email.rsplit("@", 1)[-1]
+        if _is_excluded(_normalize_host(domain)):
+            continue
+        values.add(email)
 
     out: set[str] = set()
     for value in list(values)[:_MAX_VALUES]:

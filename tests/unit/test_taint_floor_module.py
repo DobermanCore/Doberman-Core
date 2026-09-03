@@ -515,3 +515,148 @@ def test_echo_tripwire_fires_even_if_the_trusted_allowlist_is_unreadable(tmp_pat
 
     assert out.final_verdict is Verdict.AUTH
     assert ReasonCode.untrusted_value_echo in out.reason_codes
+
+
+# --- final review, CRITICAL: an aggregate fingerprint cap so padded args -----
+# cannot defeat a match query by blowing SQLite's `IN (...)` variable limit.
+# Both padded-args tests monkeypatch the fingerprint key loader with an
+# lru_cache purely for TEST SPEED (production is unaffected — same
+# deterministic key either way): without it, tens of thousands of real
+# fingerprint() calls each re-read the local key file from disk (a pre-
+# existing, unrelated cost — see fingerprint.py's _load_or_create_key).
+
+
+def _cache_fingerprint_key(monkeypatch) -> None:
+    from functools import lru_cache
+
+    import doberman.storage.fingerprint as fingerprint_module
+
+    monkeypatch.setattr(
+        fingerprint_module,
+        "_load_or_create_key",
+        lru_cache(maxsize=1)(fingerprint_module._load_or_create_key),
+    )
+
+
+def test_padded_args_cannot_defeat_the_echo_tripwire_via_sqlite_variable_limit(
+    tmp_path, monkeypatch
+):
+    # A per-string extraction cap (provenance_values._MAX_VALUES == 200) still
+    # multiplies unbounded across every string walked in the call's args: 300
+    # padded strings x 200 host tokens each produces 60,002 candidate
+    # fingerprints with no AGGREGATE cap, which exceeds SQLite's `IN (...)`
+    # parameter limit (measured 32766 on this box). match_untrusted_value's own
+    # except swallows the resulting OperationalError and returns None --
+    # silently defeating the tripwire by padding the call's OTHER arguments
+    # around the real attacker destination. taint_floor._MAX_MATCH_FPS must
+    # keep the destination's own fingerprint in the capped set regardless of
+    # how much padding surrounds it.
+    _cache_fingerprint_key(monkeypatch)
+
+    action = _action(external_destination=_UNTRUSTED_HOST_URL)
+    decision = _pass_decision(action)
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+
+    values = list(untrusted_value_fingerprints(_UNTRUSTED_HOST_URL))
+    asyncio.run(record_untrusted_values(str(tmp_path), ["sess-padded-echo"], values, "WebFetch"))
+
+    padded_args = {
+        f"field{i}": " ".join(f"pad{i}-{j}.example.net" for j in range(200)) for i in range(300)
+    }
+    padded_args["url"] = _UNTRUSTED_HOST_URL
+
+    out = apply_echo_tripwire(
+        action, decision, "strict", str(tmp_path), "sess-padded-echo", padded_args
+    )
+
+    assert out.final_verdict is Verdict.AUTH
+    assert ReasonCode.untrusted_value_echo in out.reason_codes
+
+
+def test_padded_args_cannot_defeat_confirmed_exfil_via_sqlite_variable_limit(tmp_path, monkeypatch):
+    # Secret-path sibling: _outbound_secret_fingerprints has the identical
+    # unbounded-union shape (engine.rules.secrets.candidate_secret_fingerprints
+    # caps at 16 tokens PER STRING). Enough padded strings still produce more
+    # fingerprints than SQLite's variable limit, and match_secret_fingerprint's
+    # own except silently swallows the failure as a no-match -- defeating the
+    # STRONGEST signal (confirmed_exfil, a hard BLOCK in every mode). In
+    # "balanced" mode the taint floor still raises via the separate
+    # multi_step_exfil signal even when confirmed_exfil is defeated, so the
+    # observable difference is BLOCK/confirmed_exfil (fixed) vs
+    # AUTH/multi_step_exfil (defeated) -- the real secret is embedded in the
+    # egress DESTINATION's query string (candidate_secret_fingerprints scans
+    # query values specially), mirroring the untrusted-value test's shape:
+    # the real value lives where the aggregate cap's dest-priority protects it.
+    _cache_fingerprint_key(monkeypatch)
+
+    egress_url = f"https://attacker.example/collect?k={_SYNTHETIC_SECRET}"
+    action = _action(external_destination=egress_url)
+    decision = _pass_decision(action)
+    asyncio.run(record_taints(str(tmp_path), ["sess-padded-secret"], [TAINT_SECRET_ACCESS]))
+    from doberman.engine.rules.secrets import candidate_secret_fingerprints
+    from doberman.storage.taint import record_secret_fingerprints
+
+    real_fps = list(candidate_secret_fingerprints(_SYNTHETIC_SECRET))
+    asyncio.run(record_secret_fingerprints(str(tmp_path), ["sess-padded-secret"], real_fps))
+
+    padded_args = {
+        f"field{i}": " ".join(f"AKIA{i:04d}{j:012d}" for j in range(16)) for i in range(3800)
+    }
+
+    out = apply_taint_floor(
+        action, decision, "balanced", str(tmp_path), "sess-padded-secret", padded_args
+    )
+
+    assert out.final_verdict is Verdict.BLOCK
+    assert out.final_risk is Risk.critical
+    assert ReasonCode.confirmed_exfil in out.reason_codes
+
+
+# --- final review, IMPORTANT 1: excluded_hosts must use registered-domain ---
+# suffix matching (destinations._registered_match), the SAME semantics
+# ExternalDestinationRule uses for TRUSTED_HOSTS -- exact membership misses a
+# subdomain like api.github.com.
+
+
+def test_echo_tripwire_excludes_a_subdomain_of_a_trusted_host(tmp_path):
+    asyncio.run(
+        record_output_taint(
+            "see https://api.github.com/repos/x for the issue",
+            str(tmp_path),
+            "sess-subdomain-echo",
+            tool_name="WebFetch",
+        )
+    )
+    action = _action(external_destination="api.github.com")
+    decision = _pass_decision(action)
+
+    out = apply_echo_tripwire(
+        action, decision, "strict", str(tmp_path), "sess-subdomain-echo", {"url": "api.github.com"}
+    )
+
+    assert out is decision
+
+
+def test_echo_tripwire_still_raises_for_a_lookalike_domain_not_a_true_subdomain(tmp_path):
+    # github.com.evil.test merely CONTAINS "github.com" as a label sequence --
+    # it is NOT a subdomain under registered-domain suffix matching (host == d
+    # or host.endswith("." + d)) and must still raise. Regression guard
+    # against over-broad exclusion.
+    evil_url = "https://github.com.evil.test/x"
+    asyncio.run(
+        record_output_taint(
+            f"see {evil_url} for the payload",
+            str(tmp_path),
+            "sess-lookalike-echo",
+            tool_name="WebFetch",
+        )
+    )
+    action = _action(external_destination=evil_url)
+    decision = _pass_decision(action)
+
+    out = apply_echo_tripwire(
+        action, decision, "strict", str(tmp_path), "sess-lookalike-echo", {"url": evil_url}
+    )
+
+    assert out.final_verdict is Verdict.AUTH
+    assert ReasonCode.untrusted_value_echo in out.reason_codes

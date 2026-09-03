@@ -82,3 +82,87 @@ def test_no_excluded_hosts_behaves_exactly_as_before():
     with_none = untrusted_value_fingerprints(_EVIL_URL)
     with_empty = untrusted_value_fingerprints(_EVIL_URL, excluded_hosts=set())
     assert with_none == with_empty == {fingerprint("evil.test"), fingerprint(_EVIL_URL)}
+
+
+# --- final review, IMPORTANT 1: excluded_hosts must use registered-domain
+# suffix matching (destinations._registered_match), not exact membership -----
+# _excluded_hosts (taint_floor.py) seeds this set from the SAME TRUSTED_HOSTS
+# ExternalDestinationRule matches by suffix (host == d or a dotted subdomain of
+# d); exact membership here would miss a subdomain like api.github.com.
+
+
+def test_excluded_hosts_matches_a_subdomain_of_a_trusted_host():
+    fps = untrusted_value_fingerprints(
+        "see https://api.github.com/repos/x for the issue", excluded_hosts={"github.com"}
+    )
+    assert fps == set()
+
+
+def test_excluded_hosts_suffix_matching_does_not_over_match_a_lookalike_domain():
+    # github.com.evil.test merely contains "github.com" as a label sequence --
+    # it is NOT a dotted subdomain of github.com (registered-domain suffix
+    # matching requires host == d or host.endswith("." + d)) and must still be
+    # fingerprinted. Regression guard against over-broad exclusion.
+    fps = untrusted_value_fingerprints(
+        "see https://github.com.evil.test/x for the payload", excluded_hosts={"github.com"}
+    )
+    assert fingerprint("github.com.evil.test") in fps
+
+
+def test_excluded_hosts_applies_to_the_email_branchs_domain():
+    # MINOR (final review): excluded_hosts previously only filtered the URL and
+    # bare-host branches -- an email at a trusted domain still fingerprinted.
+    fps = untrusted_value_fingerprints(
+        "contact security@github.com about this", excluded_hosts={"github.com"}
+    )
+    assert fps == set()
+
+
+def test_excluded_hosts_email_domain_check_does_not_over_exclude_a_different_domain():
+    fps = untrusted_value_fingerprints(
+        "contact attacker@evil.test about this", excluded_hosts={"github.com"}
+    )
+    assert fingerprint("attacker@evil.test") in fps
+
+
+# --- final review, MINOR: IDNA/punycode normalization -----------------------
+# untrusted_value_fingerprints used its own _normalize_host (lowercase + www-
+# strip only, no IDNA decode) -- a punycode-encoded host and the unicode host
+# it decodes to fingerprinted as two UNRELATED values, so a homoglyph/punycode-
+# disguised repeat host slipped past the echo tripwire.
+
+
+def test_punycode_host_and_its_unicode_form_fingerprint_the_same():
+    unicode_fps = untrusted_value_fingerprints("see https://café.example/x")
+    punycode_fps = untrusted_value_fingerprints("see https://xn--caf-dma.example/x")
+    assert fingerprint("xn--caf-dma.example") in unicode_fps
+    assert fingerprint("xn--caf-dma.example") in punycode_fps
+
+
+# --- final review, MINOR: IP-literal branch ----------------------------------
+# The bare-host regex requires an alpha-only final label (a TLD shape), so a
+# bare IP address mentioned with no scheme was invisible to it -- a bare-IP
+# mention and a later http://<ip>/ egress did not fingerprint as the same
+# value.
+
+
+def test_bare_ipv4_and_url_form_fingerprint_the_same_host():
+    bare_fps = untrusted_value_fingerprints("reach out to 192.0.2.1 directly")
+    url_fps = untrusted_value_fingerprints("fetch http://192.0.2.1/status")
+    assert fingerprint("192.0.2.1") in bare_fps
+    assert fingerprint("192.0.2.1") in url_fps
+
+
+def test_invalid_ipv4_shaped_string_is_not_treated_as_a_host():
+    # 999 is not a valid octet -- the IP-literal branch validates via
+    # ipaddress, not just dotted-quad shape.
+    fps = untrusted_value_fingerprints("version 999.999.999.999 released")
+    assert fps == set()
+
+
+def test_bracketed_ipv6_url_form_is_still_extracted_as_a_host_value():
+    # Regression guard: bracketed IPv6 in a URL was already covered via
+    # urlsplit().hostname (which strips the brackets) -- the new IP-literal
+    # branch must not disturb that existing path.
+    fps = untrusted_value_fingerprints("see http://[2001:db8::1]/status for the endpoint")
+    assert fingerprint("2001:db8::1") in fps

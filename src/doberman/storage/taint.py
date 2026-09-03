@@ -147,12 +147,24 @@ async def record_secret_fingerprints(
         return
 
 
+#: Hard cap on fingerprints in a single `IN (...)` match query — a defense-in-
+#: depth backstop independent of any caller-side cap (engine.taint_floor's
+#: _MAX_MATCH_FPS). A match query already binds `scope` as its own parameter;
+#: capping the fingerprint list well under SQLite's variable limit (999 on
+#: older builds, 32766 by default since 3.32.0) guarantees THIS query can
+#: never itself raise `sqlite3.OperationalError: too many SQL variables` —
+#: which the broad `except Exception` below would otherwise swallow as a
+#: silent no-match, defeating whichever floor called this (final review,
+#: CRITICAL).
+_MAX_QUERY_FINGERPRINTS = 500
+
+
 async def match_secret_fingerprint(repo_root: str, scope: str, fingerprints: list[str]) -> bool:
     """True iff any of ``fingerprints`` was previously recorded under ``scope`` — a
     confirmed read-then-send. Fails closed to ``False``: a missing/locked DB or a
     read error never *fabricates* a match (the taint floor still governs).
     """
-    fps = [f for f in fingerprints if f]
+    fps = [f for f in fingerprints if f][:_MAX_QUERY_FINGERPRINTS]
     if not scope or not fps or not db_path(repo_root).exists():
         return False
     placeholders = ",".join("?" for _ in fps)
@@ -232,7 +244,7 @@ async def match_untrusted_value(repo_root: str, scope: str, fingerprints: list[s
     ``scope`` — a confirmed untrusted-value echo — or ``None``. Fails closed to
     ``None``: a missing/locked DB or a read error never fabricates a match.
     """
-    fps = [f for f in fingerprints if f]
+    fps = [f for f in fingerprints if f][:_MAX_QUERY_FINGERPRINTS]
     if not scope or not fps or not db_path(repo_root).exists():
         return None
     placeholders = ",".join("?" for _ in fps)
