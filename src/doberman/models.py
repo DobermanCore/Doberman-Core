@@ -343,7 +343,7 @@ class ReasonCode(StrEnum):
     # on the one grant.
     single_use_elevation_unclaimable = "single_use_elevation_unclaimable"
 
-    # HK.5.6 — a shell/git command opens a raw network channel outside the
+    # HK.5.6 — a shell command opens a raw network channel outside the
     # normal HTTP/tool egress path: a `/dev/tcp`/`/dev/udp` redirection target,
     # netcat/ncat/socat used in exec-on-connect (reverse/bind-shell) form, or
     # an `openssl s_client -connect` TLS handshake. Detection is shape-based
