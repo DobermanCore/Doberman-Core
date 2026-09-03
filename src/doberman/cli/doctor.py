@@ -151,6 +151,45 @@ def _check_hook_command(path: str) -> CheckResult:
     )
 
 
+def _check_hook_integrity(path: str) -> CheckResult:
+    """#239: has Doberman's own hook registration changed since install-hooks?"""
+    from doberman.hosthooks.install import hook_install_states
+    from doberman.hosthooks.install_codex import codex_hook_install_states
+    from doberman.hosthooks.integrity import check_all
+
+    name = "Hook integrity"
+    statuses = check_all(path)
+    diverged = [s for s in statuses if s.state == "diverged"]
+    intact = [s for s in statuses if s.state == "intact"]
+    if diverged:
+        where = ", ".join(f"{s.host} {s.scope}: {'/'.join(s.diverged_events)}" for s in diverged)
+        critical = any(s.critical for s in diverged)
+        return CheckResult(
+            name,
+            CheckStatus.FAIL if critical else CheckStatus.WARN,
+            f"diverged ({where}) - Doberman's hook registration changed since install; "
+            "run `doberman install-hooks` to restore",
+            critical=critical,
+        )
+    if intact:
+        detail = "intact (" + ", ".join(f"{s.host} {s.scope}" for s in intact) + ")"
+        seen = [s.divergence_seen for s in intact if s.divergence_seen]
+        if seen:
+            detail += f" - a divergence was seen at {max(seen)}; re-run install-hooks to clear"
+        return CheckResult(name, CheckStatus.OK, detail)
+    installed = any(ok for _s, _p, ok in hook_install_states(path)) or any(
+        ok for _s, _p, ok in codex_hook_install_states(path)
+    )
+    if installed:
+        return CheckResult(
+            name,
+            CheckStatus.WARN,
+            "untracked - installed before integrity tracking; re-run `doberman install-hooks` "
+            "to record a manifest",
+        )
+    return CheckResult(name, CheckStatus.OK, "nothing to verify (no hooks installed)")
+
+
 def _check_codex_version() -> CheckResult:
     """Report the installed Codex CLI version against the adapter's supported
     range. Always **non-critical** (WARN, never FAIL): a newer or absent Codex is
@@ -387,6 +426,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
     return [
         _safe_check("Host hooks", True, lambda: _check_hooks(path)),
         _safe_check("Hook command", True, lambda: _check_hook_command(path)),
+        _safe_check("Hook integrity", True, lambda: _check_hook_integrity(path)),
         _safe_check("Config", True, lambda: _check_config(path)),
         _safe_check("Decision DB", True, lambda: _check_db(path)),
         _safe_check("Enforcement", False, lambda: _check_enforcement(path)),

@@ -107,6 +107,11 @@ After installing, run `doberman --install-completion` to enable shell tab comple
 > uninstall; `doberman doctor` flags any hook entry whose `doberman` is not on PATH. More recovery
 > steps: [Recover](docs/RECOVERY.md).
 
+- Install integrity: install-hooks records a keyed fingerprint of Doberman's own hook entries in
+  your per-user Doberman config dir (never in the repo). If those entries are later stripped or
+  altered, the next surviving hook invocation warns and doberman doctor reports which scope
+  diverged. Detection only; it never blocks. (#239)
+
 | Your agent | How Doberman plugs in | Get started |
 |---|---|---|
 | **Claude Code** | Hooks: gates every built-in and MCP tool call *(recommended)* | `doberman setup` → [guide](docs/SETUP.md) |

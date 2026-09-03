@@ -68,6 +68,13 @@ taint bump. The dedupe is a UX concern, never a gate: any doubt re-evaluates.
   version range (`doberman doctor` reports yours) and a scheduled canary catches
   upstream API churn — but a Codex release outside the tested range may need an
   adapter update.
+- **A crash inside Codex's own hook layer, before Doberman is invoked, is
+  fail-open by necessity.** The host proceeds and no Doberman decision is
+  recorded (seen live on 2026-08-09 as a tree-sitter allocation failure in the
+  Codex hook runner). Core cannot intercept a host that never calls it. What
+  Doberman does: `doberman doctor` verifies the hook registration is intact
+  (#239), and this section says so plainly. An automated live canary (a `codex
+  exec` that must be blocked) is tracked in #335.
 
 ## Learn more
 
