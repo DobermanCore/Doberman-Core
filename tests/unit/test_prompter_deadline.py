@@ -35,7 +35,7 @@ def test_tty_prompt_states_the_deadline(monkeypatch):
 
     TtyPrompter().confirm("Approve THIS exact action?")
 
-    assert "[auto-denies in 20m if unanswered]" in output.text
+    assert "[auto-denies in 10m if unanswered]" in output.text
 
 
 def test_gui_dialog_states_the_deadline():

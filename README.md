@@ -73,7 +73,7 @@ way past the model's own guardrails first. Two properties make that a guarantee:
 
 - **Fail closed**: any error, uncertainty, or unhandled case denies the action. There's no path to a
   tool around the decision engine. This includes silence: an approval prompt nobody answers is bounded
-  by a hard deadline (2 minutes for the desktop dialog, 20 minutes as the whole-challenge backstop)
+  by a hard deadline (2 minutes for the desktop dialog, 10 minutes as the whole-challenge backstop)
   and resolves to a denial, logged distinctly as `timeout` rather than `denied`. A hung prompt is not a
   denial, and agents usually run unattended, so the deadline matters.
 - **Raise-only learning**: guardrails and adaptive learning can auto-tighten, never silently loosen.

@@ -311,13 +311,36 @@ def test_the_default_deadline_exceeds_the_worst_case_channel_chain():
     under this one budget. Sizing the deadline for a single pass would cut off a human
     who approved the confirm late in the budget while they were typing their TOTP code,
     manufacturing a denial of an action they were actively approving — on the highest-risk
-    tiers. Hence the ``* 2``: it is the whole reason this constant is not 600s.
+    tiers. Hence the ``* 2``: the channel budgets are sized so two passes still fit
+    under the ten-minute ceiling.
+
+    One pass is the dashboard window (its timeout raises ``PrompterUnavailableError``,
+    so ``FallbackPrompter`` moves on) plus the FIRST open human channel: elicitation or
+    the GUI dialog. Their expiry is a human-channel outcome (``EOFError`` / expired), which
+    is final — the next channel is never consulted — so the two never stack.
     """
     from doberman.auth.dashboard_prompter import DEFAULT_TIMEOUT_S as DASH_S
     from doberman.auth.elicitation_prompter import ANSWER_TIMEOUT_S as ELICIT_S
 
-    one_pass = DASH_S + ELICIT_S + gui_prompter.DEFAULT_DIALOG_TIMEOUT_S
+    one_pass = DASH_S + max(ELICIT_S, gui_prompter.DEFAULT_DIALOG_TIMEOUT_S)
     assert DEFAULT_CHALLENGE_TIMEOUT_S > one_pass * 2
+
+
+def test_an_unanswered_challenge_expires_within_ten_minutes():
+    """The whole-challenge ceiling is ten minutes, and the channel chain fits under it.
+
+    Before this pin the ceiling was 20 minutes and a live proxy-path challenge nobody answered
+    was still approvable ~13.5 minutes in, while the README promised a 2-minute dialog. Both
+    halves are pinned: the ceiling itself, and that two passes (dashboard window + the longest
+    single human channel) finish before it, so the ceiling only ever bites on silence and
+    never preempts a human mid-answer.
+    """
+    from doberman.auth.dashboard_prompter import DEFAULT_TIMEOUT_S as DASH_S
+    from doberman.auth.elicitation_prompter import ANSWER_TIMEOUT_S as ELICIT_S
+
+    assert DEFAULT_CHALLENGE_TIMEOUT_S == 600.0
+    one_pass = DASH_S + max(ELICIT_S, gui_prompter.DEFAULT_DIALOG_TIMEOUT_S)
+    assert one_pass * 2 <= DEFAULT_CHALLENGE_TIMEOUT_S
 
 
 # --- the GUI dialog's own bound ------------------------------------------------------

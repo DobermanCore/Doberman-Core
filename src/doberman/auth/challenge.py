@@ -54,8 +54,12 @@ logger = logging.getLogger("doberman.auth.challenge")
 
 #: Hard wall-clock ceiling on ONE challenge, whichever channel it runs on.
 #:
-#: Sized above the worst-case *legitimate* fallback chain (dashboard 90s →
-#: elicitation 300s → GUI 120s → terminal) run **twice**, because a
+#: Ten minutes: an unanswered approval must not sit approvable for longer than
+#: that, whichever channels it fell through. Sized above the worst-case
+#: *legitimate* pass: the dashboard window (90s, falls through when unanswered)
+#: plus ONE human channel — the first open one answers or expires, and its
+#: expiry is final (elicitation 180s or GUI 120s; the terminal shares this
+#: deadline) — so 270s per pass, run **twice** (540s), because a
 #: ``two_factor``/``role_elevation`` tier dispatches the whole chain once for
 #: ``confirm()`` and again for ``read_code()``
 #: (:meth:`~doberman.auth.provider.LocalAuthProvider._run_tier`) under this one
@@ -64,8 +68,9 @@ logger = logging.getLogger("doberman.auth.challenge")
 #: of an action someone was actively approving, on the highest-risk tiers.
 #: It therefore bites only when nobody answers anywhere, where denying is the
 #: correct outcome regardless. ``test_the_default_deadline_exceeds_the_worst_case_channel_chain``
-#: pins the arithmetic.
-DEFAULT_CHALLENGE_TIMEOUT_S = 1200.0
+#: pins the arithmetic and ``test_an_unanswered_challenge_expires_within_ten_minutes``
+#: pins the ceiling, so a channel budget cannot grow past it unnoticed.
+DEFAULT_CHALLENGE_TIMEOUT_S = 600.0
 
 #: :attr:`AuthResult.method` (and the decision log's ``auth_result``) when the
 #: deadline expired. Deliberately distinct from ``"denied"`` (a human said no)
