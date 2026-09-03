@@ -181,6 +181,9 @@ VERIFICATION_CONFIG_GLOBS: tuple[str, ...] = (
     ".eslintrc.*",
     "eslint.config.*",
     "**/.eslintrc*",
+    "**/eslint.config.*",
+    "**/.ruff.toml",
+    "**/.mypy.ini",
 )
 
 #: Paths that are sensitive: allowed, but only after authentication.
@@ -258,6 +261,10 @@ TEST_FILE_GLOBS: tuple[str, ...] = (
     "**/tests/**",
     "**/*.test.[jt]s",
     "**/*.spec.[jt]s",
+    "**/*.test.[jt]sx",
+    "**/*.spec.[jt]sx",
+    "**/*.test.mjs",
+    "**/*.spec.mjs",
 )
 
 _TEST_FILE_PATTERNS = _sanitize_globs(TEST_FILE_GLOBS)
@@ -274,7 +281,14 @@ _RENAME_TOOL_HINT = re.compile(r"(?i)rename|move")
 
 
 def _is_delete_or_rename(action_type: ActionType, tool_name: str) -> bool:
-    return action_type is ActionType.file_delete or bool(_RENAME_TOOL_HINT.search(tool_name or ""))
+    if action_type is ActionType.file_delete:
+        return True
+    # The tool-name hint is a MUTATION signal, not an action-type-agnostic
+    # one: a file_read whose tool merely happens to be named "rename_file"
+    # (e.g. a dry-run/preview call) is not a rename in progress.
+    return action_type in ProtectedPathRule.MUTATION_ACTION_TYPES and bool(
+        _RENAME_TOOL_HINT.search(tool_name or "")
+    )
 
 
 def names_control_plane(raw_path: str, root: str = _DEFAULT_ROOT) -> bool:
@@ -447,6 +461,21 @@ class ProtectedPathRule:
                 explanation="Target is a protected path; blocked by policy.",
             )
 
+        # Checked BEFORE the test-file branch below: a path can match both
+        # (e.g. ".github/workflows/tests/ci.yml" matches "**/tests/**" too) —
+        # a CI/CD-pipeline or other sensitive-path delete keeps its own stable
+        # reason code, rather than being relabeled test_file_removal just
+        # because "tests" happens to appear in the path.
+        if _matches_any(canonical.relposix, self._sensitive):
+            return GuardrailResult(
+                verdict=Verdict.AUTH,
+                risk=Risk.medium,
+                reason_codes=[ReasonCode.sensitive_path_access],
+                explanation=(
+                    "Target is a sensitive path; authentication required before proceeding."
+                ),
+            )
+
         if _is_delete_or_rename(action_type, tool_name) and _matches_any(
             canonical.relposix, _TEST_FILE_PATTERNS
         ):
@@ -457,16 +486,6 @@ class ProtectedPathRule:
                 explanation=(
                     "Target is a test file being deleted or renamed; "
                     "authentication required before proceeding."
-                ),
-            )
-
-        if _matches_any(canonical.relposix, self._sensitive):
-            return GuardrailResult(
-                verdict=Verdict.AUTH,
-                risk=Risk.medium,
-                reason_codes=[ReasonCode.sensitive_path_access],
-                explanation=(
-                    "Target is a sensitive path; authentication required before proceeding."
                 ),
             )
 

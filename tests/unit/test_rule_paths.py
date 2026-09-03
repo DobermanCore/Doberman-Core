@@ -417,3 +417,62 @@ def test_verification_and_test_file_globs_never_overlap_control_plane():
     control = set(_sanitize_globs(CICD_CONFIG_GLOBS)) | set(_sanitize_globs(DEFAULT_BLOCKED_GLOBS))
     assert control.isdisjoint(_sanitize_globs(VERIFICATION_CONFIG_GLOBS))
     assert control.isdisjoint(_sanitize_globs(TEST_FILE_GLOBS))
+
+
+@pytest.mark.parametrize(
+    "test_path",
+    [
+        "src/App.test.tsx",
+        "src/App.spec.tsx",
+        "src/app.test.mjs",
+        "src/app.spec.mjs",
+    ],
+)
+def test_jsx_tsx_and_mjs_test_file_delete_requires_auth(tmp_path, test_path):
+    # Previously TEST_FILE_GLOBS only covered .test.js/.spec.ts shapes — a
+    # .tsx/.jsx/.mjs test/spec file deleted or renamed passed silently.
+    action = _action(test_path, action_type=ActionType.file_delete)
+    result = RULE.evaluate(action, _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH, test_path
+    assert ReasonCode.test_file_removal in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        "packages/a/eslint.config.mjs",
+        "sub/.ruff.toml",
+        "sub/.mypy.ini",
+    ],
+)
+def test_nested_verification_config_globs_require_auth(tmp_path, config_path):
+    # Previously only the bare-root forms (eslint.config.*, .ruff.toml,
+    # .mypy.ini) were listed — a nested copy (a monorepo package, a
+    # subdirectory) passed silently.
+    result = RULE.evaluate(_action(config_path, action_type=ActionType.file_write), _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH, config_path
+    assert ReasonCode.sensitive_path_access in result.reason_codes
+
+
+def test_test_file_rename_hint_gated_on_mutation_action_type(tmp_path):
+    # The tool-name "rename"/"move" hint must not fire for a non-mutation
+    # action type (e.g. a read) just because the tool happens to be named
+    # "rename_file" — only file_write/file_delete are mutations here.
+    action = _action(
+        "tests/unit/test_auth.py", action_type=ActionType.file_read, tool_name="rename_file"
+    )
+    result = RULE.evaluate(action, _ctx(tmp_path))
+    assert result.verdict is Verdict.PASS
+
+
+def test_cicd_path_that_also_looks_like_a_test_file_stays_sensitive_path_access(tmp_path):
+    # ".github/workflows/tests/ci.yml" matches BOTH the CI/CD sensitive-glob
+    # set ("**/.github/workflows/**") AND the test-file glob table
+    # ("**/tests/**") — the CI/CD classification must win (a delete of a
+    # pipeline definition keeps its own stable reason code), not get
+    # relabeled test_file_removal just because "tests" appears in the path.
+    action = _action(".github/workflows/tests/ci.yml", action_type=ActionType.file_delete)
+    result = RULE.evaluate(action, _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_path_access in result.reason_codes
+    assert ReasonCode.test_file_removal not in result.reason_codes
