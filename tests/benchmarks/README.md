@@ -51,6 +51,7 @@ tests/benchmarks/
 ├── suites/
 │   ├── synthetic.py   # built-in, deterministic, dependency-free (the CI gate)
 │   ├── corpus.py      # the labeled detection corpus (C8): loader + adapter + per-row driver
+│   ├── devsession.py  # built-in, deterministic, dependency-free — seeded warm corpus (C11)
 │   ├── agentdojo.py   # AgentDojo + AgentDyn adapters (on-demand; lazy `agentdojo` import)
 │   └── <your_suite>.py
 └── README.md      # this file
@@ -279,6 +280,14 @@ for the methodology and the honest-vs-leak-quantifier arm split.
   `PYTHONPATH=/path/to/AgentDyn/src python -m tests.benchmarks.run --suite agentdyn`.
 - **Confirm AgentDyn's license before redistributing any of its data**; the
   adapter loads it from your supplied path and vendors nothing here.
+
+### Devsession — built-in, adapter shipped
+- Not an external suite: a seeded synthetic corpus (four developer-session archetypes) sized to clear
+  the subjective layer's `K_OBSERVATIONS`/`HST_WARMUP` thresholds, which AgentDojo's much smaller warm
+  traces don't reach. See [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#subjective-layer-baseline-separation-diagnostic)
+  for the caveat: this measures distribution separation on a synthetic corpus, not real telemetry.
+- **Implemented** in `suites/devsession.py` (`DevSessionAdapter`), registered in `BUILTIN_ADAPTERS` as
+  `devsession`. No external data, no network: `python -m tests.benchmarks.run --suite devsession --subjective`.
 
 ### AgentSentry
 - **Confirm the exact project name, schema, and license first** (not yet
