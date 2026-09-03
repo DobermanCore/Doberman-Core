@@ -9,6 +9,7 @@ Use this index to find the right Doberman documentation for your task.
 | [REASON_CODES.md](REASON_CODES.md) | Open this when reading a Doberman decision or log and you need to understand why an action received `AUTH` or `BLOCK`. |
 | [PARITY.md](PARITY.md) | Open this when checking which security guarantees are proven on each supported host and where coverage gaps remain. |
 | [ADAPTER_GUIDE.md](ADAPTER_GUIDE.md) | Open this when building or understanding a coding-agent host integration and need to see how tool calls flow through Doberman's decision spine. |
+| [CONNECTOR_MEMO_CURSOR.md](CONNECTOR_MEMO_CURSOR.md) | Open this when deciding whether and how to guard Cursor: the hook capability matrix, the fail-closed honesty test, and the envelope a v1 connector would use. |
 | [AUTHORITY_TIERS.md](AUTHORITY_TIERS.md) | Open this when you need to know which layer of a Doberman decision is allowed to `BLOCK` versus only ever step up to `AUTH`, and why. |
 | [BENCHMARKS.md](BENCHMARKS.md) | Open this when evaluating Doberman's protection results, reproducing benchmark numbers, or understanding what those metrics do and do not prove. |
 | [RELEASING.md](RELEASING.md) | Open this when preparing and publishing a Doberman-Core release and verifying the required checks and evidence. |
