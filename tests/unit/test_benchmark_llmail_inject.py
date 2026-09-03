@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import random
 
 import pytest
 
@@ -125,11 +126,50 @@ def test_benign_send_variant_shows_honest_auth_friction_never_a_hard_block(tmp_p
     assert ReasonCode.unknown_external_destination in decision.reason_codes
 
 
+def _write_dataset_with_n_qualifying_attacks(tmp_path: pathlib.Path, n: int) -> pathlib.Path:
+    """M2: a pool with more than one qualifying (attack_attempt=True,
+    reason=api_triggered) row, so sampling a strict subset is actually
+    possible -- a 1-row pool (like ``_write_dataset``) can never fail a
+    determinism/seed-dependence test, since `min(sample_size, 1)` always
+    returns that one row regardless of seed."""
+    root = tmp_path / "llmail-inject"
+    data_dir = root / "data"
+    data_dir.mkdir(parents=True)
+    labelled = {
+        f"Subject: hi.   Body: qualifying attack row {i}.": {
+            "attack_attempt": "True",
+            "reason": "api_triggered",
+        }
+        for i in range(n)
+    }
+    (data_dir / "labelled_unique_submissions_phase2.json").write_text(
+        json.dumps(labelled), encoding="utf-8"
+    )
+    (data_dir / "emails_for_fp_tests.json").write_text(json.dumps([]), encoding="utf-8")
+    return root
+
+
 def test_sample_size_and_seed_are_deterministic(tmp_path):
-    root = _write_dataset(tmp_path)
-    first = [c.case_id for c in LlmailInjectAdapter(data_dir=root, sample_size=1, seed=1).load()]
-    second = [c.case_id for c in LlmailInjectAdapter(data_dir=root, sample_size=1, seed=1).load()]
-    assert first == second
+    root = _write_dataset_with_n_qualifying_attacks(tmp_path, 6)
+    all_prompts = sorted(
+        json.loads(
+            (root / "data" / "labelled_unique_submissions_phase2.json").read_text(encoding="utf-8")
+        ).keys()
+    )
+
+    def _bodies(seed: int) -> list[str]:
+        cases = LlmailInjectAdapter(data_dir=root, sample_size=3, seed=seed).load()
+        return [c.actions[0].raw_arguments["body"] for c in cases if c.label == "attack"]
+
+    first = _bodies(seed=1)
+    second = _bodies(seed=1)
+    assert first == second  # same seed -> byte-identical selection, same order
+
+    expected = sorted(random.Random(1).sample(all_prompts, 3))  # noqa: S311 — mirrors the adapter
+    assert first == expected  # a specific, non-trivial expected subset (not the whole pool)
+
+    different_seed = _bodies(seed=2)
+    assert set(different_seed) != set(first)  # a different seed must select a different subset
 
 
 def test_redaction_payload_never_in_case_id_or_note(tmp_path):
