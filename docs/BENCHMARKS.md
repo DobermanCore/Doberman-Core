@@ -126,6 +126,49 @@ python -m tests.benchmarks.run --suite corpus --corpus --mode strict  # any F6 m
 python -m tests.corpus._generate --check                              # verify the shipped floors match the engine
 ```
 
+## Judge agreement (offline, experimental)
+
+A constrained, BYO-model second opinion (`doberman.judge.HaikuJudgeAdjudicator`,
+`pip install "doberman-core[judge]"`) implements the shadow-adjudicator Protocol
+(`doberman.engine.adjudicator.Adjudicator`) but is **not** wired into any live
+decision - nothing in core registers or calls it today
+(`doberman.engine.registry.discover_adjudicators` has zero production callers).
+This section measures, offline, whether it is even worth wiring in.
+
+- **What it measures.** `tests/benchmarks/suites/judge_agreement.py` replays
+  the same labeled `tests/corpus/detection_corpus.jsonl` used by the detection
+  corpus above. For each row it runs the real `ObjectiveGuardrail`, builds the
+  judge's `redacted_features()` envelope from that result (algebra, reason
+  codes, counts - no text), and asks Haiku for two booleans (`unambiguous`,
+  `high_impact`). It reports per-`kind` agreement with the rule's verdict
+  direction, the judge's own false-raise rate on benign rows, and - the actual
+  lift number - how often the judge would raise on an attack row the
+  deterministic rules missed (verdict `PASS`).
+- **The honest limit, stated up front.** `redacted_features()` carries no
+  command, argument, path, or destination text - only enum classes and counts
+  - so this measures class-level judgment only. A judge on this envelope is
+  structurally blind to natural-language injection for the exact same reason
+  the deterministic layer is (see the corpus's `injection` row above); this
+  bench cannot and does not claim to close that gap.
+- **Opt-in, never a live call in CI.** Requires `ANTHROPIC_API_KEY` and
+  `DOBERMAN_JUDGE_ENABLED=1` (the same three-way gate
+  `HaikuJudgeAdjudicator.adjudicate()` itself enforces - installed, keyed, and
+  explicitly flagged). With either missing, the module prints a skip message
+  and exits 0; `tests/unit/test_judge.py` asserts that skip path so CI stays
+  green with no credentials. The prompt is frozen in
+  `src/doberman/judge.py`'s `_JUDGE_SYSTEM_PROMPT` before the first measured
+  run and reported as-is - this is a directional n=137 read, not a
+  prompt-tuned result.
+
+Reproduce (needs a key; never runs in CI):
+
+```bash
+pip install -e ".[judge]"
+export ANTHROPIC_API_KEY=sk-...
+export DOBERMAN_JUDGE_ENABLED=1
+python -m tests.benchmarks.suites.judge_agreement
+```
+
 ## Cross-session baseline poisoning (gradual-drift robustness)
 
 The subjective layer learns *allowed* actions only, which is poisonable in

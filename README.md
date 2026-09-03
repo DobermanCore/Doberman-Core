@@ -264,6 +264,16 @@ Doberman is **defense-in-depth, not airtight**: no single rule is a guarantee. T
   Python one-liner with no recognizable verb) is not caught here — only by the post-execution
   output scan.
 - **The control plane is self-protected: a mediated agent cannot disable its own leash, but a human still can.** Wherever an action routes through the decision engine, a write, delete, or read of Doberman's own state (`.doberman/`) or a host's hook-and-trust config is hard-blocked, and the same check runs against a shell command that merely *names* one of those paths, so `rm -rf .doberman` or `echo > .claude/settings.json` is caught too. The protected set now also recognizes the Codex CLI control plane (`.codex/hooks.json`, `.codex/config.toml`, and the `.codex/` plugin dirs are hard-blocked; the rest of `.codex/**` steps up to authentication), mirroring the `.claude`/`.doberman` split, so it is enforced the moment a Codex action reaches the engine. Note the front door matters: today that path covers Claude Code (hooks) and any MCP-wrapped tool server. A **Codex CLI PreToolUse adapter now exists** (`doberman hook codex-pre`; Codex's hook layer is a Claude Code compatibility shim, so it shares the same decision spine and deny shape), and `doberman install-hooks --host codex` wires it into `~/.codex/hooks.json` (or a project-local one with `--local`) in one command. And the limit is honest even then: this stops the *agent*, not a *human*: someone at the keyboard can always disable a hook (e.g. Codex's own `--dangerously-bypass-hook-trust`), and a control-plane path built at runtime (from a shell variable, glob, or a `python -c` payload) is not caught by static command parsing.
+- **A constrained BYO-model judge exists, but only as an offline measurement, not a live guard.**
+  `pip install "doberman-core[judge]"` (plus `ANTHROPIC_API_KEY` and `DOBERMAN_JUDGE_ENABLED=1`)
+  enables `doberman.judge.HaikuJudgeAdjudicator`, a second-opinion classifier that sees only the
+  same class-only `redacted_features()` envelope the shadow-adjudicator seam allows (no path,
+  command, argument, or secret). Nothing in core registers or calls it: the only place it runs
+  today is the offline `tests/benchmarks/suites/judge_agreement.py` replay over the labeled
+  corpus, measuring whether an LLM adds any lift over the deterministic rules on that envelope -
+  see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). Wiring any judge into a live decision needs its
+  own ADR (raise-only governs the verdict *direction*, not whether the architecture becomes
+  network-dependent) and has not happened.
 
 ---
 

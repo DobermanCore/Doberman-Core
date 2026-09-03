@@ -444,6 +444,11 @@ keyed, and flagged, all three), and any failure (missing key, no network, timeou
 silently falls back to the offline template. There is no `doberman explain` command; the TUI and
 `doberman log` are the only surfaces for this.
 
+A separate `[judge]` extra installs the same `anthropic` dependency for an unrelated,
+experimental use: a constrained BYO-model second opinion evaluated offline against the labeled
+corpus, not a CLI feature. See [`docs/BENCHMARKS.md`](BENCHMARKS.md#judge-agreement-offline-experimental)
+- there is no live wiring and nothing here to run against a real session.
+
 ### Dashboard
 
 ```bash
