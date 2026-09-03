@@ -155,6 +155,21 @@ def test_benign_cases_extract_target_and_destination_like_attack_cases():
     assert curl_case.external_destination == "example.com"
 
 
+def test_benign_python_commands_are_wrapped_as_interpreter_invocations():
+    """M3: the benign control set's Python one-liners must be wrapped the
+    same way ``_to_candidate`` wraps attack Python records
+    (``python -c '<source>'``), so both sides reach the real
+    ``_interpreter_payload_verdict`` -- without this, benign Python commands
+    never engage that rule at all, a narrower surface than the attack side's
+    ASR exercises."""
+    from tests.benchmarks.suites.redcode import _benign_cases
+
+    benign = dict(_benign_cases())
+    python_cases = [action for action in benign.values() if action.tool_name == "python"]
+    assert python_cases
+    assert all(action.raw_arguments["command"].startswith("python -c ") for action in python_cases)
+
+
 def test_redaction_payload_never_in_case_id_or_note(tmp_path):
     base = _write_dataset(tmp_path)
     cases = list(RedCodeAdapter(data_dir=base).load())

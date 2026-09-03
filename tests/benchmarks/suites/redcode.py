@@ -190,23 +190,29 @@ def _index_num(index_field: object) -> int | None:
         return None
 
 
+def _wrap_command(tool: str, code: str) -> str:
+    """Wrap *code* as the interpreter invocation a coding agent would actually
+    run (``python -c '<source>'``, quoted with :func:`shlex.quote`, for
+    Python; unchanged for bash) so the real destructive-command rule's
+    ``_interpreter_payload_verdict`` — which only fires when a command's
+    first token is a recognized interpreter — actually sees it, instead of
+    the Python statements being walked as pseudo shell segments. Shared by
+    both the attack side (``_to_candidate``) and the benign control set
+    (``_benign_cases``, M3) so both reach the same rule."""
+    return f"python -c {shlex.quote(code)}" if tool == "python" else code
+
+
 def _to_candidate(record: dict) -> tuple[str, CandidateAction] | None:
     """Map one record to ``(tool_name, CandidateAction)``, or ``None`` if unusable.
 
-    A bash record's ``Code`` runs directly as the shell command. A python
-    record's ``Code`` is wrapped as an interpreter invocation
-    (``python -c '<source>'``, quoted with :func:`shlex.quote`) so the real
-    destructive-command rule's ``_interpreter_payload_verdict`` — which only
-    fires when a command's first token is a recognized interpreter — actually
-    sees it, instead of the Python statements being walked as pseudo shell
-    segments. ``target``/``external_destination`` are still extracted from the
-    raw ``code`` (the wrapping doesn't change what path/URL the record names).
+    ``target``/``external_destination`` are extracted from the raw ``code``
+    (the interpreter wrapping doesn't change what path/URL the record names).
     """
     code = record.get("Code")
     tool = _LANG_TOOL.get(str(record.get("Language") or "").lower())
     if not code or tool is None:
         return None
-    command = f"python -c {shlex.quote(code)}" if tool == "python" else code
+    command = _wrap_command(tool, code)
     return tool, CandidateAction(
         action_type=ActionType.shell_exec,
         tool_name=tool,
@@ -307,20 +313,26 @@ def _benign_cases() -> Iterable[tuple[str, CandidateAction]]:
     that dominate the attack side's reason codes, so its FPR would measure a
     narrower rule surface than the attack side's ASR. An absolute out-of-repo
     path like ``/app`` in a benign command escaping the harness root is real
-    Doberman friction, reported honestly rather than trimmed away."""
+    Doberman friction, reported honestly rather than trimmed away.
+
+    Python commands are also wrapped via ``_wrap_command`` exactly like the
+    attack side (M3) — without it, benign Python one-liners never reach
+    ``_interpreter_payload_verdict`` (it only fires on a recognized
+    interpreter's own invocation), so the benign side's FPR would exercise a
+    narrower rule surface than the attack side's ASR for that half of the set."""
     commands = [("bash", c) for c in _BENIGN_BASH_COMMANDS] + [
         ("python", c) for c in _BENIGN_PYTHON_COMMANDS
     ]
-    for i, (tool, command) in enumerate(commands):
+    for i, (tool, code) in enumerate(commands):
         yield (
             f"redcode-benign-{i:03d}",
             CandidateAction(
                 action_type=ActionType.shell_exec,
                 tool_name=tool,
-                target=_first_path(command),
-                external_destination=_first_destination(command),
+                target=_first_path(code),
+                external_destination=_first_destination(code),
                 source_context=SourceContext.user,
-                raw_arguments={"command": command},
+                raw_arguments={"command": _wrap_command(tool, code)},
             ),
         )
 
