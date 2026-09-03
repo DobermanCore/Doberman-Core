@@ -250,6 +250,38 @@ def _outbound_untrusted_value_fingerprints(args: dict[str, Any], dest: str | Non
     return fps
 
 
+async def _excluded_host_fingerprints(repo_root: str, session_id: str | None) -> set[str]:
+    """Keyed-HMAC fingerprints of hosts the echo tripwire must never raise on:
+    Doberman's own trusted-destination allowlist (the SAME
+    ``destinations.TRUSTED_HOSTS`` :class:`~doberman.engine.rules.destinations.
+    ExternalDestinationRule` uses — never a second list) and any host the user
+    named in their own turn this session (:mod:`doberman.storage.task_match`,
+    scoped by session id only — see that module's docstring).
+
+    Without this, a WebFetch/WebSearch result that merely MENTIONS a common
+    trusted host (``github.com``, ``pypi.org``) would make a later, ordinary
+    ``git push origin`` / ``pip install`` step up to AUTH — a fatigue bomb on
+    the most common flows. This only narrows the RAISE; the objective
+    :class:`ExternalDestinationRule` destination check is untouched.
+
+    Fails closed: an unreadable allowlist or task store (or a fingerprinting
+    failure) excludes NOTHING — the floor stays strict, it just doesn't get to
+    skip the read for the trusted/task-named case.
+    """
+    try:
+        from doberman.engine.rules.destinations import TRUSTED_HOSTS
+        from doberman.engine.rules.provenance_values import _normalize_host
+        from doberman.storage.fingerprint import fingerprint
+        from doberman.storage.task_match import task_hosts_for
+
+        hosts: set[str] = set(TRUSTED_HOSTS)
+        if session_id:
+            hosts.update(await task_hosts_for(repo_root, session_id))
+        return {fingerprint(_normalize_host(h)) for h in hosts if h}
+    except Exception:  # noqa: BLE001 — a read/fingerprint failure excludes nothing
+        return set()
+
+
 async def apply_echo_tripwire_async(
     action: SecurityObject,
     decision: Decision,
@@ -269,6 +301,11 @@ async def apply_echo_tripwire_async(
     analysis — no n-gram shingling, no partial match. Whole-value keyed-HMAC
     only. Raise-only: never lowers a verdict/risk, and a storage failure leaves
     the decision untouched (fails closed to no-match, never fabricates one).
+
+    A trusted host (``destinations.TRUSTED_HOSTS``) or a host the user named in
+    their own turn this session (``storage.task_match``) is excluded from the
+    match — see :func:`_excluded_host_fingerprints`. This only narrows the
+    RAISE; it never touches the objective destination rule.
     """
     if action.external_destination is None:
         return decision  # not an egress — nothing can leave through this action
@@ -278,6 +315,10 @@ async def apply_echo_tripwire_async(
     fps = _outbound_untrusted_value_fingerprints(args, action.external_destination)
     if not fps:
         return decision  # nothing host/URL/email-shaped outbound — skip the DB read
+
+    fps -= await _excluded_host_fingerprints(repo_root, session_id)
+    if not fps:
+        return decision  # every outbound value is a trusted/task-named host — skip the DB read
 
     from doberman.storage.taint import entity_scope, match_untrusted_value
 
@@ -388,7 +429,13 @@ async def record_output_taint(
 
         if tool_name in UNTRUSTED_READ_TOOLS:
             await record_taints(repo_root, scopes, [TAINT_UNTRUSTED_READ])
-            values = untrusted_value_fingerprints(output_text)
+            # Reviewer follow-up: never record a fingerprint for a trusted or
+            # task-named host in the first place — same exclusion the echo
+            # check applies, kept symmetric (row-cap hygiene; see
+            # _excluded_host_fingerprints).
+            values = untrusted_value_fingerprints(output_text) - await _excluded_host_fingerprints(
+                repo_root, session_id
+            )
             if values:
                 await record_untrusted_values(repo_root, scopes, list(values), tool_name)
     except Exception:  # noqa: BLE001 — recording must never break the execution path

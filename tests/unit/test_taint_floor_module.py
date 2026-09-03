@@ -291,3 +291,150 @@ async def test_apply_echo_tripwire_async_storage_failure_leaves_decision_untouch
 
 def test_untrusted_read_tools_constant_matches_the_expected_set():
     assert UNTRUSTED_READ_TOOLS == frozenset({"WebFetch", "WebSearch"})
+
+
+# --- C1 reviewer follow-up: exclude trusted/task-named hosts from the raise ---
+# A WebFetch result merely MENTIONING a trusted host (github.com, pypi.org) or a
+# host the user named in their own turn must never turn a later, ordinary
+# `git push origin` / `pip install` into an AUTH — that would be a fatigue bomb
+# on the most common flows. See doberman.engine.rules.destinations.TRUSTED_HOSTS
+# (the same allowlist ExternalDestinationRule uses) and
+# doberman.storage.task_match (the user-named-host ledger).
+
+
+def test_echo_tripwire_excludes_a_trusted_host_end_to_end(tmp_path):
+    # (1) An untrusted result mentioning github.com (on TRUSTED_HOSTS), then an
+    # outbound call to github.com — must NOT raise.
+    asyncio.run(
+        record_output_taint(
+            "see https://github.com/doberman/docs for details",
+            str(tmp_path),
+            "sess-trusted-echo",
+            tool_name="WebFetch",
+        )
+    )
+    action = _action(external_destination="github.com")
+    decision = _pass_decision(action)
+
+    out = apply_echo_tripwire(
+        action, decision, "strict", str(tmp_path), "sess-trusted-echo", {"url": "github.com"}
+    )
+
+    assert out is decision
+
+
+def test_echo_tripwire_excludes_a_trusted_host_at_record_time_too(tmp_path):
+    # The record leg must ALSO drop the trusted HOST-level fingerprint — never
+    # store the bare "github.com" fingerprint in the first place (row-cap
+    # hygiene; C1's "symmetrically at RECORD and CHECK time" instruction). The
+    # exclusion is host-value-shaped (matching the brief's exact formula), so
+    # this checks the bare-host fingerprint specifically — the same shape a
+    # `git push origin`-style bare-host destination produces.
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+
+    asyncio.run(
+        record_output_taint(
+            "see https://github.com/doberman/docs for details",
+            str(tmp_path),
+            "sess-trusted-record",
+            tool_name="WebFetch",
+        )
+    )
+
+    host_fp = list(untrusted_value_fingerprints("github.com"))
+    assert asyncio.run(match_untrusted_value(str(tmp_path), "sess-trusted-record", host_fp)) is None
+
+
+def test_echo_tripwire_excludes_a_task_named_host(tmp_path):
+    # (2) Same, but for a host the user named in their own turn this session
+    # (seeded via storage.task_match) rather than the static trusted allowlist.
+    from doberman.storage.task_match import record_task_hosts
+
+    asyncio.run(record_task_hosts(str(tmp_path), "sess-task-echo", ["internal.example.net"]))
+    asyncio.run(
+        record_output_taint(
+            "the doc lives at https://internal.example.net/wiki",
+            str(tmp_path),
+            "sess-task-echo",
+            tool_name="WebFetch",
+        )
+    )
+    action = _action(external_destination="internal.example.net")
+    decision = _pass_decision(action)
+
+    out = apply_echo_tripwire(
+        action,
+        decision,
+        "strict",
+        str(tmp_path),
+        "sess-task-echo",
+        {"url": "internal.example.net"},
+    )
+
+    assert out is decision
+
+
+def test_echo_tripwire_still_raises_for_a_non_excluded_host(tmp_path):
+    # (3) Regression guard: a task-named host in the SAME session must not
+    # blanket-exclude a genuine attacker host that was also echoed.
+    from doberman.storage.task_match import record_task_hosts
+
+    asyncio.run(record_task_hosts(str(tmp_path), "sess-mixed-echo", ["internal.example.net"]))
+    asyncio.run(
+        record_output_taint(
+            f"compare internal.example.net against {_UNTRUSTED_HOST_URL} for the payload",
+            str(tmp_path),
+            "sess-mixed-echo",
+            tool_name="WebFetch",
+        )
+    )
+    action = _action(external_destination=_UNTRUSTED_HOST_URL)
+    decision = _pass_decision(action)
+
+    out = apply_echo_tripwire(
+        action,
+        decision,
+        "strict",
+        str(tmp_path),
+        "sess-mixed-echo",
+        {"url": _UNTRUSTED_HOST_URL},
+    )
+
+    assert out.final_verdict is Verdict.AUTH
+    assert ReasonCode.untrusted_value_echo in out.reason_codes
+
+
+def test_echo_tripwire_fires_even_if_the_trusted_allowlist_is_unreadable(tmp_path, monkeypatch):
+    # (4) A broken exclusion lookup must fail closed to "exclude nothing" — the
+    # floor stays strict, never crashes, and never suppresses a real attacker
+    # echo just because the allowlist/task store couldn't be read.
+    import doberman.engine.rules.destinations as destinations_module
+
+    class _Unreadable:
+        def __iter__(self):
+            raise RuntimeError("allowlist unreadable")
+
+    monkeypatch.setattr(destinations_module, "TRUSTED_HOSTS", _Unreadable())
+
+    asyncio.run(
+        record_output_taint(
+            f"visit {_UNTRUSTED_HOST_URL}",
+            str(tmp_path),
+            "sess-allowlist-fail",
+            tool_name="WebFetch",
+        )
+    )
+    action = _action(external_destination=_UNTRUSTED_HOST_URL)
+    decision = _pass_decision(action)
+
+    out = apply_echo_tripwire(
+        action,
+        decision,
+        "strict",
+        str(tmp_path),
+        "sess-allowlist-fail",
+        {"url": _UNTRUSTED_HOST_URL},
+    )
+
+    assert out.final_verdict is Verdict.AUTH
+    assert ReasonCode.untrusted_value_echo in out.reason_codes
