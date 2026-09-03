@@ -68,6 +68,11 @@ eventually surface the shadow recommendation to a human, but the envelope itself
 or model-derived signal reaches `BLOCK`, or even the live verdict at all, without a human choosing to act
 on an advisory it read.
 
+The shipped T3 example is `doberman/judge.py` (`HaikuJudgeAdjudicator`, PR #539): behind the optional
+`[judge]` extra, off unless explicitly enabled, it sees only `redacted_features()`, maps its two-boolean
+answer through a raise-only contract against the current result, and is shadow-only today — nothing
+registers it into `decide()`, so it has no production caller.
+
 ## What this page does NOT claim
 
 This is a regression guard over **today's closed rule set**, not a structural (AST/lint-level) proof that
