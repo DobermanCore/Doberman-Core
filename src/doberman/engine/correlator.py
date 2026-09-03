@@ -217,7 +217,7 @@ def _task_matches_destination(action: SecurityObject, task_hosts: frozenset[str]
     """
     if not task_hosts or action.external_destination is None:
         return False
-    host, _had_credentials = _parse_host(action.external_destination)
+    host, _had_credentials, _is_mailbox = _parse_host(action.external_destination)
     if not host:
         return False
     return _registered_match(host, task_hosts)

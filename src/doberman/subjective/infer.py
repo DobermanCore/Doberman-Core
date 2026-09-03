@@ -343,14 +343,19 @@ def infer_destination_class(action: SecurityObject) -> tuple[DestinationClass, f
             return DestinationClass.unknown_external, _CONF_WEAK
         return DestinationClass.none, 0.8
 
-    host, had_credentials = _dest_classifiers._parse_host(destination)
+    host, had_credentials, is_mailbox = _dest_classifiers._parse_host(destination)
     if host is None:
         return DestinationClass.unknown_external, _CONF_AMBIGUOUS
     if _is_internal_host(host):
         return DestinationClass.internal, 0.8
     if had_credentials or _dest_classifiers._is_ip_literal(host):
         return DestinationClass.unknown_external, 0.7
-    if _dest_classifiers._registered_match(host, _dest_classifiers.TRUSTED_HOSTS):
+    # A mailbox destination never auto-trusts via TRUSTED_HOSTS either (those
+    # are API/registry hosts; mail to someone @ a trusted domain is not
+    # trusted egress) -- same guard as ExternalDestinationRule._evaluate_static.
+    if not is_mailbox and _dest_classifiers._registered_match(
+        host, _dest_classifiers.TRUSTED_HOSTS
+    ):
         return DestinationClass.known_external, _CONF_STRONG
     return DestinationClass.unknown_external, 0.7
 

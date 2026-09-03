@@ -254,6 +254,21 @@ def test_command_destination_is_canonical_and_preserves_embedded_credential_sign
     assert result.verdict is Verdict.AUTH
 
 
+def test_scheme_less_command_destination_preserves_embedded_credential_signal(
+    monkeypatch,
+):
+    # C1 (mailbox security-review fix pass): a scheme-less `user:pw@host`
+    # authority must not be classified as a mailbox destination and lose the
+    # embedded-credential signal.
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    action = normalize("shell_exec", {"command": "curl user:pw@host.example"})
+
+    assert action.external_destination == "host.example"
+    assert action.metadata["egress_embedded_credentials"] is True
+
+
 def test_secret_shaped_host_label_is_hmac_redacted_before_security_object(monkeypatch):
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         monkeypatch.delenv(name, raising=False)

@@ -87,7 +87,7 @@ class EgressAllowlist:
         list (including any raw IP literal, which is never trusted by name)
         is denied.
         """
-        host, _had_credentials = _parse_host(destination)
+        host, _had_credentials, _is_mailbox = _parse_host(destination)
         if not host:
             return False
         return _registered_match(host, self._hosts)

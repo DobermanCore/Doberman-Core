@@ -83,6 +83,22 @@ def test_punycode_homoglyph_is_not_trusted():
     assert cls is DestinationClass.unknown_external
 
 
+def test_mailbox_to_trusted_domain_is_unknown_external():
+    # C2 (mailbox security-review fix pass): mail to someone @ a trusted
+    # domain is not trusted egress -- must not take the TRUSTED_HOSTS branch
+    # just because a mailbox destination parses with no credentials.
+    cls, conf = infer_destination_class(_net("user@github.com"))
+    assert cls is DestinationClass.unknown_external
+    assert conf == pytest.approx(0.7)
+
+
+def test_scheme_less_credentials_to_trusted_domain_is_unknown_external():
+    # C1 collateral: `admin:s3cret@pypi.org` must not be read as a mailbox
+    # either -- the embedded-credential signal must still win here.
+    cls, _ = infer_destination_class(_net("admin:s3cret@pypi.org"))
+    assert cls is DestinationClass.unknown_external
+
+
 def test_file_action_with_no_destination_is_none():
     action = _action("fs_write", action_type=ActionType.file_write, target="src/a.py")
     cls, _ = infer_destination_class(action)
