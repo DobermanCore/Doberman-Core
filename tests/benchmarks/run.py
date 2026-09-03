@@ -80,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.replay_session and (args.corpus or args.subjective or args.poisoning):
+        parser.error("--replay-session does not apply to --corpus/--subjective/--poisoning")
+
     if args.poisoning:
         from .poisoning_runner import run_poisoning_eval
 
