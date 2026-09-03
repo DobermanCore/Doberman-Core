@@ -274,6 +274,28 @@ Doberman is **defense-in-depth, not airtight**: no single rule is a guarantee. T
   see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). Wiring any judge into a live decision needs its
   own ADR (raise-only governs the verdict *direction*, not whether the architecture becomes
   network-dependent) and has not happened.
+- **Verification-integrity checks are path-class and argv-shape only, not content- or session-aware.**
+  A `git commit --no-verify`/`-n`/`--no-gpg-sign` requires authentication, as does deleting or renaming a
+  file that matches a test-file name/path pattern (`test_*.py`, `*_test.py`, `tests/**`,
+  `*.test.js`/`*.spec.ts`), and editing `CODEOWNERS` or a lint/type-check config (`ruff.toml`, `mypy.ini`,
+  `.eslintrc*`) alongside the CI-pipeline configs already covered above. All three are raise-only and
+  cannot tell a legitimate edit from a silencing one, so a routine `ruff.toml` tune or a test rename
+  during a genuine refactor steps up exactly the same as an attempt to hide a broken test or a disabled
+  lint rule — that is a deliberate false-positive cost, not a bug. The `-n` scoping follows git's own
+  argv grammar (it combines with other short commit flags such as `-an`, and can be swallowed as another
+  option's attached value) rather than a bare substring match, so a commit message or flag value that
+  happens to contain the letter `n` is not mistaken for the bypass. A repo-root `conftest.py` is not
+  test-classed: the glob table matches `test_*.py`/`*_test.py`/`tests/**` shapes only, not pytest's own
+  discovery conventions, so deleting or renaming a root-level `conftest.py` is invisible to this check.
+  Rename detection is a tool-name heuristic only ("rename"/"move" in the tool's name): a `git mv` or shell
+  `mv` is a command, not a path-target action, and is invisible to this check (`DestructiveCommandRule`
+  does not special-case it either); a rename tool that names itself something else is also invisible.
+  Deliberately out of scope: detecting a `pytest.mark.skip`/`xfail`/`it.skip` marker inserted into a
+  *kept* test, a lowered `--cov-fail-under` threshold, a `pyproject.toml [tool.ruff]`-section-only edit,
+  and any cross-session "an assertion was edited in the same session as a non-test change" correlation —
+  all four need file content, an old-vs-new diff, or session history this rule never reads;
+  `pyproject.toml` itself is left unflagged for the same reason (constant, routine dependency-bump
+  traffic).
 
 ---
 

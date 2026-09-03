@@ -173,6 +173,11 @@ REASON_DESCRIPTIONS: dict[str, str] = {
     "turn_blocked_repeatedly": (
         "repeated resubmission of a blocked request locked this session out for the cooldown window"
     ),
+    "verification_bypass_flag": (
+        "the git commit skips its pre-commit/pre-push hooks or signature check "
+        "(--no-verify, -n, or --no-gpg-sign)"
+    ),
+    "test_file_removal": "a test file is being deleted or renamed, not just edited",
 }
 
 # Fail at import time if a ReasonCode is ever added without a description - a
@@ -395,6 +400,8 @@ _HEADLINE_FACTS: dict[str, str] = {
     "tool_schema_changed": "Tool contract changed",
     "environment_dump_command": "Environment dump",
     "single_use_elevation_unclaimable": "Elevation already spent",
+    "verification_bypass_flag": "Verification bypass",
+    "test_file_removal": "Test file removal",
 }
 
 #: Reason codes whose headline reads better with the TARGET PATH CLASS as the
