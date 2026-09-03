@@ -15,7 +15,15 @@ properly parsed URL (never substring-match the raw string) and:
 * treat bare IP literals (and ``[::1]``) as **unknown** (never trusted) — a
   trusted *name* cannot be impersonated by an IP;
 * match on the **registered domain** (host == trusted, or a dotted subdomain of
-  it), so ``evil-github.com`` and ``github.com.evil.test`` are *not* trusted.
+  it), so ``evil-github.com`` and ``github.com.evil.test`` are *not* trusted;
+* recognize a bare mailbox destination (``local@domain``, or ``mailto:``) as
+  mail, not a URL with embedded credentials — a ``send_email``-shaped tool's
+  ``to`` address must not be mistaken for ``user:pass@host`` smuggling, and its
+  domain never auto-trusts via ``TRUSTED_HOSTS`` (those are API/registry hosts;
+  mail to someone ``@`` a trusted domain is not trusted egress). Raise-only:
+  this only removes a false "embeds credentials" AUTH — the taint floor, echo
+  tripwire, secrets rule, and Strict/Paranoid mode still raise mail egress
+  when warranted.
 
 SECURITY: the explanation names only the classification, never the raw URL,
 query parameters, or any embedded credential.
@@ -237,28 +245,58 @@ def _extract_destination(action: SecurityObject, ctx: EvalContext | None = None)
     return None
 
 
-def _parse_host(destination: str) -> tuple[str | None, bool]:
-    """Return ``(decoded_host, had_embedded_credentials)`` from a destination.
+def _mailbox_domain(raw: str) -> str | None:
+    """The domain of a bare ``local@domain`` mailbox destination, or a
+    ``mailto:`` URL — ``None`` if ``raw`` is not one of those forms.
+
+    Deliberately narrow: no scheme separator (other than ``mailto:``), no
+    path, no whitespace, exactly one ``@`` with a non-empty local part, and a
+    dotted, non-IP domain with no port. Anything else — ``user:pw@host``,
+    ``user@host:8080``, ``user@host/path`` — keeps the credential-in-URL
+    smell ``_parse_host`` already applies and is not treated as mail.
+    """
+    candidate = raw[len("mailto:") :] if raw.lower().startswith("mailto:") else raw
+    if "://" in candidate or "/" in candidate or any(c.isspace() for c in candidate):
+        return None
+    if candidate.count("@") != 1:
+        return None
+    local, _, domain = candidate.partition("@")
+    if not local or ":" in domain or "." not in domain or _is_ip_literal(domain):
+        return None
+    return domain
+
+
+def _parse_host(destination: str) -> tuple[str | None, bool, bool]:
+    """Return ``(decoded_host, had_embedded_credentials, is_mailbox)`` from a
+    destination.
 
     Handles bare ``host``/``host:port`` (no scheme) as well as full URLs. The
     host is taken from the authority *after* any ``user:pass@`` so a credential
     prefix cannot disguise the true host.
+
+    A bare mailbox destination or a ``mailto:`` URL (see :func:`_mailbox_
+    domain`) is recognized separately: ``had_embedded_credentials`` is always
+    ``False`` for it and ``is_mailbox`` is ``True`` so a caller (see
+    ``ExternalDestinationRule``) can skip the trusted-host PASS branch for it.
     """
     raw = destination.strip()
+    mailbox_domain = _mailbox_domain(raw)
+    if mailbox_domain is not None:
+        return _decode_host(mailbox_domain), False, True
     # Give urlsplit a scheme to parse bare hosts consistently.
     candidate = raw if "://" in raw else f"//{raw}"
     try:
         parts = urlsplit(candidate if "://" in raw else f"http:{candidate}")
     except ValueError:
-        return None, False
+        return None, False, False
     had_credentials = "@" in (parts.netloc or "") and bool(parts.username or parts.password)
     host = parts.hostname  # already strips credentials and brackets for IPv6
     if not host:
-        return None, had_credentials
+        return None, had_credentials, False
     if _is_ip_literal(host):
         # Keep IP literals as-is (never IDNA-decoded); they are always unknown.
-        return host.lower(), had_credentials
-    return _decode_host(host), had_credentials
+        return host.lower(), had_credentials, False
+    return _decode_host(host), had_credentials, False
 
 
 class ExternalDestinationRule:
@@ -420,7 +458,7 @@ class ExternalDestinationRule:
         if not destination:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
-        host, had_credentials = _parse_host(destination)
+        host, had_credentials, is_mailbox = _parse_host(destination)
         had_credentials = had_credentials or bool(metadata.get("egress_embedded_credentials"))
 
         # A malformed/absent host on a network/egress action is suspicious → AUTH.
@@ -477,7 +515,11 @@ class ExternalDestinationRule:
                 "authentication required."
             )
 
-        if _registered_match(host, self._trusted):
+        # A mailbox destination never auto-trusts via TRUSTED_HOSTS (those are
+        # API/registry hosts; mail to someone @ a trusted domain is not
+        # trusted egress) — it always falls through to the mode-aware logic
+        # below like any other unknown host.
+        if not is_mailbox and _registered_match(host, self._trusted):
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
         # A plain unknown host steps up only when the mode says so. Light and

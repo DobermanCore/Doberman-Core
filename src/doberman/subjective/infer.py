@@ -343,7 +343,7 @@ def infer_destination_class(action: SecurityObject) -> tuple[DestinationClass, f
             return DestinationClass.unknown_external, _CONF_WEAK
         return DestinationClass.none, 0.8
 
-    host, had_credentials = _dest_classifiers._parse_host(destination)
+    host, had_credentials, _is_mailbox = _dest_classifiers._parse_host(destination)
     if host is None:
         return DestinationClass.unknown_external, _CONF_AMBIGUOUS
     if _is_internal_host(host):

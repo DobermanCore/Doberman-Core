@@ -418,7 +418,7 @@ def _candidate_hosts(arguments: list[str]) -> tuple[list[str], bool, bool]:
             continue
         if not _looks_like_host_token(token):
             continue
-        host, embedded_credentials = _parse_host(token)
+        host, embedded_credentials, _is_mailbox = _parse_host(token)
         if host:
             hosts.append(host)
             had_credentials = had_credentials or embedded_credentials
