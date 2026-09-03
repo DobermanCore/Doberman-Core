@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
@@ -362,6 +363,79 @@ def test_excluded_project_skips_the_check(
     _strip(settings_path, "PreToolUse")
     monkeypatch.setattr("doberman.hosthooks.spine.is_excluded", lambda cwd: True)
     assert claude_code.run_pre_hook(_pass_payload(repo)) is None
+
+
+def test_pre_hook_real_deny_keeps_hook_output_and_gains_warning(
+    manifest_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Unlike test_deny_envelope_keeps_its_decision_and_gains_warning (which feeds
+    # "not json" and never reaches evaluate_pre), this drives a REAL BLOCK decision
+    # through evaluate_pre so the merge is exercised against a real hookSpecificOutput,
+    # not just the parse-failure _deny() stub.
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    settings_path = _install(repo)
+    _strip(settings_path, "PostToolUse")
+
+    # The decision reason embeds a fresh action id (uuid4) on every call, so a
+    # second evaluation of the identical payload would otherwise differ only in
+    # that token. Freeze it so the "same hookSpecificOutput" comparison is exact.
+    from doberman.proxy import normalize as normalize_mod
+
+    monkeypatch.setattr(normalize_mod.uuid, "uuid4", lambda: uuid.UUID(int=0))
+
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "rm -rf /"},
+        "cwd": str(repo),
+    }
+    baseline = claude_code.evaluate_pre(dict(payload))
+    assert baseline is not None
+    assert baseline["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    out = claude_code.run_pre_hook(json.dumps(payload))
+    assert out is not None
+    data = json.loads(out)
+    assert data["hookSpecificOutput"] == baseline["hookSpecificOutput"]
+    assert data["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "hook registration changed since install" in data["systemMessage"]
+    assert str(tmp_path) not in data["systemMessage"]
+
+
+def test_post_hook_gains_warning_when_registration_diverged(
+    manifest_env: Path, tmp_path: Path
+) -> None:
+    # run_post_hook's _attach_integrity_warning wiring (mirrors the PreToolUse
+    # coverage above) had no test at all before this.
+    def _post_payload(repo: Path) -> str:
+        return json.dumps(
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo hi"},
+                "tool_response": "build succeeded",
+                "cwd": str(repo),
+            }
+        )
+
+    intact = tmp_path / "intact"
+    intact.mkdir(exist_ok=True)
+    _install(intact)
+    baseline = claude_code.run_post_hook(_post_payload(intact))
+    assert baseline is None  # registration intact -> evaluate_post's abstain survives untouched
+
+    diverged = tmp_path / "diverged"
+    diverged.mkdir(exist_ok=True)
+    settings_path = _install(diverged)
+    _strip(settings_path, "PreToolUse")  # PostToolUse itself stays wired to report this
+    out = claude_code.run_post_hook(_post_payload(diverged))
+    assert out is not None
+    data = json.loads(out)
+    assert "hookSpecificOutput" not in data
+    assert "hook registration changed since install" in data["systemMessage"]
+    assert "PreToolUse" in data["systemMessage"]
+    assert str(tmp_path) not in data["systemMessage"]
 
 
 def test_codex_pre_hook_warns_on_stderr(
