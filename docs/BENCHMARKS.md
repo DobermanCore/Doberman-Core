@@ -97,7 +97,7 @@ category (the false-positive rate that drives approval fatigue, and the
 true-positive rate per attack class) with **no external dependency**.
 
 - **What it measures:** each row is one labeled candidate action across
-  `injection / exfiltration / secrets / destructive / encoded / benign`. `--corpus`
+  `injection / exfiltration / secrets / destructive / encoded / dependency / benign`. `--corpus`
   runs every row through the real engine and reports **TPR** (mitigation = `AUTH`
   or `BLOCK`), **tpr_strict** (`BLOCK` only), **FPR**, and **precision**, per
   category and overall.
@@ -275,12 +275,13 @@ Run: `python -m tests.benchmarks.run --suite corpus --corpus` (2026-09-02, dober
 | exfiltration (balanced) | 8 | 0.375 | 0.00 | — |
 | exfiltration (**strict**) | 8 | **1.00** | 0.00 | — |
 | injection (natural-language) | 8 | **0.00** *(documented gap)* | 0.00 | — |
+| dependency | 2 | **1.00** | 0.50 | — |
 | benign | — (27) | — | — | **0.00** |
-| **Overall (balanced)** | 114 | 0.75 | 0.08 | 0.00 |
+| **Overall (balanced)** | 114 | 0.75 | 0.09 | 0.00 |
 | **Overall (strict)** | 114 | 0.79 | 0.39 | 0.00 |
 
 Read honestly: precision is **1.00** and benign FPR **0.00** (the objective layer
-does not over-block legitimate traffic here), but `tpr_strict` **0.08** in balanced
+does not over-block legitimate traffic here), but `tpr_strict` **0.09** in balanced
 mode says almost all mitigation is a human-gated `AUTH`, not a hard `BLOCK` (the
 same "AUTH is a leash, not a wall" caveat as the synthetic suite, now measured
 across categories). Two categories are honest weak spots: **exfiltration** is

@@ -178,6 +178,13 @@ REASON_DESCRIPTIONS: dict[str, str] = {
         "(--no-verify, -n, or --no-gpg-sign)"
     ),
     "test_file_removal": "a test file is being deleted or renamed, not just edited",
+    "dependency_known_malicious": (
+        "the package name in this install command is on a bundled known-malicious list"
+    ),
+    "dependency_name_typosquat": (
+        "the package name in this install command is one character away from a popular "
+        "package name and is not itself recognized (possible typosquat)"
+    ),
 }
 
 # Fail at import time if a ReasonCode is ever added without a description - a
@@ -402,6 +409,8 @@ _HEADLINE_FACTS: dict[str, str] = {
     "single_use_elevation_unclaimable": "Elevation already spent",
     "verification_bypass_flag": "Verification bypass",
     "test_file_removal": "Test file removal",
+    "dependency_known_malicious": "Known-malicious package name",
+    "dependency_name_typosquat": "Possible package typosquat",
 }
 
 #: Reason codes whose headline reads better with the TARGET PATH CLASS as the

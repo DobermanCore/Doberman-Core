@@ -336,10 +336,27 @@ def test_no_filesystem_or_network_io_in_evaluate(monkeypatch):
         rule.evaluate(_action(), _ctx(cmd))  # must not raise, must not touch patched I/O
 
 
-def test_bounded_time_on_an_oversized_candidate_name():
-    rule = DependencyAdmissionRule(
-        known_malicious=FIXTURE_KNOWN_MALICIOUS, popular_by_len=FIXTURE_POPULAR_BY_LEN
-    )
+def test_bounded_time_on_an_oversized_candidate_name(monkeypatch):
+    # Non-vacuous: run against the REAL bundled popular list (not the tiny
+    # fixture, which could "pass" this test even without bucketing, simply
+    # because there is little to scan) and prove the length-bucket lookup
+    # short-circuits BEFORE any edit-distance call — a call counter, not
+    # just a time budget, so a regression that removes bucketing fails
+    # deterministically instead of just "usually" being fast.
+    import doberman.engine.rules.dependency_admission as dep_mod
+
+    rule = DependencyAdmissionRule()  # real bundled known-malicious + popular lists
+    calls = 0
+    real_within_edit_distance_one = dep_mod._within_edit_distance_one
+
+    def _counting(a: str, b: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return real_within_edit_distance_one(a, b)
+
+    monkeypatch.setattr(dep_mod, "_within_edit_distance_one", _counting)
+
     huge_name = "a" * 4096  # 4KB name — must not scan the full popular list per-char
     result = rule.evaluate(_action(), _ctx(f"pip install {huge_name}"))
     assert result.verdict is Verdict.PASS  # no bucket at that length; abstains cheaply
+    assert calls == 0  # bucketing short-circuits before any edit-distance call

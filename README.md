@@ -308,6 +308,17 @@ Doberman is **defense-in-depth, not airtight**: no single rule is a guarantee. T
   all four need file content, an old-vs-new diff, or session history this rule never reads;
   `pyproject.toml` itself is left unflagged for the same reason (constant, routine dependency-bump
   traffic).
+- **Dependency admission is name-only and offline: it does not read your lockfile, does not resolve a
+  registry, and does not inspect postinstall scripts.** `DependencyAdmissionRule` parses `pip`/`npm`/
+  `cargo`/`gem`/`go`/... install commands and checks the package NAME ONLY against two bundled, static
+  JSON snapshots: a known-malicious list (hard `BLOCK`) and a popular-package list used only for an
+  edit-distance-1 typosquat heuristic (`AUTH`, never `BLOCK` — a statistical signal is capped by
+  construction). Both lists are point-in-time snapshots refreshed per release, not a live feed, and
+  they are small (a few thousand names at most): a typosquat of an obscure package, a brand-new
+  malicious package not yet in the bundled list, a name that isn't within one edit of anything in the
+  popular list, or an attack that lives in a lockfile/manifest/postinstall script rather than the
+  install command's argv, is not caught here. This is defense-in-depth against the cheap, common case
+  (a popular-package typo, a documented known-bad name), not a supply-chain guarantee.
 
 ---
 
