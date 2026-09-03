@@ -108,16 +108,17 @@ def _save(data: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def _matches(entry: Any, host: str, scope: str, path_fp: str) -> bool:
+    return (
+        isinstance(entry, dict)
+        and entry.get("host") == host
+        and entry.get("scope") == scope
+        and entry.get("path_fp") == path_fp
+    )
+
+
 def _find(data: dict[str, Any], host: str, scope: str, path_fp: str) -> dict[str, Any] | None:
-    for entry in data["entries"]:
-        if (
-            isinstance(entry, dict)
-            and entry.get("host") == host
-            and entry.get("scope") == scope
-            and entry.get("path_fp") == path_fp
-        ):
-            return entry
-    return None
+    return next((e for e in data["entries"] if _matches(e, host, scope, path_fp)), None)
 
 
 def record_install(
@@ -141,16 +142,7 @@ def record_install(
         "groups": _group_fps(groups_by_event),
         "recorded_at": _now(),
     }
-    data["entries"] = [
-        e
-        for e in data["entries"]
-        if not (
-            isinstance(e, dict)
-            and e.get("host") == host
-            and e.get("scope") == scope
-            and e.get("path_fp") == path_fp
-        )
-    ]
+    data["entries"] = [e for e in data["entries"] if not _matches(e, host, scope, path_fp)]
     data["entries"].append(entry)
     _save(data)
 
@@ -167,16 +159,7 @@ def clear_install(host: str, scope: str, settings_path: Path) -> None:
     data = _load()
     path_fp = _path_fp(settings_path)
     before = len(data["entries"])
-    data["entries"] = [
-        e
-        for e in data["entries"]
-        if not (
-            isinstance(e, dict)
-            and e.get("host") == host
-            and e.get("scope") == scope
-            and e.get("path_fp") == path_fp
-        )
-    ]
+    data["entries"] = [e for e in data["entries"] if not _matches(e, host, scope, path_fp)]
     if len(data["entries"]) != before:
         _save(data)
 
