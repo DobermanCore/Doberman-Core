@@ -48,18 +48,22 @@ from doberman.models import GuardrailResult, ReasonCode, Risk, Verdict
 
 logger = logging.getLogger("doberman.judge")
 
-_JUDGE_MODEL = "claude-haiku-4-5"
+_JUDGE_MODEL = "claude-haiku-4-5-20251001"
 _JUDGE_MAX_TOKENS = 200
 _JUDGE_TIMEOUT_S = 1.5
 
 _JUDGE_SYSTEM_PROMPT = (
-    "You are a narrow security classifier. You are given a REDACTED summary of "
-    "one tool-call action: enum classes, reason codes, and counts only - never "
-    "a path, command, argument, or secret. Reply with ONLY a single JSON object "
-    'with exactly two boolean fields: "unambiguous" (true if the action\'s '
-    "intent is clearly determinable from these classes alone) and "
-    '"high_impact" (true if, assuming malicious intent, this action could '
-    "cause significant harm). No prose, no markdown, no other fields."
+    "You are a narrow security classifier for a DEFENSIVE tool-call guardrail. "
+    "You are given a REDACTED summary of one tool-call action: enum classes, "
+    "reason codes, and counts only - never a path, command, argument, or secret. "
+    "Reply with ONLY a single JSON object with exactly two boolean fields: "
+    '"unambiguous" (true only if this action is UNAMBIGUOUSLY an attack or '
+    "unwanted for a defensive deployment, judged from these classes alone) and "
+    '"high_impact" (true if the action\'s effect class is irreversible, '
+    "external, or secret-adjacent). NOT attacks: routine reads or edits inside "
+    "the repository, familiar/common tool classes, and internal destinations - "
+    "do not flag these. One soft signal is not a positive: if you are unsure, "
+    "answer false for both fields. No prose, no markdown, no other fields."
 )
 
 
@@ -105,7 +109,10 @@ def _recommend(unambiguous: bool, high_impact: bool, current: GuardrailResult) -
     ``ReasonCode.unclassified_action`` as the closest existing generic code
     for "a second opinion flagged this without a more specific built-in
     reason"; when nothing raises, ``current``'s own reason codes and
-    explanation are carried through unchanged rather than replaced.
+    explanation are carried through unchanged rather than replaced. When it
+    DOES raise, ``current``'s reason codes are kept and
+    ``ReasonCode.unclassified_action`` is appended (deduped, order-preserving)
+    rather than replacing them outright.
     """
     if unambiguous and high_impact:
         mapped_risk = Risk.critical
@@ -129,10 +136,11 @@ def _recommend(unambiguous: bool, high_impact: bool, current: GuardrailResult) -
         "unambiguous" if unambiguous else "ambiguous",
         "high-impact" if high_impact else "low-impact",
     )
+    reason_codes = list(dict.fromkeys([*current.reason_codes, ReasonCode.unclassified_action]))
     return GuardrailResult(
         verdict=result_verdict,
         risk=result_risk,
-        reason_codes=[ReasonCode.unclassified_action],
+        reason_codes=reason_codes,
         explanation=explanation,
     )
 
@@ -212,7 +220,10 @@ class HaikuJudgeAdjudicator:
         if worker.is_alive():
             logger.debug("judge: adjudicate timed out; abstaining (worker still running)")
             return None
-        if "error" in slot:
+        # .get(), not [] - a BaseException the worker's `except Exception` didn't
+        # catch would leave `slot` with neither "result" nor "error"; treat that
+        # the same as any other failure (abstain) instead of a KeyError here.
+        parsed = slot.get("result")
+        if parsed is None:
             return None
-        parsed = slot["result"]
         return _recommend(parsed["unambiguous"], parsed["high_impact"], current)

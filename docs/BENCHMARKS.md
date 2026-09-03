@@ -155,7 +155,8 @@ This section measures, offline, whether it is even worth wiring in.
   `HaikuJudgeAdjudicator.adjudicate()` itself enforces - installed, keyed, and
   explicitly flagged). With either missing, the module prints a skip message
   and exits 0; `tests/unit/test_judge.py` asserts that skip path so CI stays
-  green with no credentials. The prompt is frozen before the first measured
+  green with no credentials. The prompt is frozen in
+  `src/doberman/judge.py`'s `_JUDGE_SYSTEM_PROMPT` before the first measured
   run and reported as-is - this is a directional n=137 read, not a
   prompt-tuned result.
 

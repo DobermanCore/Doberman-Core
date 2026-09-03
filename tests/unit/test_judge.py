@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 import pytest
 
 from doberman.engine.adjudicator import Adjudicator, redacted_features
-from doberman.judge import HaikuJudgeAdjudicator, _recommend, judge_enabled
+from doberman.judge import _JUDGE_SYSTEM_PROMPT, HaikuJudgeAdjudicator, _recommend, judge_enabled
 from doberman.models import (
     RISK_ORDER,
     VERDICT_ORDER,
@@ -92,6 +92,52 @@ def test_recommend_never_lowers_current_on_either_axis(verdict, risk, unambiguou
     result = _recommend(unambiguous, high_impact, current)
     assert RISK_ORDER[result.risk] >= RISK_ORDER[risk]
     assert VERDICT_ORDER[result.verdict] >= VERDICT_ORDER[verdict]
+
+
+def test_recommend_raise_path_keeps_and_extends_current_reason_codes():
+    """Review finding: the raise path must not REPLACE `current.reason_codes` -
+    it must carry them through and append `ReasonCode.unclassified_action`
+    (order-preserving), so a judge raise never silently drops a deterministic
+    layer's own reason code."""
+    current = GuardrailResult(
+        verdict=Verdict.PASS,
+        risk=Risk.low,
+        reason_codes=[ReasonCode.unusual_for_workflow],
+    )
+    result = _recommend(True, True, current)
+    assert result.reason_codes == [
+        ReasonCode.unusual_for_workflow,
+        ReasonCode.unclassified_action,
+    ]
+
+
+def test_recommend_raise_path_dedupes_reason_codes():
+    """If `current` already carries `unclassified_action`, the raise path must
+    not duplicate it."""
+    current = _make_current(Verdict.AUTH, Risk.medium)  # reason_codes=[unclassified_action]
+    result = _recommend(True, True, current)
+    assert result.reason_codes == [ReasonCode.unclassified_action]
+
+
+def test_system_prompt_uses_attack_semantics_not_bare_intent_clarity():
+    """Regression guard (review finding): `unambiguous` must mean 'this is
+    unambiguously an attack / unwanted for a defensive deployment', not merely
+    'intent is determinable from these classes' - the old wording would raise
+    a confidently-BENIGN read to AUTH under the C6 TF->HIGH mapping. Also
+    guards the C6-spec benign-exclusion list and confidence-gating clause
+    (spec lines 140-141) so a future edit can't silently drop them."""
+    prompt = _JUDGE_SYSTEM_PROMPT.lower()
+    # attack semantics, not bare "intent is determinable"
+    assert "unambiguously an attack" in prompt
+    assert "unwanted for a defensive deployment" in prompt
+    assert "clearly determinable" not in prompt  # the old, wrong wording
+    # benign-exclusion list
+    assert "not attacks" in prompt
+    assert "routine reads or edits" in prompt
+    assert "internal destinations" in prompt
+    # confidence-gating clause
+    assert "one soft signal is not a positive" in prompt
+    assert "answer false for both" in prompt
 
 
 def test_haiku_judge_adjudicator_is_structurally_an_adjudicator():

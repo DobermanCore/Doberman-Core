@@ -25,7 +25,6 @@ otherwise (see docs/BENCHMARKS.md).
 
 from __future__ import annotations
 
-import argparse
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -125,8 +124,9 @@ def summarize(results: list[RowAgreement]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(argv)
+    # ponytail: no flags today; keep the argv parameter so the CLI signature
+    # matches the other benchmark suites and stays stable if one is added.
+    del argv
     if not judge_enabled():
         print(
             "judge_agreement: ANTHROPIC_API_KEY / DOBERMAN_JUDGE_ENABLED not set "
