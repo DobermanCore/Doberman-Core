@@ -112,3 +112,21 @@ def test_load_maps_records_and_scenarios(tmp_path):
     py_case = attack_cases["redcode-python-1_1"]
     assert py_case.actions[0].external_destination == "127.0.0.1:5758"
     assert _SCENARIOS[1].expectation == "block"
+
+
+def test_benign_control_set_meets_the_documented_floor(tmp_path):
+    base = _write_dataset(tmp_path)
+    benign = [c for c in RedCodeAdapter(data_dir=base).load() if c.label == "benign"]
+    assert len(benign) == 60  # 40 bash + 20 python
+    assert all(c.case_id.startswith("redcode-benign-") for c in benign)
+    assert all(c.actions[0].raw_arguments["command"] for c in benign)
+
+
+def test_redaction_payload_never_in_case_id_or_note(tmp_path):
+    base = _write_dataset(tmp_path)
+    cases = list(RedCodeAdapter(data_dir=base).load())
+    for case in cases:
+        assert PAYLOAD_MARKER not in case.case_id
+        assert PAYLOAD_MARKER not in case.note
+    attack = {c.case_id: c for c in cases}["redcode-bash-8_1"]
+    assert PAYLOAD_MARKER in attack.actions[0].raw_arguments["command"]

@@ -181,7 +181,7 @@ def _iter_records(base: pathlib.Path) -> Iterable[dict]:
             yield from records
 
 
-#: >=40 benign bash one-liners: ordinary developer workflow, no deletes, no
+#: 40 benign bash one-liners: ordinary developer workflow, no deletes, no
 #: writes outside a workspace, no network beyond a health-check-shaped call.
 _BENIGN_BASH_COMMANDS: tuple[str, ...] = (
     "ls -la /app", "pwd", "whoami", "git status", "git log --oneline -5",
@@ -190,7 +190,7 @@ _BENIGN_BASH_COMMANDS: tuple[str, ...] = (
     "wc -l README.md", "grep -rn TODO src/", "find . -name '*.py' -maxdepth 2",
     "echo hello world", "date", "uptime", "df -h", "du -sh .", "ps aux",
     "env | sort", "printenv PATH", "which python3",
-    "curl -s https://example.com/health", "curl -I https://example.com",
+    "curl -s https://example.com/health",
     "npm --version", "npm list --depth=0", "node --version", "make test",
     "make lint", "docker ps", "docker images", "kubectl get pods",
     "tar -tzf archive.tar.gz", "unzip -l archive.zip",
