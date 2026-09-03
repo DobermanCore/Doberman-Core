@@ -632,3 +632,20 @@ def test_doctor_integrity_untracked_install_warns(integrity_env: Path, tmp_path:
 def test_doctor_integrity_nothing_installed_is_ok(integrity_env: Path) -> None:
     r = _integrity(run_checks(str(integrity_env)))
     assert r.status is CheckStatus.OK
+
+
+def test_doctor_integrity_plugin_only_codex_is_ok(
+    integrity_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plugin-only Codex install has no writable hooks.json to manifest -
+    doctor must not permanently WARN "untracked" for it (round follow-up on #239)."""
+    import doberman.hosthooks.install_codex as install_codex_mod
+
+    monkeypatch.setattr(
+        install_codex_mod,
+        "codex_hook_install_states",
+        lambda path: [("plugin", str(Path(path) / "plugin-hooks.json"), True)],
+    )
+    r = _integrity(run_checks(str(integrity_env)))
+    assert r.status is CheckStatus.OK
+    assert r.detail == "nothing to verify (no hooks installed)"

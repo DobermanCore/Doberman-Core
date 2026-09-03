@@ -254,6 +254,35 @@ def test_codex_install_records_and_uninstall_clears(manifest_env: Path, tmp_path
     assert integrity.verify_install("codex", "repo", hooks_path, groups).state == "absent"
 
 
+def test_setup_wizard_records_the_manifest(
+    manifest_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`setup --yes` wires Claude hooks through the same merge/write path as
+    `install-hooks` (main.py's per-host wiring step) and must also record the
+    integrity manifest - pins that against a regression."""
+    import shutil
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: (
+            "/venv/bin/doberman"
+            if name == "doberman"
+            else None
+            if name == "codex"
+            else real_which(name, *a, **k)
+        ),
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    result = CliRunner().invoke(app, ["setup", "--yes", "--host", "claude", "--path", str(repo)])
+    assert result.exit_code == 0, result.output
+    settings_path = resolve_settings_path("project", str(repo))
+    groups = doberman_groups(load_settings(settings_path))
+    assert integrity.verify_install("claude", "project", settings_path, groups).state == "intact"
+
+
 # ---------------------------------------------------------------------------
 # check_all / hook_warning — verify at every surviving hook invocation (#239)
 # ---------------------------------------------------------------------------
@@ -310,7 +339,7 @@ def test_pre_hook_silent_when_uninstalled_legitimately(manifest_env: Path, tmp_p
     assert claude_code.run_pre_hook(_pass_payload(repo)) is None
 
 
-def test_deny_envelope_keeps_its_decision_and_gains_warning(
+def test_unparseable_payload_deny_is_untouched_by_the_integrity_check(
     manifest_env: Path, tmp_path: Path
 ) -> None:
     repo = tmp_path / "repo"
@@ -320,6 +349,7 @@ def test_deny_envelope_keeps_its_decision_and_gains_warning(
     out = claude_code.run_pre_hook("not json")
     data = json.loads(out)
     assert data["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "systemMessage" not in data
 
 
 def test_divergence_is_recorded_in_manifest(manifest_env: Path, tmp_path: Path) -> None:

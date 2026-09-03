@@ -27,7 +27,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from doberman.hosthooks.install import _is_doberman_group, load_settings
+from doberman.hosthooks.install import _is_doberman_group, doberman_groups, load_settings
 
 #: Codex PreToolUse group Doberman registers — matches every tool. The
 #: ``doberman hook `` marker (shared with the Claude Code installer) identifies it
@@ -92,19 +92,12 @@ def remove_codex_hooks(settings: dict[str, Any]) -> dict[str, Any]:
 def codex_doberman_groups(settings: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     """Doberman-owned hook groups per event key, Codex-shaped (for the install manifest).
 
-    Same shape as :func:`doberman.hosthooks.install.doberman_groups`; reuses this
-    module's own ``_is_doberman_group`` import (the shared marker also matches
-    ``codex-pre``) so a foreign group's command never reaches the manifest.
+    Codex's groups are byte-identical Claude-Code-shaped dicts (the shared
+    ``_is_doberman_group`` marker matches ``codex-pre`` too), so this is a thin
+    wrapper around :func:`doberman.hosthooks.install.doberman_groups` kept
+    under this name for the Codex-specific import sites.
     """
-    hooks_section = settings.get("hooks") or {}
-    out: dict[str, list[dict[str, Any]]] = {}
-    for event_key, groups in hooks_section.items():
-        if not isinstance(groups, list):
-            continue
-        ours = [g for g in groups if isinstance(g, dict) and _is_doberman_group(g)]
-        if ours:
-            out[event_key] = ours
-    return out
+    return doberman_groups(settings)
 
 
 def resolve_codex_hooks_path(scope: str, project_root: str) -> Path:

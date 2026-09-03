@@ -1331,6 +1331,7 @@ def doctor(
     section_for = {
         "Host hooks": "Hooks",
         "Hook command": "Hooks",
+        "Hook integrity": "Hooks",
         "Config": "Policy",
         "Enforcement": "Policy",
         "Policy version": "Policy",
@@ -3028,9 +3029,10 @@ def _uninstall_global(path: str, yes: bool, dry_run: bool, keep_package: bool) -
         if not claude_installed.get(scope):
             continue
         target = resolve_settings_path(scope, path)
-        _clear_manifest("claude", scope, target)
         try:
-            write_settings(target, remove_doberman_hooks(load_settings(target)))
+            current = load_settings(target)
+            _clear_manifest("claude", scope, target)
+            write_settings(target, remove_doberman_hooks(current))
         except (ValueError, OSError) as exc:
             errors.append(f"{target}: {exc}")
 
@@ -3043,9 +3045,10 @@ def _uninstall_global(path: str, yes: bool, dry_run: bool, keep_package: bool) -
         if not codex_installed.get(scope):
             continue
         target = resolve_codex_hooks_path(scope, path)
-        _clear_manifest("codex", scope, target)
         try:
-            write_settings(target, remove_codex_hooks(load_settings(target)))
+            current = load_settings(target)
+            _clear_manifest("codex", scope, target)
+            write_settings(target, remove_codex_hooks(current))
         except (ValueError, OSError) as exc:
             errors.append(f"{target}: {exc}")
 
@@ -3208,9 +3211,9 @@ def uninstall(
     for scope, settings_path, installed in _hook_install_states(path):
         if scope not in ("project", "local") or not installed:
             continue
-        _clear_manifest("claude", scope, resolve_settings_path(scope, path))
         try:
             current = load_settings(resolve_settings_path(scope, path))
+            _clear_manifest("claude", scope, resolve_settings_path(scope, path))
             write_settings(resolve_settings_path(scope, path), remove_doberman_hooks(current))
         except (ValueError, OSError) as exc:
             errors.append(f"{settings_path}: {exc}")
@@ -3218,9 +3221,9 @@ def uninstall(
     for scope, hooks_path, installed in codex_hook_install_states(path):
         if scope != "repo" or not installed:
             continue
-        _clear_manifest("codex", scope, resolve_codex_hooks_path(scope, path))
         try:
             current = load_settings(resolve_codex_hooks_path(scope, path))
+            _clear_manifest("codex", scope, resolve_codex_hooks_path(scope, path))
             write_settings(resolve_codex_hooks_path(scope, path), remove_codex_hooks(current))
         except (ValueError, OSError) as exc:
             errors.append(f"{hooks_path}: {exc}")

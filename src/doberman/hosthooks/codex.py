@@ -226,12 +226,11 @@ def run_codex_pre(stdin_text: str) -> str | None:
     singleflight.record(key, text)
 
     try:  # #239: warn on stderr when Doberman's own registration diverged.
-        from doberman.hosthooks import spine as _spine
         from doberman.hosthooks.integrity import hook_warning
 
         cwd = payload.get("cwd")
-        if not _spine.is_excluded(cwd):
-            warning = hook_warning(_spine.resolve_root_and_mode(cwd)[0])
+        if not spine.is_excluded(cwd):
+            warning = hook_warning(spine.resolve_root_and_mode(cwd)[0])
             if warning:
                 print(warning, file=sys.stderr)
     except Exception:  # noqa: BLE001,S110 — warning-only

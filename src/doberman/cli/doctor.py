@@ -178,7 +178,7 @@ def _check_hook_integrity(path: str) -> CheckResult:
             detail += f" - a divergence was seen at {max(seen)}; re-run install-hooks to clear"
         return CheckResult(name, CheckStatus.OK, detail)
     installed = any(ok for _s, _p, ok in hook_install_states(path)) or any(
-        ok for _s, _p, ok in codex_hook_install_states(path)
+        ok for s, _p, ok in codex_hook_install_states(path) if s != "plugin"
     )
     if installed:
         return CheckResult(
