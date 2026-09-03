@@ -274,12 +274,14 @@ async def _run_arm(cases_by_suite: dict[str, list[BenchmarkCase]], *, firewall: 
     }
 
 
-def run_subjective_eval(adapter: SuiteAdapter) -> dict:
+def run_subjective_eval(adapter: SuiteAdapter, *, include_with_provenance: bool = True) -> dict:
     """Run the subjective-baseline separation eval over ``adapter``'s cases.
 
     Returns a redaction-safe report dict (scores/counts/suite names only). The
     ``provenance_free`` arm is the honest number; ``with_provenance`` is reported
-    only to quantify label leakage. Deterministic for a fixed adapter.
+    only to quantify label leakage — pass ``include_with_provenance=False`` to
+    skip computing it (halves this function's SQLite-backed work) when a caller
+    only ever reads the honest arm. Deterministic for a fixed adapter.
     """
     by_suite: dict[str, list[BenchmarkCase]] = defaultdict(list)
     for case in adapter.load():
@@ -287,8 +289,9 @@ def run_subjective_eval(adapter: SuiteAdapter) -> dict:
     for cases in by_suite.values():
         cases.sort(key=lambda c: c.case_id)
 
-    provenance_free = asyncio.run(_run_arm(by_suite, firewall=True))
-    with_provenance = asyncio.run(_run_arm(by_suite, firewall=False))
+    arms = {"provenance_free": asyncio.run(_run_arm(by_suite, firewall=True))}
+    if include_with_provenance:
+        arms["with_provenance"] = asyncio.run(_run_arm(by_suite, firewall=False))
 
     return {
         "suite": adapter.suite_name,
@@ -309,8 +312,5 @@ def run_subjective_eval(adapter: SuiteAdapter) -> dict:
             "next to its bucket n. The honest number is the provenance_free arm; "
             "with_provenance is shown only to quantify the adapter's label leakage."
         ),
-        "arms": {
-            "provenance_free": provenance_free,
-            "with_provenance": with_provenance,
-        },
+        "arms": arms,
     }

@@ -108,7 +108,15 @@ def _real_hst_test(fn):
 
 @pytest.fixture(scope="module")
 def devsession_report() -> dict:
-    return run_subjective_eval(DevSessionAdapter())
+    # include_with_provenance=False: none of this module's 3 tests read the
+    # "with_provenance" arm (only "provenance_free", the honest one) — computing
+    # it anyway doubles this fixture's SQLite-backed work (2 arms x 4 suites x
+    # ~650 warm+held-out actions each). That made this the single most expensive
+    # item in the whole suite (336s setup measured in CI) and crashed the
+    # windows-latest/3.12 xdist worker twice in a row (issue #560); the other
+    # legs merely ran it slowly. Skipping the unread arm halves the work with no
+    # loss of coverage for what this module actually asserts.
+    return run_subjective_eval(DevSessionAdapter(), include_with_provenance=False)
 
 
 @_real_hst_test

@@ -188,6 +188,16 @@ def test_both_arms_present_and_honest_arm_named(fx_report):
     assert set(fx_report["arms"]) == {"provenance_free", "with_provenance"}
 
 
+# --- 7b. with_provenance can be skipped (halves SQLite-backed work for a ----
+# caller that never reads it — devsession's tests are the motivating case,
+# issue #560) -----------------------------------------------------------------
+def test_with_provenance_can_be_omitted_by_request():
+    report = run_subjective_eval(_Fx(), include_with_provenance=False)
+    assert report["honest_arm"] == "provenance_free"
+    assert set(report["arms"]) == {"provenance_free"}
+    assert report["arms"]["provenance_free"]["per_suite"]["fixture"]["n_warm_observations"] > 0
+
+
 # --- 8. held-out FPR + warm-sufficiency constants (C11) ---------------------
 def test_report_carries_warm_sufficiency_constants(fx_report):
     from doberman.subjective.baseline import HST_WARMUP
