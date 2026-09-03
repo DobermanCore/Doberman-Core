@@ -4,17 +4,25 @@ install-command parsing, known-malicious BLOCK, typosquat AUTH.
 Covers: argv -> (ecosystem, package names) extraction across every supported
 package manager, chained/substituted commands, opaque-command abstention,
 known-malicious BLOCK, typosquat AUTH with its false-positive guards, no
-filesystem/network I/O in evaluate(), bounded time on an oversized name, and
-redaction (the package name/argv text never appears in an explanation).
+filesystem/network I/O in evaluate(), bounded time on an oversized name,
+redaction (the package name/argv text never appears in an explanation), and
+(Task 4) registration in BUILTIN_RULE_TYPES + no-I/O and bounded-time
+property tests.
 
 Extraction tests use FIXTURE lists only (never the real shipped JSON) so
 they do not churn when the bundled lists are updated.
 """
 
+import builtins
+import os
+import pathlib
+import random
+import socket
 from datetime import datetime, timezone
 
 import pytest
 
+from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.rules.commands import walk_command
 from doberman.engine.rules.dependency_admission import (
     DependencyAdmissionRule,
@@ -267,3 +275,71 @@ def test_bundled_data_files_load_and_contain_seed_entries():
     assert "requests" in popular_pypi_all
     popular_npm_all = {n for bucket in _DEFAULT_POPULAR_BY_LEN["npm"].values() for n in bucket}
     assert "request" in popular_npm_all
+
+
+# ── Task 4: registration + no-I/O + bounded-time property tests ──────────
+
+
+def test_rule_is_registered_in_builtin_rule_types():
+    from doberman.engine.rules import BUILTIN_RULE_TYPES
+
+    assert DependencyAdmissionRule in BUILTIN_RULE_TYPES
+
+
+def test_objective_guardrail_reaches_block_via_the_real_registration():
+    # Uses the REAL bundled data (not fixtures) — proves end-to-end wiring
+    # through ObjectiveGuardrail, not just direct RULE.evaluate() calls.
+    #
+    # DEVIATION FROM BRIEF (documented, not improvised): the brief's literal
+    # example used "pip install colourama", but colourama was already
+    # rejected by the Task 3 controller-verified seed decision (see
+    # C3-seed-verified.md, and this file's own
+    # test_bundled_data_files_load_and_contain_seed_entries below) — v1
+    # ships an EMPTY pypi known-malicious list, so colourama matches
+    # nothing in real data. Swapped to npm/"crossenv", the one entry this
+    # file already asserts is real and OSV-verified, to keep the test's
+    # actual intent (prove BLOCK via the real bundled data, not fixtures).
+    guardrail = ObjectiveGuardrail(load_plugins=False)
+    result = guardrail.evaluate(_action(), _ctx("npm install crossenv"))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result.reason_codes
+
+
+def test_no_filesystem_or_network_io_in_evaluate(monkeypatch):
+    # Construct the rule from FIXTURES (no I/O at construction either) so
+    # the assertion is airtight: the module's own import-time data load
+    # already happened before this test runs (pytest collection imports
+    # the module), and this rule instance never touches the real files.
+    #
+    # The monkeypatches below are applied AFTER
+    # doberman.engine.rules.dependency_admission was already imported (at
+    # collection time, via the module-level imports above), so they cannot
+    # interfere with the module's own import-time `_load_json_lists()` call
+    # — only with I/O performed inside evaluate() itself.
+    rule = DependencyAdmissionRule(
+        known_malicious=FIXTURE_KNOWN_MALICIOUS, popular_by_len=FIXTURE_POPULAR_BY_LEN
+    )
+
+    def _forbidden(*_a, **_k):
+        raise AssertionError("evaluate() performed forbidden I/O")
+
+    monkeypatch.setattr(builtins, "open", _forbidden)
+    monkeypatch.setattr(pathlib.Path, "read_text", _forbidden)
+    monkeypatch.setattr(socket, "socket", _forbidden)
+    monkeypatch.setattr(os, "environ", {})
+
+    verbs = ["pip install", "npm install", "cargo add", "go get", "gem install"]
+    names = ["requestx", "requests", "evilpkg-fixture", "left-pad", "@myorg/utils", "a", ""]
+    rng = random.Random(1337)  # noqa: S311 — fuzz-input generator, not cryptographic
+    for _ in range(200):
+        cmd = f"{rng.choice(verbs)} {rng.choice(names)}{rng.randint(0, 999)}"
+        rule.evaluate(_action(), _ctx(cmd))  # must not raise, must not touch patched I/O
+
+
+def test_bounded_time_on_an_oversized_candidate_name():
+    rule = DependencyAdmissionRule(
+        known_malicious=FIXTURE_KNOWN_MALICIOUS, popular_by_len=FIXTURE_POPULAR_BY_LEN
+    )
+    huge_name = "a" * 4096  # 4KB name — must not scan the full popular list per-char
+    result = rule.evaluate(_action(), _ctx(f"pip install {huge_name}"))
+    assert result.verdict is Verdict.PASS  # no bucket at that length; abstains cheaply

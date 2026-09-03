@@ -43,13 +43,13 @@ import json
 from importlib.resources import files
 
 from doberman.engine.rules.commands import (
+    _COMMAND_ACTION_TYPES,
     _argv_from_tokens,
     _command_text,
     _raw_command_payload,
     walk_command,
 )
 from doberman.models import (
-    ActionType,
     EvalContext,
     GuardrailResult,
     ReasonCode,
@@ -194,15 +194,13 @@ def _within_edit_distance_one(a: str, b: str) -> bool:
 
 _PASS = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
-#: Same command-bearing action types DestructiveCommandRule recognizes
-#: (`commands.py`'s `_COMMAND_ACTION_TYPES`) — a tool-name label is not a
-#: trust boundary. Any OTHER action type still gets scanned via the
-#: raw-arguments fallback below, just without the `action.target` fallback
-#: (a file path or URL on an unrelated action must never be misread as a
-#: shell command) — see `commands.py:895-906` for the pattern being mirrored.
-_COMMAND_ACTION_TYPES = frozenset(
-    {ActionType.shell_exec, ActionType.git_op, ActionType.package_install}
-)
+# _COMMAND_ACTION_TYPES (the command-bearing action types
+# DestructiveCommandRule recognizes — a tool-name label is not a trust
+# boundary) is imported from commands.py above rather than redefined here;
+# any OTHER action type still gets scanned via the raw-arguments fallback
+# below, just without the `action.target` fallback (a file path or URL on
+# an unrelated action must never be misread as a shell command) — see
+# `commands.py:895-906` for the pattern being mirrored.
 
 
 def _bucket_by_length(names: frozenset[str]) -> dict[int, frozenset[str]]:
