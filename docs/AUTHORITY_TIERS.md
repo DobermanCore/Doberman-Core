@@ -84,9 +84,8 @@ adds a boundary case for it in `tests/unit/test_authority_tiers.py`.
 
 It also does not claim uniform false-positive coverage: the shipped detection corpus
 (`tests/corpus/detection_corpus.jsonl`) has no benign `shell_exec`/`git_op` row that exercises
-`destructive_command`'s near-miss edge (its four benign shell rows and three benign git rows are `ls`,
-`pytest`, `make`, `grep`, `git status`, `git commit`, `git diff` — none reach the delete-verb branch of
-`DestructiveCommandRule` at all). `tests/integration/test_corpus_gate.py`'s `fpr == 0.0` assertion is
+`destructive_command`'s near-miss edge (its benign shell and git rows are read-only, build, or VCS-status
+commands — none reach the delete-verb branch of `DestructiveCommandRule` at all). `tests/integration/test_corpus_gate.py`'s `fpr == 0.0` assertion is
 therefore true for that code today in a vacuous sense, not because a benign delete-shaped command was
 tried and passed. `tests/unit/test_authority_tiers.py`'s discrete-boundary test closes this specific gap
 directly (a same-rule near-miss case, not a corpus row), but a corpus row exercising that same edge
