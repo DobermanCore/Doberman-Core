@@ -287,6 +287,29 @@ def test_challenge_message_is_ascii_and_cp1252_safe():
         msg.encode("ascii")  # raises UnicodeEncodeError if non-ASCII
 
 
+def test_challenge_message_with_capped_unknown_effects_is_ascii_and_cp1252_safe():
+    """The blast-radius line must not reintroduce non-ASCII: the capped/unknown
+    shade of EffectSet (hard failure — no lower bound at all, ADR 0094) renders
+    through format_effect_set's "unknown ..." branch, which must stay ASCII like
+    every other challenge-message line."""
+    from doberman.auth.provider import _challenge_message
+
+    unknown_effects = EffectSet(
+        file_count=None,
+        dir_count=None,
+        capped=True,
+        hits_git=False,
+        hits_outside_repo=False,
+        digest="d",
+    )
+    for tone in ("human", "technical"):
+        msg = _challenge_message(
+            _auth_decision(effects=unknown_effects), _action(), AuthTier.soft_confirm, tone
+        )
+        assert msg.isascii(), f"non-ASCII in {tone} challenge prompt: {msg!r}"
+        assert msg.encode("cp1252")  # raises UnicodeEncodeError if not cp1252-safe
+
+
 def test_challenge_message_human_tone_is_plain_and_names_target_and_reason():
     """S1: the "human" tone (the default) is plain-worded but states the same facts —
     the exact target and the reason, in plain language, without the raw code or the

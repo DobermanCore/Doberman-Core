@@ -281,7 +281,7 @@ def test_format_effect_set_hard_unknown():
         hits_outside_repo=False,
         digest="d",
     )
-    assert format_effect_set(effects) == "unknown — count unavailable"
+    assert format_effect_set(effects) == "unknown - count unavailable"
 
 
 def test_format_effect_set_never_contains_a_path():

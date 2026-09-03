@@ -313,7 +313,7 @@ def format_effect_set(effects: EffectSet | None) -> str | None:
         return None
     if effects.capped:
         if effects.file_count is None:
-            return "unknown — count unavailable"
+            return "unknown - count unavailable"
         return f"{effects.file_count}+ files"
     file_word = "file" if effects.file_count == 1 else "files"
     files = f"{effects.file_count:,} {file_word}"
