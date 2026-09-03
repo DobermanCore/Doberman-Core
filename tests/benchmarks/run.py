@@ -23,14 +23,16 @@ _PROFILES = ("both", "before_after", "builtins_only", "with_plugins")
 _MODES = ("light", "balanced", "strict", "paranoid")
 
 
-def _run_one(adapter, profile: str, mode: str | None) -> dict:
+def _run_one(adapter, profile: str, mode: str | None, session_replay: bool) -> dict:
     """Run one (profile, mode) combination and return its report dict."""
     if profile == "both":
-        return run_profiles(adapter, mode=mode)
+        return run_profiles(adapter, mode=mode, session_replay=session_replay)
     if profile == "before_after":
-        return run_before_after(adapter, mode=mode)
+        return run_before_after(adapter, mode=mode, session_replay=session_replay)
     load_plugins = profile == "with_plugins"
-    return run_suite(adapter, build_pipeline(load_plugins=load_plugins), mode=mode).to_dict()
+    return run_suite(
+        adapter, build_pipeline(load_plugins=load_plugins), mode=mode, session_replay=session_replay
+    ).to_dict()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -67,6 +69,15 @@ def main(argv: list[str] | None = None) -> int:
         "number) instead of the ASR/FPR path; suite-independent (--suite/--profile/--mode "
         "are ignored)",
     )
+    parser.add_argument(
+        "--replay-session",
+        action="store_true",
+        help="apply the post-decide floors (taint floor, echo tripwire, session correlator) that the "
+        "proxy/host-hook spine apply after decide() returns, replaying each case inside a fresh isolated "
+        "per-case session; off by default (byte-for-byte the existing stateless per-action path). "
+        "Applies only to the ASR/FPR path (--profile both/before_after/builtins_only/with_plugins), not "
+        "--corpus/--subjective/--poisoning.",
+    )
     args = parser.parse_args(argv)
 
     if args.poisoning:
@@ -102,10 +113,22 @@ def main(argv: list[str] | None = None) -> int:
         from .subjective_runner import run_subjective_eval
 
         report: dict = run_subjective_eval(adapter)
-    elif args.mode == "all":
-        report = {m: _run_one(adapter, args.profile, m) for m in _MODES}
     else:
-        report = _run_one(adapter, args.profile, args.mode)
+        from contextlib import nullcontext
+
+        if args.replay_session:
+            from .session_replay import isolated_process_state
+
+            state_ctx = isolated_process_state()
+        else:
+            state_ctx = nullcontext()
+        with state_ctx:
+            if args.mode == "all":
+                report = {
+                    m: _run_one(adapter, args.profile, m, args.replay_session) for m in _MODES
+                }
+            else:
+                report = _run_one(adapter, args.profile, args.mode, args.replay_session)
 
     json.dump(report, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
