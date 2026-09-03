@@ -51,15 +51,23 @@ _MAX_INPUT_CHARS = 8192
 _PREFIX = "hmac:"
 
 
-def _default_key_path() -> Path:
-    """Per-user key path OUTSIDE any repository (never committed)."""
+def user_config_dir() -> Path:
+    """Per-user Doberman config directory OUTSIDE any repository (never committed).
+
+    Holds the fingerprint key and the hook install manifest.
+    """
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.path.join(
             os.path.expanduser("~"), "AppData", "Local"
         )
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    return Path(base) / "doberman" / "fingerprint.key"
+    return Path(base) / "doberman"
+
+
+def _default_key_path() -> Path:
+    """Per-user key path OUTSIDE any repository (never committed)."""
+    return user_config_dir() / "fingerprint.key"
 
 
 def _key_path() -> Path:
