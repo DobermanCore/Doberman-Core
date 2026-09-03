@@ -219,11 +219,14 @@ def test_unknown_and_cap_hit_share_the_same_sentinel_digest(tmp_path):
     assert cap_hit.digest == unknown.digest
 
 
-def test_nul_byte_operand_yields_unknown_never_raises(tmp_path):
-    # A NUL byte in an adversarial operand makes os.path.islink()/os.path.join()
-    # raise ValueError before the pre-existing try/except OSError even starts —
-    # compute_delete_effects's contract is "never raises; failure => unknown"
-    # (ADR 0094 clause 3), so this must degrade to unknown, not propagate.
+def test_nul_byte_operand_yields_unknown_never_a_confident_zero(tmp_path):
+    # A NUL byte can never appear in a real path component on any filesystem.
+    # canonicalize()/Path.exists() already swallow the resulting ValueError
+    # internally (stdlib genericpath does this since 3.8) rather than raise
+    # it, so left unguarded this operand would fall through the "doesn't
+    # exist" branch and render as a confident file_count=0 — exactly the
+    # false-safe empty preview ADR 0094 clause 3 forbids. Must degrade to
+    # unknown instead.
     effects = compute_delete_effects(["evil\x00operand"], str(tmp_path))
     assert effects.capped is True
     assert effects.file_count is None
