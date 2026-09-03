@@ -18,6 +18,7 @@ from typer.testing import Result
 
 from doberman.auth.password import PASSWORD_FILE_ENV
 from doberman.auth.totp import TOTP_FILE_ENV
+from doberman.hosthooks.integrity import MANIFEST_ENV
 from doberman.storage import fingerprint as _fingerprint_module
 from doberman.storage.device_metrics import HOME_ENV
 from doberman.storage.fingerprint import KEY_FILE_ENV
@@ -44,6 +45,15 @@ def isolated_fingerprint_key(tmp_path, monkeypatch):
     monkeypatch.setenv(KEY_FILE_ENV, str(key_path))
     _fingerprint_module._load_or_create_key.cache_clear()
     return key_path
+
+
+@pytest.fixture(autouse=True)
+def isolated_install_manifest(tmp_path, monkeypatch):
+    """Point the hook install manifest (#239) at a per-test temp file so CLI
+    tests that run install-hooks never write to the real per-user manifest."""
+    manifest_path = tmp_path / "doberman-install-manifest.json"
+    monkeypatch.setenv(MANIFEST_ENV, str(manifest_path))
+    return manifest_path
 
 
 @pytest.fixture(autouse=True)
