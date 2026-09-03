@@ -195,11 +195,18 @@ def replay_case(
     isolated per-case session (a temp repo root — a temp SQLite DB) so a prior
     case's taint/decision history can never leak into this one via
     ``entity_scope``, which is keyed by repo root alone (see the module
-    docstring's "Per-case isolation" rationale in the plan)."""
-    with tempfile.TemporaryDirectory(
-        prefix="doberman-bench-", ignore_cleanup_errors=True
-    ) as repo_root:
-        return asyncio.run(_replay_case_async(case, suite_name, pipeline, mode, repo_root))
+    docstring's "Per-case isolation" rationale in the plan).
+
+    Also wraps ``isolated_process_state()`` (never touch the operator's real
+    ``~/.doberman`` fingerprint key / metrics rollup) — this guarantee must
+    hold for ANY caller, not just the CLI entry point (``tests/benchmarks/
+    run.py``), which nests its own (now redundant, harmless) copy around the
+    whole run."""
+    with isolated_process_state():
+        with tempfile.TemporaryDirectory(
+            prefix="doberman-bench-", ignore_cleanup_errors=True
+        ) as repo_root:
+            return asyncio.run(_replay_case_async(case, suite_name, pipeline, mode, repo_root))
 
 
 def _restore_env(name: str, prev: str | None) -> None:

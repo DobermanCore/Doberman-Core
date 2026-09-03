@@ -12,7 +12,11 @@ the-floor style, including the former's synthetic AWS-example-key fixture.
 
 from __future__ import annotations
 
+import pathlib
+
 from doberman.models import ActionType, ReasonCode, SourceContext
+from doberman.storage.device_metrics import HOME_ENV
+from doberman.storage.fingerprint import KEY_FILE_ENV
 from tests.benchmarks.adapter import BenchmarkCase, CandidateAction
 from tests.benchmarks.profiles import build_pipeline
 from tests.benchmarks.runner import run_suite
@@ -172,6 +176,28 @@ def test_session_replay_leaves_a_benign_single_action_case_unchanged():
     )
     assert stateless.benign_pass == replayed.benign_pass == 1
     assert stateless.to_dict()["benign"] == replayed.to_dict()["benign"]
+
+
+def test_replay_case_isolates_process_state_without_the_cli_wrapper(monkeypatch, tmp_path):
+    """The isolated_process_state() guarantee (never touch the operator's real
+    per-user state) must not depend on the CLI entry point (tests/benchmarks/
+    run.py) wrapping the call -- a programmatic replay_case() call must
+    isolate itself. Un-sets DOBERMAN_HOME/DOBERMAN_KEY_FILE (undoing
+    conftest's own autouse isolation, to prove replay_case doesn't rely on
+    an external caller for it) and points Path.home() at a fake directory,
+    then proves nothing gets created there."""
+    from tests.benchmarks import session_replay
+
+    fake_home = tmp_path / "fake-real-home"
+    fake_home.mkdir()
+    monkeypatch.setattr(pathlib.Path, "home", lambda: fake_home)
+    monkeypatch.delenv(HOME_ENV, raising=False)
+    monkeypatch.delenv(KEY_FILE_ENV, raising=False)
+
+    pipeline = build_pipeline(load_plugins=False)
+    session_replay.replay_case(_benign_single_action_case(), "suite", pipeline, "balanced")
+
+    assert not (fake_home / ".doberman").exists()
 
 
 def test_record_untrusted_read_survives_entity_scope_failure(monkeypatch):
