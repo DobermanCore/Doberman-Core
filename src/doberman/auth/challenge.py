@@ -299,6 +299,30 @@ def current_challenge() -> tuple[Decision, SecurityObject, AuthTier] | None:
     return _current_challenge.get()
 
 
+#: The shared "Blast radius" label every prompter puts in front of
+#: format_effect_set()'s string (ADR 0094) — hoisted to one constant so the
+#: four hand-written call sites (provider.py's two tones, gui_prompter,
+#: dashboard_prompter) cannot drift on the wording (C2 final review, prefix
+#: hoist). The technical tone lower-cases it to match its other lower-case
+#: field labels; the word choice itself stays identical everywhere.
+EFFECT_SET_LABEL = "Blast radius"
+
+
+def _effect_set_flags_suffix(effects: EffectSet) -> str:
+    """ ", includes .git" / ", reaches outside the repo" / both — ASCII only.
+
+    I2 (C2 final review): ``hits_git``/``hits_outside_repo`` were computed and
+    carried on ``EffectSet`` but never rendered by this, the ONE formatter
+    every prompter uses. Classes, not paths — no location is named.
+    """
+    flags = []
+    if effects.hits_git:
+        flags.append("includes .git")
+    if effects.hits_outside_repo:
+        flags.append("reaches outside the repo")
+    return f", {', '.join(flags)}" if flags else ""
+
+
 def format_effect_set(effects: EffectSet | None) -> str | None:
     """The ONE redaction-safe display string for a delete-class AUTH's
     blast-radius preview (ADR 0094) — every prompter (dashboard, GUI,
@@ -307,20 +331,23 @@ def format_effect_set(effects: EffectSet | None) -> str | None:
     show — a non-delete-class AUTH, or ``effects`` itself is ``None``.
 
     Built from counts and booleans only; never a path (there is no path
-    field on ``EffectSet`` to leak).
+    field on ``EffectSet`` to leak). The ``hits_git``/``hits_outside_repo``
+    flags (I2) are appended, ASCII only, in every shade — known count, cap
+    hit, and hard unknown alike.
     """
     if effects is None:
         return None
+    flags = _effect_set_flags_suffix(effects)
     if effects.capped:
         if effects.file_count is None:
-            return "unknown - count unavailable"
-        return f"{effects.file_count}+ files"
+            return "unknown - count unavailable" + flags
+        return f"{effects.file_count:,}+ files" + flags
     file_word = "file" if effects.file_count == 1 else "files"
     files = f"{effects.file_count:,} {file_word}"
     if effects.dir_count:
         dir_word = "directory" if effects.dir_count == 1 else "directories"
-        return f"{files} in {effects.dir_count:,} {dir_word}"
-    return files
+        return f"{files} in {effects.dir_count:,} {dir_word}" + flags
+    return files + flags
 
 
 def _run_with_deadline(

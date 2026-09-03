@@ -33,7 +33,13 @@ from typing import Any, Protocol, runtime_checkable
 
 from doberman.auth import totp
 from doberman.auth.approval import ApprovalOutcome, request_approval, resolve_approval_method
-from doberman.auth.challenge import AuthResult, AuthTier, Prompter, format_effect_set
+from doberman.auth.challenge import (
+    EFFECT_SET_LABEL,
+    AuthResult,
+    AuthTier,
+    Prompter,
+    format_effect_set,
+)
 from doberman.explain import _describe_reason
 from doberman.models import ActionType, Decision, SecurityObject
 
@@ -215,7 +221,7 @@ def _message_from_parts(parts: dict[str, Any]) -> str:
     prefix = f"{parts['notice']}\n\n" if parts["notice"] else ""
     effects = parts.get("effects")
     if parts["tone"] == "technical":
-        effects_line = f"  blast radius: {effects}\n" if effects else ""
+        effects_line = f"  {EFFECT_SET_LABEL.lower()}: {effects}\n" if effects else ""
         return prefix + (
             f"{parts['headline']}\n"
             f"  role:   {parts['role']}\n"
@@ -224,7 +230,7 @@ def _message_from_parts(parts: dict[str, Any]) -> str:
             f"{effects_line}"
             f"Approve THIS exact action?"
         )
-    effects_line = f"Blast radius: {effects}\n\n" if effects else ""
+    effects_line = f"{EFFECT_SET_LABEL}: {effects}\n\n" if effects else ""
     return prefix + (
         f"{parts['headline']}\n"
         f"\n"

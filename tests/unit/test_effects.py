@@ -330,7 +330,10 @@ def test_format_effect_set_cap_hit():
         hits_outside_repo=False,
         digest="d",
     )
-    assert format_effect_set(effects) == "1000+ files"
+    # M3 (C2 final review): the cap branch renders without a thousands
+    # separator while the known-count branch uses `{:,}` — inconsistent, and
+    # the whole point of a preview is a number a human reads at a glance.
+    assert format_effect_set(effects) == "1,000+ files"
 
 
 def test_format_effect_set_hard_unknown():
@@ -343,6 +346,71 @@ def test_format_effect_set_hard_unknown():
         digest="d",
     )
     assert format_effect_set(effects) == "unknown - count unavailable"
+
+
+# --- hits_git / hits_outside_repo rendering (I2, C2 final review) ------------
+#
+# Both flags were computed and carried on EffectSet but never shown by the
+# ONE formatter every prompter renders — README said "flagged", but nothing
+# rendered them. Every shade (known count, cap hit, hard unknown) must show
+# both, ASCII only.
+
+
+def test_format_effect_set_includes_git_flag():
+    effects = EffectSet(
+        file_count=3, dir_count=1, capped=False, hits_git=True, hits_outside_repo=False, digest="d"
+    )
+    assert format_effect_set(effects) == "3 files in 1 directory, includes .git"
+
+
+def test_format_effect_set_outside_repo_flag():
+    effects = EffectSet(
+        file_count=3, dir_count=1, capped=False, hits_git=False, hits_outside_repo=True, digest="d"
+    )
+    assert format_effect_set(effects) == "3 files in 1 directory, reaches outside the repo"
+
+
+def test_format_effect_set_both_flags():
+    effects = EffectSet(
+        file_count=3, dir_count=1, capped=False, hits_git=True, hits_outside_repo=True, digest="d"
+    )
+    assert (
+        format_effect_set(effects)
+        == "3 files in 1 directory, includes .git, reaches outside the repo"
+    )
+
+
+def test_format_effect_set_git_flag_on_cap_hit_shade():
+    effects = EffectSet(
+        file_count=1000,
+        dir_count=None,
+        capped=True,
+        hits_git=True,
+        hits_outside_repo=False,
+        digest="d",
+    )
+    assert format_effect_set(effects) == "1,000+ files, includes .git"
+
+
+def test_format_effect_set_git_flag_on_hard_unknown_shade():
+    effects = EffectSet(
+        file_count=None,
+        dir_count=None,
+        capped=True,
+        hits_git=True,
+        hits_outside_repo=False,
+        digest="d",
+    )
+    assert format_effect_set(effects) == "unknown - count unavailable, includes .git"
+
+
+def test_format_effect_set_flags_are_ascii_only():
+    effects = EffectSet(
+        file_count=3, dir_count=1, capped=False, hits_git=True, hits_outside_repo=True, digest="d"
+    )
+    rendered = format_effect_set(effects)
+    rendered.encode("ascii")  # raises UnicodeEncodeError if not pure ASCII
+    rendered.encode("cp1252")
 
 
 def test_format_effect_set_never_contains_a_path():

@@ -58,7 +58,7 @@ import threading
 from collections.abc import Iterable
 from typing import Any
 
-from doberman.auth.challenge import Prompter
+from doberman.auth.challenge import EFFECT_SET_LABEL, Prompter
 from doberman.render import deadline_note_mmss
 
 logger = logging.getLogger("doberman.auth.gui_prompter")
@@ -1122,7 +1122,7 @@ def _effects_line(parts: dict) -> str | None:
     ``None``, or a hand-built ``parts`` dict that omits the key.
     """
     effects = parts.get("effects")
-    return f"Blast radius: {effects}" if effects else None
+    return f"{EFFECT_SET_LABEL}: {effects}" if effects else None
 
 
 _SEVERITY_WORDS = ("critical", "high", "medium", "low")

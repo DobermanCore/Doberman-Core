@@ -28,7 +28,7 @@ import asyncio
 import threading
 from datetime import datetime, timezone
 
-from doberman.auth.challenge import current_challenge, format_effect_set
+from doberman.auth.challenge import EFFECT_SET_LABEL, current_challenge, format_effect_set
 from doberman.auth.gui_prompter import PrompterUnavailableError
 from doberman.storage import approvals
 from doberman.storage.heartbeat import DEFAULT_HEARTBEAT_MAX_AGE_S, heartbeat_is_fresh
@@ -95,7 +95,7 @@ class DashboardPrompter:
         # explanation exactly as it was.
         effects_line = format_effect_set(decision.effects)
         explanation = (
-            f"{decision.explanation} Blast radius: {effects_line}"
+            f"{decision.explanation} {EFFECT_SET_LABEL}: {effects_line}"
             if effects_line
             else decision.explanation
         )
