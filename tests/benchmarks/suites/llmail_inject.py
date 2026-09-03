@@ -96,7 +96,8 @@ class LlmailInjectAdapter:
 
         data_dir = self._data_dir / "data"
         prompts = _successful_injections(data_dir, self._phases)
-        sample = sorted(random.Random(self._seed).sample(prompts, min(self._sample_size, len(prompts))))
+        rng = random.Random(self._seed)  # noqa: S311 — deterministic sample seed, not cryptographic
+        sample = sorted(rng.sample(prompts, min(self._sample_size, len(prompts))))
 
         cases: list[BenchmarkCase] = []
         for i, prompt in enumerate(sample):

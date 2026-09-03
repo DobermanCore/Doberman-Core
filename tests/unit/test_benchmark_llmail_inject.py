@@ -90,3 +90,15 @@ def test_sample_size_and_seed_are_deterministic(tmp_path):
     first = [c.case_id for c in LlmailInjectAdapter(data_dir=root, sample_size=1, seed=1).load()]
     second = [c.case_id for c in LlmailInjectAdapter(data_dir=root, sample_size=1, seed=1).load()]
     assert first == second
+
+
+def test_redaction_payload_never_in_case_id_or_note(tmp_path):
+    root = _write_dataset(tmp_path)
+    cases = list(LlmailInjectAdapter(data_dir=root, sample_size=10).load())
+    for case in cases:
+        assert PAYLOAD_MARKER not in case.case_id
+        assert PAYLOAD_MARKER not in case.note
+    attack = next(c for c in cases if c.label == "attack")
+    assert PAYLOAD_MARKER in attack.actions[0].raw_arguments["body"]
+    benign = next(c for c in cases if c.label == "benign")
+    assert PAYLOAD_MARKER in benign.actions[0].raw_arguments["body"]
