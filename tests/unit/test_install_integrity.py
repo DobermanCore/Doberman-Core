@@ -7,7 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from doberman.cli.main import app
-from doberman.hosthooks import integrity
+from doberman.hosthooks import claude_code, integrity
 from doberman.hosthooks.install import (
     doberman_groups,
     load_settings,
@@ -251,3 +251,145 @@ def test_codex_install_records_and_uninstall_clears(manifest_env: Path, tmp_path
         == 0
     )
     assert integrity.verify_install("codex", "repo", hooks_path, groups).state == "absent"
+
+
+# ---------------------------------------------------------------------------
+# check_all / hook_warning — verify at every surviving hook invocation (#239)
+# ---------------------------------------------------------------------------
+
+
+def _install(repo: Path) -> Path:
+    assert CliRunner().invoke(app, ["install-hooks", "--path", str(repo)]).exit_code == 0
+    return resolve_settings_path("project", str(repo))
+
+
+def _strip(settings_path: Path, event: str) -> None:
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data["hooks"].pop(event)
+    settings_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _pass_payload(repo: Path) -> str:
+    return json.dumps(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(repo / "README.md")},
+            "cwd": str(repo),
+            "session_id": "s1",
+        }
+    )
+
+
+def test_pre_hook_warns_when_post_group_stripped(manifest_env: Path, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    settings_path = _install(repo)
+    _strip(settings_path, "PostToolUse")
+    out = claude_code.run_pre_hook(_pass_payload(repo))
+    assert out is not None
+    data = json.loads(out)
+    assert "hookSpecificOutput" not in data  # the PASS envelope is unchanged: no deny added
+    assert "PostToolUse" in data["systemMessage"]
+    assert str(tmp_path) not in data["systemMessage"]
+
+
+def test_pre_hook_silent_when_intact(manifest_env: Path, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    _install(repo)
+    assert claude_code.run_pre_hook(_pass_payload(repo)) is None
+
+
+def test_pre_hook_silent_when_uninstalled_legitimately(manifest_env: Path, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    _install(repo)
+    assert CliRunner().invoke(app, ["uninstall-hooks", "--path", str(repo)]).exit_code == 0
+    assert claude_code.run_pre_hook(_pass_payload(repo)) is None
+
+
+def test_deny_envelope_keeps_its_decision_and_gains_warning(
+    manifest_env: Path, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    settings_path = _install(repo)
+    _strip(settings_path, "PostToolUse")
+    out = claude_code.run_pre_hook("not json")
+    data = json.loads(out)
+    assert data["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_divergence_is_recorded_in_manifest(manifest_env: Path, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    settings_path = _install(repo)
+    _strip(settings_path, "PreToolUse")
+    claude_code.run_pre_hook(_pass_payload(repo))
+    data = json.loads(manifest_env.read_text(encoding="utf-8"))
+    assert data["entries"][0]["diverged"]["events"] == ["PreToolUse"]
+
+
+def test_hook_warning_never_raises(
+    manifest_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    _install(repo)
+    monkeypatch.setattr(
+        integrity, "check_all", lambda root: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    assert integrity.hook_warning(str(repo)) is None
+    assert claude_code.run_pre_hook(_pass_payload(repo)) is None
+
+
+def test_no_manifest_file_means_no_settings_reads(
+    manifest_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(integrity, "check_all", lambda root: calls.append(root) or [])
+    assert integrity.hook_warning(str(tmp_path)) is None
+    assert calls == []
+
+
+def test_excluded_project_skips_the_check(
+    manifest_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    settings_path = _install(repo)
+    _strip(settings_path, "PreToolUse")
+    monkeypatch.setattr("doberman.hosthooks.spine.is_excluded", lambda cwd: True)
+    assert claude_code.run_pre_hook(_pass_payload(repo)) is None
+
+
+def test_codex_pre_hook_warns_on_stderr(
+    manifest_env: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from doberman.hosthooks import codex
+    from doberman.hosthooks.install_codex import resolve_codex_hooks_path
+
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    assert (
+        CliRunner().invoke(app, ["install-hooks", "--host", "codex", "--path", str(repo)]).exit_code
+        == 0
+    )
+    # Codex scopes in this codebase are "repo" (project-analog) and "user" (global-
+    # analog) — not "project"; see resolve_codex_hooks_path.
+    hooks_path = resolve_codex_hooks_path("repo", str(repo))
+    _strip(hooks_path, "PreToolUse")
+    # Benign Codex payload shape (mirrors tests/unit/test_hosthook_codex.py's pre_bash.json
+    # fixture usage): a Read tool, translated by codex.to_normalize_input via the shared
+    # Claude Code builtin map, PASSes (abstains) so the warning is the only signal.
+    payload = json.dumps(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(repo / "x")},
+            "cwd": str(repo),
+        }
+    )
+    codex.run_codex_pre(payload)
+    assert "hook registration changed" in capsys.readouterr().err

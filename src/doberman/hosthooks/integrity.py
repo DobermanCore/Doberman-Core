@@ -224,3 +224,78 @@ def note_divergence(host: str, scope: str, settings_path: Path, events: tuple[st
         _save(data)
     except Exception:  # noqa: BLE001,S110 - a record-keeping failure must never reach a hook
         pass
+
+
+#: Every tracked (host, scope) registration. Codex's scopes are "repo" (the
+#: project-settings analog) and "user" (the global-settings analog) -- see
+#: doberman.hosthooks.install_codex.resolve_codex_hooks_path.
+_SCOPES: tuple[tuple[str, str], ...] = (
+    ("claude", "project"),
+    ("claude", "global"),
+    ("claude", "local"),
+    ("codex", "repo"),
+    ("codex", "user"),
+)
+
+
+def _live_groups(
+    host: str, scope: str, project_root: str
+) -> tuple[Path, dict[str, list[dict[str, Any]]]]:
+    """Resolve a scope's settings file and its live Doberman groups. May raise."""
+    from doberman.hosthooks.install import load_settings
+
+    if host == "claude":
+        from doberman.hosthooks.install import doberman_groups, resolve_settings_path
+
+        path = resolve_settings_path(scope, project_root)
+        return path, doberman_groups(load_settings(path))
+    from doberman.hosthooks.install_codex import codex_doberman_groups, resolve_codex_hooks_path
+
+    path = resolve_codex_hooks_path(scope, project_root)
+    return path, codex_doberman_groups(load_settings(path))
+
+
+def check_all(project_root: str) -> list[IntegrityStatus]:
+    """Verify every tracked scope for *project_root*. Never raises.
+
+    One status per ``(host, scope)`` in :data:`_SCOPES`; a scope whose settings
+    file is unreadable yields ``absent`` rather than raising.
+    """
+    out: list[IntegrityStatus] = []
+    for host, scope in _SCOPES:
+        try:
+            path, groups = _live_groups(host, scope, project_root)
+            out.append(verify_install(host, scope, path, groups))
+        except Exception:  # noqa: BLE001 - an unreadable settings file is "absent", never a crash
+            out.append(IntegrityStatus(host, scope, "absent"))
+    return out
+
+
+def hook_warning(project_root: str) -> str | None:
+    """The one-line warning a hook attaches when a recorded registration diverged.
+
+    Cheap when there is nothing to check (no manifest file: return without
+    reading any settings file). Never raises; any failure is "no warning".
+    """
+    try:
+        if not manifest_path().exists():
+            return None
+        diverged = [s for s in check_all(project_root) if s.state == "diverged"]
+        if not diverged:
+            return None
+        for s in diverged:
+            try:
+                path, _ = _live_groups(s.host, s.scope, project_root)
+                note_divergence(s.host, s.scope, path, s.diverged_events)
+            except Exception:  # noqa: BLE001,S110
+                pass
+        from doberman.branding import DOG
+
+        where = ", ".join(f"{s.host} {s.scope}: {'/'.join(s.diverged_events)}" for s in diverged)
+        return (
+            f"{DOG} Doberman: hook registration changed since install ({where}). "
+            "Doberman may not be gating every call here. Run `doberman doctor`, "
+            "then `doberman install-hooks` to restore."
+        )
+    except Exception:  # noqa: BLE001 - warning-only; never reaches the hook's decision
+        return None
