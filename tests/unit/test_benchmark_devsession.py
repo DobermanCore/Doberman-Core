@@ -89,7 +89,8 @@ def test_held_out_and_warm_case_ids_are_disjoint():
 # the whole file.
 
 _real_hst_marks = (
-    # Measured ~172s at the default fast HST; ~4x headroom (also covers the
+    # Measured 172-396s at the default fast HST on a loaded Windows box (worst
+    # case ~1.8x headroom; nightly production-size run 345s, ~2x) (also covers the
     # nightly's DOBERMAN_TEST_REAL_HST=1 production-size run, measured ~327s).
     pytest.mark.timeout(700),
     # ONE shared xdist group so this module's 3 tests (1 module-scoped
