@@ -367,6 +367,12 @@ class ReasonCode(StrEnum):
     # never promoted to BLOCK (a probability score never earns a BLOCK).
     dependency_name_typosquat = "dependency_name_typosquat"
 
+    # C2 — the proxy's post-approval TOCTOU re-check (ADR 0094) found the
+    # recomputed delete-class blast-radius effect set disagrees with what was
+    # shown at approval time: the filesystem changed (in either direction), or
+    # a previously-known count became unknown. Synthetic BLOCK, never released.
+    effect_set_diverged = "effect_set_diverged"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).
@@ -456,6 +462,35 @@ class SecurityObject(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class EffectSet(BaseModel):
+    """A bounded, offline snapshot of what a delete-class command's operands
+    would remove (ADR 0094). Computed by
+    :func:`doberman.engine.effects.compute_delete_effects`; attached to
+    :attr:`Decision.effects`.
+
+    ``file_count``/``dir_count`` are ``None`` only in the hard-failure shade of
+    the non-authoritative state (an OS error, a wall-clock timeout, or an
+    unresolved glob-shaped operand) — no lower bound at all. Hitting the entry
+    cap is the OTHER non-authoritative shade: ``capped=True`` too, but
+    ``file_count`` reports the cap itself as a known lower bound ("at least
+    this many"). Never render either shade as an exact, reassuring number.
+
+    ``digest`` is a stable hash of the sorted matched relative-path set (or a
+    fixed sentinel shared by both non-authoritative shades) — never a raw path
+    itself. Used only to detect drift between an AUTH preview and execution
+    (the proxy's TOCTOU re-check in ``proxy/executor.py``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    file_count: int | None
+    dir_count: int | None
+    capped: bool
+    hits_git: bool
+    hits_outside_repo: bool
+    digest: str
+
+
 class Decision(BaseModel):
     """The engine's final, immutable answer for one action.
 
@@ -491,6 +526,11 @@ class Decision(BaseModel):
     decided_at: AwareDatetime
     #: Shadow-only second opinion; never affects final_verdict/final_risk.
     shadow: GuardrailResult | None = None
+    #: Bounded, offline blast-radius preview for a delete-class command
+    #: (ADR 0094) — display/audit only, same structural isolation as
+    #: ``shadow``: no validator relates it to final_verdict/final_risk, and no
+    #: rule or floor reads it. ``None`` for every non-delete-class decision.
+    effects: EffectSet | None = None
 
     @model_validator(mode="after")
     def _non_pass_must_be_explained(self) -> "Decision":
