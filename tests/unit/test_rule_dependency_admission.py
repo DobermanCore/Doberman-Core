@@ -331,6 +331,45 @@ def test_npm_known_malicious_flagship_blocks_via_real_bundled_data():
     assert ReasonCode.dependency_known_malicious in result.reason_codes
 
 
+# ── pnpm/yarn boolean-flag regression (`-w`/`-W` are NOT npm's `-w`) ──────
+# CRITICAL fix: pnpm's `-w`/`--workspace-root` and yarn classic's
+# `-W`/`--ignore-workspace-root-check` are BOOLEAN flags on those tools —
+# unlike npm's own `-w`/`--workspace <name>`, which takes a value. Applying
+# npm's value-flag set to pnpm/yarn swallowed the next operand as the
+# flag's "value" and silently PASSed (`pnpm add -w crossenv`, `pnpm install
+# -w crossenv`), a fail-closed regression introduced alongside the
+# per-ecosystem value-flag split in 67d8a8d.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pnpm add -w crossenv",
+        "pnpm install -w crossenv",
+        "pnpm add -F app crossenv",  # pnpm's real value flag still consumes its value
+        "yarn add -W crossenv",
+        "npm i -w app crossenv",  # npm's own -w DOES take a value; crossenv still extracted
+        "bun add crossenv",
+    ],
+)
+def test_npm_family_boolean_flags_are_not_misread_as_value_flags(command):
+    rule = DependencyAdmissionRule()  # real bundled known-malicious data
+    result = rule.evaluate(_action(), _ctx(command))
+    assert result.verdict is Verdict.BLOCK, command
+    assert ReasonCode.dependency_known_malicious in result.reason_codes
+
+
+def test_npm_install_cross_env_passes():
+    # Sanity: a legit package is unaffected by the pnpm/yarn boolean-flag fix.
+    result = DependencyAdmissionRule().evaluate(_action(), _ctx("npm install cross-env"))
+    assert result.verdict is Verdict.PASS
+
+
+def test_pnpm_add_react_passes():
+    result = DependencyAdmissionRule().evaluate(_action(), _ctx("pnpm add react"))
+    assert result.verdict is Verdict.PASS
+
+
 # ── uv's pip-compatible shim subcommand ───────────────────────────────────
 # IMPORTANT fix: v1 only mapped `uv add` (uv's own verb); `uv pip install X`
 # is uv's pip-compatible shim subcommand and used to fall through unmatched

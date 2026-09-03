@@ -72,7 +72,25 @@ from doberman.models import (
 _PIP_VALUE_FLAGS = frozenset(
     {"-r", "--requirement", "-c", "--constraint", "-i", "--index-url", "--extra-index-url"}
 )
-_NPM_VALUE_FLAGS = frozenset({"--registry", "--prefix", "-w", "--workspace"})
+_NPM_VALUE_FLAGS = frozenset({"--registry", "--prefix", "-w", "--workspace", "--tag"})
+#: pnpm's `-w`/`--workspace-root` is a BOOLEAN flag ("run as if invoked from
+#: the workspace root") — unlike npm's own `-w`/`--workspace <name>`, it
+#: takes NO value. Applying npm's value-flag set to pnpm swallowed the next
+#: operand as `-w`'s "value" (a fail-closed regression: `pnpm add -w
+#: crossenv` / `pnpm install -w crossenv` silently dropped the malicious
+#: name and PASSed). `-C`/`--dir <path>` and `-F`/`--filter <pattern>` are
+#: pnpm's real value-taking flags.
+_PNPM_VALUE_FLAGS = frozenset({"--registry", "-C", "--dir", "-F", "--filter"})
+#: yarn classic's `-W`/`--ignore-workspace-root-check` is likewise BOOLEAN
+#: (same shape as pnpm's `-w` above) — never give it npm's value set.
+_YARN_VALUE_FLAGS = frozenset({"--cwd", "--registry"})
+#: bun's own value-taking flags on `add`/`install`. `--registry` is left
+#: OUT: unverified whether bun accepts it as a CLI flag (vs. only via
+#: bunfig.toml/.npmrc). Per this module's value-flag policy, an unverified
+#: flag stays out of the value set — worst case a stray flag token is
+#: rejected by `_is_installable_name` (fail-closed), never a swallowed
+#: operand (fail-open).
+_BUN_VALUE_FLAGS = frozenset({"--cwd"})
 _CARGO_VALUE_FLAGS = frozenset({"--git", "--path", "--registry", "--features", "--rename", "-p"})
 #: gem's `-i` is `--install-dir` — a real gem flag, but NOT the pip
 #: `--index-url` alias it happens to collide with textually; keep `-i` for
@@ -93,9 +111,9 @@ _ECOSYSTEM_VERBS: dict[str, tuple[str, frozenset[str], frozenset[str]]] = {
     "uv": ("pypi", frozenset({"add"}), _NO_VALUE_FLAGS),
     "poetry": ("pypi", frozenset({"add"}), _NO_VALUE_FLAGS),
     "npm": ("npm", frozenset({"install", "i", "add"}), _NPM_VALUE_FLAGS),
-    "pnpm": ("npm", frozenset({"install", "i", "add"}), _NPM_VALUE_FLAGS),
-    "yarn": ("npm", frozenset({"add"}), _NPM_VALUE_FLAGS),
-    "bun": ("npm", frozenset({"install", "i", "add"}), _NPM_VALUE_FLAGS),
+    "pnpm": ("npm", frozenset({"install", "i", "add"}), _PNPM_VALUE_FLAGS),
+    "yarn": ("npm", frozenset({"add"}), _YARN_VALUE_FLAGS),
+    "bun": ("npm", frozenset({"install", "i", "add"}), _BUN_VALUE_FLAGS),
     "cargo": ("cargo", frozenset({"add"}), _CARGO_VALUE_FLAGS),
     "gem": ("rubygems", frozenset({"install"}), _GEM_VALUE_FLAGS),
     "go": ("go", frozenset({"get"}), _NO_VALUE_FLAGS),
