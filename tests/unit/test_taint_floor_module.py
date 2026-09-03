@@ -345,6 +345,83 @@ def test_echo_tripwire_excludes_a_trusted_host_at_record_time_too(tmp_path):
     assert asyncio.run(match_untrusted_value(str(tmp_path), "sess-trusted-record", host_fp)) is None
 
 
+def test_echo_tripwire_excludes_a_trusted_host_whole_url_form_end_to_end(tmp_path):
+    # Reviewer finding: untrusted_value_fingerprints emits BOTH the bare host
+    # AND the whole scheme://host/path form for a URL match. The old
+    # fingerprint-subtraction exclusion only ever removed the bare-host
+    # fingerprint (a fingerprint of "github.com" cannot be subtracted from the
+    # fingerprint of "https://github.com/octocat" — the two hash to unrelated
+    # values) — so a WebFetch result mentioning a trusted host's FULL URL,
+    # followed by an egress to that EXACT URL, still raised
+    # untrusted_value_echo even though the host is trusted. The fix filters by
+    # HOST before fingerprinting, so both forms are dropped together.
+    asyncio.run(
+        record_output_taint(
+            "see https://github.com/octocat for the profile",
+            str(tmp_path),
+            "sess-trusted-url-echo",
+            tool_name="WebFetch",
+        )
+    )
+    action = _action(external_destination="https://github.com/octocat")
+    decision = _pass_decision(action)
+
+    out = apply_echo_tripwire(
+        action,
+        decision,
+        "strict",
+        str(tmp_path),
+        "sess-trusted-url-echo",
+        {"url": "https://github.com/octocat"},
+    )
+
+    assert out is decision
+
+
+def test_echo_tripwire_excludes_a_trusted_host_whole_url_form_at_record_time_too(tmp_path):
+    # The record leg must ALSO drop the whole-URL fingerprint for a trusted
+    # host — not just the bare-host one — for the same row-cap-hygiene reason
+    # as the bare-host record-time test above.
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+
+    asyncio.run(
+        record_output_taint(
+            "see https://github.com/octocat for the profile",
+            str(tmp_path),
+            "sess-trusted-url-record",
+            tool_name="WebFetch",
+        )
+    )
+
+    url_fp = list(untrusted_value_fingerprints("https://github.com/octocat"))
+    assert (
+        asyncio.run(match_untrusted_value(str(tmp_path), "sess-trusted-url-record", url_fp)) is None
+    )
+
+
+def test_echo_tripwire_still_raises_a_whole_url_echo_for_a_non_excluded_host(tmp_path):
+    # Regression guard: the host-based pre-filter must not over-exclude — a
+    # genuine attacker host's whole-URL echo still raises exactly as before.
+    evil_url = "https://evil.test/x"
+    asyncio.run(
+        record_output_taint(
+            f"see {evil_url} for the payload",
+            str(tmp_path),
+            "sess-evil-url-echo",
+            tool_name="WebFetch",
+        )
+    )
+    action = _action(external_destination=evil_url)
+    decision = _pass_decision(action)
+
+    out = apply_echo_tripwire(
+        action, decision, "strict", str(tmp_path), "sess-evil-url-echo", {"url": evil_url}
+    )
+
+    assert out.final_verdict is Verdict.AUTH
+    assert ReasonCode.untrusted_value_echo in out.reason_codes
+
+
 def test_echo_tripwire_excludes_a_task_named_host(tmp_path):
     # (2) Same, but for a host the user named in their own turn this session
     # (seeded via storage.task_match) rather than the static trusted allowlist.

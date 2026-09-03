@@ -93,15 +93,26 @@ def _looks_like_host(candidate: str) -> bool:
     return tld not in _NON_TLD_LABELS
 
 
-def untrusted_value_fingerprints(text: str) -> set[str]:
+def untrusted_value_fingerprints(
+    text: str, *, excluded_hosts: set[str] | frozenset[str] | None = None
+) -> set[str]:
     """Keyed-HMAC fingerprints of whole hostname / URL / email VALUES in
     ``text``. Best-effort: a fingerprinting failure drops that value, never
     raises. Bounded input (``_SCAN_MAX_CHARS``) and output (``_MAX_VALUES``).
     The plaintext never leaves this function.
+
+    ``excluded_hosts`` (already-normalized, e.g. via :func:`_normalize_host`)
+    drops a URL/bare-host candidate by its HOST *before* fingerprinting — for
+    one URL match this drops BOTH the bare-host value and the whole-URL value
+    together, since they share the same host. This must happen pre-fingerprint:
+    a caller holding only a host allowlist has no way to derive the fingerprint
+    of a whole URL it never saw, so subtracting fingerprints *after* the fact
+    (as callers used to) can only ever drop the bare-host form.
     """
     if not text:
         return set()
     sample = text[:_SCAN_MAX_CHARS]
+    excluded = excluded_hosts or ()
 
     values: set[str] = set()
 
@@ -113,7 +124,7 @@ def untrusted_value_fingerprints(text: str) -> set[str]:
         except ValueError:
             continue
         host = _normalize_host(parts.hostname or "")
-        if not host:
+        if not host or host in excluded:
             continue
         values.add(host)
         # Whole-URL value (scheme + host + path, query stripped) — an exact
@@ -124,7 +135,7 @@ def untrusted_value_fingerprints(text: str) -> set[str]:
         if len(values) >= _MAX_VALUES:
             break
         host = _normalize_host(match.group(0))
-        if host and _looks_like_host(host):
+        if host and _looks_like_host(host) and host not in excluded:
             values.add(host)
 
     for match in _EMAIL_RE.finditer(sample):

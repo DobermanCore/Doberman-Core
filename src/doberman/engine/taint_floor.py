@@ -225,18 +225,22 @@ async def _outbound_matches_recorded_secret(
         return False
 
 
-def _outbound_untrusted_value_fingerprints(args: dict[str, Any], dest: str | None) -> set[str]:
+def _outbound_untrusted_value_fingerprints(
+    args: dict[str, Any], dest: str | None, excluded_hosts: set[str] | None = None
+) -> set[str]:
     """Keyed-HMAC fingerprints of untrusted-value-candidate tokens anywhere in
     the outbound payload (the call's arguments + its external destination).
     Mirrors ``_outbound_secret_fingerprints``'s walk exactly, swapping in the
-    C1 host/URL/email extractor."""
+    C1 host/URL/email extractor. ``excluded_hosts`` (see :func:`_excluded_hosts`)
+    is forwarded so a trusted/task-named host's value is dropped BEFORE
+    fingerprinting, not subtracted after."""
     from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
 
     fps: set[str] = set()
 
     def _walk(value: Any) -> None:
         if isinstance(value, str):
-            fps.update(untrusted_value_fingerprints(value))
+            fps.update(untrusted_value_fingerprints(value, excluded_hosts=excluded_hosts))
         elif isinstance(value, dict):
             for item in value.values():
                 _walk(item)
@@ -246,12 +250,12 @@ def _outbound_untrusted_value_fingerprints(args: dict[str, Any], dest: str | Non
 
     _walk(args)
     if dest:
-        fps.update(untrusted_value_fingerprints(dest))
+        fps.update(untrusted_value_fingerprints(dest, excluded_hosts=excluded_hosts))
     return fps
 
 
-async def _excluded_host_fingerprints(repo_root: str, session_id: str | None) -> set[str]:
-    """Keyed-HMAC fingerprints of hosts the echo tripwire must never raise on:
+async def _excluded_hosts(repo_root: str, session_id: str | None) -> set[str]:
+    """Normalized hosts the echo tripwire must never raise/record on:
     Doberman's own trusted-destination allowlist (the SAME
     ``destinations.TRUSTED_HOSTS`` :class:`~doberman.engine.rules.destinations.
     ExternalDestinationRule` uses — never a second list) and any host the user
@@ -264,22 +268,48 @@ async def _excluded_host_fingerprints(repo_root: str, session_id: str | None) ->
     the most common flows. This only narrows the RAISE; the objective
     :class:`ExternalDestinationRule` destination check is untouched.
 
-    Fails closed: an unreadable allowlist or task store (or a fingerprinting
-    failure) excludes NOTHING — the floor stays strict, it just doesn't get to
-    skip the read for the trusted/task-named case.
+    Returns raw normalized HOSTS, not fingerprints — deliberately, so callers
+    pass this into ``provenance_values.untrusted_value_fingerprints``'s
+    ``excluded_hosts`` and filter each candidate by its host BEFORE
+    fingerprinting. A fingerprint of ``"github.com"`` cannot be subtracted from
+    the fingerprint of a whole-URL value like ``"https://github.com/octocat"``
+    — the two hash to unrelated fingerprints — so a fingerprint-only exclusion
+    (the pre-fix shape of this function) could only ever drop the bare-host
+    form, leaving the whole-URL form of the very same trusted host raising.
+
+    Fails closed: an unreadable allowlist or task store excludes NOTHING — the
+    floor stays strict, it just doesn't get to skip the host for the
+    trusted/task-named case.
     """
     try:
         from doberman.engine.rules.destinations import TRUSTED_HOSTS
         from doberman.engine.rules.provenance_values import _normalize_host
-        from doberman.storage.fingerprint import fingerprint
         from doberman.storage.task_match import task_hosts_for
 
         hosts: set[str] = set(TRUSTED_HOSTS)
         if session_id:
             hosts.update(await task_hosts_for(repo_root, session_id))
-        return {fingerprint(_normalize_host(h)) for h in hosts if h}
-    except Exception:  # noqa: BLE001 — a read/fingerprint failure excludes nothing
+        return {_normalize_host(h) for h in hosts if h}
+    except Exception:  # noqa: BLE001 — a read failure excludes nothing
         return set()
+
+
+async def untrusted_read_value_fingerprints(
+    text: str, repo_root: str, session_id: str | None
+) -> set[str]:
+    """The ONE function both RECORD legs call for the untrusted-value side of
+    an untrusted read: the pure-MCP proxy's :func:`record_output_taint` below,
+    and the Claude Code host-hook's ``_record_untrusted_value_fingerprints``
+    (``hosthooks/claude_code.py``). Keeping this in one place is what makes the
+    two legs symmetric by construction rather than by discipline — before this,
+    the host-hook leg stored every candidate while the proxy leg excluded
+    trusted/task-named hosts, so the same WebFetch result taxed the two entry
+    points differently.
+    """
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+
+    excluded = await _excluded_hosts(repo_root, session_id)
+    return untrusted_value_fingerprints(text, excluded_hosts=excluded)
 
 
 async def apply_echo_tripwire_async(
@@ -304,21 +334,18 @@ async def apply_echo_tripwire_async(
 
     A trusted host (``destinations.TRUSTED_HOSTS``) or a host the user named in
     their own turn this session (``storage.task_match``) is excluded from the
-    match — see :func:`_excluded_host_fingerprints`. This only narrows the
-    RAISE; it never touches the objective destination rule.
+    match — see :func:`_excluded_hosts`. This only narrows the RAISE; it never
+    touches the objective destination rule.
     """
     if action.external_destination is None:
         return decision  # not an egress — nothing can leave through this action
     if decision.final_verdict is Verdict.BLOCK:
         return decision  # already maximally raised; skip the read
 
-    fps = _outbound_untrusted_value_fingerprints(args, action.external_destination)
+    excluded_hosts = await _excluded_hosts(repo_root, session_id)
+    fps = _outbound_untrusted_value_fingerprints(args, action.external_destination, excluded_hosts)
     if not fps:
-        return decision  # nothing host/URL/email-shaped outbound — skip the DB read
-
-    fps -= await _excluded_host_fingerprints(repo_root, session_id)
-    if not fps:
-        return decision  # every outbound value is a trusted/task-named host — skip the DB read
+        return decision  # nothing host/URL/email-shaped (or all trusted) outbound — skip the read
 
     from doberman.storage.taint import entity_scope, match_untrusted_value
 
@@ -403,7 +430,6 @@ async def record_output_taint(
     beyond what was actually found in the text.
     """
     try:
-        from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
         from doberman.engine.rules.secrets import candidate_secret_fingerprints
         from doberman.storage.taint import (
             TAINT_SECRET_ACCESS,
@@ -430,12 +456,11 @@ async def record_output_taint(
         if tool_name in UNTRUSTED_READ_TOOLS:
             await record_taints(repo_root, scopes, [TAINT_UNTRUSTED_READ])
             # Reviewer follow-up: never record a fingerprint for a trusted or
-            # task-named host in the first place — same exclusion the echo
-            # check applies, kept symmetric (row-cap hygiene; see
-            # _excluded_host_fingerprints).
-            values = untrusted_value_fingerprints(output_text) - await _excluded_host_fingerprints(
-                repo_root, session_id
-            )
+            # task-named host in the first place — the SAME shared function
+            # the host-hook record leg calls (untrusted_read_value_fingerprints),
+            # so the two legs cannot drift on what gets excluded (row-cap
+            # hygiene; see _excluded_hosts).
+            values = await untrusted_read_value_fingerprints(output_text, repo_root, session_id)
             if values:
                 await record_untrusted_values(repo_root, scopes, list(values), tool_name)
     except Exception:  # noqa: BLE001 — recording must never break the execution path

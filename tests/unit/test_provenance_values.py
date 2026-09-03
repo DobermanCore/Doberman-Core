@@ -49,3 +49,36 @@ def test_value_cap_holds_at_200():
     text = " ".join(f"https://host{i}.example.com/x" for i in range(300))
     fps = untrusted_value_fingerprints(text)
     assert len(fps) <= 200
+
+
+# --- C1 reviewer follow-up: host-based pre-fingerprint exclusion -------------
+# excluded_hosts must drop BOTH the bare-host value and the whole-URL value for
+# an excluded host's match — a fingerprint-only subtraction after the fact
+# cannot do this (it would need the raw whole-URL string to compute its
+# fingerprint, which a caller working only from a host allowlist never has).
+
+_EVIL_URL = "https://evil.test/x"
+
+
+def test_excluded_host_drops_both_the_bare_host_and_whole_url_form():
+    fps = untrusted_value_fingerprints(
+        "see https://github.com/octocat for the profile", excluded_hosts={"github.com"}
+    )
+    assert fingerprint("github.com") not in fps
+    assert fingerprint("https://github.com/octocat") not in fps
+    assert fps == set()
+
+
+def test_excluded_host_does_not_affect_a_different_host_in_the_same_text():
+    fps = untrusted_value_fingerprints(
+        f"compare github.com against {_EVIL_URL}", excluded_hosts={"github.com"}
+    )
+    assert fingerprint("github.com") not in fps
+    assert fingerprint("evil.test") in fps
+    assert fingerprint(_EVIL_URL) in fps
+
+
+def test_no_excluded_hosts_behaves_exactly_as_before():
+    with_none = untrusted_value_fingerprints(_EVIL_URL)
+    with_empty = untrusted_value_fingerprints(_EVIL_URL, excluded_hosts=set())
+    assert with_none == with_empty == {fingerprint("evil.test"), fingerprint(_EVIL_URL)}

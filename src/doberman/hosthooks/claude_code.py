@@ -598,18 +598,18 @@ def _record_untrusted_value_fingerprints(
     trusted local read is not an untrusted-provenance source. Light (the
     storage import is on the untrusted-read path only) and wrapped so a write
     can never break the execution path.
+
+    Reviewer follow-up: calls ``taint_floor.untrusted_read_value_fingerprints``
+    — the SAME function the proxy's ``record_output_taint`` calls — so a
+    trusted/task-named host is excluded from this leg exactly like the proxy
+    leg. The two record legs must never drift on what gets excluded.
     """
     if tool_name not in _UNTRUSTED_READ_TOOLS:
         return
 
-    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
-
-    values = untrusted_value_fingerprints(output_text)
-    if not values:
-        return
-
     import asyncio
 
+    from doberman.engine.taint_floor import untrusted_read_value_fingerprints
     from doberman.storage.taint import entity_scope, record_untrusted_values
 
     scopes: list[str] = [session_id] if session_id else []
@@ -618,8 +618,13 @@ def _record_untrusted_value_fingerprints(
     except Exception:  # noqa: BLE001,S110 — keep the session scope even if entity scope fails
         pass
 
+    async def _record() -> None:
+        values = await untrusted_read_value_fingerprints(output_text, repo_root, session_id)
+        if values:
+            await record_untrusted_values(repo_root, scopes, list(values), tool_name)
+
     try:
-        asyncio.run(record_untrusted_values(repo_root, scopes, list(values), tool_name))
+        asyncio.run(_record())
     except Exception:  # noqa: BLE001,S110 — fingerprint recording must never break execution
         pass
 
