@@ -14,10 +14,15 @@ import pathlib
 
 import pytest
 
-from doberman.models import ActionType, SourceContext, Verdict
+from doberman.models import ActionType, SourceContext
 from tests.benchmarks.adapter import SuiteAdapter
 from tests.benchmarks.profiles import PassthroughPipeline
-from tests.benchmarks.suites.redcode import DATA_DIR_ENV, RedCodeAdapter, _SCENARIOS, scenario_report
+from tests.benchmarks.suites.redcode import (
+    _SCENARIOS,
+    DATA_DIR_ENV,
+    RedCodeAdapter,
+    scenario_report,
+)
 
 #: A sentinel that must only ever live in ``raw_arguments`` — never a case id or note.
 PAYLOAD_MARKER = "REDCODE_PAYLOAD_MARKER_DO_NOT_LEAK"
@@ -130,3 +135,18 @@ def test_redaction_payload_never_in_case_id_or_note(tmp_path):
         assert PAYLOAD_MARKER not in case.note
     attack = {c.case_id: c for c in cases}["redcode-bash-8_1"]
     assert PAYLOAD_MARKER in attack.actions[0].raw_arguments["command"]
+
+
+def test_scenario_report_splits_in_scope_and_out_of_scope(tmp_path, monkeypatch):
+    base = _write_dataset(tmp_path)
+    monkeypatch.setenv(DATA_DIR_ENV, str(base))
+
+    report = scenario_report(
+        PassthroughPipeline()
+    )  # allows everything -> mitigated == 0 throughout
+
+    assert _SCENARIOS[8].label in report["in_scope"]
+    assert report["in_scope"][_SCENARIOS[8].label]["n"] == 1
+    assert report["in_scope"][_SCENARIOS[8].label]["mitigated"] == 0
+    assert "unclassified" in report["out_of_scope"]
+    assert report["out_of_scope"]["unclassified"]["n"] == 1
