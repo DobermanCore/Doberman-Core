@@ -23,8 +23,23 @@ from doberman.engine.rules.paths import ProtectedPathRule
 from doberman.engine.rules.policy_source import PolicySourceRule
 from doberman.engine.rules.role_boundary import RoleBoundaryRule
 from doberman.engine.rules.secrets import SecretLeakageRule
-from doberman.models import ActionType, EvalContext, ReasonCode, SecurityObject, Verdict
+from doberman.engine.subjective import SubjectiveGuardrail
+from doberman.models import (
+    ActionType,
+    Algebra,
+    BlastRadius,
+    Capability,
+    DestinationClass,
+    EvalContext,
+    Provenance,
+    ReasonCode,
+    Reversibility,
+    SecurityObject,
+    TargetClass,
+    Verdict,
+)
 from doberman.policy.modes import FLOOR_HARD_BLOCKS
+from doberman.policy.preferences import PreferenceVector
 from doberman.policy.sources import ResolvedPolicy
 from doberman.roles.roles import RoleDefinition
 from tests.benchmarks.profiles import build_pipeline
@@ -222,3 +237,39 @@ def test_block_boundaries_are_discrete_predicates_not_scores(tmp_path):
     assert ReasonCode.policy_source_blocked in over.reason_codes
     under = PolicySourceRule().evaluate(_policy_action("app/main.py"), policy_ctx)
     assert under.verdict is not Verdict.BLOCK
+
+
+def test_subjective_score_never_blocks_even_at_maximum_abnormality():
+    """T2: the continuous three-axis score (surprise x sensitivity x care) has
+    no Verdict.BLOCK literal anywhere on its path (engine/subjective.py
+    _step_up_result always builds AUTH). Drive every axis to its maximum in
+    Paranoid (the mode most eager to escalate) while deliberately keeping
+    provenance=trusted_instruction so the SEPARATE, score-independent
+    lethal-trifecta floor (which the subjective allowlist does permit to
+    BLOCK in strict/paranoid) does not fire -- isolating the score path
+    itself, not its sibling deterministic floor."""
+    algebra = Algebra(
+        capability=Capability.send,
+        target_class=TargetClass.secret,
+        destination_class=DestinationClass.known_external,
+        provenance=Provenance.trusted_instruction,  # excludes the trifecta floor
+        blast_radius=BlastRadius.mass,
+        classification_confidence=1.0,
+    )
+    action = SecurityObject(
+        id="c9-subjective-1",
+        ts=datetime(2026, 9, 2, tzinfo=timezone.utc),
+        agent_role="c9",
+        action_type=ActionType.network_request,
+        tool_name="http_post",
+        reversibility=Reversibility.low,
+        algebra=algebra,
+    )
+    max_care = PreferenceVector(confidentiality=1.0, reversibility=1.0, blast_radius=1.0)
+    ctx = EvalContext(
+        mode="paranoid",
+        metadata={"surprise": 1.0, "preferences": max_care},
+    )
+    result = SubjectiveGuardrail(load_plugins=False).evaluate(action, ctx)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.lethal_trifecta not in result.reason_codes
