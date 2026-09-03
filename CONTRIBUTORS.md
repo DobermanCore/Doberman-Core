@@ -12,6 +12,7 @@ testing, or ideas. Thank you. 🐕
 
 In alphabetical order by handle (ordering is not a ranking):
 
+- [@a0927929980-dot](https://github.com/a0927929980-dot)
 - [@AmirF194](https://github.com/AmirF194)
 - [@AshSgDe29071999](https://github.com/AshSgDe29071999)
 - [@averyquinnhq](https://github.com/averyquinnhq)
@@ -27,6 +28,7 @@ In alphabetical order by handle (ordering is not a ranking):
 - [@slegarraga](https://github.com/slegarraga)
 - [@snowyukitty](https://github.com/snowyukitty)
 - [@stevenmini2019](https://github.com/stevenmini2019)
+- [@thesageak](https://github.com/thesageak)
 - [@Tian-Tan](https://github.com/Tian-Tan)
 - [@tomatotomata](https://github.com/tomatotomata)
 
