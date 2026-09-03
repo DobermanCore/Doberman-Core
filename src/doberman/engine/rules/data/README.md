@@ -48,7 +48,15 @@ ecosystem. Used ONLY as (a) the "not itself popular" false-positive guard
 and (b) the edit-distance-1 typosquat target set — never as an allowlist
 that grants anything.
 
-This is a STARTER seed (~10-20 names per ecosystem). Expand toward the
+A name on this list is EXEMPT from the typosquat check (it can never itself be
+flagged as one edit away from something popular) — so adding or omitting a name
+here is a security-relevant decision, not cosmetic: a real, legitimate package
+absent from this seed can be gated once (stepped up to `AUTH`) if it happens to
+land one edit from an entry that IS present (e.g. `vuex` vs. `vue`, `boto` vs.
+`boto3` — both fixed by adding the omitted name, see the C3 whole-branch review).
+
+This is a STARTER seed (5-22 names per ecosystem: pypi 22, npm 22, cargo 10,
+rubygems 10, go 5 — 69 names total). Expand toward the
 ≤2000-per-ecosystem ceiling from a real ranked snapshot before relying on
 this in production — e.g. PyPI's own download-stats BigQuery dataset
 (`hugovk.github.io/top-pypi-packages`), npm's registry download-count API,

@@ -276,9 +276,13 @@ Run: `python -m tests.benchmarks.run --suite corpus --corpus` (2026-09-02, dober
 | exfiltration (**strict**) | 8 | **1.00** | 0.00 | — |
 | injection (natural-language) | 8 | **0.00** *(documented gap)* | 0.00 | — |
 | dependency | 2 | **1.00** | 0.50 | — |
-| benign | — (27) | — | — | **0.00** |
+| benign | — (25) | — | — | **0.00** |
 | **Overall (balanced)** | 114 | 0.75 | 0.09 | 0.00 |
 | **Overall (strict)** | 114 | 0.79 | 0.39 | 0.00 |
+
+The corpus's 27 total benign entries split across two rows above: 25 are `kind: benign`
+(the `benign` row), and 2 more are `kind: dependency, is_attack: false` (folded into the
+`dependency` row's own FPR, not broken out separately here).
 
 Read honestly: precision is **1.00** and benign FPR **0.00** (the objective layer
 does not over-block legitimate traffic here), but `tpr_strict` **0.09** in balanced
