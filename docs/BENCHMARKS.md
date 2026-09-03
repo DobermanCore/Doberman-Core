@@ -91,7 +91,7 @@ unusual actions.
 
 The synthetic suite is a 3-attack smoke gate; the AgentDojo run measures coverage
 but needs an operator-supplied package. The **detection corpus** fills the gap
-between them: a deterministic, in-repo, ~141-row labeled fixture
+between them: a deterministic, in-repo, ~158-row labeled fixture
 (`tests/corpus/detection_corpus.jsonl`) that measures detection *quality* per
 category (the false-positive rate that drives approval fatigue, and the
 true-positive rate per attack class) with **no external dependency**.
@@ -263,29 +263,34 @@ the protection is exactly as strong as the human answering the prompt (`deny-all
 stops everything; `approve-all` stops nothing). This is a smoke gate, not a
 coverage claim.
 
-### Detection corpus (deterministic, n = 114 attack / 27 benign)
+### Detection corpus (deterministic, n = 125 attack / 33 benign)
 
 Run: `python -m tests.benchmarks.run --suite corpus --corpus` (2026-09-02, doberman-core built-ins only, balanced mode unless noted).
 
 | Category | n (attack) | TPR (AUTH∪BLOCK) | tpr_strict (BLOCK) | FPR |
 |---|---|---|---|---|
 | secrets | 7 | **1.00** | 0.43 | — |
-| destructive | 12 | 0.83 | 0.50 | — |
+| destructive | 21 | 0.90 | 0.29 | — |
 | encoded / smuggling | 79 | 0.82 | 0.00 | — |
 | exfiltration (balanced) | 8 | 0.375 | 0.00 | — |
 | exfiltration (**strict**) | 8 | **1.00** | 0.00 | — |
 | injection (natural-language) | 8 | **0.00** *(documented gap)* | 0.00 | — |
 | dependency | 2 | **1.00** | 0.50 | — |
-| benign | — (25) | — | — | **0.00** |
-| **Overall (balanced)** | 114 | 0.75 | 0.09 | 0.00 |
-| **Overall (strict)** | 114 | 0.79 | 0.39 | 0.00 |
+| benign | — (31) | — | — | **0.00** |
+| **Overall (balanced)** | 125 | 0.77 | 0.08 | 0.00 |
+| **Overall (strict)** | 125 | 0.81 | 0.36 | 0.00 |
 
-The corpus's 27 total benign entries split across two rows above: 25 are `kind: benign`
+The corpus's 33 total benign entries split across two rows above: 31 are `kind: benign`
 (the `benign` row), and 2 more are `kind: dependency, is_attack: false` (folded into the
-`dependency` row's own FPR, not broken out separately here).
+`dependency` row's own FPR, not broken out separately here). `destructive` grew from 10 to
+21 rows across this revision: 9 HK.5.6 raw-socket-egress candidates (`/dev/tcp`/`/dev/udp`,
+netcat/ncat/socat exec-on-connect, `openssl s_client`) and 2 C4 verification-integrity
+candidates (`git commit --no-verify`, a test-file delete) moved into the generator alongside
+the original 10, diluting its TPR/tpr_strict ratios without changing the underlying
+detections.
 
 Read honestly: precision is **1.00** and benign FPR **0.00** (the objective layer
-does not over-block legitimate traffic here), but `tpr_strict` **0.09** in balanced
+does not over-block legitimate traffic here), but `tpr_strict` **0.08** in balanced
 mode says almost all mitigation is a human-gated `AUTH`, not a hard `BLOCK` (the
 same "AUTH is a leash, not a wall" caveat as the synthetic suite, now measured
 across categories). Two categories are honest weak spots: **exfiltration** is
