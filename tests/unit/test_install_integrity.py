@@ -4,8 +4,16 @@ import json
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from doberman.cli.main import app
 from doberman.hosthooks import integrity
+from doberman.hosthooks.install import (
+    doberman_groups,
+    load_settings,
+    merge_doberman_hooks,
+    resolve_settings_path,
+)
 
 
 @pytest.fixture
@@ -157,3 +165,89 @@ def test_user_config_dir_backs_the_key_path(
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert fp._default_key_path() == fp.user_config_dir() / "fingerprint.key"
+
+
+# ---------------------------------------------------------------------------
+# CLI wiring — install-hooks / uninstall-hooks record and clear the manifest
+# ---------------------------------------------------------------------------
+
+
+def test_doberman_groups_extracts_only_our_groups() -> None:
+    foreign = {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}
+    merged = merge_doberman_hooks({"hooks": {"PreToolUse": [foreign]}})
+    groups = doberman_groups(merged)
+    assert set(groups) == {"PreToolUse", "PostToolUse", "SessionStart"}
+    assert foreign not in groups["PreToolUse"]
+    assert doberman_groups({}) == {}
+
+
+def test_install_hooks_records_manifest(manifest_env: Path, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    result = CliRunner().invoke(app, ["install-hooks", "--path", str(repo)])
+    assert result.exit_code == 0, result.output
+    settings_path = resolve_settings_path("project", str(repo))
+    groups = doberman_groups(load_settings(settings_path))
+    assert integrity.verify_install("claude", "project", settings_path, groups).state == "intact"
+
+
+def test_install_hooks_already_wired_still_records(manifest_env: Path, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    runner = CliRunner()
+    assert runner.invoke(app, ["install-hooks", "--path", str(repo)]).exit_code == 0
+    manifest_env.unlink()  # simulate a pre-manifest install
+    assert runner.invoke(app, ["install-hooks", "--path", str(repo)]).exit_code == 0
+    settings_path = resolve_settings_path("project", str(repo))
+    groups = doberman_groups(load_settings(settings_path))
+    assert integrity.verify_install("claude", "project", settings_path, groups).state == "intact"
+
+
+def test_install_hooks_dry_run_writes_no_manifest(manifest_env: Path, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    result = CliRunner().invoke(app, ["install-hooks", "--path", str(repo), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert not manifest_env.exists()
+
+
+def test_uninstall_hooks_clears_manifest_first(manifest_env: Path, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    runner = CliRunner()
+    assert runner.invoke(app, ["install-hooks", "--path", str(repo)]).exit_code == 0
+    assert runner.invoke(app, ["uninstall-hooks", "--path", str(repo)]).exit_code == 0
+    settings_path = resolve_settings_path("project", str(repo))
+    assert integrity.verify_install("claude", "project", settings_path, {}).state == "absent"
+
+
+def test_manifest_write_failure_does_not_fail_install(
+    manifest_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    monkeypatch.setenv(integrity.MANIFEST_ENV, str(tmp_path))  # a directory: unwritable as a file
+    result = CliRunner().invoke(app, ["install-hooks", "--path", str(repo)])
+    assert result.exit_code == 0, result.output
+    assert "manifest" in result.output.lower()
+
+
+def test_codex_install_records_and_uninstall_clears(manifest_env: Path, tmp_path: Path) -> None:
+    from doberman.hosthooks.install_codex import codex_doberman_groups, resolve_codex_hooks_path
+
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    runner = CliRunner()
+    assert (
+        runner.invoke(app, ["install-hooks", "--host", "codex", "--path", str(repo)]).exit_code == 0
+    )
+    # No --global -> the Codex repo scope (the Claude "project" scope's analog).
+    hooks_path = resolve_codex_hooks_path("repo", str(repo))
+    groups = codex_doberman_groups(load_settings(hooks_path))
+    assert groups["PreToolUse"]
+    assert integrity.verify_install("codex", "repo", hooks_path, groups).state == "intact"
+    assert (
+        runner.invoke(app, ["uninstall-hooks", "--host", "codex", "--path", str(repo)]).exit_code
+        == 0
+    )
+    assert integrity.verify_install("codex", "repo", hooks_path, groups).state == "absent"

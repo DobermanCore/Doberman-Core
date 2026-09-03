@@ -72,6 +72,23 @@ def _is_doberman_group(group: dict[str, Any]) -> bool:
     return False
 
 
+def doberman_groups(settings: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Doberman-owned hook groups per event key (for the install manifest).
+
+    Only groups :func:`_is_doberman_group` recognises are returned, so a foreign
+    hook's command never reaches the manifest even as a fingerprint input.
+    """
+    hooks_section = settings.get("hooks") or {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for event_key, groups in hooks_section.items():
+        if not isinstance(groups, list):
+            continue
+        ours = [g for g in groups if isinstance(g, dict) and _is_doberman_group(g)]
+        if ours:
+            out[event_key] = ours
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Pure merge / remove functions
 # ---------------------------------------------------------------------------

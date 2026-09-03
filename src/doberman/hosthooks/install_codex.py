@@ -89,6 +89,24 @@ def remove_codex_hooks(settings: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def codex_doberman_groups(settings: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Doberman-owned hook groups per event key, Codex-shaped (for the install manifest).
+
+    Same shape as :func:`doberman.hosthooks.install.doberman_groups`; reuses this
+    module's own ``_is_doberman_group`` import (the shared marker also matches
+    ``codex-pre``) so a foreign group's command never reaches the manifest.
+    """
+    hooks_section = settings.get("hooks") or {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for event_key, groups in hooks_section.items():
+        if not isinstance(groups, list):
+            continue
+        ours = [g for g in groups if isinstance(g, dict) and _is_doberman_group(g)]
+        if ours:
+            out[event_key] = ours
+    return out
+
+
 def resolve_codex_hooks_path(scope: str, project_root: str) -> Path:
     """Resolve the target ``hooks.json`` path for *scope*.
 
