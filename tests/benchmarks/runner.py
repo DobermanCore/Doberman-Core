@@ -123,7 +123,9 @@ def run_suite(
     for case in adapter.load():
         try:
             outcomes.extend(
-                _evaluate_case(case, adapter.suite_name, pipeline, mode, session_replay=session_replay)
+                _evaluate_case(
+                    case, adapter.suite_name, pipeline, mode, session_replay=session_replay
+                )
             )
         except Exception:  # noqa: BLE001 — isolate a bad case, keep measuring
             logger.warning(

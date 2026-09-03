@@ -102,7 +102,9 @@ def _content_text(action: CandidateAction) -> str:
         return str(action.raw_arguments)
 
 
-async def _record_untrusted_read(action: CandidateAction, repo_root: str, session_id: str | None) -> None:
+async def _record_untrusted_read(
+    action: CandidateAction, repo_root: str, session_id: str | None
+) -> None:
     """Record BOTH taint legs for one untrusted-read action: the secret leg via
     the real ``record_output_taint`` (content-judged, tool-name-independent),
     and the untrusted-VALUE leg by calling the real extractor +  store write
@@ -187,7 +189,9 @@ def replay_case(
     case's taint/decision history can never leak into this one via
     ``entity_scope``, which is keyed by repo root alone (see the module
     docstring's "Per-case isolation" rationale in the plan)."""
-    with tempfile.TemporaryDirectory(prefix="doberman-bench-", ignore_cleanup_errors=True) as repo_root:
+    with tempfile.TemporaryDirectory(
+        prefix="doberman-bench-", ignore_cleanup_errors=True
+    ) as repo_root:
         return asyncio.run(_replay_case_async(case, suite_name, pipeline, mode, repo_root))
 
 

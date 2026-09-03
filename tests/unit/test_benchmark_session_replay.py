@@ -143,7 +143,9 @@ def test_session_replay_raises_the_secret_taint_send_via_the_taint_floor():
 def test_stateless_mode_passes_the_echo_tripwire_send():
     pipeline = build_pipeline(load_plugins=False)
     report = run_suite(_OneCaseAdapter(_echo_tripwire_case()), pipeline, mode="balanced")
-    assert report.attack_bypassed == 1  # the send's own destination is an unknown host -> PASS in balanced
+    assert (
+        report.attack_bypassed == 1
+    )  # the send's own destination is an unknown host -> PASS in balanced
     assert report.session_replay is False
     assert ReasonCode.untrusted_value_echo.value not in report.reason_codes
 
@@ -163,7 +165,10 @@ def test_session_replay_leaves_a_benign_single_action_case_unchanged():
     pipeline = build_pipeline(load_plugins=False)
     stateless = run_suite(_OneCaseAdapter(_benign_single_action_case()), pipeline, mode="balanced")
     replayed = run_suite(
-        _OneCaseAdapter(_benign_single_action_case()), pipeline, mode="balanced", session_replay=True
+        _OneCaseAdapter(_benign_single_action_case()),
+        pipeline,
+        mode="balanced",
+        session_replay=True,
     )
     assert stateless.benign_pass == replayed.benign_pass == 1
     assert stateless.to_dict()["benign"] == replayed.to_dict()["benign"]
