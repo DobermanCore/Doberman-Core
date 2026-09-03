@@ -73,7 +73,33 @@ unusual actions.
   ensemble is novelty + Markov-surprisal + volume-z only. Each suite reports
   `n_warm_observations`, `blend_weight`, `cold_start_active`, and
   `hst_engaged`. **A suite whose numbers ride mostly the constant prior is
-  inconclusive: read every AUC next to its bucket `n`.**
+  inconclusive: read every AUC next to its bucket `n`.** The `devsession`
+  suite (below) exists specifically to clear this bar.
+- **Held-out-benign FPR (reported beside every AUC):** `held_out_fpr` is the
+  fraction of held-out benign actions whose surprise score exceeds a fixed
+  cut — the `fpr_quantile=0.95` (95th-percentile) mark of that suite's own
+  **warm-set** score distribution. This is a calibration-style FPR ("if I set
+  my alert bar at the top 5% of what I've already seen and allowed, how often
+  does a genuinely new benign action still cross it"), not a `decide()`-path
+  false-positive rate — the eval never calls `decide()`. The threshold is
+  computed only from the run's own warm scores, never from AgentDojo, and is
+  never tuned. Every report's top-level `constants` block
+  (`k_observations`, `hst_warmup`, `fpr_quantile`) names exactly what it was
+  measured against.
+- **The `devsession` suite — a benign corpus sized to actually clear the warm
+  bar:** four seeded, synthetic developer-session archetypes (backend dev,
+  script runner, test/CI loop, git-heavy dev; see `suites/devsession.py`)
+  long enough that `n_warm_observations >= max(K_OBSERVATIONS, HST_WARMUP)`
+  for every suite, so `hst_engaged` and `cold_start_active is False` hold
+  throughout — the full ensemble, not just the cold-start prior. **This
+  corpus is synthetic, not user telemetry**: a generator whose action
+  distribution is smoother than a real developer's inflates both the AUC and
+  a threshold-based FPR alike, so read `devsession`'s numbers as "does the
+  mechanism separate the two distributions it was shown," not as a claim
+  about real-world detection rates or false-positive burden. The one
+  injected-egress attack case per archetype is a synthetic vignette, not a
+  catalog of real attacks — the AgentDojo run above remains the coverage
+  measurement against real, adversarially-designed injection tasks.
 - **What it does not claim:** it does not catch injections that mimic benign
   action shapes: structure-invisible injections are honest true-negatives,
   never tuned away. The objective floor and the lethal-trifecta floor remain
@@ -82,10 +108,12 @@ unusual actions.
 
   ```bash
   python -m tests.benchmarks.run --suite agentdojo --subjective
+  python -m tests.benchmarks.run --suite devsession --subjective   # no external data needed
   ```
 
-  Needs the operator-supplied `agentdojo` package, same precondition as the
-  other `agentdojo` commands above.
+  The AgentDojo run needs the operator-supplied `agentdojo` package, same
+  precondition as the other `agentdojo` commands above. The `devsession` run
+  needs nothing beyond `doberman` itself.
 
 ## Labeled detection corpus (per-category FPR / TPR)
 
@@ -311,6 +339,36 @@ layer cannot close (0.00); it belongs to provenance / the subjective layer.
 
 _Pending an operator run, populated at release time per [`RELEASING.md`](RELEASING.md).
 Record the pinned `agentdojo` commit and the `before_after` table here._
+
+### Devsession suite — subjective-layer diagnostic (seeded, in-repo, no external dependency)
+
+Run: `python -m tests.benchmarks.run --suite devsession --subjective` (2026-09-02, doberman-core
+0.18.5, production-size HST: `HST_TREES=25`, `HST_HEIGHT=15` — not the pytest-scaled-down fixture).
+`provenance_free` arm (the honest number) unless noted; `constants`:
+`k_observations=100`, `hst_warmup=250`, `fpr_quantile=0.95`.
+
+| Suite | n_warm_observations | hst_engaged | cold_start_active | AUC | held_out_fpr |
+|---|---|---|---|---|---|
+| backend-dev | 260 | true | false | 1.00 | 0.00 |
+| script-runner | 260 | true | false | 1.00 | 0.00 |
+| test-ci-loop | 260 | true | false | 1.00 | 0.00 |
+| git-heavy-dev | 260 | true | false | 1.00 | 0.00 |
+| **Pooled (n = 520 held-out benign / 4 attack)** | — | — | — | **1.00** | **0.023** |
+
+Read honestly: every suite clears the warm bar (`n_warm_observations=260 >=
+max(K_OBSERVATIONS=100, HST_WARMUP=250)`, `hst_engaged=true`,
+`cold_start_active=false` throughout), so this is the **full ensemble**, not the
+cold-start prior AgentDojo's smaller suites are stuck reporting. AUC is a
+perfect **1.00** in both arms and pooled `held_out_fpr` is **2.3%** (12/520) at
+the fixed 95th-percentile warm-set cut — but per the warm-sufficiency and
+`devsession` caveats above, that separation is measured against a synthetic
+action distribution smoother than a real developer's, with one injected-egress
+vignette per archetype, so read it as *"the mechanism separates what it was
+shown,"* not a real-world FPR or detection-rate estimate. `with_provenance`
+raises every attack score (e.g. backend-dev 0.665 → 0.668, git-heavy-dev
+0.417 → 0.498) without moving AUC off 1.00 — on this suite the separation
+already saturates without the `source_context` leak, so this run under-states
+rather than overstates how much that leak would matter on a harder corpus.
 
 ## Fixed bypasses
 
