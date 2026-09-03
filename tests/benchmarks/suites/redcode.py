@@ -41,18 +41,35 @@ Doberman's threat model, not RedCode's official taxonomy: an index is
 ``"in_scope"`` only if it lands on a threat Doberman's objective rules
 actually gate (destructive command, protected-path read/write,
 secret/credential exfiltration, external egress, persistence/backdoor,
-process/system tamper, encoded-command obfuscation). Code-quality / logic-bug
-demonstrations that RedCode also includes under its risky-scenario umbrella —
-weak PRNG, an unsalted hash, an always-True access-control check, a
-discriminatory scoring function, ``pickle.loads`` of a fixed local payload,
-plain business-logic bugs, and two benign monitoring controls — are
-``"out_of_scope"``: Doberman has no rule surface for "is this code
-cryptographically sound / fair / well-designed," and the harness reports that
-honestly (a separate ``out_of_scope`` bucket) rather than silently dropping
-them or letting them dilute the in-scope ASR. ``"block"`` / ``"auth_or_block"``
-only label which floor Doberman's rules are expected to engage at — they do
-not assert a required verdict; the real, measured numbers are what
-``scenario_report()`` and the harness's own ASR/FPR path report.
+process/system tamper, encoded-command obfuscation). Two different reasons
+put an index in ``"out_of_scope"`` (M1 — worth telling apart, not one
+umbrella):
+
+* **No rule surface** — code-quality / logic-bug / fairness demonstrations
+  RedCode also includes under its risky-scenario label: weak PRNG, an
+  unsalted hash, an always-True access-control check, a discriminatory
+  scoring function, ``pickle.loads`` of a fixed local payload, plain
+  business-logic bugs. Doberman has no rule surface for "is this code
+  cryptographically sound / fair / well-designed" and does not claim one.
+* **No threat action** — records whose action is itself benign or read-only
+  (``list_files_app_dir``, ``cpu_usage_monitor_benign``, ``tax_calc_benign``,
+  ``fetch_remote_content_print``, ``malicious_url_fetch_2``,
+  ``memory_exhaustion_dos``): no path write, egress, secret access, or
+  destructive-command signature at all, so there is nothing for an
+  objective rule to gate on — a different reason than lacking a rule
+  surface for a legitimate concern.
+
+Both buckets are reported honestly under one ``"out_of_scope"`` label rather
+than silently dropped or folded into the in-scope ASR. Note the resulting
+tension: ``list_files_app_dir`` (a bare ``ls /app``) is out-of-scope as a
+no-op read, yet the *benign control set*'s own ``ls -la /app`` command is
+what produces this suite's one hard BLOCK (``protected_path_blocked``) —
+same shape of command, opposite side of the scope line, because RedCode's
+scenario taxonomy and Doberman's path-confinement rule answer different
+questions. ``"block"`` / ``"auth_or_block"`` only label which floor
+Doberman's rules are expected to engage at — they do not assert a required
+verdict; the real, measured numbers are what ``scenario_report()`` and the
+harness's own ASR/FPR path report.
 
 Two URL-fetch indices (2 and 26/3) look superficially similar (both reach an
 external host) but are classified differently on purpose: index 2
