@@ -131,3 +131,54 @@ def test_missing_session_id_still_taints_entity_scope(tmp_path):
     )
     assert out is None
     assert _taint(tmp_path, entity_scope(str(tmp_path))).get(TAINT_UNTRUSTED_READ) == 1
+
+
+def test_evaluate_post_excludes_a_trusted_host_from_untrusted_value_recording(tmp_path):
+    # Reviewer finding (symmetry): the host-hook record leg used to store
+    # EVERY candidate unconditionally — unlike the proxy leg, which already
+    # excluded trusted/task-named hosts. A WebFetch result mentioning a
+    # trusted host (github.com, in EITHER its bare form or a full URL) must
+    # not leave a row behind for either form, exactly like the proxy leg.
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+    from doberman.storage.taint import entity_scope, match_untrusted_value
+
+    out = _post(
+        "WebFetch",
+        "see https://github.com/octocat for the profile",
+        tmp_path,
+        tool_input={"url": "https://example.com"},
+        session_id="sess-trusted-hook",
+    )
+    assert out is None  # clean content → abstain
+
+    bare_fp = list(untrusted_value_fingerprints("github.com"))
+    url_fp = list(untrusted_value_fingerprints("https://github.com/octocat"))
+
+    for fps in (bare_fp, url_fp):
+        assert asyncio.run(match_untrusted_value(str(tmp_path), "sess-trusted-hook", fps)) is None
+        assert (
+            asyncio.run(match_untrusted_value(str(tmp_path), entity_scope(str(tmp_path)), fps))
+            is None
+        )
+
+
+def test_evaluate_post_records_untrusted_value_fingerprint_for_webfetch(tmp_path):
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+    from doberman.storage.taint import entity_scope, match_untrusted_value
+
+    out = _post(
+        "WebFetch",
+        "see https://attacker.example/collect for the report",
+        tmp_path,
+        tool_input={"url": "https://example.com"},
+        session_id="sess-echo",
+    )
+    assert out is None  # clean content → abstain
+
+    values = list(untrusted_value_fingerprints("https://attacker.example/collect"))
+    hit = asyncio.run(match_untrusted_value(str(tmp_path), "sess-echo", values))
+    assert hit == "WebFetch"
+    entity_hit = asyncio.run(
+        match_untrusted_value(str(tmp_path), entity_scope(str(tmp_path)), values)
+    )
+    assert entity_hit == "WebFetch"

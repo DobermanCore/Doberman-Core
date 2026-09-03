@@ -101,6 +101,10 @@ REASON_DESCRIPTIONS: dict[str, str] = {
     "anomalous_token_pattern": "the token pattern in the payload was anomalous",
     "multi_step_exfil": "this action is part of a multi-step pattern that looks like exfiltration",
     "confirmed_exfil": ("a secret read earlier in this session reappeared in an outbound payload"),
+    "untrusted_value_echo": (
+        "a destination in this call matches a value first seen in untrusted content "
+        "read earlier in this session"
+    ),
     "egress_route_divergence": (
         "this entity recently connected to a destination its static egress classification "
         "did not predict"
@@ -372,6 +376,7 @@ _HEADLINE_FACTS: dict[str, str] = {
     "secret_exfiltration": "Secret exfiltration attempt",
     "confirmed_exfil": "Confirmed secret exfiltration",
     "multi_step_exfil": "Multi-step exfiltration pattern",
+    "untrusted_value_echo": "Untrusted-value echo",
     "sensitive_secret_access": "Secret file read",
     "possible_high_entropy_secret": "Possible secret in payload",
     "pii_data_class_egress": "Personal-data egress",

@@ -149,3 +149,50 @@ async def test_output_taint_recording_failure_is_best_effort(monkeypatch):
 
     assert not result.isError
     assert result.content[0].text == "just an ordinary config value"
+
+
+async def test_proxy_excludes_a_trusted_host_whole_url_echo_from_the_raise():
+    # Reviewer finding: a WebFetch result mentioning a trusted host's FULL URL
+    # (https://github.com/octocat), followed by an egress to that EXACT URL,
+    # used to still raise untrusted_value_echo even though github.com is
+    # trusted — the old fingerprint-subtraction exclusion only ever dropped
+    # the bare-host fingerprint, never the whole-URL one. Driven end to end
+    # through decide_and_execute: the fixed behavior is "no raise", so this
+    # never reaches the AUTH challenge branch and forwards normally.
+    save_mode("balanced", executor.REPO_ROOT)
+    session = _FakeSession(
+        {
+            "WebFetch": _ok_result("see https://github.com/octocat for the profile"),
+            "net_get": _ok_result("ok"),
+        }
+    )
+
+    fetch_result = await executor.decide_and_execute(
+        session, "WebFetch", {"url": "https://x.example"}
+    )
+    assert not fetch_result.isError
+
+    egress_result = await executor.decide_and_execute(
+        session, "net_get", {"url": "https://github.com/octocat"}
+    )
+
+    assert not egress_result.isError
+    assert session.calls[-1] == ("net_get", {"url": "https://github.com/octocat"})
+
+
+async def test_proxy_records_untrusted_value_fingerprint_from_webfetch_result():
+    # The bug this fixes: _record_result_taint used to drop tool_name entirely,
+    # so record_output_taint could never classify an untrusted-read tool and the
+    # proxy path recorded ZERO untrusted-read taint no matter what it fetched.
+    save_mode("balanced", executor.REPO_ROOT)
+    session = _FakeSession({"WebFetch": _ok_result(f"see {_EGRESS_URL} for the report")})
+
+    result = await executor.decide_and_execute(session, "WebFetch", {"url": "https://x.example"})
+
+    assert not result.isError
+    from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
+    from doberman.storage.taint import entity_scope, match_untrusted_value
+
+    values = list(untrusted_value_fingerprints(_EGRESS_URL))
+    hit = await match_untrusted_value(executor.REPO_ROOT, entity_scope(executor.REPO_ROOT), values)
+    assert hit == "WebFetch"

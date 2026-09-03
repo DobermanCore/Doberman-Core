@@ -53,7 +53,11 @@ from doberman.engine.rules.commands import (
 from doberman.engine.rules.destinations import ExternalDestinationRule
 from doberman.engine.rules.secrets import contains_strong_secret
 from doberman.engine.subjective import SubjectiveGuardrail
-from doberman.engine.taint_floor import apply_taint_floor_async, record_output_taint
+from doberman.engine.taint_floor import (
+    apply_echo_tripwire_async,
+    apply_taint_floor_async,
+    record_output_taint,
+)
 from doberman.models import (
     ActionType,
     Decision,
@@ -498,19 +502,22 @@ def _scannable_text(result: CallToolResult) -> str:
     return "\n".join(part for part in parts if part)
 
 
-async def _record_result_taint(result: CallToolResult) -> None:
+async def _record_result_taint(result: CallToolResult, tool_name: str) -> None:
     """Best-effort: feed a successful tool result's text to the taint floor.
 
-    Mirrors the host-hook's PostToolUse recording so a secret read through the
-    proxy taints the session for the next call's cross-call exfil check
-    (``apply_taint_floor_async``). Guards non-text content blocks; never raises —
-    ``record_output_taint`` is itself fail-closed/best-effort, but a malformed
-    result (e.g. a non-string ``.text``) must not break the forward/return path.
+    Mirrors the host-hook's PostToolUse recording so a secret OR an untrusted
+    value read through the proxy taints the session for the next call's
+    cross-call check (``apply_taint_floor_async`` / ``apply_echo_tripwire_async``).
+    ``tool_name`` lets ``record_output_taint`` classify the untrusted-read leg
+    (C1) — previously dropped here, so that leg was never recorded on this path.
+    Guards non-text content blocks; never raises — ``record_output_taint`` is
+    itself fail-closed/best-effort, but a malformed result must not break the
+    forward/return path.
     """
     try:
         output_text = _scannable_text(result)
         if output_text:
-            await record_output_taint(output_text, REPO_ROOT, None)
+            await record_output_taint(output_text, REPO_ROOT, None, tool_name=tool_name)
     except Exception:  # noqa: BLE001 — recording must never break the execution path
         _engine_logger.warning("output taint recording failed; continuing")
 
@@ -865,7 +872,7 @@ async def _handle_auth(
     # it is spent whether this result errors or not (matching EXECUTION, not a
     # clean result) and two concurrent calls covered by one grant can't both
     # release.
-    await _record_result_taint(result)
+    await _record_result_taint(result, tool_name)
     gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
     if gate is not None:
         # Output-scan parity (parity-1): a secret in the RESULT must not reach
@@ -931,6 +938,13 @@ async def decide_and_execute(
         action, decision, load_mode(REPO_ROOT), REPO_ROOT, None, arguments or {}
     )
 
+    # C1 — the untrusted-value echo tripwire, same session_id=None gap as the
+    # taint floor above (see its comment): the pure-MCP proxy has no session
+    # concept of its own.
+    decision = await apply_echo_tripwire_async(
+        action, decision, load_mode(REPO_ROOT), REPO_ROOT, None, arguments or {}
+    )
+
     # C3.1 session correlator: cross-call PATTERN raise (raise-only), run right
     # after the taint floor for the same reason — see _apply_correlator's
     # docstring. Same `session_id=None` gap as the taint floor call above: the
@@ -990,7 +1004,7 @@ async def decide_and_execute(
     # it is spent whether this result errors or not (matching EXECUTION, not a
     # clean result) and two concurrent calls covered by one grant can't both
     # release.
-    await _record_result_taint(result)
+    await _record_result_taint(result, tool_name)
     gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
     if gate is not None:
         # Output-scan parity (parity-1): a secret in the RESULT must not reach

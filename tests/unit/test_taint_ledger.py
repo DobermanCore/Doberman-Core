@@ -6,16 +6,24 @@ HK.5.2 consumes it. These tests cover the storage API, the additive schema
 migration, and redaction (a scope never carries a raw path).
 """
 
+from datetime import datetime, timedelta, timezone
+
 import aiosqlite
 
+from doberman.storage import taint as taint_module
 from doberman.storage.db import db_path, open_db
 from doberman.storage.taint import (
     TAINT_SECRET_ACCESS,
     TAINT_UNTRUSTED_READ,
+    clear_taint,
     entity_scope,
+    match_secret_fingerprint,
+    match_untrusted_value,
     read_taint,
+    record_secret_fingerprints,
     record_taint,
     record_taints,
+    record_untrusted_values,
 )
 
 
@@ -127,3 +135,111 @@ async def test_reopening_a_migrated_db_is_idempotent(tmp_path):
         cols = await _columns(conn, "decisions")
     assert cols.count("session_id") == 1  # not double-added
     assert await read_taint(root, "sess-1") == {TAINT_SECRET_ACCESS: 1}  # data intact
+
+
+# --- session_untrusted_value_fingerprints (C1) ---
+
+
+async def test_record_and_match_untrusted_value(tmp_path):
+    root = str(tmp_path)
+    await record_untrusted_values(root, ["sess-1"], ["hmac:abc"], "WebFetch")
+    assert await match_untrusted_value(root, "sess-1", ["hmac:abc"]) == "WebFetch"
+
+
+async def test_match_untrusted_value_no_hit_is_none(tmp_path):
+    root = str(tmp_path)
+    await record_untrusted_values(root, ["sess-1"], ["hmac:abc"], "WebFetch")
+    assert await match_untrusted_value(root, "sess-1", ["hmac:zzz"]) is None
+
+
+async def test_record_untrusted_values_drops_empty_scopes_and_fingerprints(tmp_path):
+    root = str(tmp_path)
+    await record_untrusted_values(root, ["", None, "sess-1"], [], "WebFetch")
+    assert await match_untrusted_value(root, "sess-1", ["hmac:abc"]) is None
+
+
+async def test_match_untrusted_value_fails_closed_when_no_db(tmp_path):
+    assert await match_untrusted_value(str(tmp_path), "sess-1", ["hmac:abc"]) is None
+
+
+# --- eviction bounds (C1 reviewer follow-up) ---
+
+
+async def test_record_untrusted_values_evicts_stale_rows_past_ttl(tmp_path):
+    # A fingerprint recorded more than _TTL_DAYS before a later write in the same
+    # scope is evicted on that write; a fresh one recorded in the same write
+    # still matches.
+    root = str(tmp_path)
+    old = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    await record_untrusted_values(root, ["sess-1"], ["hmac:stale"], "WebFetch", now=old)
+
+    later = old + timedelta(days=taint_module._TTL_DAYS + 1)
+    await record_untrusted_values(root, ["sess-1"], ["hmac:fresh"], "WebFetch", now=later)
+
+    assert await match_untrusted_value(root, "sess-1", ["hmac:stale"]) is None
+    assert await match_untrusted_value(root, "sess-1", ["hmac:fresh"]) == "WebFetch"
+
+
+async def test_record_untrusted_values_overflow_keeps_newest_rows_by_first_seen(
+    tmp_path, monkeypatch
+):
+    # Recording more than _MAX_ROWS_PER_SCOPE fingerprints in one scope keeps
+    # exactly the newest _MAX_ROWS_PER_SCOPE rows (pins the ORDER BY ... DESC
+    # direction in _EVICT_OVERFLOW_UNTRUSTED). Monkeypatch the cap down so the
+    # test stays fast instead of writing 5000+ real rows.
+    monkeypatch.setattr(taint_module, "_MAX_ROWS_PER_SCOPE", 3)
+    root = str(tmp_path)
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    fps = [f"hmac:{i}" for i in range(5)]
+    for i, fp in enumerate(fps):
+        await record_untrusted_values(
+            root, ["sess-1"], [fp], "WebFetch", now=base + timedelta(seconds=i)
+        )
+
+    for fp in fps[:2]:  # oldest two, evicted by the row cap
+        assert await match_untrusted_value(root, "sess-1", [fp]) is None
+    for fp in fps[2:]:  # newest three, retained
+        assert await match_untrusted_value(root, "sess-1", [fp]) == "WebFetch"
+
+
+# --- final review, CRITICAL: a hard cap on the `IN (...)` query so it can ---
+# never itself raise `sqlite3.OperationalError: too many SQL variables`
+# (defense-in-depth backstop, independent of any caller-side aggregate cap).
+# Synthetic (non-HMAC) fingerprint strings keep this fast — the point is the
+# QUERY layer's own size safety, not the extraction pipeline.
+
+
+async def test_match_secret_fingerprint_survives_a_fingerprint_list_past_the_sqlite_variable_limit(
+    tmp_path,
+):
+    root = str(tmp_path)
+    await record_secret_fingerprints(root, ["sess-1"], ["hmac:real-secret"])
+    # This box's measured SQLite variable limit is 32766 (default since
+    # 3.32.0); comfortably exceed it with cheap synthetic strings.
+    huge = ["hmac:real-secret", *(f"hmac:pad{i:06d}" for i in range(40_000))]
+
+    assert await match_secret_fingerprint(root, "sess-1", huge) is True
+
+
+async def test_match_untrusted_value_survives_a_fingerprint_list_past_the_sqlite_variable_limit(
+    tmp_path,
+):
+    root = str(tmp_path)
+    await record_untrusted_values(root, ["sess-1"], ["hmac:real-value"], "WebFetch")
+    huge = ["hmac:real-value", *(f"hmac:pad{i:06d}" for i in range(40_000))]
+
+    assert await match_untrusted_value(root, "sess-1", huge) == "WebFetch"
+
+
+async def test_clear_taint_now_returns_three_counts_and_clears_all_three_tables(tmp_path):
+    root = str(tmp_path)
+    await record_taint(root, "sess-1", TAINT_SECRET_ACCESS)
+    await record_secret_fingerprints(root, ["sess-1"], ["hmac:secret"])
+    await record_untrusted_values(root, ["sess-1"], ["hmac:untrusted"], "WebFetch")
+
+    taint_rows, fp_rows, untrusted_rows = await clear_taint(root)
+
+    assert (taint_rows, fp_rows, untrusted_rows) == (1, 1, 1)
+    assert await read_taint(root, "sess-1") == {}
+    assert await match_secret_fingerprint(root, "sess-1", ["hmac:secret"]) is False
+    assert await match_untrusted_value(root, "sess-1", ["hmac:untrusted"]) is None

@@ -19,7 +19,7 @@ Design:
   to an empty result (a corrupt/locked DB can never *clear* taint).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from doberman.storage.db import db_path, open_db
@@ -147,12 +147,24 @@ async def record_secret_fingerprints(
         return
 
 
+#: Hard cap on fingerprints in a single `IN (...)` match query — a defense-in-
+#: depth backstop independent of any caller-side cap (engine.taint_floor's
+#: _MAX_MATCH_FPS). A match query already binds `scope` as its own parameter;
+#: capping the fingerprint list well under SQLite's variable limit (999 on
+#: older builds, 32766 by default since 3.32.0) guarantees THIS query can
+#: never itself raise `sqlite3.OperationalError: too many SQL variables` —
+#: which the broad `except Exception` below would otherwise swallow as a
+#: silent no-match, defeating whichever floor called this (final review,
+#: CRITICAL).
+_MAX_QUERY_FINGERPRINTS = 500
+
+
 async def match_secret_fingerprint(repo_root: str, scope: str, fingerprints: list[str]) -> bool:
     """True iff any of ``fingerprints`` was previously recorded under ``scope`` — a
     confirmed read-then-send. Fails closed to ``False``: a missing/locked DB or a
     read error never *fabricates* a match (the taint floor still governs).
     """
-    fps = [f for f in fingerprints if f]
+    fps = [f for f in fingerprints if f][:_MAX_QUERY_FINGERPRINTS]
     if not scope or not fps or not db_path(repo_root).exists():
         return False
     placeholders = ",".join("?" for _ in fps)
@@ -170,27 +182,109 @@ async def match_secret_fingerprint(repo_root: str, scope: str, fingerprints: lis
         return False
 
 
-async def clear_taint(repo_root: str) -> tuple[int, int]:
-    """Wipe ALL sticky taint for this repo's DB — both ``session_taint`` and
-    ``session_secret_fingerprints`` — and return ``(taint_rows_cleared,
-    fingerprint_rows_cleared)``.
+_TTL_DAYS = 7
+_MAX_ROWS_PER_SCOPE = 5000
+
+_INSERT_UNTRUSTED_VALUE = (
+    "INSERT INTO session_untrusted_value_fingerprints (scope, fingerprint, source_class, first_seen) "
+    "VALUES (?, ?, ?, ?) ON CONFLICT(scope, fingerprint) DO NOTHING"
+)
+_EVICT_STALE_UNTRUSTED = (
+    "DELETE FROM session_untrusted_value_fingerprints WHERE scope = ? AND first_seen < ?"
+)
+_EVICT_OVERFLOW_UNTRUSTED = (
+    "DELETE FROM session_untrusted_value_fingerprints WHERE scope = ? AND fingerprint NOT IN ("  # noqa: S608
+    "SELECT fingerprint FROM session_untrusted_value_fingerprints WHERE scope = ? "
+    "ORDER BY first_seen DESC LIMIT ?)"
+)
+
+
+async def record_untrusted_values(
+    repo_root: str,
+    scopes: list[str],
+    fingerprints: list[str],
+    source_class: str,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Store keyed-HMAC ``fingerprints`` of untrusted host/URL/email VALUES that
+    entered each scope's context from ``source_class`` (e.g. ``"WebFetch"``) —
+    best-effort, bounded (C1). Empty/falsy scopes and fingerprints are dropped;
+    never raises — a write failure must never affect a verdict.
+
+    Bounded (invariant: no unbounded scanner/store): each scope is capped at
+    :data:`_MAX_ROWS_PER_SCOPE` rows and rows older than :data:`_TTL_DAYS` are
+    evicted on every write. This is a DELIBERATE divergence from the sticky-
+    forever secret ledger above (``session_secret_fingerprints``): untrusted-
+    value recall decays over a session's life in a way a secret's sensitivity
+    does not. Eviction only ever REMOVES rows — it can never un-fire a match
+    that already happened, and it can never fabricate one either.
+    """
+    scopes = [s for s in scopes if s]
+    fps = [f for f in fingerprints if f]
+    if not scopes or not fps:
+        return
+    when = now or datetime.now(timezone.utc)
+    ts = when.isoformat()
+    cutoff = (when - timedelta(days=_TTL_DAYS)).isoformat()
+    try:
+        async with open_db(repo_root) as conn:
+            for scope in scopes:
+                for fp in fps:
+                    await conn.execute(_INSERT_UNTRUSTED_VALUE, (scope, fp, source_class, ts))
+                await conn.execute(_EVICT_STALE_UNTRUSTED, (scope, cutoff))
+                await conn.execute(_EVICT_OVERFLOW_UNTRUSTED, (scope, scope, _MAX_ROWS_PER_SCOPE))
+            await conn.commit()
+    except Exception:  # noqa: BLE001 — fingerprint recording must never break execution
+        return
+
+
+async def match_untrusted_value(repo_root: str, scope: str, fingerprints: list[str]) -> str | None:
+    """The ``source_class`` recorded for the first matching fingerprint under
+    ``scope`` — a confirmed untrusted-value echo — or ``None``. Fails closed to
+    ``None``: a missing/locked DB or a read error never fabricates a match.
+    """
+    fps = [f for f in fingerprints if f][:_MAX_QUERY_FINGERPRINTS]
+    if not scope or not fps or not db_path(repo_root).exists():
+        return None
+    placeholders = ",".join("?" for _ in fps)
+    sql = (
+        "SELECT source_class FROM session_untrusted_value_fingerprints "  # noqa: S608 — bound '?' params
+        f"WHERE scope = ? AND fingerprint IN ({placeholders}) LIMIT 1"
+    )
+    try:
+        async with open_db(repo_root) as conn:
+            async with conn.execute(sql, (scope, *fps)) as cur:
+                row = await cur.fetchone()
+                return row[0] if row else None
+    except Exception:  # noqa: BLE001 — a read failure must never crash a decision
+        return None
+
+
+async def clear_taint(repo_root: str) -> tuple[int, int, int]:
+    """Wipe ALL sticky taint for this repo's DB — ``session_taint``,
+    ``session_secret_fingerprints``, AND ``session_untrusted_value_fingerprints``
+    — and return ``(taint_rows_cleared, fingerprint_rows_cleared,
+    untrusted_value_rows_cleared)``.
 
     This is the deliberate, human-gated recovery path (``doberman taint clear``):
     the DB is already per-repo (``.doberman/doberman.db``), so there is no
-    narrower scope to target — every row in both tables belongs to this repo.
-    Clearing only ``session_taint`` would leave ``session_secret_fingerprints``
-    armed, so ``_outbound_matches_recorded_secret`` would still hard-BLOCK the
-    next egress — both tables must go together.
+    narrower scope to target — every row in all three tables belongs to this
+    repo. Clearing only some of the three would leave the others armed, so the
+    matching floor (HK.5.2b's secret match, or C1's echo tripwire) would still
+    raise the next egress — all three tables must go together.
 
     INVERSION from every other function in this module: reads above fail closed
-    to empty/``False`` and writes are best-effort, because a storage hiccup must
-    never *fabricate* or *clear* taint on its own. A *deliberate* clear is the
-    opposite risk — reporting success on a failed clear would tell the caller
-    protection is restored when it isn't — so this raises on any storage error
-    instead of swallowing it; the CLI must not report success on a failure.
+    to empty/``False``/``None`` and writes are best-effort, because a storage
+    hiccup must never *fabricate* or *clear* taint on its own. A *deliberate*
+    clear is the opposite risk — reporting success on a failed clear would tell
+    the caller protection is restored when it isn't — so this raises on any
+    storage error instead of swallowing it; the CLI must not report success on
+    a failure.
     """
     async with open_db(repo_root) as conn:
         taint_cur = await conn.execute("DELETE FROM session_taint")
         fingerprint_cur = await conn.execute("DELETE FROM session_secret_fingerprints")
+        untrusted_cur = await conn.execute("DELETE FROM session_untrusted_value_fingerprints")
         await conn.commit()
-        return taint_cur.rowcount, fingerprint_cur.rowcount
+        return taint_cur.rowcount, fingerprint_cur.rowcount, untrusted_cur.rowcount

@@ -280,6 +280,12 @@ class ReasonCode(StrEnum):
     # fingerprint) in an outbound payload: a confirmed read-then-send exfiltration.
     confirmed_exfil = "confirmed_exfil"
 
+    # C1 — the untrusted-value echo tripwire: a host/URL/email that entered
+    # this session's context from an untrusted read (WebFetch/WebSearch, an
+    # issue/PR body) reappeared as a later call's egress destination. Whole-
+    # value match only (no flow analysis); AUTH-capped in every mode (v1).
+    untrusted_value_echo = "untrusted_value_echo"
+
     # C3.1 — the session correlator (doberman.engine.correlator): catches
     # individually-safe actions that combine into exfiltration across a
     # session's decision history. Raised post-decide, in the async executor —

@@ -46,6 +46,7 @@ from doberman.branding import DOG
 from doberman.config import load_active_role, load_message_tone
 from doberman.engine.decision_engine import PASS_STUB, decide, max_risk
 from doberman.engine.objective import ObjectiveGuardrail
+from doberman.engine.taint_floor import UNTRUSTED_READ_TOOLS as _UNTRUSTED_READ_TOOLS
 from doberman.hosthooks import hookio, spine
 from doberman.models import Decision, EvalContext, Risk, SecurityObject, Verdict
 from doberman.proxy.normalize import normalize
@@ -316,8 +317,10 @@ _SECRET_REASON_CODES = frozenset(
 _POST_BLOCK_REASON_CODES = frozenset({"secret_exfiltration", "sensitive_secret_access"})
 
 #: Tools that pull untrusted external content into the agent's context — the
-#: "untrusted provenance" leg of the multi-step trifecta (HK.5.1 taint ledger).
-_UNTRUSTED_READ_TOOLS: frozenset[str] = frozenset({"WebFetch", "WebSearch"})
+#: "untrusted provenance" leg of the multi-step trifecta (HK.5.1 taint ledger)
+#: AND the C1 echo tripwire's source classification. Single source of truth in
+#: engine/taint_floor.py (imported at module top, not redefined) so the
+#: host-hook and the proxy's record_output_taint never drift.
 
 
 def _coerce_response_text(tool_response: Any) -> str:
@@ -421,6 +424,7 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
             # HK.5.2b: fingerprint the secret(s) in this output so a later egress
             # carrying the same value is a confirmed exfil — before any block return.
             _record_secret_fingerprints(output_text, fired_codes, repo_root, session_id)
+            _record_untrusted_value_fingerprints(tool_name, output_text, repo_root, session_id)
 
             if fired_codes & _POST_BLOCK_REASON_CODES:
                 reason = _POST_REASON.format(
@@ -580,6 +584,47 @@ def _record_secret_fingerprints(
 
     try:
         asyncio.run(record_secret_fingerprints(repo_root, scopes, list(fps)))
+    except Exception:  # noqa: BLE001,S110 — fingerprint recording must never break execution
+        pass
+
+
+def _record_untrusted_value_fingerprints(
+    tool_name: str, output_text: str, repo_root: str, session_id: str | None
+) -> None:
+    """Best-effort (C1): record keyed-HMAC fingerprints of the host/URL/email
+    VALUES in an untrusted-read tool's output, so a later egress reusing the
+    SAME value raises PASS -> AUTH (engine/taint_floor.py's
+    apply_echo_tripwire[_async]). Only acts for _UNTRUSTED_READ_TOOLS — a
+    trusted local read is not an untrusted-provenance source. Light (the
+    storage import is on the untrusted-read path only) and wrapped so a write
+    can never break the execution path.
+
+    Reviewer follow-up: calls ``taint_floor.untrusted_read_value_fingerprints``
+    — the SAME function the proxy's ``record_output_taint`` calls — so a
+    trusted/task-named host is excluded from this leg exactly like the proxy
+    leg. The two record legs must never drift on what gets excluded.
+    """
+    if tool_name not in _UNTRUSTED_READ_TOOLS:
+        return
+
+    import asyncio
+
+    from doberman.engine.taint_floor import untrusted_read_value_fingerprints
+    from doberman.storage.taint import entity_scope, record_untrusted_values
+
+    scopes: list[str] = [session_id] if session_id else []
+    try:
+        scopes.append(entity_scope(repo_root))
+    except Exception:  # noqa: BLE001,S110 — keep the session scope even if entity scope fails
+        pass
+
+    async def _record() -> None:
+        values = await untrusted_read_value_fingerprints(output_text, repo_root, session_id)
+        if values:
+            await record_untrusted_values(repo_root, scopes, list(values), tool_name)
+
+    try:
+        asyncio.run(_record())
     except Exception:  # noqa: BLE001,S110 — fingerprint recording must never break execution
         pass
 

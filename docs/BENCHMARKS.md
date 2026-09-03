@@ -118,6 +118,15 @@ true-positive rate per attack class) with **no external dependency**.
   on credential *paths* and shapeless high-entropy values, never assembled
   provider literals.
 
+**C1 (untrusted-value echo tripwire) has no corpus rows, by design.** The detection corpus
+(`tests/corpus/detection_corpus.jsonl`) evaluates each row through a single, stateless `decide()` call
+(`tests/benchmarks/suites/corpus.py::evaluate_corpus`) — the taint floor and the echo tripwire are
+POST-decide floors applied by the host-hook spine / proxy executor, never inside `decide()` itself, and
+the corpus format has no session/taint pre-seeding hook. This is the identical structural reason
+`multi_step_exfil` and `confirmed_exfil` (the two existing taint-floor codes) also carry zero corpus
+rows. Real coverage for the two-call scenario lives in `tests/unit/test_echo_tripwire.py` instead —
+extending the corpus harness to support stateful, multi-call rows is a real, separate gap.
+
 Reproduce (deterministic, from a cold clone):
 
 ```bash

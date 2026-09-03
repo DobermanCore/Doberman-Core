@@ -26,7 +26,7 @@ from doberman.config import load_active_role, load_mode, resolve_enforcement_syn
 from doberman.engine.correlator import apply_correlator
 from doberman.engine.decision_engine import PASS_STUB, decide
 from doberman.engine.objective import ObjectiveGuardrail
-from doberman.engine.taint_floor import apply_taint_floor
+from doberman.engine.taint_floor import apply_echo_tripwire, apply_taint_floor
 from doberman.models import Decision, EvalContext, SecurityObject, Verdict
 from doberman.policy.drift import acted_verdict
 from doberman.policy.modes import DEFAULT_MODE
@@ -100,6 +100,10 @@ def evaluate_action(
     )
     decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
     decision = apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)
+    # C1 — the untrusted-value echo tripwire: same scope keying, right after
+    # the secret-taint floor for the identical cross-call reason (see
+    # engine/taint_floor.py's module docstring).
+    decision = apply_echo_tripwire(action, decision, ctx.mode, repo_root, session_id, args)
     # C3.1 session correlator: cross-call PATTERN raise (raise-only), right after
     # the taint floor for the same reason (see doberman.engine.correlator's module
     # docstring). Unlike the pure-MCP proxy's tool-execution chokepoint (no session

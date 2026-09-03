@@ -62,7 +62,10 @@ DB_FILE = "doberman.db"
 #: Version 12 fingerprints the baseline's destination feature keys and purges
 #: legacy raw-host rows (H4 — a hostname can embed secret material). Version 13
 #: adds bounded exact-action approval memory (keyed HMAC identity only).
-SCHEMA_VERSION = 13
+#: Version 14 adds the untrusted-value echo tripwire's fingerprint store (C1:
+#: session_untrusted_value_fingerprints -- additive CREATE TABLE; keyed HMAC
+#: fingerprints of hostnames/URLs/emails only, never the raw value).
+SCHEMA_VERSION = 14
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -133,6 +136,23 @@ CREATE TABLE IF NOT EXISTS session_secret_fingerprints (
     scope       TEXT NOT NULL,
     fingerprint TEXT NOT NULL,
     first_seen  TEXT,
+    PRIMARY KEY (scope, fingerprint)
+);
+
+-- Untrusted-value echo tripwire (C1): keyed-HMAC fingerprints of hostnames/URLs/
+-- emails that entered a scope's context from an UNTRUSTED source (a WebFetch/
+-- WebSearch result, an issue/PR body), so a later egress reusing the SAME value
+-- raises PASS -> AUTH. Sibling table to session_secret_fingerprints (identical
+-- (scope, fingerprint) PK shape) rather than a shared `kind` column -- every
+-- other taint concept added here (session_taint, session_task_hosts, tool_pins)
+-- got its own additive table, and this keeps the shipped secret-fingerprint
+-- table's schema untouched. `source_class` is a class label (e.g. "WebFetch"),
+-- never the value. No raw host/URL/email is ever stored.
+CREATE TABLE IF NOT EXISTS session_untrusted_value_fingerprints (
+    scope        TEXT NOT NULL,
+    fingerprint  TEXT NOT NULL,
+    source_class TEXT,
+    first_seen   TEXT,
     PRIMARY KEY (scope, fingerprint)
 );
 
