@@ -133,7 +133,9 @@ class MsbPoisoningAdapter:
                 )
         for case_id, action in _benign_cases():
             cases.append(
-                BenchmarkCase(case_id=case_id, label="benign", note="benign_tool_call", actions=(action,))
+                BenchmarkCase(
+                    case_id=case_id, label="benign", note="benign_tool_call", actions=(action,)
+                )
             )
         cases.sort(key=lambda c: c.case_id)
         return tuple(cases)
@@ -285,4 +287,38 @@ def _benign_cases() -> Iterable[tuple[str, CandidateAction]]:
 
 
 def attack_type_report(pipeline) -> dict:
-    return {}
+    """Per-``attack_type`` ASR/mitigation breakdown, redaction-safe. Mirrors
+    the self-contained per-scenario report pattern used elsewhere in this
+    package (build cases, decide, tally by class label — never emit payload
+    text into the returned dict)."""
+    from ..mapping import to_eval_context, to_security_object
+
+    by_type: dict[str, dict] = {}
+    for case in MsbPoisoningAdapter().load():
+        if case.label != "attack":
+            continue
+        action = case.actions[case.attacker_goal_index]
+        security_object = to_security_object(f"msb:{case.case_id}", action)
+        ctx = to_eval_context(action)
+        decision = pipeline.decide(security_object, ctx)
+        bucket = by_type.setdefault(
+            case.note,
+            {"lure_only": case.note in _LURE_ONLY_TYPES, "n": 0, "mitigated": 0, "blocked": 0},
+        )
+        bucket["n"] += 1
+        if decision.final_verdict is not Verdict.PASS:
+            bucket["mitigated"] += 1
+        if decision.final_verdict is Verdict.BLOCK:
+            bucket["blocked"] += 1
+    return by_type
+
+
+if __name__ == "__main__":  # pragma: no cover - operator convenience entry point
+    import sys
+
+    from ..profiles import build_pipeline
+
+    json.dump(
+        attack_type_report(build_pipeline(load_plugins=False)), sys.stdout, indent=2, sort_keys=True
+    )
+    sys.stdout.write("\n")

@@ -16,7 +16,13 @@ import pytest
 
 from doberman.models import ActionType, SourceContext
 from tests.benchmarks.adapter import SuiteAdapter
-from tests.benchmarks.suites.msb_poisoning import DATA_DIR_ENV, MsbPoisoningAdapter
+from tests.benchmarks.profiles import PassthroughPipeline
+from tests.benchmarks.suites.msb_poisoning import (
+    _LURE_ONLY_TYPES,
+    DATA_DIR_ENV,
+    MsbPoisoningAdapter,
+    attack_type_report,
+)
 
 PAYLOAD_MARKER = "MSB_PAYLOAD_MARKER_DO_NOT_LEAK"
 
@@ -94,3 +100,15 @@ def test_redaction_payload_never_in_case_id_or_note(tmp_path):
     case = {c.case_id: c for c in cases}["msb-kill_process-prompt_injection"]
     assert PAYLOAD_MARKER in case.actions[0].raw_arguments["response"]
     assert PAYLOAD_MARKER in case.actions[1].raw_arguments["implementation"]
+
+
+def test_attack_type_report_flags_lure_only_types(tmp_path, monkeypatch):
+    root = _write_dataset(tmp_path)
+    monkeypatch.setenv(DATA_DIR_ENV, str(root))
+
+    report = attack_type_report(PassthroughPipeline())
+
+    assert report["prompt_injection"]["lure_only"] is False
+    assert report["prompt_injection"]["n"] == 1
+    assert report["name_overlap"]["lure_only"] is True
+    assert "name_overlap" in _LURE_ONLY_TYPES
