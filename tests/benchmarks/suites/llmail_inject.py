@@ -51,6 +51,25 @@ _DEFAULT_SAMPLE_SIZE = 500
 _DEFAULT_SEED = 20260902
 
 
+def _successful_injections(data_dir: pathlib.Path, phases: tuple[str, ...]) -> list[str]:
+    """Prompts whose recorded outcome shows the injection actually triggered the
+    target tool call (``attack_attempt == "True"`` and ``reason ==
+    "api_triggered"``); ``reason == "judge"`` is a content-only opinion,
+    independent of whether the tool call fired, and is excluded."""
+    prompts: list[str] = []
+    for phase in phases:
+        path = data_dir / f"labelled_unique_submissions_{phase}.json"
+        if not path.is_file():
+            continue
+        labelled = json.loads(path.read_text(encoding="utf-8"))
+        prompts.extend(
+            prompt
+            for prompt, label in labelled.items()
+            if label.get("attack_attempt") == "True" and label.get("reason") == "api_triggered"
+        )
+    return sorted(prompts)
+
+
 class LlmailInjectAdapter:
     suite_name = "llmail_inject"
 
@@ -74,4 +93,53 @@ class LlmailInjectAdapter:
                 f"LLMail-Inject dataset not found; set {DATA_DIR_ENV} to a checkout "
                 "root (the directory containing data/scenarios.json)."
             )
-        return ()
+
+        data_dir = self._data_dir / "data"
+        prompts = _successful_injections(data_dir, self._phases)
+        sample = sorted(random.Random(self._seed).sample(prompts, min(self._sample_size, len(prompts))))
+
+        cases: list[BenchmarkCase] = []
+        for i, prompt in enumerate(sample):
+            read_action = CandidateAction(
+                action_type=ActionType.file_read,
+                tool_name="read_email",
+                source_context=SourceContext.email,
+                raw_arguments={"body": prompt},
+            )
+            send_action = CandidateAction(
+                action_type=ActionType.network_request,
+                tool_name="send_email",
+                external_destination=ATTACKER_EMAIL,
+                source_context=SourceContext.email,
+                raw_arguments={"to": ATTACKER_EMAIL, "body": _GOAL_BODY},
+            )
+            cases.append(
+                BenchmarkCase(
+                    case_id=f"llmail-attack-{i:05d}",
+                    label="attack",
+                    note="api_triggered",
+                    actions=(read_action, send_action),
+                    attacker_goal_index=1,
+                )
+            )
+
+        fp_path = data_dir / "emails_for_fp_tests.json"
+        if fp_path.is_file():
+            for i, email in enumerate(json.loads(fp_path.read_text(encoding="utf-8"))):
+                cases.append(
+                    BenchmarkCase(
+                        case_id=f"llmail-benign-{i:05d}",
+                        label="benign",
+                        note="fp_test_email",
+                        actions=(
+                            CandidateAction(
+                                action_type=ActionType.file_read,
+                                tool_name="read_email",
+                                source_context=SourceContext.email,
+                                raw_arguments={"body": email},
+                            ),
+                        ),
+                    )
+                )
+        cases.sort(key=lambda c: c.case_id)
+        return tuple(cases)
