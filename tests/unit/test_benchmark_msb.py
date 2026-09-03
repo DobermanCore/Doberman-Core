@@ -76,3 +76,21 @@ def test_load_builds_two_action_cases_per_attack_type(tmp_path):
     assert case.actions[1].action_type is ActionType.other
     assert case.actions[1].tool_name == "kill_process"
     assert case.actions[1].target == "case-output"  # "{pid}" substituted, MSB's own rule
+
+
+def test_benign_tool_calls_present(tmp_path):
+    root = _write_dataset(tmp_path)
+    benign = [c for c in MsbPoisoningAdapter(data_dir=root).load() if c.label == "benign"]
+    assert len(benign) == 5
+    assert all(c.case_id.startswith("msb-benign-") for c in benign)
+
+
+def test_redaction_payload_never_in_case_id_or_note(tmp_path):
+    root = _write_dataset(tmp_path)
+    cases = list(MsbPoisoningAdapter(data_dir=root).load())
+    for case in cases:
+        assert PAYLOAD_MARKER not in case.case_id
+        assert PAYLOAD_MARKER not in case.note
+    case = {c.case_id: c for c in cases}["msb-kill_process-prompt_injection"]
+    assert PAYLOAD_MARKER in case.actions[0].raw_arguments["response"]
+    assert PAYLOAD_MARKER in case.actions[1].raw_arguments["implementation"]
