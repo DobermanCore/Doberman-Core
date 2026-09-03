@@ -11,9 +11,12 @@ from datetime import datetime, timezone
 
 import pytest
 
+from doberman.engine.rules import commands as commands_module
 from doberman.engine.rules.commands import (
     DestructiveCommandRule,
+    command_contains_dynamic_content,
     delete_class_operands,
+    delete_class_operands_and_dynamic,
     walk_command,
 )
 from doberman.models import (
@@ -907,3 +910,32 @@ def test_delete_class_operands_reuses_the_rule_parse_not_a_reparse():
     # known literal operand for this rm segment -> [] (found, but empty),
     # never a guess reconstructed from a sibling segment.
     assert delete_class_operands("FOO=bar rm -rf $(echo target)") == []
+
+
+# --- delete_class_operands_and_dynamic (M1, C2 final review) -----------------
+
+
+def test_delete_class_operands_and_dynamic_parses_the_command_once(monkeypatch):
+    # M1: delete_class_operands() then command_contains_dynamic_content() used
+    # to re-parse the same command line separately (0.046s each on a 44KB
+    # adversarial command). The combined helper must call walk_command exactly
+    # once.
+    calls = []
+    real_walk_command = commands_module.walk_command
+
+    def _spy(command):
+        calls.append(command)
+        return real_walk_command(command)
+
+    monkeypatch.setattr(commands_module, "walk_command", _spy)
+    operands, dynamic = delete_class_operands_and_dynamic("rm -rf $(echo target)")
+    assert len(calls) == 1
+    assert operands == []
+    assert dynamic is True
+
+
+def test_delete_class_operands_and_dynamic_matches_the_two_separate_calls():
+    for command in ("rm -rf build", "ls -la", "rm -rf $(echo x)", ""):
+        operands, dynamic = delete_class_operands_and_dynamic(command)
+        assert operands == delete_class_operands(command)
+        assert dynamic == command_contains_dynamic_content(command)

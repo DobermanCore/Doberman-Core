@@ -182,6 +182,38 @@ def test_wide_tree_returns_within_budget_capped(tmp_path):
     assert elapsed < 2.0  # generous CI margin; the point is "doesn't run to completion"
 
 
+def test_operand_level_cap_enforced_for_many_existing_file_operands(tmp_path):
+    # C1 (C2 final review): a FILE operand's own `files.add(canon.relposix)`
+    # had no cap check after it — only the os.walk directory-walk branches
+    # did. Many individual existing-file operands (not one directory operand
+    # containing many files) sailed straight past the cap while reporting
+    # capped=False: 3,000 such operands measured file_count=3000 (cap=1000),
+    # capped=False — a non-authoritative result presented as authoritative.
+    operands = []
+    for i in range(10):
+        f = tmp_path / f"f{i}.txt"
+        f.write_text("x", encoding="utf-8")
+        operands.append(f"f{i}.txt")
+    effects = compute_delete_effects(operands, str(tmp_path), cap=5)
+    assert effects.capped is True
+    assert effects.file_count == 5  # the cap value, not the true 10
+
+
+def test_many_nonexistent_operands_returns_within_budget(tmp_path):
+    # C1 (C2 final review): the per-operand loop itself (islink,
+    # canonicalize, Path.exists()) had no deadline check between iterations
+    # for operands that never exist — only os.walk checked the deadline, and
+    # a nonexistent operand never reaches os.walk. 20,000 such operands
+    # measured 15.4s against a 0.25s budget (60x over) before the fix.
+    operands = [f"never-existed-{i}" for i in range(20_000)]
+    started = time.monotonic()
+    effects = compute_delete_effects(operands, str(tmp_path), budget_s=0.25)
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0  # generous CI margin against a 0.25s budget
+    assert effects.capped is True
+    assert effects.file_count is None  # the unknown shade, never a reassuring small number
+
+
 def test_unresolved_glob_operand_is_unknown_never_a_silent_zero(tmp_path):
     # No file literally named "*.log" — and no glob engine here (ponytail) —
     # so this must fail toward unknown, not toward "nothing to delete".

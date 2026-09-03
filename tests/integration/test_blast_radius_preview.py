@@ -1,5 +1,6 @@
 """C2 — blast-radius preview v1: AUTH attaches effects; TOCTOU re-blocks on drift."""
 
+import threading
 from datetime import datetime, timezone
 from unittest.mock import Mock
 
@@ -157,6 +158,101 @@ async def test_toctou_reblocks_when_a_file_is_added_during_the_challenge(
     rows = await read_decisions(executor.REPO_ROOT)
     assert rows[-1]["final_verdict"] == "BLOCK"
     assert ReasonCode.effect_set_diverged.value in rows[-1]["reason_codes_json"]
+
+
+async def test_toctou_reblocks_when_a_file_is_removed_during_the_challenge(
+    monkeypatch, isolated_executor_repo_root
+):
+    # M4 (C2 final review): near-duplicate of the file-ADDED case above — the
+    # divergence guard must catch drift in EITHER direction, not just growth.
+    target = isolated_executor_repo_root / "fixture"
+    target.mkdir()
+    (target / "a.txt").write_text("x", encoding="utf-8")
+    (target / "b.txt").write_text("x", encoding="utf-8")
+
+    def approve_but_race(decision, action, **kwargs):
+        # Simulate the filesystem changing WHILE the (mocked) human is
+        # looking at the challenge — a file disappears before approval
+        # returns.
+        (target / "b.txt").unlink()
+        return AuthResult(
+            approved=True,
+            tier=AuthTier.local_auth,
+            method="test",
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    from doberman.engine.decision_engine import StaticGuardrail
+    from doberman.models import GuardrailResult, Risk, Verdict
+
+    monkeypatch.setattr(
+        executor,
+        "DEFAULT_OBJECTIVE",
+        StaticGuardrail(
+            GuardrailResult(
+                verdict=Verdict.AUTH,
+                risk=Risk.high,
+                reason_codes=[ReasonCode.destructive_command],
+                explanation="test auth",
+            )
+        ),
+    )
+    monkeypatch.setattr(executor, "run_auth_challenge", approve_but_race)
+    async with proxied_session() as (fake, agent):
+        result = await agent.call_tool("shell_exec", {"command": "rm -rf fixture"})
+    assert result.isError
+    assert "blocked by policy" in result.content[0].text
+    assert ReasonCode.effect_set_diverged.value in result.content[0].text
+    assert fake.calls == []  # never forwarded
+
+    rows = await read_decisions(executor.REPO_ROOT)
+    assert rows[-1]["final_verdict"] == "BLOCK"
+    assert ReasonCode.effect_set_diverged.value in rows[-1]["reason_codes_json"]
+
+
+async def test_compute_delete_effects_runs_off_the_event_loop(
+    monkeypatch, isolated_executor_repo_root
+):
+    # C1 amplifier (C2 final review): compute_delete_effects used to run
+    # synchronously on the proxy's event loop, unlike run_auth_challenge
+    # (moved off it via asyncio.to_thread, with a comment). A slow/adversarial
+    # walk would otherwise block the whole proxy. Both call sites must run in
+    # a worker thread.
+    target = isolated_executor_repo_root / "fixture"
+    target.mkdir()
+    (target / "a.txt").write_text("x", encoding="utf-8")
+
+    real_compute = executor.compute_delete_effects
+    seen_threads = []
+
+    def spy(*args, **kwargs):
+        seen_threads.append(threading.current_thread())
+        return real_compute(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "compute_delete_effects", spy)
+
+    from doberman.engine.decision_engine import StaticGuardrail
+    from doberman.models import GuardrailResult, Risk, Verdict
+
+    monkeypatch.setattr(
+        executor,
+        "DEFAULT_OBJECTIVE",
+        StaticGuardrail(
+            GuardrailResult(
+                verdict=Verdict.AUTH,
+                risk=Risk.high,
+                reason_codes=[ReasonCode.destructive_command],
+                explanation="test auth",
+            )
+        ),
+    )
+    monkeypatch.setattr(executor, "run_auth_challenge", _approve())
+    async with proxied_session() as (fake, agent):
+        result = await agent.call_tool("shell_exec", {"command": "rm -rf fixture"})
+    assert not result.isError
+    assert len(seen_threads) == 2  # preview + TOCTOU recompute
+    assert all(t is not threading.current_thread() for t in seen_threads)
 
 
 async def test_dynamic_delete_operand_never_reports_a_confirmed_count(

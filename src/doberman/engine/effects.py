@@ -131,6 +131,18 @@ def compute_delete_effects(
         return os.path.relpath(abs_path, root).replace(os.sep, "/")
 
     for operand in operands:
+        # C1 (C2 final review): the bounds above only ever fired inside
+        # os.walk. The per-operand work itself (islink, canonicalize,
+        # Path.exists()/is_file(), and a bare `files.add()` for a FILE
+        # operand — no os.walk involved at all) was unbounded: 20,000
+        # nonexistent operands took 15.4s against a 0.25s budget, and 3,000
+        # existing-file operands sailed past a cap=1000 reporting
+        # capped=False. Check both bounds once per operand, before any work
+        # on it starts.
+        if time.monotonic() > deadline:
+            return _unknown(hits_git, hits_outside_repo)
+        if len(files) + len(dirs) >= cap:
+            return _cap_hit(cap, hits_git, hits_outside_repo)
         try:
             # A NUL byte can never appear in a real path component on any
             # filesystem, so an operand containing one cannot denote a real

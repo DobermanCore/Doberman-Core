@@ -1135,6 +1135,34 @@ def _command_text(action: SecurityObject, ctx: EvalContext) -> str | None:
     return None
 
 
+def delete_class_operands_and_dynamic(command: str) -> tuple[list[str] | None, bool]:
+    """``(delete_class_operands(command), command_contains_dynamic_content(command))``
+    from a SINGLE :func:`walk_command` parse.
+
+    M1 (C2 final review): a caller that needs both values (the blast-radius
+    preview, ADR 0094) used to call the two functions below separately,
+    re-parsing the same command line twice (0.046s each on a 44KB adversarial
+    command). Both are now thin wrappers around this one parse; call this
+    directly when you need both values.
+    """
+    segments, _ambiguous, dynamic = walk_command(_normalize_windows_backslashes(command))
+    operands: list[str] = []
+    found = False
+    for raw_segment in segments:
+        tokens = _argv_from_tokens(raw_segment)
+        if not tokens:
+            continue
+        cmd = tokens[0]
+        if cmd == "rm":
+            found = True
+            operands.extend(t for t in tokens[1:] if not t.startswith("-"))
+        elif cmd.lower() in _WINDOWS_DELETE_VERBS:
+            found = True
+            _, _, ops = _windows_delete_flags_and_operands(tokens)
+            operands.extend(ops)
+    return (operands if found else None), dynamic
+
+
 def delete_class_operands(command: str) -> list[str] | None:
     """Path operands to every delete-class segment (``rm`` / a Windows delete
     verb) in ``command``, using the SAME adversarial parse the destructive-
@@ -1157,27 +1185,14 @@ def delete_class_operands(command: str) -> list[str] | None:
     that distinction (e.g. the blast-radius preview, ADR 0094) checks
     :func:`command_contains_dynamic_content` on the same ``command`` and
     treats a dynamic result as unknown, not as a confirmed (possibly zero)
-    count.
+    count. A caller that needs BOTH this and the dynamic flag should call
+    :func:`delete_class_operands_and_dynamic` once instead (M1).
 
     Used by :mod:`doberman.engine.effects` (ADR 0094); this module keeps its
     own no-filesystem-access contract — only the caller touches disk.
     """
-    segments, _ambiguous, _dynamic = walk_command(_normalize_windows_backslashes(command))
-    operands: list[str] = []
-    found = False
-    for raw_segment in segments:
-        tokens = _argv_from_tokens(raw_segment)
-        if not tokens:
-            continue
-        cmd = tokens[0]
-        if cmd == "rm":
-            found = True
-            operands.extend(t for t in tokens[1:] if not t.startswith("-"))
-        elif cmd.lower() in _WINDOWS_DELETE_VERBS:
-            found = True
-            _, _, ops = _windows_delete_flags_and_operands(tokens)
-            operands.extend(ops)
-    return operands if found else None
+    operands, _dynamic = delete_class_operands_and_dynamic(command)
+    return operands
 
 
 def command_contains_dynamic_content(command: str) -> bool:
@@ -1188,8 +1203,10 @@ def command_contains_dynamic_content(command: str) -> bool:
     preview, ADR 0094) tell a genuinely confirmed empty/complete operand list
     apart from one the walker merely couldn't see into, so a partial
     ``delete_class_operands`` result is never mistaken for a confirmed count.
+    A caller that needs BOTH this and the operand list should call
+    :func:`delete_class_operands_and_dynamic` once instead (M1).
     """
-    _segments, _ambiguous, dynamic = walk_command(_normalize_windows_backslashes(command))
+    _operands, dynamic = delete_class_operands_and_dynamic(command)
     return dynamic
 
 

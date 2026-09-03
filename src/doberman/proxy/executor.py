@@ -47,9 +47,8 @@ from doberman.engine.effects import compute_delete_effects, unknown_effects
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.rules import BUILTIN_RULE_TYPES
 from doberman.engine.rules.commands import (
-    command_contains_dynamic_content,
     command_line_from_arguments,
-    delete_class_operands,
+    delete_class_operands_and_dynamic,
 )
 from doberman.engine.rules.destinations import ExternalDestinationRule
 from doberman.engine.rules.secrets import contains_strong_secret
@@ -737,19 +736,25 @@ async def _handle_auth(
     # offline blast-radius preview for a delete-class command and attach it
     # to the decision every prompter reads. None of this runs (and no
     # filesystem walk happens) for any non-delete-class AUTH —
-    # delete_class_operands returns None immediately for those. A delete
-    # segment whose operands include a live shell substitution ($( ), a
-    # backtick, ${ }, or $VAR) never gets a confirmed count — the walker
-    # would silently see a partial/empty operand list, and "0 files" would
-    # be a worse preview than none — so `dynamic` is checked once here and
-    # reused unchanged at the TOCTOU recompute below.
+    # delete_class_operands_and_dynamic returns (None, ...) immediately for
+    # those. A delete segment whose operands include a live shell
+    # substitution ($( ), a backtick, ${ }, or $VAR) never gets a confirmed
+    # count — the walker would silently see a partial/empty operand list,
+    # and "0 files" would be a worse preview than none — so `dynamic` is
+    # computed once here (M1: one walk_command parse for both the operand
+    # list and the dynamic flag) and reused unchanged at the TOCTOU recompute
+    # below. compute_delete_effects runs off the event loop (asyncio.to_thread,
+    # same as run_auth_challenge below): a slow/adversarial walk must never
+    # block the proxy loop (C1 amplifier).
     command = command_line_from_arguments(arguments or {})
-    delete_operands = delete_class_operands(command) if command else None
-    dynamic = False
+    delete_operands, dynamic = (
+        delete_class_operands_and_dynamic(command) if command else (None, False)
+    )
     if delete_operands is not None:
-        dynamic = command_contains_dynamic_content(command)
         effects = (
-            unknown_effects() if dynamic else compute_delete_effects(delete_operands, REPO_ROOT)
+            unknown_effects()
+            if dynamic
+            else await asyncio.to_thread(compute_delete_effects, delete_operands, REPO_ROOT)
         )
         decision = decision.model_copy(update={"effects": effects})
 
@@ -824,7 +829,9 @@ async def _handle_auth(
     # it does not re-block on dynamism alone — only on an actual mismatch.
     if decision.effects is not None:
         recomputed = (
-            unknown_effects() if dynamic else compute_delete_effects(delete_operands, REPO_ROOT)
+            unknown_effects()
+            if dynamic
+            else await asyncio.to_thread(compute_delete_effects, delete_operands, REPO_ROOT)
         )
         if recomputed.digest != decision.effects.digest:
             diverged = _effect_set_diverged_decision(action)
