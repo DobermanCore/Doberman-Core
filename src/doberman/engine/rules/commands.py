@@ -1135,6 +1135,39 @@ def _command_text(action: SecurityObject, ctx: EvalContext) -> str | None:
     return None
 
 
+def delete_class_operands(command: str) -> list[str] | None:
+    """Path operands to every delete-class segment (``rm`` / a Windows delete
+    verb) in ``command``, using the SAME adversarial parse the destructive-
+    command rule itself uses (:func:`walk_command`, prefix-stripped) — never a
+    second parser. ``None`` means no delete-class segment was found at all
+    (the caller should not walk the filesystem for this command).
+
+    Deliberately does NOT unwrap an opaque shell payload (``bash -c "..."``):
+    that AUTHs via ``opaque_command``, not a delete-class reason, so showing
+    no preview for a payload we cannot statically vet is correct — never a
+    guess at what an opaque command deletes.
+
+    Used by :mod:`doberman.engine.effects` (ADR 0094); this module keeps its
+    own no-filesystem-access contract — only the caller touches disk.
+    """
+    segments, _ambiguous, _dynamic = walk_command(_normalize_windows_backslashes(command))
+    operands: list[str] = []
+    found = False
+    for raw_segment in segments:
+        tokens = _argv_from_tokens(raw_segment)
+        if not tokens:
+            continue
+        cmd = tokens[0]
+        if cmd == "rm":
+            found = True
+            operands.extend(t for t in tokens[1:] if not t.startswith("-"))
+        elif cmd.lower() in _WINDOWS_DELETE_VERBS:
+            found = True
+            _, _, ops = _windows_delete_flags_and_operands(tokens)
+            operands.extend(ops)
+    return operands if found else None
+
+
 class DestructiveCommandRule:
     """Detect catastrophic and risky shell/git commands; opaque → AUTH."""
 
