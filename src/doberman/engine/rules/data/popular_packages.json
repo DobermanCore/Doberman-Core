@@ -3,12 +3,14 @@
   "pypi": [
     "requests", "numpy", "flask", "django", "pytest", "boto3", "pyyaml",
     "click", "urllib3", "setuptools", "pip", "wheel", "six", "certifi",
-    "idna", "charset-normalizer", "cryptography", "pandas", "scipy", "pillow"
+    "idna", "charset-normalizer", "cryptography", "pandas", "scipy", "pillow",
+    "boto", "request"
   ],
   "npm": [
     "react", "lodash", "express", "axios", "chalk", "commander", "webpack",
     "typescript", "eslint", "prettier", "react-dom", "vue", "next", "jest",
-    "moment", "dotenv", "uuid", "semver", "request", "left-pad"
+    "moment", "dotenv", "uuid", "semver", "request", "left-pad",
+    "vuex", "nest"
   ],
   "cargo": [
     "serde", "tokio", "clap", "rand", "regex", "anyhow", "thiserror", "log",

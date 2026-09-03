@@ -18,6 +18,7 @@ import os
 import pathlib
 import random
 import socket
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -277,6 +278,104 @@ def test_bundled_data_files_load_and_contain_seed_entries():
     assert "request" in popular_npm_all
 
 
+# ── per-ecosystem value-flag regression ───────────────────────────────────
+# CRITICAL fix (whole-branch review): pip's -r/-c/-i/--index-url/--extra-
+# index-url used to be ONE global value-flag set applied to every
+# ecosystem, so e.g. `npm i -i crossenv` swallowed the malicious operand as
+# "-i"'s value and silently PASSed. Each ecosystem now carries its own real
+# value-flag set (npm --registry/--prefix/-w, cargo --git/--path/--registry/
+# --features/--rename/-p, gem -v/-s/-i where -i really is gem's
+# --install-dir) so none of -i/-r/-c/--index-url is misread as a real npm,
+# yarn, pnpm, bun, or cargo flag.
+
+_VALUE_FLAG_PROBE_MALICIOUS = {"npm": frozenset({"crossenv"}), "cargo": frozenset({"crossenv"})}
+_VALUE_FLAG_PROBE_RULE = DependencyAdmissionRule(
+    known_malicious=_VALUE_FLAG_PROBE_MALICIOUS, popular_by_len={}
+)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "npm i -i crossenv",
+        "npm i -r crossenv",
+        "npm i --index-url crossenv",
+        "yarn add -i crossenv",
+        "pnpm add -c crossenv",
+        "bun add -r crossenv",
+        "cargo add -r crossenv",
+    ],
+)
+def test_pip_value_flags_no_longer_leak_into_other_ecosystems(command):
+    result = _VALUE_FLAG_PROBE_RULE.evaluate(_action(), _ctx(command))
+    assert result.verdict is Verdict.BLOCK, command
+
+
+def test_gem_install_dir_is_a_real_gem_flag_and_still_consumes_its_value():
+    # The mirror image: gem's `-i` really IS `--install-dir` on gem's own
+    # CLI, so this one command correctly swallows its operand and never
+    # reaches classification at all — "evilgem" is also not on any bundled
+    # list, so even if it did reach classification it would PASS, but the
+    # honest reason here is abstention, not a lucky miss.
+    result = _VALUE_FLAG_PROBE_RULE.evaluate(_action(), _ctx("gem install -i evilgem"))
+    assert result.verdict is Verdict.PASS
+
+
+def test_npm_known_malicious_flagship_blocks_via_real_bundled_data():
+    # One end-to-end proof against the REAL shipped npm known-malicious
+    # list (not the fixture above) that the value-flag fix reaches
+    # production data, not just a test fixture.
+    rule = DependencyAdmissionRule()
+    result = rule.evaluate(_action(), _ctx("npm i -i crossenv"))
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result.reason_codes
+
+
+# ── uv's pip-compatible shim subcommand ───────────────────────────────────
+# IMPORTANT fix: v1 only mapped `uv add` (uv's own verb); `uv pip install X`
+# is uv's pip-compatible shim subcommand and used to fall through unmatched
+# (`uv`'s verb table only recognized "add"), so it silently PASSed. Mirrors
+# the existing `python -m pip` peel.
+
+
+def test_uv_pip_install_is_treated_as_a_pip_invocation():
+    segments, _, _ = walk_command("uv pip install reqests")
+    assert _ecosystem_and_names(segments[0]) == ("pypi", ["reqests"])
+
+
+def test_uv_pip_install_inherits_pips_value_flags():
+    segments, _, _ = walk_command("uv pip install -r requirements.txt")
+    assert _ecosystem_and_names(segments[0]) is None  # no name, no file read
+
+
+# ── popular-seed false-positive guards (IMPORTANT) ────────────────────────
+# The small starter seed itself manufactured false positives: these four
+# real, legitimate package names were each one edit away from an existing
+# popular-list entry and not themselves on the list, so they stepped up to
+# AUTH. Adding them to the popular seed is a security-relevant data change
+# (see data/README.md), not a code change.
+
+
+def test_npm_vuex_is_popular_not_a_typosquat_of_vue():
+    result = DependencyAdmissionRule().evaluate(_action(), _ctx("npm install vuex"))
+    assert result.verdict is Verdict.PASS
+
+
+def test_npm_nest_is_popular_not_a_typosquat_of_next_or_jest():
+    result = DependencyAdmissionRule().evaluate(_action(), _ctx("npm install nest"))
+    assert result.verdict is Verdict.PASS
+
+
+def test_pypi_boto_is_popular_not_a_typosquat_of_boto3():
+    result = DependencyAdmissionRule().evaluate(_action(), _ctx("pip install boto"))
+    assert result.verdict is Verdict.PASS
+
+
+def test_pypi_request_is_popular_not_a_typosquat_of_requests():
+    result = DependencyAdmissionRule().evaluate(_action(), _ctx("pip install request"))
+    assert result.verdict is Verdict.PASS
+
+
 # ── Task 4: registration + no-I/O + bounded-time property tests ──────────
 
 
@@ -323,17 +422,48 @@ def test_no_filesystem_or_network_io_in_evaluate(monkeypatch):
     def _forbidden(*_a, **_k):
         raise AssertionError("evaluate() performed forbidden I/O")
 
+    class _ExplodingEnviron:
+        """A mapping stand-in for `os.environ` whose read methods raise —
+        an empty dict ({}) would pass this test even if evaluate() DID read
+        an env var (an absent key just raises KeyError either way), so it
+        never actually proved anything. This fails loudly on any read."""
+
+        def __getitem__(self, key):
+            raise AssertionError("evaluate() performed forbidden I/O (os.environ[...])")
+
+        def get(self, *_a, **_k):
+            raise AssertionError("evaluate() performed forbidden I/O (os.environ.get(...))")
+
     monkeypatch.setattr(builtins, "open", _forbidden)
     monkeypatch.setattr(pathlib.Path, "read_text", _forbidden)
     monkeypatch.setattr(socket, "socket", _forbidden)
-    monkeypatch.setattr(os, "environ", {})
 
     verbs = ["pip install", "npm install", "cargo add", "go get", "gem install"]
     names = ["requestx", "requests", "evilpkg-fixture", "left-pad", "@myorg/utils", "a", ""]
     rng = random.Random(1337)  # noqa: S311 — fuzz-input generator, not cryptographic
-    for _ in range(200):
-        cmd = f"{rng.choice(verbs)} {rng.choice(names)}{rng.randint(0, 999)}"
-        rule.evaluate(_action(), _ctx(cmd))  # must not raise, must not touch patched I/O
+
+    # A vacuous fuzz loop: every generated name gets a random digit suffix
+    # appended, so the exact known-malicious fixture name never matches and
+    # the BLOCK branch was never actually exercised here. One exact-name
+    # call first, asserted, closes that gap.
+    exact_hit = rule.evaluate(_action(), _ctx("pip install evilpkg-fixture"))
+    assert exact_hit.verdict is Verdict.BLOCK
+
+    # os.environ is patched with a manual save/restore (NOT `monkeypatch`)
+    # scoped tightly around just this loop: pytest's own progress reporting
+    # reads `os.environ["COLUMNS"]` for terminal-width detection between
+    # the test's call phase and its teardown phase — i.e. while a
+    # `monkeypatch`-fixture-scoped patch (undone only at teardown) would
+    # still be active — and a KeyError there is normal/handled, but our
+    # AssertionError is not, crashing the test run itself.
+    real_environ = os.environ
+    os.environ = _ExplodingEnviron()  # noqa: B003 — stand-in object, not real env mutation
+    try:
+        for _ in range(200):
+            cmd = f"{rng.choice(verbs)} {rng.choice(names)}{rng.randint(0, 999)}"
+            rule.evaluate(_action(), _ctx(cmd))  # must not raise, must not touch patched I/O
+    finally:
+        os.environ = real_environ  # noqa: B003 — restoring the real object, not clearing it
 
 
 def test_bounded_time_on_an_oversized_candidate_name(monkeypatch):
@@ -360,3 +490,18 @@ def test_bounded_time_on_an_oversized_candidate_name(monkeypatch):
     result = rule.evaluate(_action(), _ctx(f"pip install {huge_name}"))
     assert result.verdict is Verdict.PASS  # no bucket at that length; abstains cheaply
     assert calls == 0  # bucketing short-circuits before any edit-distance call
+
+
+def test_bounded_on_a_one_megabyte_command():
+    # Not a performance guarantee: `walk_command`'s own shlex-based parse
+    # has a pre-existing, non-linear cost on an oversized single-token
+    # payload that this rule does not fix (out of this slice's scope) —
+    # measured ~25s locally for a 1 MB command. This only proves
+    # `DependencyAdmissionRule.evaluate()` completes rather than hangs.
+    rule = DependencyAdmissionRule()
+    huge_command = "pip install " + ("a" * (1024 * 1024))
+    start = time.monotonic()
+    result = rule.evaluate(_action(), _ctx(huge_command))
+    elapsed = time.monotonic() - start
+    assert result.verdict is Verdict.PASS
+    assert elapsed < 90, f"took {elapsed:.1f}s"  # generous bound; not a speed claim

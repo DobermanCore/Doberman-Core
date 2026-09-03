@@ -1,8 +1,9 @@
 """Dependency admission rule (C3, v1 — offline, name-only).
 
 Parses package-manager install commands (pip/pip3/pipx/uv/poetry, npm/pnpm/
-yarn/bun, cargo, gem, go — including a `python -m pip ...` wrapper, chained
-commands, and command-substitution bodies, all via
+yarn/bun, cargo, gem, go — including a `python -m pip ...` wrapper and uv's
+pip-compatible `uv pip install ...` shim subcommand, chained commands, and
+command-substitution bodies, all via
 :func:`~doberman.engine.rules.commands.walk_command`) and raises on the
 package NAME alone:
 
@@ -10,6 +11,9 @@ package NAME alone:
 * ``AUTH``  when the name is edit-distance 1 from a bundled popular-package
   name AND is not itself on that popular list (the false-positive guard —
   npm's real `request` package must never flag a neighbor of `requests`).
+  An npm scoped package (a leading ``@``, e.g. ``@myorg/utils``) is
+  unconditionally exempt from this check too — an org scope is never a
+  registry-wide typosquat target the way a bare name is.
 
 v1 is deliberately name-only and 100% offline: **zero filesystem I/O, zero
 network I/O inside evaluate()**. The two bundled lists
@@ -58,24 +62,43 @@ from doberman.models import (
     Verdict,
 )
 
+#: Flags whose value is a separate token (never a package name) — both are
+#: skipped. Per-ecosystem, NOT global: `-i`/`-r`/`-c` are real pip flags but
+#: NOT real npm/cargo flags (a prior version applied pip's set to every
+#: ecosystem, so e.g. `npm i -i crossenv` swallowed the malicious operand as
+#: "-i"'s value and silently passed). `-r`/`-c` point at a local
+#: requirements/constraints FILE: reading it would be the lockfile-read this
+#: slice explicitly defers.
+_PIP_VALUE_FLAGS = frozenset(
+    {"-r", "--requirement", "-c", "--constraint", "-i", "--index-url", "--extra-index-url"}
+)
+_NPM_VALUE_FLAGS = frozenset({"--registry", "--prefix", "-w", "--workspace"})
+_CARGO_VALUE_FLAGS = frozenset({"--git", "--path", "--registry", "--features", "--rename", "-p"})
+#: gem's `-i` is `--install-dir` — a real gem flag, but NOT the pip
+#: `--index-url` alias it happens to collide with textually; keep `-i` for
+#: gem ONLY.
+_GEM_VALUE_FLAGS = frozenset({"-v", "--version", "-s", "--source", "-i", "--install-dir"})
+_NO_VALUE_FLAGS: frozenset[str] = frozenset()
+
 #: verb -> (ecosystem, install-subcommands that take a package NAME
-#: operand). Deliberately excludes publish/upload/push (C3 is an admission
-#: gate, not a publish gate — that table belongs to C6) and go's "install"
-#: (builds from an already-resolved module-cache entry, not a fresh-name
-#: admission point); "go get" is the fetch-a-new-dependency verb.
-_ECOSYSTEM_VERBS: dict[str, tuple[str, frozenset[str]]] = {
-    "pip": ("pypi", frozenset({"install"})),
-    "pip3": ("pypi", frozenset({"install"})),
-    "pipx": ("pypi", frozenset({"install"})),
-    "uv": ("pypi", frozenset({"add"})),
-    "poetry": ("pypi", frozenset({"add"})),
-    "npm": ("npm", frozenset({"install", "i", "add"})),
-    "pnpm": ("npm", frozenset({"install", "i", "add"})),
-    "yarn": ("npm", frozenset({"add"})),
-    "bun": ("npm", frozenset({"install", "i", "add"})),
-    "cargo": ("cargo", frozenset({"add"})),
-    "gem": ("rubygems", frozenset({"install"})),
-    "go": ("go", frozenset({"get"})),
+#: operand, that verb's own value-taking flags). Deliberately excludes
+#: publish/upload/push (C3 is an admission gate, not a publish gate — that
+#: table belongs to C6) and go's "install" (builds from an already-resolved
+#: module-cache entry, not a fresh-name admission point); "go get" is the
+#: fetch-a-new-dependency verb.
+_ECOSYSTEM_VERBS: dict[str, tuple[str, frozenset[str], frozenset[str]]] = {
+    "pip": ("pypi", frozenset({"install"}), _PIP_VALUE_FLAGS),
+    "pip3": ("pypi", frozenset({"install"}), _PIP_VALUE_FLAGS),
+    "pipx": ("pypi", frozenset({"install"}), _PIP_VALUE_FLAGS),
+    "uv": ("pypi", frozenset({"add"}), _NO_VALUE_FLAGS),
+    "poetry": ("pypi", frozenset({"add"}), _NO_VALUE_FLAGS),
+    "npm": ("npm", frozenset({"install", "i", "add"}), _NPM_VALUE_FLAGS),
+    "pnpm": ("npm", frozenset({"install", "i", "add"}), _NPM_VALUE_FLAGS),
+    "yarn": ("npm", frozenset({"add"}), _NPM_VALUE_FLAGS),
+    "bun": ("npm", frozenset({"install", "i", "add"}), _NPM_VALUE_FLAGS),
+    "cargo": ("cargo", frozenset({"add"}), _CARGO_VALUE_FLAGS),
+    "gem": ("rubygems", frozenset({"install"}), _GEM_VALUE_FLAGS),
+    "go": ("go", frozenset({"get"}), _NO_VALUE_FLAGS),
 }
 
 #: `python -m pip install X` / `python3 -m pip install X`:
@@ -83,13 +106,6 @@ _ECOSYSTEM_VERBS: dict[str, tuple[str, frozenset[str]]] = {
 #: (sudo/env/...) but not this interpreter-module-runner shape, so it is
 #: peeled here.
 _MODULE_RUNNERS = frozenset({"python", "python3", "py"})
-
-#: Flags whose value is a separate token (never a package name) — both are
-#: skipped. `-r`/`-c` point at a local requirements/constraints FILE:
-#: reading it would be the lockfile-read this slice explicitly defers.
-_VALUE_FLAGS = frozenset(
-    {"-r", "--requirement", "-c", "--constraint", "-i", "--index-url", "--extra-index-url"}
-)
 
 #: Never edit-distance-check a name this short — a 1-2 char name is close
 #: to almost everything and the false-positive rate swamps any signal.
@@ -99,6 +115,17 @@ _MIN_TYPOSQUAT_NAME_LEN = 4
 def _peel_module_runner(tokens: list[str]) -> list[str]:
     if len(tokens) >= 3 and tokens[0].lower() in _MODULE_RUNNERS and tokens[1] == "-m":
         return tokens[2:]
+    return tokens
+
+
+def _peel_uv_pip(tokens: list[str]) -> list[str]:
+    """``uv pip install X`` is uv's pip-compatible shim subcommand, not
+    uv's own ``add`` verb (v1 only mapped ``uv add``, so this silently
+    passed before). Rewrite it to a plain pip invocation so it gets pip's
+    own subcommand table AND value-flag set — mirrors `_peel_module_runner`
+    above."""
+    if len(tokens) >= 3 and tokens[0].lower() == "uv" and tokens[1].lower() == "pip":
+        return ["pip", *tokens[2:]]
     return tokens
 
 
@@ -132,8 +159,15 @@ def _is_installable_name(name: str) -> bool:
     return True
 
 
-def _extract_names(tokens: list[str]) -> list[str]:
-    """Package-name operands in a subcommand's argument tail, minus flags."""
+def _extract_names(tokens: list[str], value_flags: frozenset[str]) -> list[str]:
+    """Package-name operands in a subcommand's argument tail, minus flags.
+
+    ``value_flags`` is the CALLING ecosystem's own value-taking flag set
+    (see `_ECOSYSTEM_VERBS`) — never a global set, since a flag spelling
+    can collide across ecosystems while meaning something different (or
+    nothing) in each (`-i` is pip's `--index-url` alias and gem's
+    `--install-dir`, but not a recognized npm/cargo flag at all).
+    """
     names: list[str] = []
     skip_value = False
     for tok in tokens:
@@ -141,7 +175,7 @@ def _extract_names(tokens: list[str]) -> list[str]:
             skip_value = False
             continue
         if tok.startswith("-"):
-            if tok in _VALUE_FLAGS:
+            if tok in value_flags:
                 skip_value = True
             continue
         candidate = _strip_version(tok).lower()
@@ -153,17 +187,17 @@ def _extract_names(tokens: list[str]) -> list[str]:
 def _ecosystem_and_names(raw_tokens: list[str]) -> tuple[str, list[str]] | None:
     """One segment's ``(ecosystem, [package names])``, or ``None`` if it is
     not a recognized package-manager install/add invocation."""
-    tokens = _peel_module_runner(_argv_from_tokens(raw_tokens))
+    tokens = _peel_uv_pip(_peel_module_runner(_argv_from_tokens(raw_tokens)))
     if not tokens:
         return None
     entry = _ECOSYSTEM_VERBS.get(tokens[0].lower())
     if entry is None:
         return None
-    ecosystem, subcommands = entry
+    ecosystem, subcommands, value_flags = entry
     rest = tokens[1:]
     if not rest or rest[0].lower() not in subcommands:
         return None
-    names = _extract_names(rest[1:])
+    names = _extract_names(rest[1:], value_flags)
     return (ecosystem, names) if names else None
 
 
