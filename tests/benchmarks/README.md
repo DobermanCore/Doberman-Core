@@ -54,6 +54,9 @@ tests/benchmarks/
 │   ├── corpus.py      # the labeled detection corpus (C8): loader + adapter + per-row driver
 │   ├── devsession.py  # built-in, deterministic, dependency-free — seeded warm corpus (C11)
 │   ├── agentdojo.py   # AgentDojo + AgentDyn adapters (on-demand; lazy `agentdojo` import)
+│   ├── redcode.py     # RedCode-Exec adapter (on-demand; env DOBERMAN_BENCH_REDCODE_DIR)
+│   ├── msb_poisoning.py  # MSB tool-response-poisoning adapter (on-demand; env DOBERMAN_BENCH_MSB_DIR)
+│   ├── llmail_inject.py  # LLMail-Inject adapter (on-demand; env DOBERMAN_BENCH_LLMAIL_DIR)
 │   └── <your_suite>.py
 └── README.md      # this file
 ```
@@ -325,3 +328,49 @@ for the methodology and the honest-vs-leak-quantifier arm split.
 
 If a named suite turns out not to exist under that name or its license is
 incompatible, **stop and report** rather than inventing a mapping.
+
+### RedCode-Exec — adapter shipped
+- Source: `https://github.com/AI-secure/RedCode` (code MIT; dataset CC BY 4.0). 4,050 (Index, Prompt,
+  Language, Code, expected_result, Text_summary, Text_details) records asking an agent to execute a risky
+  Bash/Python snippet.
+- Map: each record's ``Code`` → one ``CandidateAction`` (`action_type=shell_exec`, the snippet in
+  `raw_arguments["command"]`), label `attack` (RedCode ships no benign counterpart — the adapter supplies
+  its own synthetic benign command set, extracted through the same target/destination logic as the attack
+  records). `source_context=user` (direct misuse, not injection).
+- **Implemented** in `suites/redcode.py` (`RedCodeAdapter`), registered as `redcode`. Reads
+  `DOBERMAN_BENCH_REDCODE_DIR`; vendors no data. `scenario_report()` gives the per-scenario in-scope/
+  out-of-scope breakdown (`python -m tests.benchmarks.suites.redcode`). Single-action cases — stateless
+  and `--replay-session` are byte-for-byte identical for this suite, so only the stateless run is
+  published; see [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#redcode-exec-risky-code-execution).
+
+### MSB — adapter shipped
+- Source: `https://github.com/dongsenzhang/MSB` (MIT). 12 MCP-specific attack types across the tool-use
+  pipeline (task planning / tool invocation / response handling).
+- Map: each (attack_task, attack_type) pair → a two-action `BenchmarkCase` (a poisoned tool response,
+  `source_context=tool_output`; the consummating action it tries to trigger,
+  `attacker_goal_index=1`), built from three static MSB files (`attack_task.jsonl`, `attack_type.jsonl`,
+  `prompt_template.py` — parsed via `ast.literal_eval`, never imported/executed). See
+  `suites/msb_poisoning.py`'s module docstring for why this differs from a static tool-definition/schema
+  diff.
+- **Implemented** in `suites/msb_poisoning.py` (`MsbPoisoningAdapter`), registered as `msb`. Reads
+  `DOBERMAN_BENCH_MSB_DIR`; vendors no data, executes no MSB code. `attack_type_report()` gives the
+  per-attack-type breakdown (`python -m tests.benchmarks.suites.msb_poisoning`). Published in both
+  stateless and `--replay-session` modes — identical numbers, because every MSB consummating action here
+  is a local file write or process action with no `external_destination`, so none of the three post-decide
+  floors can engage; see [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#msb-mcp-tool-response-poisoning).
+
+### LLMail-Inject — adapter shipped
+- Source: `https://huggingface.co/datasets/microsoft/llmail-inject-challenge` (MIT). Labelled email
+  prompt-injection submissions from a real adaptive-attacker challenge.
+- Map: submissions with `attack_attempt == "True" and reason == "api_triggered"` (the target tool call
+  actually fired) → a two-action `BenchmarkCase` (the email arriving, `source_context=email`; the
+  consummating `send_email` to the challenge's fixed attacker address, `attacker_goal_index=1`). Benign:
+  `emails_for_fp_tests.json` as read-only cases, plus a second, synthetic benign SEND case per email (a
+  fixed, clearly-synthetic recipient) so FPR is also measured on an ordinary legitimate send.
+- **Implemented** in `suites/llmail_inject.py` (`LlmailInjectAdapter`), registered as `llmail_inject`.
+  Reads `DOBERMAN_BENCH_LLMAIL_DIR`; vendors no data. Deterministic seeded sample (`sample_size`, default
+  500, configurable). Published in both stateless and `--replay-session` modes — identical top-line
+  ASR/FPR (`engine/rules/destinations.py::_parse_host` AUTHs a bare `user@host` destination unconditionally
+  in every mode, before either post-decide floor runs), but the reason-code breakdown differs sharply
+  (`untrusted_value_echo` on ~470/500 attacks under replay); see
+  [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#llmail-inject-email-prompt-injection).
