@@ -175,3 +175,16 @@ def test_passthrough_pipeline_is_the_unmediated_baseline():
     assert report.verdict_histogram == {"PASS": report.n_attack + report.n_benign}
     # A PASS carries no reason codes, so the baseline report attributes nothing.
     assert report.reason_codes == {}
+
+
+# --- session_replay labeling -------------------------------------------------
+def test_build_report_default_session_replay_is_false():
+    report = build_report("suite", "profile", [])
+    assert report.session_replay is False
+    assert report.to_dict()["session_replay"] is False
+
+
+def test_build_report_session_replay_flag_propagates():
+    report = build_report("suite", "profile", [], session_replay=True)
+    assert report.session_replay is True
+    assert report.to_dict()["session_replay"] is True

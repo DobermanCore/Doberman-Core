@@ -105,6 +105,13 @@ class SuiteReport:
     benign_block: int  # false block
     reason_codes: dict[str, int] = field(default_factory=dict)
     verdict_histogram: dict[str, int] = field(default_factory=dict)
+    #: Whether this report was produced with the post-decide floors (taint floor,
+    #: echo tripwire, session correlator) applied via a fresh isolated per-case
+    #: session — see ``tests/benchmarks/session_replay.py``. ``False`` (default)
+    #: is the existing stateless per-action path; keeping this on the report
+    #: itself means a session-replay number can never be silently confused with
+    #: a stateless one.
+    session_replay: bool = False
 
     @property
     def asr(self) -> float:
@@ -215,6 +222,7 @@ class SuiteReport:
         return {
             "suite": self.suite,
             "profile": self.profile,
+            "session_replay": self.session_replay,
             "n_attack": self.n_attack,
             "n_benign": self.n_benign,
             "asr": round(self.asr, 6),
@@ -334,7 +342,9 @@ def corpus_metrics(results: Iterable[_RowResultLike]) -> dict:
     }
 
 
-def build_report(suite: str, profile: str, outcomes: Iterable[ActionOutcome]) -> SuiteReport:
+def build_report(
+    suite: str, profile: str, outcomes: Iterable[ActionOutcome], *, session_replay: bool = False
+) -> SuiteReport:
     """Aggregate per-action outcomes into a :class:`SuiteReport`."""
     n_attack = n_benign = 0
     a_bypassed = a_auth = a_block = 0
@@ -378,4 +388,5 @@ def build_report(suite: str, profile: str, outcomes: Iterable[ActionOutcome]) ->
         benign_block=b_block,
         reason_codes=dict(reasons),
         verdict_histogram=dict(verdicts),
+        session_replay=session_replay,
     )
