@@ -74,9 +74,11 @@ def test_unrelated_destination_stays_unescalated(tmp_path):
             "session_id": "sess-clean",
         }
     )
-    if pre_out is not None:
-        reason = pre_out["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "untrusted_value_echo" not in reason
+    # Final review, MINOR: the previous `if pre_out is not None:` guard was
+    # vacuous -- an unrelated, non-tainted destination is a raise-only PASS, so
+    # evaluate_pre always abstains (returns None) here; assert that directly
+    # instead of a conditional that never actually executes its body.
+    assert pre_out is None
 
 
 # --- (c): the MCP-proxy path — this is the path that recorded NOTHING before Task 4 ---
@@ -158,11 +160,17 @@ def test_the_attacker_value_never_appears_in_any_persisted_decision_row(tmp_path
     )
 
     async def _all_rows_text():
+        # Final review, MINOR: SELECT * (not a hand-picked column list) over
+        # BOTH decisions AND pending_approvals -- pending_approvals carries its
+        # own `explanation` column (an AUTH challenge queued there) that the
+        # original column-scoped SELECT never looked at.
         async with open_db(str(tmp_path)) as conn:
-            async with conn.execute(
-                "SELECT target_path_class, reason_codes_json, source_context FROM decisions"
-            ) as cur:
-                return await cur.fetchall()
+            rows: list[tuple] = []
+            async with conn.execute("SELECT * FROM decisions") as cur:
+                rows.extend(await cur.fetchall())
+            async with conn.execute("SELECT * FROM pending_approvals") as cur:
+                rows.extend(await cur.fetchall())
+            return rows
 
     rows = asyncio.run(_all_rows_text())
     blob = " ".join(str(cell) for row in rows for cell in row)
