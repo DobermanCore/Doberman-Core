@@ -45,6 +45,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.coordinate import Coordinate
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Header, Input, LoadingIndicator, Static
@@ -1532,6 +1533,25 @@ class DecisionExplainerApp(App[None]):
 
     # --- selection / why panel ------------------------------------------------
 
+    def _why_panel(self) -> _WhyPanel | None:
+        """Best-effort `#explanation-scroll` accessor: `None` instead of
+        raising `NoMatches` when the panel isn't (yet, or any longer)
+        mounted. Root cause (the CI flake this guards against, reproduced
+        locally): a mount-timing race, not a filter-driven swap - the very
+        first `DataTable.RowHighlighted`, posted by the initial load's own
+        `table.move_cursor()`, can be pumped through
+        `on_data_table_row_highlighted` -> `_show_explanation` before every
+        sibling widget composed alongside this one is queryable yet.
+        `on_mount` itself is exempt (compose has already placed the panel by
+        then); every other call site must no-op via this instead of
+        crashing the app. `_update_date_bar`/`_update_next_line` guard the
+        same race on their own sibling widgets (`#date-bar`/`#next-line`)
+        the same way."""
+        try:
+            return self.query_one("#explanation-scroll", _WhyPanel)
+        except NoMatches:
+            return None
+
     def _set_panel(self, text: str | Text) -> None:
         self._panel_base = text
         self._refresh_why_panel_scroll_cue()
@@ -1557,10 +1577,12 @@ class DecisionExplainerApp(App[None]):
         up as a stuck stale cue under load once content had already gone
         back to something short.
         """
+        scroll = self._why_panel()
+        if scroll is None:
+            return
         try:
-            scroll = self.query_one("#explanation-scroll", _WhyPanel)
             static = self.query_one("#explanation", Static)
-        except Exception:  # noqa: BLE001 — defensive: not mounted yet
+        except NoMatches:  # defensive: not mounted yet
             return
         base = self._panel_base
         static.update(base)
@@ -1582,11 +1604,19 @@ class DecisionExplainerApp(App[None]):
         layout, not "no data". The why panel itself goes blank (nothing to
         explain) and loses its time-line border title.
         """
-        self.query_one("#decisions", _DecisionTable).display = False
-        empty = self.query_one("#empty-message", Static)
+        # Same mount-timing race as `_why_panel`/`_update_gutter`: this can
+        # run inside the initial load, before `#decisions`/`#empty-message`
+        # are queryable yet - no-op the swap rather than crash the app.
+        try:
+            self.query_one("#decisions", _DecisionTable).display = False
+            empty = self.query_one("#empty-message", Static)
+        except NoMatches:
+            return
         empty.update(message)
         empty.display = True
-        self.query_one("#explanation-scroll", _WhyPanel).set_time_line("")
+        why_panel = self._why_panel()
+        if why_panel is not None:
+            why_panel.set_time_line("")
         self._set_panel("")
 
     def _hide_empty_message(self) -> None:
@@ -1598,7 +1628,14 @@ class DecisionExplainerApp(App[None]):
         # applies here too (round 5 design critique item 9): the glyphs
         # aren't worth explaining for a browser with zero rows in it.
         text = _date_bar_text(row) if self._rows else ""
-        self.query_one("#date-bar", Static).update(text)
+        try:
+            # Same mount-timing race as `_why_panel`: the initial
+            # `move_cursor`'s `RowHighlighted` can be pumped through
+            # `on_data_table_row_highlighted` before this sibling widget is
+            # queryable - no-op rather than crash the app.
+            self.query_one("#date-bar", Static).update(text)
+        except NoMatches:
+            pass
 
     def _update_next_line(self, row: dict | None) -> None:
         # Docked separately from the panel body (round 3 design critique item
@@ -1607,7 +1644,10 @@ class DecisionExplainerApp(App[None]):
         # detail" affordance; the full-screen why (`full_why_text`) is the
         # detail itself and must not repeat it (round 5 design critique item 1).
         next_line = render.next_step_line(row.get("final_verdict")) if row is not None else None
-        widget = self.query_one("#next-line", Static)
+        try:
+            widget = self.query_one("#next-line", Static)  # same race, see `_update_date_bar`
+        except NoMatches:
+            return
         widget.update(_next_line_text(next_line) if next_line else "")
 
     def _update_gutter(self, index: int) -> None:
@@ -1615,7 +1655,14 @@ class DecisionExplainerApp(App[None]):
         # previous mark (if any) and mark the new cursor row with ">" - kept
         # independent of Textual's own cursor-row background, which measured
         # too low-contrast on its own to read as "selected".
-        table = self.query_one("#decisions", _DecisionTable)
+        try:
+            # Same mount-timing race as `_why_panel`/`_update_date_bar`: this
+            # fires from `on_data_table_row_highlighted`, a fresh query for
+            # `#decisions` posted by that same table's own cursor move - it
+            # can still lose the race before the table is queryable again.
+            table = self.query_one("#decisions", _DecisionTable)
+        except NoMatches:
+            return
         if self._gutter_row is not None and self._gutter_row != index:
             try:
                 table.update_cell_at(Coordinate(self._gutter_row, 0), Text(""), update_width=False)
@@ -1644,7 +1691,9 @@ class DecisionExplainerApp(App[None]):
         # design critique item 1: this now goes to the panel's border_title
         # (via `set_time_line`), not the panel body - see `_panel_text`.
         time_line = _abs_utc_and_age(row)
-        self.query_one("#explanation-scroll", _WhyPanel).set_time_line(time_line)
+        why_panel = self._why_panel()
+        if why_panel is not None:
+            why_panel.set_time_line(time_line)
         self._update_date_bar(row)
         self._update_next_line(row)
         self._update_gutter(index)
