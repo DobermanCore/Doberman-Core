@@ -1147,6 +1147,18 @@ def delete_class_operands(command: str) -> list[str] | None:
     no preview for a payload we cannot statically vet is correct — never a
     guess at what an opaque command deletes.
 
+    **The returned list can be empty or PARTIAL — never ``None`` — when a
+    live shell substitution (``$( )``, backtick, ``${ }``, ``$VAR``) sits
+    among the operands.** :func:`walk_command` flattens a substitution's body
+    into its own sibling segment (see its own docstring), so that text is
+    invisible here: a delete-class command word was still seen (``found``
+    stays ``True``), but the list this returns must NEVER be read as a
+    confirmed/complete operand set in that case. A caller that needs to draw
+    that distinction (e.g. the blast-radius preview, ADR 0094) checks
+    :func:`command_contains_dynamic_content` on the same ``command`` and
+    treats a dynamic result as unknown, not as a confirmed (possibly zero)
+    count.
+
     Used by :mod:`doberman.engine.effects` (ADR 0094); this module keeps its
     own no-filesystem-access contract — only the caller touches disk.
     """
@@ -1166,6 +1178,19 @@ def delete_class_operands(command: str) -> list[str] | None:
             _, _, ops = _windows_delete_flags_and_operands(tokens)
             operands.extend(ops)
     return operands if found else None
+
+
+def command_contains_dynamic_content(command: str) -> bool:
+    """True if a live shell substitution (``$( )``, backtick, ``${ }``, or a
+    bare ``$VAR``) appears anywhere in ``command`` — :func:`walk_command`'s
+    own ``dynamic`` signal, exposed on its own because
+    :func:`delete_class_operands` discards it. Lets a caller (the blast-radius
+    preview, ADR 0094) tell a genuinely confirmed empty/complete operand list
+    apart from one the walker merely couldn't see into, so a partial
+    ``delete_class_operands`` result is never mistaken for a confirmed count.
+    """
+    _segments, _ambiguous, dynamic = walk_command(_normalize_windows_backslashes(command))
+    return dynamic
 
 
 class DestructiveCommandRule:

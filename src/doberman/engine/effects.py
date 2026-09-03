@@ -75,6 +75,18 @@ def _raise_walk_error(error: OSError) -> None:
     raise error
 
 
+def unknown_effects() -> EffectSet:
+    """The ``unknown`` :class:`~doberman.models.EffectSet` state (ADR 0094),
+    for a caller that must not even try a walk: a delete-class command whose
+    operand list can't be trusted (e.g. a live shell substitution among the
+    operands — see ``engine/rules/commands.py::command_contains_dynamic_content``)
+    rather than a walk that started and then failed. Same sentinel digest as
+    an OS-error/cap/timeout failure — both are equally "not what was shown"
+    for the TOCTOU compare in ``proxy/executor.py``.
+    """
+    return _unknown(hits_git=False, hits_outside_repo=False)
+
+
 def compute_delete_effects(
     operands: list[str],
     repo_root: str,
