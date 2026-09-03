@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 
 import pytest
 
@@ -106,6 +108,21 @@ def _real_hst_test(fn):
     return fn
 
 
+# issue #560: even with with_provenance skipped above, this test's xdist worker
+# has died without a traceback ("[gwN] node down: Not properly terminated")
+# building the devsession_report fixture on the windows-latest/3.12 PR leg
+# specifically, three times (runs 33707622306, 33713310252, 33716795652) —
+# Windows 3.11 and every Ubuntu leg pass the same test every time. Narrow,
+# platform+version+leg-specific skip; the nightly deep workflow
+# (DOBERMAN_TEST_REAL_HST=1) and every other CI leg still run it.
+_WIN312_FAST_GATE_CRASH_560 = (
+    sys.platform == "win32"
+    and sys.version_info[:2] == (3, 12)
+    and bool(os.environ.get("DOBERMAN_TEST_FAST_HST_GATES"))
+    and not os.environ.get("DOBERMAN_TEST_REAL_HST")
+)
+
+
 @pytest.fixture(scope="module")
 def devsession_report() -> dict:
     # include_with_provenance=False: none of this module's 3 tests read the
@@ -120,6 +137,14 @@ def devsession_report() -> dict:
 
 
 @_real_hst_test
+@pytest.mark.skipif(
+    _WIN312_FAST_GATE_CRASH_560,
+    reason=(
+        "issue #560: xdist worker dies without a traceback "
+        "('[gwN] node down: Not properly terminated') on the windows-latest/3.12 "
+        "PR leg; nightly real-HST and every other leg still run it"
+    ),
+)
 def test_warm_phase_clears_full_ensemble_engagement(devsession_report):
     needed = max(K_OBSERVATIONS, HST_WARMUP)
     per_suite = devsession_report["arms"]["provenance_free"]["per_suite"]
