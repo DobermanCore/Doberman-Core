@@ -131,20 +131,30 @@ def compute_delete_effects(
         return os.path.relpath(abs_path, root).replace(os.sep, "/")
 
     for operand in operands:
-        # Check the RAW, unresolved operand for symlink-ness before it is
-        # canonicalized: canonicalize()/Path.resolve() resolve symlinks, so an
-        # in-repo symlink target (rm -rf link, link -> real_dir/, both inside
-        # the repo) would otherwise sail past an is_symlink() check performed
-        # on the already-resolved path and have its TARGET walked and counted
-        # — but `rm` removes the link entry, never the target's contents
-        # (Task 3 review fix, ADR 0094). Confinement still goes through the
-        # one shared canonicalizer below (no second path resolver).
-        is_link_operand = os.path.islink(os.path.join(root, operand))
-        canon = canonicalize(operand, root=repo_root)
-        if canon.escapes_root:
-            hits_outside_repo = True
-            continue  # never walk outside the confined root
         try:
+            # A NUL byte can never appear in a real path component on any
+            # filesystem, so an operand containing one cannot denote a real
+            # target. canonicalize()'s internal fallback and Path.exists()
+            # both swallow the resulting ValueError rather than raise it, so
+            # left unguarded this would silently fall through to the
+            # "doesn't exist" branch and render as a confident zero — the
+            # exact false-safe empty preview ADR 0094 clause 3 forbids. Fail
+            # toward unknown here, before any path work starts.
+            if "\x00" in operand:
+                return _unknown(hits_git, hits_outside_repo)
+            # Check the RAW, unresolved operand for symlink-ness before it is
+            # canonicalized: canonicalize()/Path.resolve() resolve symlinks, so an
+            # in-repo symlink target (rm -rf link, link -> real_dir/, both inside
+            # the repo) would otherwise sail past an is_symlink() check performed
+            # on the already-resolved path and have its TARGET walked and counted
+            # — but `rm` removes the link entry, never the target's contents
+            # (Task 3 review fix, ADR 0094). Confinement still goes through the
+            # one shared canonicalizer below (no second path resolver).
+            is_link_operand = os.path.islink(os.path.join(root, operand))
+            canon = canonicalize(operand, root=repo_root)
+            if canon.escapes_root:
+                hits_outside_repo = True
+                continue  # never walk outside the confined root
             if is_link_operand:
                 # A symlink operand is exactly one filesystem entry — never
                 # descended, and never reported under the resolved target's
@@ -196,7 +206,7 @@ def compute_delete_effects(
                     files.add(rel)
                     if len(files) + len(dirs) >= cap:
                         return _cap_hit(cap, hits_git, hits_outside_repo)
-        except OSError:
+        except (OSError, ValueError):
             return _unknown(hits_git, hits_outside_repo)
 
     return EffectSet(
