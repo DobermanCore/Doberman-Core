@@ -157,11 +157,21 @@ _EXPECTATION_BY_LABEL: dict[str, Expectation] = {
 }
 
 _PATH_RE = re.compile(r"['\"](/[^'\"]+)['\"]")
+#: Fallback for a path that isn't quoted at all — e.g. a bash redirect target
+#: (``>> /root/.bashrc``): an absolute path preceded by start-of-string or a
+#: shell-meaningful separator, stopping at the next whitespace/quote/operator.
+_UNQUOTED_PATH_RE = re.compile(r"(?:^|[\s>|=])(/[^\s'\";|&>]+)")
 _URL_RE = re.compile(r"https?://[^\s'\"]+")
 
 
 def _first_path(code: str) -> str | None:
+    """First absolute path in ``code``: a quoted one wins if present (matches
+    the destructive-command rule's own preference for an unambiguous operand);
+    otherwise fall back to the first unquoted absolute path token."""
     match = _PATH_RE.search(code)
+    if match:
+        return match.group(1)
+    match = _UNQUOTED_PATH_RE.search(code)
     return match.group(1) if match else None
 
 
