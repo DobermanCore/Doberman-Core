@@ -56,8 +56,10 @@ logger = logging.getLogger("doberman.auth.challenge")
 #:
 #: Ten minutes: an unanswered approval must not sit approvable for longer than
 #: that, whichever channels it fell through. Sized above the worst-case
-#: *legitimate* fallback chain (dashboard 90s → elicitation 60s → GUI 120s →
-#: terminal, 270s) run **twice** (540s), because a
+#: *legitimate* pass: the dashboard window (90s, falls through when unanswered)
+#: plus ONE human channel — the first open one answers or expires, and its
+#: expiry is final (elicitation 180s or GUI 120s; the terminal shares this
+#: deadline) — so 270s per pass, run **twice** (540s), because a
 #: ``two_factor``/``role_elevation`` tier dispatches the whole chain once for
 #: ``confirm()`` and again for ``read_code()``
 #: (:meth:`~doberman.auth.provider.LocalAuthProvider._run_tier`) under this one
