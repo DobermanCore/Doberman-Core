@@ -119,16 +119,35 @@ def compute_delete_effects(
         return os.path.relpath(abs_path, root).replace(os.sep, "/")
 
     for operand in operands:
+        # Check the RAW, unresolved operand for symlink-ness before it is
+        # canonicalized: canonicalize()/Path.resolve() resolve symlinks, so an
+        # in-repo symlink target (rm -rf link, link -> real_dir/, both inside
+        # the repo) would otherwise sail past an is_symlink() check performed
+        # on the already-resolved path and have its TARGET walked and counted
+        # — but `rm` removes the link entry, never the target's contents
+        # (Task 3 review fix, ADR 0094). Confinement still goes through the
+        # one shared canonicalizer below (no second path resolver).
+        is_link_operand = os.path.islink(os.path.join(root, operand))
         canon = canonicalize(operand, root=repo_root)
         if canon.escapes_root:
             hits_outside_repo = True
             continue  # never walk outside the confined root
-        if _touches_git(canon.relposix):
-            hits_git = True
         try:
+            if is_link_operand:
+                # A symlink operand is exactly one filesystem entry — never
+                # descended, and never reported under the resolved target's
+                # path (that would misattribute the target's identity to the
+                # link being deleted).
+                link_relposix = _relposix(os.path.join(root, operand))
+                if _touches_git(link_relposix):
+                    hits_git = True
+                files.add(link_relposix)
+                if len(files) + len(dirs) >= cap:
+                    return _cap_hit(cap, hits_git, hits_outside_repo)
+                continue
+            if _touches_git(canon.relposix):
+                hits_git = True
             target = Path(canon.resolved)
-            if target.is_symlink():
-                continue  # never follow/count a symlink operand itself
             if not target.exists():
                 if any(c in operand for c in _GLOB_CHARS):
                     return _unknown(hits_git, hits_outside_repo)
@@ -143,7 +162,13 @@ def compute_delete_effects(
                 if time.monotonic() > deadline:
                     return _unknown(hits_git, hits_outside_repo)
                 for d in dirnames:
-                    rel = _relposix(os.path.join(dirpath, d))
+                    full = os.path.join(dirpath, d)
+                    if os.path.islink(full):
+                        # Consistent with the filenames skip just below: never
+                        # counted, never descended (followlinks=False already
+                        # stops recursion into it).
+                        continue
+                    rel = _relposix(full)
                     if _touches_git(rel):
                         hits_git = True
                     dirs.add(rel)

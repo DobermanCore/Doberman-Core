@@ -87,6 +87,46 @@ def test_symlink_operand_itself_is_not_followed(tmp_path):
     assert effects.dir_count == 0
 
 
+def test_symlink_operand_with_in_repo_target_counts_as_one_entry_not_descended(tmp_path):
+    # Task 3 review fix: an in-repo symlink target used to be resolved before
+    # the is_symlink() check, so `rm -rf link` (link -> real_dir/, both inside
+    # the repo) walked and counted real_dir/'s CONTENTS. `rm` removes the link
+    # entry, not the target — the link must count as exactly one entry and
+    # never be descended into.
+    if sys.platform == "win32":
+        pytest.skip("symlink creation needs elevation on Windows")
+    real_dir = tmp_path / "real_dir"
+    _touch(real_dir / "a.txt")
+    _touch(real_dir / "b.txt")
+    link = tmp_path / "link"
+    link.symlink_to(real_dir, target_is_directory=True)
+    effects = compute_delete_effects(["link"], str(tmp_path))
+    assert effects.file_count == 1  # the link itself only
+    assert effects.dir_count == 0
+    assert effects.capped is False
+
+
+def test_symlinked_directory_inside_the_walk_is_skipped_like_a_symlinked_file(tmp_path):
+    # A symlinked dir encountered *during* the walk must be as inert as the
+    # existing symlinked-file skip in the filenames loop: never counted, never
+    # descended (followlinks=False already stops recursion; this stops the count).
+    if sys.platform == "win32":
+        pytest.skip("symlink creation needs elevation on Windows")
+    outside = tmp_path.parent / f"outside-dir-{tmp_path.name}"
+    _touch(outside / "secret.txt")
+    target = tmp_path / "target"
+    _touch(target / "real.txt")
+    (target / "linked_dir").symlink_to(outside, target_is_directory=True)
+    try:
+        effects = compute_delete_effects(["target"], str(tmp_path))
+        assert effects.file_count == 1  # real.txt only
+        assert effects.dir_count == 1  # target/ itself only — linked_dir/ not counted
+    finally:
+        import shutil
+
+        shutil.rmtree(outside, ignore_errors=True)
+
+
 def test_symlink_loop_inside_the_walk_does_not_hang(tmp_path):
     if sys.platform == "win32":
         pytest.skip("symlink creation needs elevation on Windows")
