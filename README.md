@@ -328,6 +328,7 @@ Doberman is **defense-in-depth, not airtight**: no single rule is a guarantee. T
   subcommand this rule recognizes, so none of them are parsed today. This is defense-in-depth against
   the cheap, common case (a popular-package typo, a documented known-bad name), not a supply-chain
   guarantee.
+- **The delete-class blast-radius preview is a snapshot, and its TOCTOU re-check is proxy-only.** Before an AUTH challenge for a recognized delete-class command (`rm`, `del`, `erase`, `rd`, `rmdir`, `Remove-Item`), Doberman computes a bounded, offline file/directory count for its operands (capped, wall-clock-budgeted, `.git`/outside-repo flagged) and shows it alongside the challenge. That count is a snapshot — which is exactly why the MCP-proxy path recomputes it right before forwarding and re-blocks (`effect_set_diverged`) on any drift. Drift is only detectable between two exact counts: a capped or unknown preview (past the 1,000-entry cap, a wall-clock timeout, or a delete segment with a live shell substitution) compares equal to a capped/unknown recompute by design — both non-authoritative shades share one digest sentinel — so `rm -rf node_modules` past the cap, or any dynamic `$( )` delete, is never caught by this guard. The host-hook path (Claude Code / Codex `PreToolUse`) has no equivalent post-approval re-decision point today, so this specific TOCTOU guard protects the proxy path only. Display and audit only in v1: the count never changes a verdict.
 
 ---
 

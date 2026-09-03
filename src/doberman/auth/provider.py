@@ -33,7 +33,13 @@ from typing import Any, Protocol, runtime_checkable
 
 from doberman.auth import totp
 from doberman.auth.approval import ApprovalOutcome, request_approval, resolve_approval_method
-from doberman.auth.challenge import AuthResult, AuthTier, Prompter
+from doberman.auth.challenge import (
+    EFFECT_SET_LABEL,
+    AuthResult,
+    AuthTier,
+    Prompter,
+    format_effect_set,
+)
 from doberman.explain import _describe_reason
 from doberman.models import ActionType, Decision, SecurityObject
 
@@ -152,6 +158,11 @@ def challenge_parts(
     ``action_id`` is included for outcome LOGGING only (the GUI logs one INFO
     line per dialog: the outcome and this id, never the target) — it is never
     itself rendered to the human.
+
+    ``effects`` is the ONE shared blast-radius display string (ADR 0094,
+    :func:`~doberman.auth.challenge.format_effect_set`) for a delete-class
+    AUTH's ``decision.effects`` — every prompter renders this exact string,
+    so the channels cannot drift. ``None`` for every non-delete-class AUTH.
     """
     target = action.target or "(no target)"
     notice = action.metadata.get("approval_memory_notice")
@@ -191,6 +202,7 @@ def challenge_parts(
         "notice": notice,
         "deadline_s": None,
         "action_id": action.id,
+        "effects": format_effect_set(decision.effects),
     }
 
 
@@ -199,16 +211,26 @@ def _message_from_parts(parts: dict[str, Any]) -> str:
     ``Prompter`` (TTY, dashboard, a plugin that only implements ``confirm``)
     already understands. Shared by :func:`_challenge_message` and the
     ``FallbackPrompter`` chain's per-channel fallback.
+
+    ``parts.get("effects")`` (ADR 0094's blast-radius line — see
+    :func:`challenge_parts`) renders as one extra line when present, nothing
+    when it is ``None`` or absent (a hand-built ``parts`` dict from an older
+    caller/test). ``.get`` throughout, never ``parts["effects"]`` — the key
+    was added after this function's original contract.
     """
     prefix = f"{parts['notice']}\n\n" if parts["notice"] else ""
+    effects = parts.get("effects")
     if parts["tone"] == "technical":
+        effects_line = f"  {EFFECT_SET_LABEL.lower()}: {effects}\n" if effects else ""
         return prefix + (
             f"{parts['headline']}\n"
             f"  role:   {parts['role']}\n"
             f"  action: {parts['verb']} -> {parts['target']}\n"
             f"  reason: {parts['why']}\n"
+            f"{effects_line}"
             f"Approve THIS exact action?"
         )
+    effects_line = f"{EFFECT_SET_LABEL}: {effects}\n\n" if effects else ""
     return prefix + (
         f"{parts['headline']}\n"
         f"\n"
@@ -216,6 +238,7 @@ def _message_from_parts(parts: dict[str, Any]) -> str:
         f"\n"
         f"{parts['why']}\n"
         f"\n"
+        f"{effects_line}"
         f"{parts['risk']}\n"
         f"\n"
         f"Approve this exact action?"

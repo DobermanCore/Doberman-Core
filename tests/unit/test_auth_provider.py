@@ -16,6 +16,7 @@ from doberman.engine import registry
 from doberman.models import (
     ActionType,
     Decision,
+    EffectSet,
     GuardrailResult,
     ReasonCode,
     Risk,
@@ -57,7 +58,11 @@ def _action(target="backend/api.ts"):
     )
 
 
-def _auth_decision(reasons=(ReasonCode.role_out_of_scope,), risk: Risk = Risk.medium):
+def _auth_decision(
+    reasons=(ReasonCode.role_out_of_scope,),
+    risk: Risk = Risk.medium,
+    effects: EffectSet | None = None,
+):
     objective = GuardrailResult(
         verdict=Verdict.AUTH, risk=risk, reason_codes=list(reasons), explanation="why"
     )
@@ -69,6 +74,7 @@ def _auth_decision(reasons=(ReasonCode.role_out_of_scope,), risk: Risk = Risk.me
         reason_codes=list(reasons),
         explanation="why",
         decided_at=_NOW,
+        effects=effects,
     )
 
 
@@ -281,6 +287,29 @@ def test_challenge_message_is_ascii_and_cp1252_safe():
         msg.encode("ascii")  # raises UnicodeEncodeError if non-ASCII
 
 
+def test_challenge_message_with_capped_unknown_effects_is_ascii_and_cp1252_safe():
+    """The blast-radius line must not reintroduce non-ASCII: the capped/unknown
+    shade of EffectSet (hard failure — no lower bound at all, ADR 0094) renders
+    through format_effect_set's "unknown ..." branch, which must stay ASCII like
+    every other challenge-message line."""
+    from doberman.auth.provider import _challenge_message
+
+    unknown_effects = EffectSet(
+        file_count=None,
+        dir_count=None,
+        capped=True,
+        hits_git=False,
+        hits_outside_repo=False,
+        digest="d",
+    )
+    for tone in ("human", "technical"):
+        msg = _challenge_message(
+            _auth_decision(effects=unknown_effects), _action(), AuthTier.soft_confirm, tone
+        )
+        assert msg.isascii(), f"non-ASCII in {tone} challenge prompt: {msg!r}"
+        assert msg.encode("cp1252")  # raises UnicodeEncodeError if not cp1252-safe
+
+
 def test_challenge_message_human_tone_is_plain_and_names_target_and_reason():
     """S1: the "human" tone (the default) is plain-worded but states the same facts —
     the exact target and the reason, in plain language, without the raw code or the
@@ -356,6 +385,62 @@ def test_challenge_parts_technical_tone_confirm_only_tier_says_confirm_to_contin
         _auth_decision(risk=Risk.medium), _action(), AuthTier.soft_confirm, "technical"
     )
     assert parts["risk"] == "RISK: MEDIUM - confirm to continue"
+
+
+# --- Blast-radius preview (ADR 0094): the shared facts builder ----------------------
+
+_EFFECTS = EffectSet(
+    file_count=3, dir_count=1, capped=False, hits_git=False, hits_outside_repo=False, digest="d"
+)
+
+
+def test_challenge_parts_includes_the_formatted_effects_line():
+    from doberman.auth.provider import challenge_parts
+
+    parts = challenge_parts(
+        _auth_decision(effects=_EFFECTS), _action(), AuthTier.soft_confirm, "human"
+    )
+    assert parts["effects"] == "3 files in 1 directory"
+
+
+def test_challenge_parts_effects_is_none_without_an_effect_set():
+    from doberman.auth.provider import challenge_parts
+
+    parts = challenge_parts(_auth_decision(), _action(), AuthTier.soft_confirm, "human")
+    assert parts["effects"] is None
+
+
+def test_challenge_message_human_tone_includes_the_blast_radius_line_when_present():
+    prompter = FakePrompter(confirm=False)
+    LocalAuthProvider().authenticate(
+        _auth_decision(risk=Risk.high, effects=_EFFECTS),
+        _action("backend/api.ts"),
+        AuthTier.two_factor,
+        prompter=prompter,
+    )
+    message = prompter.messages[0]
+    assert "Blast radius: 3 files in 1 directory" in message
+
+
+def test_challenge_message_omits_the_blast_radius_line_when_absent():
+    prompter = FakePrompter(confirm=False)
+    LocalAuthProvider().authenticate(
+        _auth_decision(risk=Risk.high),
+        _action("backend/api.ts"),
+        AuthTier.two_factor,
+        prompter=prompter,
+    )
+    message = prompter.messages[0]
+    assert "Blast radius" not in message
+
+
+def test_challenge_message_technical_tone_includes_the_blast_radius_line():
+    from doberman.auth.provider import _challenge_message
+
+    message = _challenge_message(
+        _auth_decision(effects=_EFFECTS), _action(), AuthTier.soft_confirm, "technical"
+    )
+    assert "blast radius: 3 files in 1 directory" in message
 
 
 def test_challenge_parts_tags_by_name_not_by_indentation():

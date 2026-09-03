@@ -187,7 +187,7 @@ def test_unknown_reason_code_is_humanized_not_a_keyerror():
 
 
 def test_every_reason_code_has_a_gloss():
-    """Gloss coverage 58/58 - every `ReasonCode` value must have a plain-English
+    """Gloss coverage 59/59 - every `ReasonCode` value must have a plain-English
     description in `REASON_DESCRIPTIONS`, not just fall back to a humanized
     form of the code itself (the fallback is a safety net, not a target)."""
     from doberman.explain import _MISSING_REASON_DESCRIPTIONS

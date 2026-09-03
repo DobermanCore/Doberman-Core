@@ -58,7 +58,7 @@ import threading
 from collections.abc import Iterable
 from typing import Any
 
-from doberman.auth.challenge import Prompter
+from doberman.auth.challenge import EFFECT_SET_LABEL, Prompter
 from doberman.render import deadline_note_mmss
 
 logger = logging.getLogger("doberman.auth.gui_prompter")
@@ -1113,6 +1113,18 @@ def _agent_identity_line(parts: dict) -> str | None:
     return None
 
 
+def _effects_line(parts: dict) -> str | None:
+    """``"Blast radius: <format_effect_set string>"`` (ADR 0094) from
+    ``parts["effects"]`` — the exact string
+    :func:`doberman.auth.provider.challenge_parts` already produced via
+    :func:`doberman.auth.challenge.format_effect_set`. ``None`` when there is
+    nothing to show: a non-delete-class AUTH, ``decision.effects`` itself is
+    ``None``, or a hand-built ``parts`` dict that omits the key.
+    """
+    effects = parts.get("effects")
+    return f"{EFFECT_SET_LABEL}: {effects}" if effects else None
+
+
 _SEVERITY_WORDS = ("critical", "high", "medium", "low")
 
 
@@ -1633,6 +1645,9 @@ def _populate_confirm_parts(root: Any, parts: dict, answer: dict, timeout_s: flo
     _build_target_panel(root, frame, parts["target"], toggle_label=_toggle_expand_label(parts))
     if parts.get("notice"):
         _build_line(frame, parts["notice"], font=_SMALL_FONT, fg=_MUTED)
+    effects_line = _effects_line(parts)
+    if effects_line:
+        _build_line(frame, effects_line, font=_SMALL_FONT, fg=_MUTED)
     _build_line(frame, _QUESTION, font=_QUESTION_FONT, fg=_FG, pady=(2, 8))
     identity = _agent_identity_line(parts)
     if identity:
@@ -1838,6 +1853,9 @@ def _populate_code_parts(root: Any, parts: dict, answer: dict, timeout_s: float)
     _build_target_panel(root, frame, parts["target"], toggle_label=_toggle_expand_label(parts))
     if parts.get("notice"):
         _build_line(frame, parts["notice"], font=_SMALL_FONT, fg=_MUTED)
+    effects_line = _effects_line(parts)
+    if effects_line:
+        _build_line(frame, effects_line, font=_SMALL_FONT, fg=_MUTED)
     _build_line(frame, _QUESTION, font=_QUESTION_FONT, fg=_FG, pady=(2, 8))
     identity = _agent_identity_line(parts)
     if identity:

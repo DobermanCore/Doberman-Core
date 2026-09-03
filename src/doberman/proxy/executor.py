@@ -43,8 +43,13 @@ from doberman.config import (
 from doberman.egress.artifact import ArtifactPinStore, ArtifactVerdict
 from doberman.engine.correlator import DecisionRow, correlate
 from doberman.engine.decision_engine import Guardrail, decide, max_risk, max_verdict
+from doberman.engine.effects import compute_delete_effects, unknown_effects
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.rules import BUILTIN_RULE_TYPES
+from doberman.engine.rules.commands import (
+    command_line_from_arguments,
+    delete_class_operands_and_dynamic,
+)
 from doberman.engine.rules.destinations import ExternalDestinationRule
 from doberman.engine.rules.secrets import contains_strong_secret
 from doberman.engine.subjective import SubjectiveGuardrail
@@ -664,6 +669,30 @@ def _single_use_unclaimable_decision(action: SecurityObject) -> Decision:
     )
 
 
+def _effect_set_diverged_decision(action: SecurityObject) -> Decision:
+    """Synthetic BLOCK when the recomputed blast-radius effect set disagrees
+    with what was shown at approval time (ADR 0094's TOCTOU guard for the
+    delete-class preview) — the filesystem changed between preview and
+    execution, in either direction, or a known count became unknown."""
+    blocked = GuardrailResult(
+        verdict=Verdict.BLOCK,
+        risk=Risk.high,
+        reason_codes=[ReasonCode.effect_set_diverged],
+        explanation="The filesystem changed between the approved preview and "
+        "execution; the effect set no longer matches what was shown.",
+    )
+    return Decision(
+        action_id=action.id,
+        final_verdict=Verdict.BLOCK,
+        final_risk=Risk.high,
+        objective=blocked,
+        subjective=None,
+        reason_codes=list(blocked.reason_codes),
+        explanation=blocked.explanation,
+        decided_at=datetime.now(timezone.utc),
+    )
+
+
 async def _persist(
     decision: Decision,
     action: SecurityObject,
@@ -703,6 +732,32 @@ async def _handle_auth(
     eid: str,
 ) -> CallToolResult:
     """Run the tiered challenge for an AUTH decision and act on the outcome."""
+    # C2 (ADR 0094): before the challenge is rendered, compute a bounded,
+    # offline blast-radius preview for a delete-class command and attach it
+    # to the decision every prompter reads. None of this runs (and no
+    # filesystem walk happens) for any non-delete-class AUTH —
+    # delete_class_operands_and_dynamic returns (None, ...) immediately for
+    # those. A delete segment whose operands include a live shell
+    # substitution ($( ), a backtick, ${ }, or $VAR) never gets a confirmed
+    # count — the walker would silently see a partial/empty operand list,
+    # and "0 files" would be a worse preview than none — so `dynamic` is
+    # computed once here (M1: one walk_command parse for both the operand
+    # list and the dynamic flag) and reused unchanged at the TOCTOU recompute
+    # below. compute_delete_effects runs off the event loop (asyncio.to_thread,
+    # same as run_auth_challenge below): a slow/adversarial walk must never
+    # block the proxy loop (C1 amplifier).
+    command = command_line_from_arguments(arguments or {})
+    delete_operands, dynamic = (
+        delete_class_operands_and_dynamic(command) if command else (None, False)
+    )
+    if delete_operands is not None:
+        effects = (
+            unknown_effects()
+            if dynamic
+            else await asyncio.to_thread(compute_delete_effects, delete_operands, REPO_ROOT)
+        )
+        decision = decision.model_copy(update={"effects": effects})
+
     # Off the event loop: the challenge blocks for a human, and an elicitation
     # answer arrives over the very session this loop services — waiting in-loop
     # would deadlock it (and freeze the proxy during GUI/TTY prompts too).
@@ -765,6 +820,29 @@ async def _handle_auth(
         log_action(action, redecision.final_verdict)
         await _persist(redecision, action, auth_result=auth_result.method, eid=eid)
         return _verdict_result(redecision)
+
+    # C2 (ADR 0094): recompute the SAME operands against the live filesystem
+    # and compare digests. Any divergence — in either direction, or a known
+    # count becoming unknown — re-blocks: the human approved what the preview
+    # showed, not what is on disk now. A dynamic delete segment stays unknown
+    # at both ends (the same `dynamic` flag, unchanged since the preview), so
+    # it does not re-block on dynamism alone — only on an actual mismatch.
+    if decision.effects is not None:
+        recomputed = (
+            unknown_effects()
+            if dynamic
+            else await asyncio.to_thread(compute_delete_effects, delete_operands, REPO_ROOT)
+        )
+        if recomputed.digest != decision.effects.digest:
+            diverged = _effect_set_diverged_decision(action)
+            await _persist(
+                diverged,
+                action,
+                auth_result=auth_result.method,
+                elevation_id=elevation_id,
+                eid=eid,
+            )
+            return _verdict_result(diverged)
 
     if not await _claim_single_use(action, grants):
         _engine_logger.warning(

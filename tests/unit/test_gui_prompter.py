@@ -1705,6 +1705,22 @@ def test_agent_identity_line_partial_and_absent():
     assert gui_prompter._agent_identity_line({"role": None, "tool": None}) is None
 
 
+def test_effects_line_renders_the_formatted_blast_radius():
+    """Pure-function coverage (no live Tk needed): the same string
+    ``doberman.auth.provider.challenge_parts`` already put on
+    ``parts["effects"]`` (ADR 0094, via
+    ``doberman.auth.challenge.format_effect_set``), prefixed for display.
+    """
+    assert gui_prompter._effects_line({"effects": "3 files in 1 directory"}) == (
+        "Blast radius: 3 files in 1 directory"
+    )
+
+
+def test_effects_line_is_none_when_absent():
+    assert gui_prompter._effects_line({"effects": None}) is None
+    assert gui_prompter._effects_line({}) is None
+
+
 def test_agent_identity_line_appears_under_the_headline(real_root):
     root = real_root
     answer: dict = {}
@@ -1716,6 +1732,46 @@ def test_agent_identity_line_appears_under_the_headline(real_root):
 
     labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
     assert "Agent: builder - via shell" in labels
+
+
+def test_effects_line_appears_in_the_confirm_dialog(real_root):
+    """ADR 0094: the blast-radius line actually renders in the live confirm
+    dialog, not just in the pure ``_effects_line`` builder."""
+    root = real_root
+    answer: dict = {}
+    parts = dict(_SAMPLE_PARTS, effects="3 files in 1 directory")
+    gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    assert "Blast radius: 3 files in 1 directory" in labels
+
+
+def test_effects_line_appears_in_the_code_dialog(real_root):
+    root = real_root
+    answer: dict = {}
+    parts = dict(_SAMPLE_PARTS, effects="3 files in 1 directory")
+    gui_prompter._populate_code_parts(root, parts, answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    assert "Blast radius: 3 files in 1 directory" in labels
+
+
+def test_no_effects_line_in_the_confirm_dialog_when_absent(real_root):
+    root = real_root
+    answer: dict = {}
+    gui_prompter._populate_confirm_parts(root, dict(_SAMPLE_PARTS), answer, 120.0)
+    root.update()
+
+    import tkinter
+
+    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
+    assert not any("Blast radius" in label for label in labels)
 
 
 # --- Risk severity ramp + chip --------------------------------------------------------

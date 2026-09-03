@@ -194,6 +194,25 @@ def test_read_code_challenge_names_the_target_and_shows_help(monkeypatch):
     assert tty_prompter._REASSURANCE in shown
 
 
+def test_confirm_challenge_shows_the_blast_radius_line_when_present(monkeypatch):
+    """ADR 0094: the shared blast-radius display string (parts["effects"],
+    built by doberman.auth.provider.challenge_parts via
+    doberman.auth.challenge.format_effect_set) renders on the terminal too --
+    the same facts every prompter shows, via _message_from_parts."""
+    captured = _fake_tty("y\n")
+    monkeypatch.setattr(tty_prompter, "_open_tty", lambda: captured)
+    parts = dict(_SAMPLE_PARTS, effects="3 files in 1 directory")
+    assert TtyPrompter().confirm_challenge(parts) is True
+    assert "Blast radius: 3 files in 1 directory" in captured[1].text
+
+
+def test_confirm_challenge_omits_the_blast_radius_line_when_absent(monkeypatch):
+    captured = _fake_tty("y\n")
+    monkeypatch.setattr(tty_prompter, "_open_tty", lambda: captured)
+    assert TtyPrompter().confirm_challenge(_SAMPLE_PARTS) is True
+    assert "Blast radius" not in captured[1].text
+
+
 def test_confirm_challenge_raises_on_eof_so_provider_denies(monkeypatch):
     monkeypatch.setattr(tty_prompter, "_open_tty", lambda: _fake_tty(""))
     with pytest.raises(EOFError):

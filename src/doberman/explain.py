@@ -136,6 +136,10 @@ REASON_DESCRIPTIONS: dict[str, str] = {
     "single_use_elevation_unclaimable": (
         "the one-time elevation covering this action was already spent or could not be claimed"
     ),
+    "effect_set_diverged": (
+        "the recomputed blast radius for this delete no longer matches what was shown "
+        "at approval time"
+    ),
     "correlated_trifecta": (
         "this action, combined with earlier ones in the session, adds up to the "
         "lethal-trifecta pattern"
@@ -411,6 +415,7 @@ _HEADLINE_FACTS: dict[str, str] = {
     "test_file_removal": "Test file removal",
     "dependency_known_malicious": "Known-malicious package name",
     "dependency_name_typosquat": "Possible package typosquat",
+    "effect_set_diverged": "Blast radius changed since approval",
 }
 
 #: Reason codes whose headline reads better with the TARGET PATH CLASS as the

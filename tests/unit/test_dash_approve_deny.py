@@ -34,6 +34,7 @@ from doberman.dash.app import create_app
 from doberman.models import (
     ActionType,
     Decision,
+    EffectSet,
     GuardrailResult,
     ReasonCode,
     Risk,
@@ -55,6 +56,7 @@ def _decision_and_action(
     action_type: ActionType = ActionType.shell_exec,
     target: str | None = "rm -rf /tmp/x",
     action_id: str = "action-1",
+    effects: EffectSet | None = None,
 ) -> tuple[Decision, SecurityObject]:
     """Build a matched (Decision, SecurityObject) AUTH pair for a challenge."""
     action = SecurityObject(
@@ -77,6 +79,7 @@ def _decision_and_action(
         reason_codes=reason_codes,
         explanation="test explanation",
         decided_at=_NOW,
+        effects=effects,
     )
     return decision, action
 
@@ -292,6 +295,54 @@ def test_totp_tier_code_flows_through_existing_verification(tmp_path, monkeypatc
     assert result.approved is True
     assert result.method == "totp"
     assert calls == ["999000"]  # verified from the PROMPTER side, via the existing totp module
+
+
+# --- blast-radius preview (ADR 0094): rendered into the pending explanation -----------------
+
+
+def test_effects_line_appended_to_the_pending_explanation_when_present(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    captured: dict = {}
+
+    def _resolver(seconds):  # noqa: ARG001
+        rows = asyncio.run(approvals.list_pending(repo_root=root))
+        captured["explanation"] = rows[0]["explanation"]
+        asyncio.run(approvals.resolve(rows[0]["id"], decision="approved", repo_root=root))
+
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _resolver)
+    effects = EffectSet(
+        file_count=3, dir_count=1, capped=False, hits_git=False, hits_outside_repo=False, digest="d"
+    )
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command], effects=effects
+    )
+
+    result = run_auth_challenge(decision, action, prompter=DashboardPrompter(root))
+
+    assert result.approved is True
+    assert "Blast radius: 3 files in 1 directory" in captured["explanation"]
+
+
+def test_no_effects_line_in_the_pending_explanation_when_absent(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    captured: dict = {}
+
+    def _resolver(seconds):  # noqa: ARG001
+        rows = asyncio.run(approvals.list_pending(repo_root=root))
+        captured["explanation"] = rows[0]["explanation"]
+        asyncio.run(approvals.resolve(rows[0]["id"], decision="approved", repo_root=root))
+
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _resolver)
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=DashboardPrompter(root))
+
+    assert result.approved is True
+    assert captured["explanation"] == "test explanation"  # unchanged, no blast-radius line
 
 
 def test_dash_app_never_imports_totp():

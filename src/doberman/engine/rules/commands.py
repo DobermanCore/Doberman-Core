@@ -1135,6 +1135,81 @@ def _command_text(action: SecurityObject, ctx: EvalContext) -> str | None:
     return None
 
 
+def delete_class_operands_and_dynamic(command: str) -> tuple[list[str] | None, bool]:
+    """``(delete_class_operands(command), command_contains_dynamic_content(command))``
+    from a SINGLE :func:`walk_command` parse.
+
+    M1 (C2 final review): a caller that needs both values (the blast-radius
+    preview, ADR 0094) used to call the two functions below separately,
+    re-parsing the same command line twice (0.046s each on a 44KB adversarial
+    command). Both are now thin wrappers around this one parse; call this
+    directly when you need both values.
+    """
+    segments, _ambiguous, dynamic = walk_command(_normalize_windows_backslashes(command))
+    operands: list[str] = []
+    found = False
+    for raw_segment in segments:
+        tokens = _argv_from_tokens(raw_segment)
+        if not tokens:
+            continue
+        cmd = tokens[0]
+        if cmd == "rm":
+            found = True
+            operands.extend(t for t in tokens[1:] if not t.startswith("-"))
+        elif cmd.lower() in _WINDOWS_DELETE_VERBS:
+            found = True
+            _, _, ops = _windows_delete_flags_and_operands(tokens)
+            operands.extend(ops)
+    return (operands if found else None), dynamic
+
+
+def delete_class_operands(command: str) -> list[str] | None:
+    """Path operands to every delete-class segment (``rm`` / a Windows delete
+    verb) in ``command``, using the SAME adversarial parse the destructive-
+    command rule itself uses (:func:`walk_command`, prefix-stripped) — never a
+    second parser. ``None`` means no delete-class segment was found at all
+    (the caller should not walk the filesystem for this command).
+
+    Deliberately does NOT unwrap an opaque shell payload (``bash -c "..."``):
+    that AUTHs via ``opaque_command``, not a delete-class reason, so showing
+    no preview for a payload we cannot statically vet is correct — never a
+    guess at what an opaque command deletes.
+
+    **The returned list can be empty or PARTIAL — never ``None`` — when a
+    live shell substitution (``$( )``, backtick, ``${ }``, ``$VAR``) sits
+    among the operands.** :func:`walk_command` flattens a substitution's body
+    into its own sibling segment (see its own docstring), so that text is
+    invisible here: a delete-class command word was still seen (``found``
+    stays ``True``), but the list this returns must NEVER be read as a
+    confirmed/complete operand set in that case. A caller that needs to draw
+    that distinction (e.g. the blast-radius preview, ADR 0094) checks
+    :func:`command_contains_dynamic_content` on the same ``command`` and
+    treats a dynamic result as unknown, not as a confirmed (possibly zero)
+    count. A caller that needs BOTH this and the dynamic flag should call
+    :func:`delete_class_operands_and_dynamic` once instead (M1).
+
+    Used by :mod:`doberman.engine.effects` (ADR 0094); this module keeps its
+    own no-filesystem-access contract — only the caller touches disk.
+    """
+    operands, _dynamic = delete_class_operands_and_dynamic(command)
+    return operands
+
+
+def command_contains_dynamic_content(command: str) -> bool:
+    """True if a live shell substitution (``$( )``, backtick, ``${ }``, or a
+    bare ``$VAR``) appears anywhere in ``command`` — :func:`walk_command`'s
+    own ``dynamic`` signal, exposed on its own because
+    :func:`delete_class_operands` discards it. Lets a caller (the blast-radius
+    preview, ADR 0094) tell a genuinely confirmed empty/complete operand list
+    apart from one the walker merely couldn't see into, so a partial
+    ``delete_class_operands`` result is never mistaken for a confirmed count.
+    A caller that needs BOTH this and the operand list should call
+    :func:`delete_class_operands_and_dynamic` once instead (M1).
+    """
+    _operands, dynamic = delete_class_operands_and_dynamic(command)
+    return dynamic
+
+
 class DestructiveCommandRule:
     """Detect catastrophic and risky shell/git commands; opaque → AUTH."""
 
