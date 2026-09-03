@@ -840,7 +840,7 @@ def _raw_socket_channel_explanation(tokens: list[str]) -> str | None:
     every token, not just ``tokens[0]``, since bash writes it as a redirect
     operand anywhere in the segment); ``nc``/``ncat``/``socat`` used in
     exec-on-connect (reverse/bind-shell) form; or
-    ``openssl s_client -connect``. Deliberately narrow (HK.5.6) so a routine
+    any ``openssl s_client`` invocation. Deliberately narrow (HK.5.6) so a routine
     port probe (``nc -zv host port``) or an unrelated ``openssl`` subcommand
     stays ``PASS``. Returns a small fixed string, never the matched token, so
     the caller's explanation never echoes a host/port/payload.
@@ -853,9 +853,11 @@ def _raw_socket_channel_explanation(tokens: list[str]) -> str | None:
     if cmd == "socat" and any(_SOCAT_EXEC_ADDRESS_RE.search(t) for t in tokens[1:]):
         return "an exec-on-connect listener"
     if cmd == "openssl" and len(tokens) > 1 and tokens[1] == "s_client":
-        # A bare `openssl s_client` with no target flag (-connect/-host/-port/
-        # -proxy/-unix/...) does nothing, so requiring no specific flag here is
-        # safe — s_client's only job is to open a TLS client connection.
+        # Match on the subcommand alone: s_client's only job is to open a TLS
+        # client connection, and even a bare `openssl s_client` dials its
+        # default target (localhost:4433), so every flag spelling that names a
+        # target (-connect/--connect/-host/-port/-proxy/-unix/...) is covered
+        # without enumerating them.
         return "a direct TLS client connection"
     return None
 
