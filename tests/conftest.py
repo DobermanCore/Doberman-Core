@@ -135,7 +135,7 @@ def _neutralize_hosthook_auth_prompter(monkeypatch):
     isn't just a coverage gap: any of that module's tests that reach an AUTH-tier decision
     without injecting their own fake prompter falls through to
     ``hookio._default_auth_prompter()``, which opens a REAL GUI dialog (blocking up to
-    ``DEFAULT_CHALLENGE_TIMEOUT_S`` = 20 minutes) on any machine with an active desktop
+    ``DEFAULT_CHALLENGE_TIMEOUT_S`` = 10 minutes) on any machine with an active desktop
     session — this previously happened to ``codex.AUTH_PROMPTER`` before it was added below.
     """
     from doberman.auth.gui_prompter import PrompterUnavailableError

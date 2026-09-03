@@ -6,7 +6,7 @@ module-level seam (mirrors ``claude_code``'s — see ``codex.py``'s docstring on
 the fixture never touched, so any test driving ``codex.evaluate_pre`` into an AUTH-tier
 decision without injecting its own fake prompter fell through to
 ``hookio._default_auth_prompter()`` — which opens a REAL GUI dialog and blocks up to
-``DEFAULT_CHALLENGE_TIMEOUT_S`` (20 minutes) on any machine with an active desktop
+``DEFAULT_CHALLENGE_TIMEOUT_S`` (10 minutes) on any machine with an active desktop
 session. This hit several existing tests (``test_hosthook_codex.py``'s
 ``test_windows_powershell_delete_is_gated`` and ``test_reason_never_echoes_raw_command``,
 ``test_hosthook_taint_floor.py``'s ``test_codex_taint_floor_multistep_exfil_denied``) that

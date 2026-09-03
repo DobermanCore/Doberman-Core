@@ -45,8 +45,11 @@ logger = logging.getLogger("doberman.auth.elicitation")
 _APPROVAL_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
 
 #: How long to wait for the human's answer. Sized for a person, not a protocol RTT;
-#: on expiry the challenge denies (module-level so tests can shrink it).
-ANSWER_TIMEOUT_S = 300.0
+#: on expiry the challenge falls through to the next channel (the GUI dialog).
+#: Kept short because a client that never surfaces the elicitation just burns the
+#: whole-challenge budget (``DEFAULT_CHALLENGE_TIMEOUT_S``, 10 minutes across two
+#: passes of the chain). Module-level so tests can shrink it.
+ANSWER_TIMEOUT_S = 60.0
 
 
 class ElicitationPrompter:
