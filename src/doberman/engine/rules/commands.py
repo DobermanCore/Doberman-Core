@@ -159,9 +159,13 @@ _SOCAT_EXEC_ADDRESS_RE = re.compile(r"(?i)\b(?:exec|system):")
 # on top of the existing opaque-payload AUTH, not static analysis — misses an
 # obfuscated variant (string concatenation, getattr, a base64-decoded module
 # name); see the README known-limitations entry for `raw_socket_channel`.
+# `urllib` is narrowed to `urllib.request`/`urlopen` (bare `\burllib\b` matched
+# the non-network `urllib.parse` too); bare `connect(` stays broad on purpose
+# (spec-mandated) even though it also matches a non-network `sqlite3.connect(`
+# — see the README known-limitations entry.
 _INLINE_SOCKET_OP = re.compile(
-    r"\bsocket\.|\bconnect\(|\bhttp\.client\b|\brequests\.|\burllib\b|"
-    r"\bnet\.Socket\b|\bfetch\(",
+    r"\bsocket\.|\bconnect\(|\bcreate_connection\(|\bhttp\.client\b|\brequests\.|"
+    r"\burllib\.request\b|\burlopen\b|\bnet\.Socket\b|\bfetch\(",
     re.IGNORECASE,
 )
 
@@ -694,6 +698,14 @@ def _environment_dump_auth() -> GuardrailResult:
     )
 
 
+def _dev_tcp_udp_auth() -> GuardrailResult:
+    return _auth(
+        ReasonCode.raw_socket_channel,
+        "Command opens a raw network channel outside the normal tool path "
+        "(bare-TCP/UDP device redirection); authentication required.",
+    )
+
+
 def _segment_verdict(
     tokens: list[str], protected_branches: Iterable[str], bulk_threshold: int, root: str
 ) -> GuardrailResult | None:
@@ -801,6 +813,26 @@ def _is_pipe_to_shell(tokens: list[str]) -> bool:
     return any(part in _SHELLS for part in tokens[1:])
 
 
+def _nc_has_exec_flag(tokens: list[str]) -> bool:
+    """True if a netcat/ncat argv (past the command name) requests exec-on-
+    connect: an exact flag (``_NC_EXEC_FLAGS``), an attached-value long flag
+    (``--exec=...``/``--sh-exec=...``), or a clustered/glued short flag
+    bundling ``e``/``c`` with other single-char flags or its own operand
+    (``-lve``, ``-nve``, ``-le``, ``-e/bin/sh``). A bare port probe (``-zv``)
+    has neither letter and stays unmatched."""
+    for token in tokens:
+        if token in _NC_EXEC_FLAGS or token.startswith(("--exec=", "--sh-exec=")):
+            return True
+        if (
+            len(token) > 1
+            and token[0] == "-"
+            and token[1] != "-"
+            and any(c in token[1:] for c in "ec")
+        ):
+            return True
+    return False
+
+
 def _raw_socket_channel_explanation(tokens: list[str]) -> str | None:
     """Explanation fragment for a raw-socket/bare-TCP egress shape, or ``None``.
 
@@ -816,11 +848,14 @@ def _raw_socket_channel_explanation(tokens: list[str]) -> str | None:
     if any(_DEV_TCP_UDP_RE.search(token) for token in tokens):
         return "bare-TCP/UDP device redirection"
     cmd = tokens[0]
-    if cmd in _NC_LIKE_COMMANDS and any(token in _NC_EXEC_FLAGS for token in tokens[1:]):
+    if cmd in _NC_LIKE_COMMANDS and _nc_has_exec_flag(tokens[1:]):
         return "an exec-on-connect listener"
     if cmd == "socat" and any(_SOCAT_EXEC_ADDRESS_RE.search(t) for t in tokens[1:]):
         return "an exec-on-connect listener"
-    if cmd == "openssl" and len(tokens) > 1 and tokens[1] == "s_client" and "-connect" in tokens:
+    if cmd == "openssl" and len(tokens) > 1 and tokens[1] == "s_client":
+        # A bare `openssl s_client` with no target flag (-connect/-host/-port/
+        # -proxy/-unix/...) does nothing, so requiring no specific flag here is
+        # safe — s_client's only job is to open a TLS client connection.
         return "a direct TLS client connection"
     return None
 
@@ -1000,6 +1035,12 @@ class DestructiveCommandRule:
         while pending and processed < _MAX_COMMAND_SEGMENTS:
             processed += 1
             raw_segment = pending.pop()
+            # Checked on the RAW segment, before _argv_from_tokens strips
+            # env-assignment/wrapper prefixes: `D=/dev/tcp/...; cat f > $D` or
+            # `TARGET=/dev/tcp/... cat f` carry the /dev/tcp path only in the
+            # env-assignment token, which the stripped argv below never sees.
+            if any(_DEV_TCP_UDP_RE.search(t) for t in raw_segment):
+                worst = _max_result(worst, _dev_tcp_udp_auth())
             if _is_environment_dump_segment(raw_segment):
                 worst = _max_result(worst, _environment_dump_auth())
                 continue

