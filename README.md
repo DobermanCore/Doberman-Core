@@ -308,6 +308,26 @@ Doberman is **defense-in-depth, not airtight**: no single rule is a guarantee. T
   all four need file content, an old-vs-new diff, or session history this rule never reads;
   `pyproject.toml` itself is left unflagged for the same reason (constant, routine dependency-bump
   traffic).
+- **Dependency admission is name-only and offline: it does not read your lockfile, does not resolve a
+  registry, and does not inspect postinstall scripts.** `DependencyAdmissionRule` parses `pip`/`npm`/
+  `cargo`/`gem`/`go`/... install commands and checks the package NAME ONLY against two bundled, static
+  JSON snapshots: a known-malicious list (hard `BLOCK`) and a popular-package list used only for an
+  edit-distance-1 typosquat heuristic (`AUTH`, never `BLOCK` — a statistical signal is capped by
+  construction). Both lists are point-in-time snapshots refreshed per release, not a live feed, and
+  they are **small starter seeds, not the thousands-of-names ceiling the format could hold**: the
+  popular-package seed is 69 names total (pypi 22, npm 22, cargo 10, rubygems 10, go 5) and the
+  known-malicious seed is 10 names (all npm). A name being on the popular list is also what makes it
+  *exempt* from the typosquat check, so a real, legitimate package that is absent from this small seed
+  can be gated once (a one-time `AUTH` step-up) if it happens to land one edit from a name that IS
+  seeded — a false positive that a larger seed would remove; see `src/doberman/engine/rules/data/README.md`
+  for the mechanics. A typosquat of an obscure package, a brand-new malicious package not yet in the
+  bundled list, a name that isn't within one edit of anything in the popular list, or an attack that
+  lives in a lockfile/manifest/postinstall script rather than the install command's argv, is not caught
+  here. **Execute-on-install shapes are a documented v1 gap:** `npx <pkg>`, `npm exec <pkg>`, and
+  `pipx run <pkg>` fetch-and-run a package in one step without ever calling an `install`/`add`
+  subcommand this rule recognizes, so none of them are parsed today. This is defense-in-depth against
+  the cheap, common case (a popular-package typo, a documented known-bad name), not a supply-chain
+  guarantee.
 
 ---
 
