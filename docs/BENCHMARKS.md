@@ -370,6 +370,46 @@ raises every attack score (e.g. backend-dev 0.665 → 0.668, git-heavy-dev
 already saturates without the `source_context` leak, so this run under-states
 rather than overstates how much that leak would matter on a harder corpus.
 
+### Session replay (post-decide floors)
+
+The tables above run each action through `decide()` alone — the harness's default, stateless mode. Three
+real Doberman floors are deliberately post-decide (they read persisted session state after `decide()`
+returns): the taint floor (`doberman.engine.taint_floor`, HK.5.2/5.2b), the untrusted-value echo tripwire
+(`doberman.engine.taint_floor.apply_echo_tripwire_async`, C1), and the session correlator
+(`doberman.engine.correlator`, C3.1). None of the three is exercised by the tables above.
+
+`--replay-session` replays each case inside a fresh, isolated per-case session and applies all three
+floors, in the exact order the real proxy/host-hook spine use, before scoring the verdict:
+
+```bash
+python -m tests.benchmarks.run --suite agentdojo --profile before_after --replay-session   # pip install agentdojo
+DOBERMAN_BENCH_LLMAIL_DIR=<path>/llmail-inject \
+  python -m tests.benchmarks.run --suite llmail_inject --profile before_after --replay-session
+DOBERMAN_BENCH_MSB_DIR=<path>/MSB \
+  python -m tests.benchmarks.run --suite msb --profile before_after --replay-session
+```
+
+**Read this before the numbers.** The echo tripwire fires on an EXACT host/URL/email value reused from an
+earlier untrusted read — LLMail-Inject's real shape (read a phishing email whose body names the attacker's
+own address, then send to that exact address) is precisely this exact-value-reuse pattern, so its ASR
+under `--replay-session` **is expected to drop** — this is the intended win session-replay exists to
+surface, not a hedge. The taint floor only fires on secret-*shaped* content, and the correlator's
+`correlated_trifecta` pattern needs a prior row with a secret-class reason code — narrower, and less likely
+to move LLMail-Inject's number on its own. All three floors require the CURRENT action to carry an
+`external_destination`; MSB attack types whose consummating action is a local file write or process action
+with no destination are untouched by any of the three floors, replayed or not — that gap is real and stays
+open after this task.
+
+| Metric | `<suite>` before | after (stateless) | after (`--replay-session`) |
+|---|---|---|---|
+| ASR | `<before.asr>` | `<after.asr>` | `<after.asr>` |
+| asr_strict | `<before.asr_strict>` | `<after.asr_strict>` | `<after.asr_strict>` |
+| FPR | `<before.fpr>` | `<after.fpr>` | `<after.fpr>` |
+
+_Numbers pending an operator run against the real datasets — this task ships the capability and its
+documented scope; filling in `<...>` for each suite is a follow-up run, not part of this task's own
+tests (which use synthetic 2-action fixtures, not the real datasets)._
+
 ## Fixed bypasses
 
 Disclosed-and-fixed only (date · bypass class · fix PR). A privately-reported

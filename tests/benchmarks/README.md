@@ -47,7 +47,8 @@ tests/benchmarks/
 ├── profiles.py    # build_pipeline(load_plugins=...) -> Pipeline; PassthroughPipeline (no-guardrail baseline)
 ├── metrics.py     # SuiteReport: ASR, asr_strict, FPR, hard_fpr; corpus_metrics: per-category TPR/FPR/precision
 ├── runner.py      # run_suite, run_profiles (builtins vs plugins), run_before_after (without vs with Doberman)
-├── run.py         # CLI: python -m tests.benchmarks.run --suite <name> --profile both  (+ --corpus, --subjective)
+├── run.py         # CLI: python -m tests.benchmarks.run --suite <name> --profile both  (+ --corpus, --subjective, --replay-session)
+├── session_replay.py  # --replay-session: exercise the real taint floor + echo tripwire + session correlator in a fresh isolated per-case session
 ├── suites/
 │   ├── synthetic.py   # built-in, deterministic, dependency-free (the CI gate)
 │   ├── corpus.py      # the labeled detection corpus (C8): loader + adapter + per-row driver
@@ -168,6 +169,34 @@ The report is `{before (no_guardrail), after (builtins_only), delta}`. The
 that makes the *after* legible, not an independent measurement. Report it as
 "with no guardrail every one of these N attacks executes," never as a number the
 harness "discovered."
+
+### `--replay-session` — exercising the post-decide floors
+
+`decide()` alone never triggers the taint floor (`doberman.engine.taint_floor.apply_taint_floor_async`),
+the echo tripwire (`apply_echo_tripwire_async`, C1), or the session correlator
+(`doberman.engine.correlator.apply_correlator_async`) — all three are deliberately post-decide, reading
+persisted session state after `decide()` returns (see each module's own docstring). The default harness
+path calls `decide()` statelessly per action, so those three floors are **never exercised** by default — a
+multi-action attack (read untrusted content, then send) is scored purely on each action's own per-call
+verdict.
+
+```bash
+python -m tests.benchmarks.run --suite agentdojo --profile before_after --replay-session
+python -m tests.benchmarks.run --suite llmail_inject --profile before_after --replay-session   # needs DOBERMAN_BENCH_LLMAIL_DIR
+python -m tests.benchmarks.run --suite msb --profile before_after --replay-session              # needs DOBERMAN_BENCH_MSB_DIR
+```
+
+`--replay-session` replays each case inside a fresh, isolated per-case session (a temp SQLite DB;
+`session_id = case_id`) and applies the real floors, in the real order, after each `decide()` — the
+report carries `"session_replay": true` at both the top level and inside every nested report so a
+replayed number is never confused with a stateless one. **Read this before comparing numbers**: the echo
+tripwire fires on an EXACT host/URL/email value reused from an earlier untrusted read — LLMail-Inject's
+real 2-action shape (read a phishing email that names the attacker's own address, then send to that exact
+address) is precisely this pattern, so its ASR under `--replay-session` is expected to drop. The taint
+floor only fires on secret-*shaped* content, and the correlator's `correlated_trifecta` needs a prior
+secret-class reason code — narrower wins. All three floors require the consummating action to carry an
+`external_destination`; a consummating action that is a local file write/process action with no
+destination (some MSB attack types) is untouched by any of them, replayed or not.
 
 ---
 
