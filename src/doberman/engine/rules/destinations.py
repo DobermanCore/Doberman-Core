@@ -31,6 +31,7 @@ query parameters, or any embedded credential.
 
 import ipaddress
 import logging
+import re
 from collections.abc import Iterable, Sequence
 from datetime import timedelta
 from urllib.parse import urlsplit
@@ -245,23 +246,41 @@ def _extract_destination(action: SecurityObject, ctx: EvalContext | None = None)
     return None
 
 
+#: A single ``label.label`` hostname shape: no empty labels (``a@.example``,
+#: ``a@b..example``), no leading/trailing hyphen (``a@-x.example``). ASCII
+#: only — the mailbox domain still goes through ``_decode_host`` below.
+_MAILBOX_LABEL = r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
+_MAILBOX_DOMAIN_RE = re.compile(rf"^{_MAILBOX_LABEL}(?:\.{_MAILBOX_LABEL})+$")
+
+
 def _mailbox_domain(raw: str) -> str | None:
     """The domain of a bare ``local@domain`` mailbox destination, or a
     ``mailto:`` URL — ``None`` if ``raw`` is not one of those forms.
 
     Deliberately narrow: no scheme separator (other than ``mailto:``), no
-    path, no whitespace, exactly one ``@`` with a non-empty local part, and a
-    dotted, non-IP domain with no port. Anything else — ``user:pw@host``,
-    ``user@host:8080``, ``user@host/path`` — keeps the credential-in-URL
-    smell ``_parse_host`` already applies and is not treated as mail.
+    path, no whitespace, and — checked over the WHOLE candidate, not just the
+    domain — no ``:`` anywhere (a scheme-less ``user:pw@host`` authority or a
+    ``user@host:8080`` port is credential-in-URL smuggling, not mail). Exactly
+    one ``@`` with a non-empty local part and a validly-shaped, non-IP domain.
+    Anything else — ``user:pw@host``, ``user@host:8080``, ``user@host/path``
+    — keeps the credential-in-URL smell ``_parse_host`` already applies and
+    is not treated as mail.
     """
     candidate = raw[len("mailto:") :] if raw.lower().startswith("mailto:") else raw
-    if "://" in candidate or "/" in candidate or any(c.isspace() for c in candidate):
+    if (
+        "://" in candidate
+        or "/" in candidate
+        or ":" in candidate
+        or any(c.isspace() for c in candidate)
+    ):
         return None
     if candidate.count("@") != 1:
         return None
     local, _, domain = candidate.partition("@")
-    if not local or ":" in domain or "." not in domain or _is_ip_literal(domain):
+    # RFC 6068 `mailto:` headers (`?subject=...`) or a stray `#fragment` can
+    # ride after the domain on a bare destination too — keep only the host.
+    domain = domain.partition("?")[0].partition("#")[0]
+    if not local or _is_ip_literal(domain) or not _MAILBOX_DOMAIN_RE.match(domain):
         return None
     return domain
 
@@ -483,6 +502,7 @@ class ExternalDestinationRule:
             if (
                 metadata.get("egress_implied_registry")
                 and not had_credentials
+                and not is_mailbox
                 and not _is_ip_literal(host)
                 and _registered_match(host, self._trusted)
                 and not thresholds_for(

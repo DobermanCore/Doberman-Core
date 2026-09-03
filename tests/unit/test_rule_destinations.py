@@ -385,3 +385,78 @@ def test_mailbox_to_trusted_domain_is_never_auto_trusted():
     result = _verdict("a@github.com", mode="strict")
     assert result.verdict is Verdict.AUTH
     assert ReasonCode.unknown_external_destination in result.reason_codes
+
+
+# --- Security-review fix pass (C1/I1/I2/M1) ----------------------------------
+# A second pass found the mailbox recognition too permissive: it only checked
+# the domain for ":", missed a second unguarded trusted-host branch, kept
+# `mailto:`/query punctuation as part of the domain, and accepted malformed
+# domain shapes as mail.
+
+
+def test_parse_host_scheme_less_credentials_are_not_a_mailbox():
+    # C1: the WHOLE candidate must be checked for ":", not just the domain --
+    # `user:pw@host` (no scheme) is credential smuggling, not mail.
+    host, had_credentials, is_mailbox = _parse_host("user:pw@host.example")
+    assert host == "host.example"
+    assert had_credentials is True
+    assert is_mailbox is False
+
+
+def test_parse_host_scheme_less_credentials_to_trusted_host_are_not_a_mailbox():
+    host, had_credentials, is_mailbox = _parse_host("admin:s3cret@pypi.org")
+    assert host == "pypi.org"
+    assert had_credentials is True
+    assert is_mailbox is False
+
+
+def test_scheme_less_credentials_auth_in_balanced_mode():
+    result = _verdict("user:pw@host.example", mode="balanced")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.unknown_external_destination in result.reason_codes
+
+
+def test_command_egress_implied_registry_mailbox_never_auto_passes():
+    # I1: the SECOND trusted-host PASS branch (command-egress
+    # `egress_implied_registry`) must also refuse a mailbox destination --
+    # `not had_credentials` alone no longer blocks it now that a mailbox has
+    # no credential smell.
+    action = SecurityObject(
+        id="cmd-mailbox-1",
+        ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
+        agent_role="unknown",
+        action_type=ActionType.package_install,
+        tool_name="pip",
+        external_destination="user@pypi.org",
+        metadata={"egress_implied_registry": True},
+    )
+    result = RULE.evaluate(action, EvalContext(mode="balanced"))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.egress_requires_auth in result.reason_codes
+
+
+def test_parse_host_mailbox_domain_truncates_at_query_string():
+    # I2: `?...` (stray query punctuation on a bare destination) must not
+    # become part of the host.
+    host, had_credentials, is_mailbox = _parse_host("user@host.example?x=y")
+    assert host == "host.example"
+    assert had_credentials is False
+    assert is_mailbox is True
+
+
+def test_parse_host_mailto_truncates_at_query_string():
+    # I2: RFC 6068 `mailto:` headers (`?subject=...`) must not become part of
+    # the host either.
+    host, had_credentials, is_mailbox = _parse_host("mailto:a@b.example?subject=hi")
+    assert host == "b.example"
+    assert had_credentials is False
+    assert is_mailbox is True
+
+
+@pytest.mark.parametrize("destination", ["a@.example", "a@-x.example", "a@b..example"])
+def test_parse_host_malformed_domains_are_not_mailboxes(destination):
+    # M1: a malformed domain shape (empty label, leading hyphen, empty
+    # interior label) falls back to the existing (AUTH) parsing paths instead
+    # of being taken as mail.
+    _host, _had_credentials, is_mailbox = _parse_host(destination)
+    assert is_mailbox is False
