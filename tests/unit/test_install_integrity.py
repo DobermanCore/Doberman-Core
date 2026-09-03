@@ -126,10 +126,11 @@ def test_missing_key_never_raises_from_verify(
 ) -> None:
     settings = tmp_path / "repo" / ".claude" / "settings.json"
     integrity.record_install("claude", "project", settings, GROUPS)
-    monkeypatch.setenv(
-        "DOBERMAN_KEY_FILE",
-        str(tmp_path / "missing" / "dir" / "that" / "cannot" / "be" / "made" / "\0bad"),
-    )
+    # A regular file where the key's parent directory should be: the key can be
+    # neither read nor created there, on every OS.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("DOBERMAN_KEY_FILE", str(blocker / "fingerprint.key"))
     # The key is process-cached; drop it so verify must reload from the bad path.
     from doberman.storage.fingerprint import _load_or_create_key
 
