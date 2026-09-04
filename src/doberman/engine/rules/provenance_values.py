@@ -65,16 +65,33 @@ _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]
 #: alphanumerics; (3) spaced separator — a literal "@"/"." with whitespace on
 #: BOTH sides between two alphanumerics (one-sided, e.g. a sentence-ending
 #: "end. Next", is left untouched).
+#:
+#: Every whitespace quantifier below is bounded to \s{0,4} (or \s{1,4} where
+#: at least one space is required) rather than \s*/\s+ — a real obfuscated
+#: address never has more than a couple of spaces around "at"/"dot", and an
+#: unbounded quantifier flanking a mandatory alternation backtracks
+#: quadratically: re.finditer/.sub retries the leading \s* one character
+#: shorter at EVERY start position once the alternation fails, so a large run
+#: of plain whitespace (attacker-controlled, up to _SCAN_MAX_CHARS) made
+#: _deobfuscated() run for tens of seconds on the hot untrusted-read path.
+#: Measured: 20,000 spaces took 7.8s pre-fix; bounded, the full 100,000-char
+#: bound finishes in milliseconds.
 _DEOBFUSCATE_BRACKETED_AT_RE = re.compile(
-    r"\s*(?:\[\s*at\s*\]|\(\s*at\s*\)|\{\s*at\s*\}|<\s*at\s*>)\s*", re.IGNORECASE
+    r"\s{0,4}(?:\[\s{0,4}at\s{0,4}\]|\(\s{0,4}at\s{0,4}\)|\{\s{0,4}at\s{0,4}\}|<\s{0,4}at\s{0,4}>)\s{0,4}",
+    re.IGNORECASE,
 )
 _DEOBFUSCATE_BRACKETED_DOT_RE = re.compile(
-    r"\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\}|<\s*dot\s*>)\s*", re.IGNORECASE
+    r"\s{0,4}(?:\[\s{0,4}dot\s{0,4}\]|\(\s{0,4}dot\s{0,4}\)|\{\s{0,4}dot\s{0,4}\}|<\s{0,4}dot\s{0,4}>)\s{0,4}",
+    re.IGNORECASE,
 )
-_DEOBFUSCATE_WORD_AT_RE = re.compile(r"(?<=[A-Za-z0-9])\s+at\s+(?=[A-Za-z0-9])", re.IGNORECASE)
-_DEOBFUSCATE_WORD_DOT_RE = re.compile(r"(?<=[A-Za-z0-9])\s+dot\s+(?=[A-Za-z0-9])", re.IGNORECASE)
-_DEOBFUSCATE_SPACED_AT_RE = re.compile(r"(?<=[A-Za-z0-9])\s+@\s+(?=[A-Za-z0-9])")
-_DEOBFUSCATE_SPACED_DOT_RE = re.compile(r"(?<=[A-Za-z0-9])\s+\.\s+(?=[A-Za-z0-9])")
+_DEOBFUSCATE_WORD_AT_RE = re.compile(
+    r"(?<=[A-Za-z0-9])\s{1,4}at\s{1,4}(?=[A-Za-z0-9])", re.IGNORECASE
+)
+_DEOBFUSCATE_WORD_DOT_RE = re.compile(
+    r"(?<=[A-Za-z0-9])\s{1,4}dot\s{1,4}(?=[A-Za-z0-9])", re.IGNORECASE
+)
+_DEOBFUSCATE_SPACED_AT_RE = re.compile(r"(?<=[A-Za-z0-9])\s{1,4}@\s{1,4}(?=[A-Za-z0-9])")
+_DEOBFUSCATE_SPACED_DOT_RE = re.compile(r"(?<=[A-Za-z0-9])\s{1,4}\.\s{1,4}(?=[A-Za-z0-9])")
 
 
 def _deobfuscated(text: str) -> str:

@@ -2,6 +2,8 @@
 untrusted-value echo tripwire. Extraction only — no verdict authority here.
 """
 
+import time
+
 import pytest
 
 from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
@@ -181,6 +183,7 @@ def test_bracketed_ipv6_url_form_is_still_extracted_as_a_host_value():
     "text",
     [
         "contact [at] contact [dot] com",
+        "contact ( at ) contact ( dot ) com",
         "contact (at) contact (dot) com",
         "contact{at}contact{dot}com",
         "contact <at> contact <dot> com",
@@ -209,3 +212,32 @@ def test_prose_at_dot_words_do_not_invent_an_address():
 def test_sentence_period_is_not_joined():
     fps = untrusted_value_fingerprints("see you at end. Next line")
     assert fingerprint("you@end.Next") not in fps
+
+
+# --- T4 perf follow-up: de-obfuscation must stay linear on adversarial
+# whitespace -------------------------------------------------------------
+# The bracketed de-obfuscation patterns had unbounded \s* flanking a
+# mandatory alternation -- on a long run of plain whitespace the regex
+# engine backtracks quadratically (every start position re-tries the
+# leading \s* one char shorter). Every de-obfuscation pattern's whitespace
+# is now bounded (\s{0,4} / \s{1,4}), so even a worst-case _SCAN_MAX_CHARS
+# (100k) payload finishes in milliseconds, not tens of seconds.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        " " * 100_000,
+        "[ " * 30_000,
+        " at " * 25_000,
+        ("a" + " " * 50) * 2_000,
+    ],
+    # explicit short ids: pytest's default id is the raw string, and Windows
+    # caps an env var at 32767 chars -- PYTEST_CURRENT_TEST would overflow it.
+    ids=["all_spaces", "bracket_space", "spaced_at_word", "letter_plus_50_spaces"],
+)
+def test_deobfuscation_is_linear_on_adversarial_whitespace(text):
+    start = time.perf_counter()
+    untrusted_value_fingerprints(text)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"took {elapsed:.2f}s on a {len(text)}-char adversarial input"
