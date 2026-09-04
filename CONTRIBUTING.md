@@ -147,7 +147,7 @@ metadata, classifications, and fingerprints are fine; raw secrets are not.
   or `docs(contributing): add onboarding guide`.
 - Tests travel with the code, and docs or README updates travel with behavior
   changes.
-- Add a `changelog.d/<PR-number>.md` fragment instead of editing `CHANGELOG.md`. Start it with one or more user-facing Markdown bullets; maintainers compile fragments during release.
+- Add a `changelog.d/<PR-number>.<type>.md` fragment instead of editing `CHANGELOG.md`; see `changelog.d/README.md` for the type names and bullet format.
 - Fill out the PR template, including the public-release safety and security
   checklists.
 - Note any AI assistance in the PR description.
