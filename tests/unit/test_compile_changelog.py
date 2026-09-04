@@ -99,6 +99,23 @@ def test_all_problems_reported_at_once(tmp_path: Path) -> None:
     assert "unnamed.md" in message
 
 
+def test_bullet_over_word_limit_rejected(tmp_path: Path) -> None:
+    words = " ".join(f"word{i}" for i in range(26))
+    write_fragment(tmp_path, "456.added.md", f"- {words} (#456)\n")
+
+    with pytest.raises(ValueError, match=r"is 26 words \(max 25\)"):
+        collect_fragments(tmp_path / "changelog.d")
+
+
+def test_bullet_at_word_limit_with_long_citation_accepted(tmp_path: Path) -> None:
+    words = " ".join(f"word{i}" for i in range(25))
+    write_fragment(tmp_path, "456.added.md", f"- {words} (#456, thanks @someone-long)\n")
+
+    fragments = collect_fragments(tmp_path / "changelog.d")
+
+    assert len(fragments) == 1
+
+
 def test_multi_bullet_fragment_all_validated(tmp_path: Path) -> None:
     write_fragment(
         tmp_path,

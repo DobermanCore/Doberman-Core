@@ -13,6 +13,8 @@ PLACEHOLDER = "_Nothing yet._"
 EM_DASH = "—"
 VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 PR_REF_RE = re.compile(r"#(\d+)")
+TRAILING_CITATION_RE = re.compile(r"\s*\([^()]*#\d+[^()]*\)\s*$")
+MAX_BULLET_WORDS = 25
 
 # Order doubles as the fixed output-section order.
 FRAGMENT_TYPES = ("security", "added", "changed", "fixed", "docs", "removed")
@@ -84,6 +86,13 @@ def collect_fragments(fragment_dir: Path) -> list[Fragment]:
                 problems.append(f"{path}: bullet exceeds 220 characters: {collapsed[:60]!r}")
             if f"#{number}" not in collapsed:
                 problems.append(f"{path}: bullet must reference #{number}: {collapsed[:60]!r}")
+
+            text = collapsed.removeprefix("- ")
+            citation = TRAILING_CITATION_RE.search(text)
+            body = text[: citation.start()] if citation else text
+            word_count = len(body.split())
+            if word_count > MAX_BULLET_WORDS:
+                problems.append(f"{path}: bullet is {word_count} words (max {MAX_BULLET_WORDS})")
 
         fragments.append(Fragment(number, path, content, frag_type))
 
