@@ -47,12 +47,16 @@ tests/benchmarks/
 ├── profiles.py    # build_pipeline(load_plugins=...) -> Pipeline; PassthroughPipeline (no-guardrail baseline)
 ├── metrics.py     # SuiteReport: ASR, asr_strict, FPR, hard_fpr; corpus_metrics: per-category TPR/FPR/precision
 ├── runner.py      # run_suite, run_profiles (builtins vs plugins), run_before_after (without vs with Doberman)
-├── run.py         # CLI: python -m tests.benchmarks.run --suite <name> --profile both  (+ --corpus, --subjective)
+├── run.py         # CLI: python -m tests.benchmarks.run --suite <name> --profile both  (+ --corpus, --subjective, --replay-session)
+├── session_replay.py  # --replay-session: exercise the real taint floor + echo tripwire + session correlator in a fresh isolated per-case session
 ├── suites/
 │   ├── synthetic.py   # built-in, deterministic, dependency-free (the CI gate)
 │   ├── corpus.py      # the labeled detection corpus (C8): loader + adapter + per-row driver
 │   ├── devsession.py  # built-in, deterministic, dependency-free — seeded warm corpus (C11)
 │   ├── agentdojo.py   # AgentDojo + AgentDyn adapters (on-demand; lazy `agentdojo` import)
+│   ├── redcode.py     # RedCode-Exec adapter (on-demand; env DOBERMAN_BENCH_REDCODE_DIR)
+│   ├── msb_poisoning.py  # MSB tool-response-poisoning adapter (on-demand; env DOBERMAN_BENCH_MSB_DIR)
+│   ├── llmail_inject.py  # LLMail-Inject adapter (on-demand; env DOBERMAN_BENCH_LLMAIL_DIR)
 │   └── <your_suite>.py
 └── README.md      # this file
 ```
@@ -119,7 +123,7 @@ supplied path stay out of the always-on CI gate and run on demand.
 | tool call kind (read/write/exec/http/git/install) | `CandidateAction.action_type` (`ActionType.*`) | pick the closest; use `ActionType.other` if unsure |
 | tool name | `tool_name` | free text |
 | file path / resource | `target` | the canonical rules read this |
-| destination URL / host | `external_destination` | drives the egress rule |
+| destination URL / host | `external_destination` | drives the egress rule; leave `None` for a command-shaped payload (`raw_arguments["command"]`/`cmd`/`script`/`args`) and `mapping.to_security_object` derives it from the proxy's own command-egress extractor, same as production — set it yourself only when the suite's own data already names a destination |
 | where the instruction came from | `source_context` (`SourceContext.*`) | `tool_output` / `webpage` / `email` for injected content |
 | raw tool arguments / body | `raw_arguments` (dict) | reaches `EvalContext.metadata["raw_arguments"]`; **may contain attack text** |
 | ground-truth attack vs benign | `BenchmarkCase.label` | the single most important field to get right |
@@ -168,6 +172,34 @@ The report is `{before (no_guardrail), after (builtins_only), delta}`. The
 that makes the *after* legible, not an independent measurement. Report it as
 "with no guardrail every one of these N attacks executes," never as a number the
 harness "discovered."
+
+### `--replay-session` — exercising the post-decide floors
+
+`decide()` alone never triggers the taint floor (`doberman.engine.taint_floor.apply_taint_floor_async`),
+the echo tripwire (`apply_echo_tripwire_async`, C1), or the session correlator
+(`doberman.engine.correlator.apply_correlator_async`) — all three are deliberately post-decide, reading
+persisted session state after `decide()` returns (see each module's own docstring). The default harness
+path calls `decide()` statelessly per action, so those three floors are **never exercised** by default — a
+multi-action attack (read untrusted content, then send) is scored purely on each action's own per-call
+verdict.
+
+```bash
+python -m tests.benchmarks.run --suite agentdojo --profile before_after --replay-session
+python -m tests.benchmarks.run --suite llmail_inject --profile before_after --replay-session   # needs DOBERMAN_BENCH_LLMAIL_DIR
+python -m tests.benchmarks.run --suite msb --profile before_after --replay-session              # needs DOBERMAN_BENCH_MSB_DIR
+```
+
+`--replay-session` replays each case inside a fresh, isolated per-case session (a temp SQLite DB;
+`session_id = case_id`) and applies the real floors, in the real order, after each `decide()` — the
+report carries `"session_replay": true` at both the top level and inside every nested report so a
+replayed number is never confused with a stateless one. **Read this before comparing numbers**: the echo
+tripwire fires on an EXACT host/URL/email value reused from an earlier untrusted read — LLMail-Inject's
+real 2-action shape (read a phishing email that names the attacker's own address, then send to that exact
+address) is precisely this pattern, so its ASR under `--replay-session` is expected to drop. The taint
+floor only fires on secret-*shaped* content, and the correlator's `correlated_trifecta` needs a prior
+secret-class reason code — narrower wins. All three floors require the consummating action to carry an
+`external_destination`; a consummating action that is a local file write/process action with no
+destination (some MSB attack types) is untouched by any of them, replayed or not.
 
 ---
 
@@ -296,3 +328,49 @@ for the methodology and the honest-vs-leak-quantifier arm split.
 
 If a named suite turns out not to exist under that name or its license is
 incompatible, **stop and report** rather than inventing a mapping.
+
+### RedCode-Exec — adapter shipped
+- Source: `https://github.com/AI-secure/RedCode` (code MIT; dataset CC BY 4.0). 4,050 (Index, Prompt,
+  Language, Code, expected_result, Text_summary, Text_details) records asking an agent to execute a risky
+  Bash/Python snippet.
+- Map: each record's ``Code`` → one ``CandidateAction`` (`action_type=shell_exec`, the snippet in
+  `raw_arguments["command"]`), label `attack` (RedCode ships no benign counterpart — the adapter supplies
+  its own synthetic benign command set, extracted through the same target/destination logic as the attack
+  records). `source_context=user` (direct misuse, not injection).
+- **Implemented** in `suites/redcode.py` (`RedCodeAdapter`), registered as `redcode`. Reads
+  `DOBERMAN_BENCH_REDCODE_DIR`; vendors no data. `scenario_report()` gives the per-scenario in-scope/
+  out-of-scope breakdown (`python -m tests.benchmarks.suites.redcode`). Single-action cases — stateless
+  and `--replay-session` are byte-for-byte identical for this suite, so only the stateless run is
+  published; see [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#redcode-exec-risky-code-execution).
+
+### MSB — adapter shipped
+- Source: `https://github.com/dongsenzhang/MSB` (MIT). 12 MCP-specific attack types across the tool-use
+  pipeline (task planning / tool invocation / response handling).
+- Map: each (attack_task, attack_type) pair → a two-action `BenchmarkCase` (a poisoned tool response,
+  `source_context=tool_output`; the consummating action it tries to trigger,
+  `attacker_goal_index=1`), built from three static MSB files (`attack_task.jsonl`, `attack_type.jsonl`,
+  `prompt_template.py` — parsed via `ast.literal_eval`, never imported/executed). See
+  `suites/msb_poisoning.py`'s module docstring for why this differs from a static tool-definition/schema
+  diff.
+- **Implemented** in `suites/msb_poisoning.py` (`MsbPoisoningAdapter`), registered as `msb`. Reads
+  `DOBERMAN_BENCH_MSB_DIR`; vendors no data, executes no MSB code. `attack_type_report()` gives the
+  per-attack-type breakdown (`python -m tests.benchmarks.suites.msb_poisoning`). Published in both
+  stateless and `--replay-session` modes — identical numbers, because every MSB consummating action here
+  is a local file write or process action with no `external_destination`, so none of the three post-decide
+  floors can engage; see [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#msb-mcp-tool-response-poisoning).
+
+### LLMail-Inject — adapter shipped
+- Source: `https://huggingface.co/datasets/microsoft/llmail-inject-challenge` (MIT). Labelled email
+  prompt-injection submissions from a real adaptive-attacker challenge.
+- Map: submissions with `attack_attempt == "True" and reason == "api_triggered"` (the target tool call
+  actually fired) → a two-action `BenchmarkCase` (the email arriving, `source_context=email`; the
+  consummating `send_email` to the challenge's fixed attacker address, `attacker_goal_index=1`). Benign:
+  `emails_for_fp_tests.json` as read-only cases, plus a second, synthetic benign SEND case per email (a
+  fixed, clearly-synthetic recipient) so FPR is also measured on an ordinary legitimate send.
+- **Implemented** in `suites/llmail_inject.py` (`LlmailInjectAdapter`), registered as `llmail_inject`.
+  Reads `DOBERMAN_BENCH_LLMAIL_DIR`; vendors no data. Deterministic seeded sample (`sample_size`, default
+  500, configurable). Published in both stateless and `--replay-session` modes — identical top-line
+  ASR/FPR (`engine/rules/destinations.py::_parse_host` AUTHs a bare `user@host` destination unconditionally
+  in every mode, before either post-decide floor runs), but the reason-code breakdown differs sharply
+  (`untrusted_value_echo` on ~470/500 attacks under replay); see
+  [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#llmail-inject-email-prompt-injection).
