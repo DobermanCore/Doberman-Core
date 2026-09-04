@@ -30,9 +30,10 @@ Decision-log retention, update nudges, and dashboard polish.
 - `docs/README.md` indexes every doc page (#492, #500, thanks @navaneethsankar07)
 
 ## v0.18.4 — 2026-08-27
-Friction reduction, part three: repeat-approval memory, safer global uninstalls, and telemetry on by default.
+Friction reduction, part three: tap-to-approve 2FA, repeat-approval memory, safer uninstalls, and default telemetry.
 
 ### Added
+- 2FA can be approved with a Windows Hello or Touch ID tap instead of a TOTP code (`doberman 2fa methods enable`)
 - `doberman demo --quiet` suppresses narration and prints only the summary line and exit code, for CI smoke tests
 - `doberman doctor` flags dangling hook entries when the installed `doberman` binary is no longer on PATH
 - `doberman uninstall --global` removes hooks, project state, auth factors, and the package device-wide, gated the same as any other removal
@@ -44,35 +45,30 @@ Friction reduction, part three: repeat-approval memory, safer global uninstalls,
 ### Fixed
 - `doberman uninstall` now actually stops protection when hooks are installed globally, not just for the current project
 
-## v0.18.3 — 2026-08-26
-Tap-to-approve two-factor authentication with Windows Hello or Touch ID.
-
-### Added
-- 2FA can be approved with a Windows Hello or Touch ID tap instead of a TOTP code (`doberman 2fa methods enable`)
-
 ## v0.18.2 — 2026-08-26
 Fewer spurious secret-detector prompts, opt-in telemetry, and a docs rewrite.
 
 ### Security
-- Subjective-layer hardening: re-approving a changed tool pin resets its learned familiarity, destination hosts are HMAC-fingerprinted, and a changed tool's scope tokens are revoked immediately
+- Re-approving a changed tool pin now resets its learned familiarity and revokes the tool's scope tokens immediately
 
 ### Added
 - Anonymous CLI telemetry is available as an opt-in (`doberman telemetry on|off|status`)
-- `doberman tune` reports friction telemetry and proposes possession-gated standing-elevations (#243)
-- MCP tool schemas are pinned on first use; a later mismatch requires `doberman tools approve <tool_name>` (#246)
-- Card numbers, IBANs, and SSNs in an outbound payload to an external destination now require authentication (#321)
-- A shell command that only dumps the environment (`env`, `printenv`, `export`, PowerShell `Env:` listing) now requires authentication (thanks @QY-25123)
-- OpenTelemetry `AuditSink` forwards redacted decisions to any OTLP/HTTP collector (#245, thanks @Maqbool61)
-- `doberman scan --mcp` statically scans known MCP configs for risky patterns without running servers (#240)
+- `doberman tune` reports friction telemetry and proposes possession-gated standing-elevations (#403)
+- MCP tool schemas are pinned on first use; a later mismatch requires `doberman tools approve <tool_name>` (#394)
+- Card numbers, IBANs, and SSNs in an outbound payload to an external destination now require authentication (#392)
+- A shell command that only dumps the environment (`env`, `printenv`, `export`, PowerShell `Env:` listing) now requires authentication (#455, thanks @QY-25123)
+- OpenTelemetry `AuditSink` forwards redacted decisions to any OTLP/HTTP collector (#368, thanks @Maqbool61)
+- `doberman scan --mcp` statically scans known MCP configs for risky patterns without running servers (#393)
 - The dashboard can change strictness mode directly, gated like `doberman mode`; live-feed rows now show risk level and source context
 - Every GitHub release now ships a CycloneDX SBOM (`sbom.json`) listing exact resolved dependencies
 
 ### Changed
 - `doberman message-tone human|technical` switches auth-prompt wording between plain language and the technical format; human is now the default
-- The auth dialog and dashboard are restyled onto Doberman's brand system, with a live ON GUARD / ALERT status pill and a per-project dashboard tab title
+- The auth dialog and dashboard are restyled onto Doberman's brand system, with a live ON GUARD/ALERT status pill and a per-project dashboard tab title
+- Destination hosts in the decision log are stored as HMAC fingerprints instead of plain names
 
 ### Fixed
-- The GUI auth dialog no longer silently fails to render off the main thread on macOS (#399)
+- The GUI auth dialog no longer silently fails to render off the main thread on macOS (#453, thanks @harshitagrawal2O)
 - The secret detector no longer flags ordinary identifiers, paths, UUIDs, or build tags as leaked secrets, and fails closed if it can't evaluate
 - Clicking a keyboard-highlighted auth-dialog button (Deny or Approve) now actually registers the click
 
@@ -109,7 +105,7 @@ Security-audit fixes, a new detection and role-governance layer, and CLI polish.
 ### Changed
 - An unanswered AUTH challenge is now logged and reported as a timeout rather than a denial (#281)
 - `--help` now groups commands into panels, and `uninstall-hooks`/`setup` state what's left behind and how to exit (#276, #279, thanks @slegarraga)
-- CLI diagnostics now use one consistent severity vocabulary: `error:`, `warning:`, `note:` (#344)
+- CLI diagnostics now use one consistent severity vocabulary: `error:`, `warning:`, `note:` (#346, thanks @floze-the-genius)
 
 ### Fixed
 - The session correlator no longer flags reading a credential when the user's own earlier prompt named the destination
@@ -127,8 +123,8 @@ Bug fixes, machine-readable CLI output, and a session-taint reset command.
 - An `AuthProvider` plugin raising a non-`Exception` (like `SystemExit`) no longer leaves an action neither approved nor denied; it now counts as a denial
 
 ### Added
-- `doberman scan/doctor/policy-history --json` and `doberman log --jsonl` emit machine-readable output through an explicit redaction allowlist (#207, #208, #210, thanks @NanoRisk6)
-- `doberman scan --quiet` suppresses the risk map for scripted use (#208, thanks @NanoRisk6)
+- `doberman scan/doctor/policy-history --json` and `doberman log --jsonl` emit machine-readable output through an explicit redaction allowlist (thanks NanoRisk6)
+- `doberman scan --quiet` suppresses the risk map for scripted use (thanks NanoRisk6)
 - `doberman taint clear` resets sticky session taint after verifying your strongest enrolled auth factor
 
 ### Changed
@@ -139,7 +135,7 @@ Bug fixes, machine-readable CLI output, and a session-taint reset command.
 
 ### Docs
 - README states the defense-in-depth disclaimer once (#264, thanks @slegarraga); hook help now points to the real `install-hooks` command (#263, thanks @AshSgDe29071999)
-- New `docs/CLI.md` command reference and `docs/REASON_CODES.md` reason-code list (#208, #209, thanks @NanoRisk6)
+- New `docs/CLI.md` command reference and `docs/REASON_CODES.md` reason-code list (thanks NanoRisk6)
 
 ## v0.17.0 — 2026-07-30
 The egress-broker extension point, plus AUTH-timeout and path-matching fixes.

@@ -21,8 +21,8 @@ Skip the fragment entirely for changes no user can see: refactors, test-only wor
 - <What changed, as the reader experiences it>; <one consequence or limit if it matters> (#<PR>[, thanks @handle])
 ```
 
-One sentence, at most 25 words / 220 characters, and it must cite its own `(#PR)`; thank an outside
-contributor in the same parenthesis (`#498, thanks @slegarraga`).
+One sentence, at most 25 words excluding the `(#PR...)` citation and 220 characters including it, and it
+must cite its own `(#PR)`; thank an outside contributor in the same parenthesis (`#498, thanks @slegarraga`).
 
 Example, trimmed from a 92-word draft: `doberman update` checks PyPI once and prints the upgrade command;
 `doberman status` nudges when you are behind. Off under `DO_NOT_TRACK`, `CI`, or `DOBERMAN_UPDATE_CHECK=off` (#508)
