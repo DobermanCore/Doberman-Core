@@ -235,7 +235,13 @@ def test_sentence_period_is_not_joined():
     ],
     # explicit short ids: pytest's default id is the raw string, and Windows
     # caps an env var at 32767 chars -- PYTEST_CURRENT_TEST would overflow it.
-    ids=["all_spaces", "bracket_space", "spaced_at_word", "letter_plus_50_spaces", "near_miss_bracket"],
+    ids=[
+        "all_spaces",
+        "bracket_space",
+        "spaced_at_word",
+        "letter_plus_50_spaces",
+        "near_miss_bracket",
+    ],
 )
 def test_deobfuscation_is_linear_on_adversarial_whitespace(text):
     start = time.perf_counter()
