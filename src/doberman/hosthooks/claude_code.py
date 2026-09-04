@@ -290,12 +290,47 @@ def _attach_integrity_warning(
     return merged
 
 
+def is_cursor_payload(payload: dict[str, Any]) -> bool:
+    """True when a ``PreToolUse``-shaped payload was actually produced by
+    Cursor's "Third Party Hooks" feature (it loads Claude Code hooks from the
+    Claude settings files and invokes them with a Cursor-shaped document, not
+    Claude Code's own). Cursor always sends ``cursor_version``; short of that,
+    it sends a non-empty ``workspace_roots`` list with no usable top-level
+    ``cwd`` (``""`` for a ``Shell`` call, absent for a ``Read``) — a shape
+    Claude Code never produces (it always sends a real ``cwd``, never
+    ``workspace_roots``). A pure function: tests pin it directly.
+    """
+    if "cursor_version" in payload:
+        return True
+    roots = payload.get("workspace_roots")
+    cwd = payload.get("cwd")
+    has_roots = isinstance(roots, list) and len(roots) > 0
+    has_cwd = isinstance(cwd, str) and bool(cwd)
+    return has_roots and not has_cwd
+
+
+def _claude_output_for(response: dict[str, Any]) -> dict[str, Any] | None:
+    """Map the Cursor adapter's response document onto Claude Code's hook-output
+    shape. An ``allow`` (or a ``sessionStart`` acknowledgement, ``{}``) abstains
+    — raise-only: Doberman never suppresses Cursor's own permission prompt by
+    answering ``allow`` itself. A ``deny`` becomes the same ``hookSpecificOutput``
+    block Claude Code's own BLOCK/AUTH-denied path returns."""
+    if response.get("permission") == "deny":
+        reason = response.get("user_message") or hookio.FAILSAFE_REASON
+        return _hook_output("deny", reason)
+    return None
+
+
 def run_pre_hook(stdin_text: str) -> str | None:
     """Parse the hook stdin, evaluate, and return the JSON string to print to
     stdout — or ``None`` to abstain (print nothing).
 
     A payload that does not parse to a JSON object is denied: an unidentifiable
-    call fails closed rather than slipping through.
+    call fails closed rather than slipping through. A Cursor-shaped payload (see
+    :func:`is_cursor_payload`) is delegated to the Cursor adapter — Cursor's
+    "Third Party Hooks" setting loads Claude Code hooks and calls them with its
+    own payload shape, which ``evaluate_pre`` cannot read (empty ``cwd``, a
+    ``Shell`` tool name).
     """
     try:
         payload = json.loads(stdin_text)
@@ -303,6 +338,12 @@ def run_pre_hook(stdin_text: str) -> str | None:
         return json.dumps(_deny())
     if not isinstance(payload, dict):
         return json.dumps(_deny())
+    if is_cursor_payload(payload):
+        from doberman.hosthooks import cursor  # lazy: the Claude hot path must not pay this import
+
+        response = cursor.respond(payload, channel="claudeCompat")
+        out = _attach_integrity_warning(_claude_output_for(response), payload)
+        return json.dumps(out) if out is not None else None
     out = _attach_integrity_warning(evaluate_pre(payload), payload)
     return json.dumps(out) if out is not None else None
 

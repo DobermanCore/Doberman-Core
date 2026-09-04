@@ -99,6 +99,19 @@ repeated identical action inside one generation is evaluated (and challenged) ag
 commands naming them are hard-blocked in every host, and the rest of `.cursor/**` (rules, MCP
 config) requires approval.
 
+## Cursor also runs your Claude Code hooks
+
+Cursor's **"Third Party Hooks"** setting loads Claude Code hooks straight out of the Claude settings
+files and calls them with Cursor's own payload shape (event names remapped: `PreToolUse` →
+`preToolUse`, `PostToolUse` → `postToolUse`, `SessionStart` → `sessionStart`, …). So on any machine
+where Doberman's **global Claude Code hooks** are installed (`doberman install-hooks --global`),
+`doberman hook pre` receives Cursor's `preToolUse` calls too — and now recognises and answers them
+through this Cursor adapter, so a project is gated even *before* `install-hooks --host cursor` is run
+there. Installing both is fine: whichever hook fires first evaluates the call and the other replays
+that answer (single-flight), so it is never evaluated — or challenged — twice. The `SessionStart` →
+`sessionStart` mapping also fires `doberman session-summary` (Claude Code's SessionStart command); it
+ignores the Cursor-shaped stdin and always exits 0, so it runs harmlessly.
+
 ## Known limits
 
 - **Doc-derived payload shapes.** Cursor's hook payloads are documented, and `Shell`'s

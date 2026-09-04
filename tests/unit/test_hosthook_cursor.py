@@ -1,9 +1,12 @@
 """Cursor host-hook adapter (#202) — ``doberman hook cursor``.
 
-Fixture-driven against DOC-DERIVED Cursor hook payloads (``tests/fixtures/cursor/``
-— shaped from https://cursor.com/docs/hooks plus two staff-confirmed field
-spellings; see that folder's README). Deterministic and hermetic: no live
-Cursor, no GUI — every test that could reach an AUTH tier injects a prompter.
+Fixture-driven against a mix of DOC-DERIVED Cursor hook payloads
+(``tests/fixtures/cursor/`` — shaped from https://cursor.com/docs/hooks plus two
+staff-confirmed field spellings; see that folder's README) and REAL captured
+payloads (``tests/fixtures/cursor_payloads/`` — ``cursor-agent`` 2026.09.02 on
+Windows; ``user_email`` scrubbed, everything else verbatim). Deterministic and
+hermetic: no live Cursor, no GUI — every test that could reach an AUTH tier
+injects a prompter.
 
 Cursor's contract: the tool runs only when the hook exits 0 with
 ``{"permission": "allow"}``; ``deny`` or exit code 2 blocks it. The
@@ -26,6 +29,9 @@ from doberman.hosthooks import cursor, singleflight
 from doberman.hosthooks import spine as spine_module
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "cursor"
+#: Real captured payloads (BOM-prefixed bytes) replace the doc-derived preToolUse
+#: Shell + sessionStart fixtures — see that folder's docstring at the top.
+REAL_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "cursor_payloads"
 
 # High-entropy, NON-credential token (same value as test_hosthook_codex.py /
 # test_hosthook_exfil_fingerprint.py): a named credential would BLOCK on the read
@@ -64,6 +70,17 @@ def _no_gui(monkeypatch):
 
 def _load(name: str, tmp_path) -> dict:
     payload = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+    return _reshape(payload, tmp_path)
+
+
+def _load_real(name: str, tmp_path) -> dict:
+    """A real captured payload (BOM-prefixed bytes) reshaped the same way as
+    ``_load``. See ``tests/fixtures/cursor_payloads/`` (Change 3, #202 slice 3)."""
+    payload = json.loads((REAL_FIXTURES / name).read_bytes().decode("utf-8-sig"))
+    return _reshape(payload, tmp_path)
+
+
+def _reshape(payload: dict, tmp_path) -> dict:
     payload["workspace_roots"] = [str(tmp_path)]
     if "cwd" in payload:
         payload["cwd"] = str(tmp_path)
@@ -84,7 +101,7 @@ def _shell(tmp_path, command: str, event: str = cursor.EVENT_PRE_TOOL) -> dict:
         payload = _load("before_shell.json", tmp_path)
         payload["command"] = command
         return payload
-    payload = _load("pre_shell.json", tmp_path)
+    payload = _load_real("pre_tool_use_shell.json", tmp_path)
     payload["tool_input"]["command"] = command
     return payload
 
@@ -213,8 +230,7 @@ def test_missing_or_unknown_event_fails_closed(tmp_path, event):
 
 
 def test_session_start_is_acknowledged(tmp_path):
-    payload = _load("pre_shell.json", tmp_path)
-    payload["hook_event_name"] = cursor.EVENT_SESSION_START
+    payload = _load_real("session_start.json", tmp_path)
     payload["session_id"] = "s"
     assert _run(payload) == ({}, 0)
 
@@ -222,8 +238,7 @@ def test_session_start_is_acknowledged(tmp_path):
 def test_session_start_writes_a_parseable_utc_marker(tmp_path):
     from datetime import datetime
 
-    payload = _load("pre_shell.json", tmp_path)
-    payload["hook_event_name"] = cursor.EVENT_SESSION_START
+    payload = _load_real("session_start.json", tmp_path)
     assert _run(payload) == ({}, 0)
 
     marker = tmp_path / ".doberman" / cursor.SESSION_MARKER
@@ -233,8 +248,7 @@ def test_session_start_writes_a_parseable_utc_marker(tmp_path):
 
 def test_session_start_skips_the_marker_for_an_excluded_project(tmp_path, monkeypatch):
     monkeypatch.setattr(spine_module, "is_excluded", lambda cwd: True)
-    payload = _load("pre_shell.json", tmp_path)
-    payload["hook_event_name"] = cursor.EVENT_SESSION_START
+    payload = _load_real("session_start.json", tmp_path)
     assert _run(payload) == ({}, 0)
     assert not (tmp_path / ".doberman" / cursor.SESSION_MARKER).exists()
 
@@ -248,8 +262,7 @@ def test_session_start_swallows_a_write_failure(tmp_path, monkeypatch):
         return real_write_text(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", _flaky_write_text)
-    payload = _load("pre_shell.json", tmp_path)
-    payload["hook_event_name"] = cursor.EVENT_SESSION_START
+    payload = _load_real("session_start.json", tmp_path)
     assert _run(payload) == ({}, 0)  # a failed heartbeat must never fail a session start
 
 
@@ -261,7 +274,7 @@ def test_missing_tool_name_fails_closed(tmp_path):
 
 @pytest.mark.parametrize("tool_input", [{}, {"command": ""}, {"command": 7}, "rm -rf /", None])
 def test_shell_without_a_visible_command_fails_closed(tmp_path, tool_input):
-    payload = _load("pre_shell.json", tmp_path)
+    payload = _load_real("pre_tool_use_shell.json", tmp_path)
     payload["tool_input"] = tool_input
     assert _run(payload)[0]["permission"] == "deny"
 
@@ -485,7 +498,7 @@ def test_mcp_without_tool_name_fails_closed(tmp_path):
 
 
 def test_pre_tool_use_mcp_prefix_maps_to_the_bare_tool(tmp_path):
-    payload = _load("pre_shell.json", tmp_path)
+    payload = _load_real("pre_tool_use_shell.json", tmp_path)
     payload["tool_name"] = "MCP:write_file"
     payload["tool_input"] = {"path": ".env", "content": "x"}
     assert _run(payload)[0]["permission"] == "deny"
@@ -514,7 +527,7 @@ def _spy(monkeypatch):
 
 def test_task_and_grep_without_path_are_evaluated_generically(tmp_path, monkeypatch):
     calls = _spy(monkeypatch)
-    payload = _load("pre_shell.json", tmp_path)
+    payload = _load_real("pre_tool_use_shell.json", tmp_path)
     payload["tool_name"] = "Task"
     payload["tool_input"] = {"prompt": "do things"}
     _run(payload)
@@ -529,7 +542,7 @@ def test_task_and_grep_without_path_are_evaluated_generically(tmp_path, monkeypa
 
 def test_grep_with_a_path_is_a_file_read(tmp_path, monkeypatch):
     calls = _spy(monkeypatch)
-    payload = _load("pre_shell.json", tmp_path)
+    payload = _load_real("pre_tool_use_shell.json", tmp_path)
     payload["tool_name"] = "Grep"
     payload["tool_input"] = {"pattern": "x", "file_path": "src"}
     _run(payload)
@@ -625,7 +638,7 @@ def test_different_generation_is_a_different_action(tmp_path, monkeypatch):
 def test_mcp_channels_share_one_flight(tmp_path, monkeypatch):
     calls = _count_evaluations(monkeypatch)
     before = _load("before_mcp.json", tmp_path)
-    pre = _load("pre_shell.json", tmp_path)
+    pre = _load_real("pre_tool_use_shell.json", tmp_path)
     pre["conversation_id"], pre["generation_id"] = (
         before["conversation_id"],
         before["generation_id"],
