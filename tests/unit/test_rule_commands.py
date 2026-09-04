@@ -1401,3 +1401,70 @@ def test_wrapper_options_are_seen_through_to_auth(command, reason):
 )
 def test_wrapper_benign_forms_stay_pass(command):
     assert _cmd(command).verdict is Verdict.PASS
+
+
+# --- T6: nested `$(...)` regions track their own quotes -----------------
+# The region-copy scanner inside `_split_segments` used a single flat
+# `region_quote` variable for the WHOLE `$(...)` span. A nested `$(...)`
+# inside a double-quoted string within that region was not recognised as its
+# own substitution, so its own quotes were read against the outer string: one
+# stray quote could make the region's depth never return to zero, swallowing
+# everything to the end of the script — including a trailing destructive
+# command — into the region. `_substitution_end` now recurses into a nested
+# `$(` (when not inside a single quote) so it carries its own quote state,
+# and an unterminated region fails closed (AUTH opaque_command) while the
+# swallowed text is still walked for an embedded destructive command.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "x=$(printf \"$(printf '%03o' $(( $(printf '%d' \"'$c\") + 1 )) )\"); rm -rf /",
+        "x=$(printf \"\\$(printf '%03o' $(( $(printf '%d' \"'$c\") + 1 )))\"); rm -rf /",
+        'x="$(echo "\'")"; rm -rf /',
+        'x=$(echo "$(echo "\'")"); rm -rf /',
+        "x=$(echo \"$(echo ')')\"); rm -rf /",
+        'x=$(echo "$(echo "$(echo "\'")")"); rm -rf /',
+    ],
+)
+def test_nested_substitution_quotes_do_not_hide_later_commands(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+def test_unterminated_substitution_fails_closed():
+    # The swallowed text (everything after the unterminated `$(`) is still
+    # walked — a destructive command inside it still raises the AUTH floor
+    # to BLOCK.
+    blocked = _cmd("x=$(echo a; rm -rf /")
+    assert blocked.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in blocked.reason_codes
+
+    for command in ("x=$(echo a", 'x=$(echo "$(echo b'):
+        result = _cmd(command)
+        assert result.verdict is Verdict.AUTH
+        assert ReasonCode.opaque_command in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "x=$(printf \"$(date '+%Y')\")",
+        'echo "$(echo "\'")"',
+        "x=$(( $(echo 1) + 1 ))",
+        'x=$(echo "$(echo "$(echo ok)")")',
+    ],
+)
+def test_nested_substitution_benign_forms_stay_pass(command):
+    assert _cmd(command).verdict is Verdict.PASS
+
+
+def test_split_segments_reports_termination():
+    segments, unterminated = commands_module._split_segments('a; x=$(b "$(c)")')
+    assert segments == ["a", 'x=$(b "$(c)")']
+    assert unterminated is False
+
+    segments, unterminated = commands_module._split_segments("x=$(echo a; rm -rf /")
+    assert unterminated is True
+    assert any("rm -rf /" in segment for segment in segments)

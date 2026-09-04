@@ -362,24 +362,97 @@ def _strip_substitutions(segment: str) -> tuple[str, list[str]]:
     return stripped, bodies
 
 
-def _split_segments(command: str) -> list[str]:
+def _substitution_end(command: str, index: int) -> tuple[int, bool]:
+    """Scan a ``$(...)`` region starting at ``index`` (the position just after
+    the opening ``$(``); return ``(index just after the matching ')', terminated)``.
+
+    T6: tracks ``depth``/``quote``/``escaped`` exactly like the flat scanner
+    this replaces, with ONE addition — whenever it sees ``$`` followed by
+    ``(`` and ``quote`` is not ``'``, it RECURSES. That's the fix: a flat
+    single ``quote`` variable for the whole region let a quote belonging to a
+    NESTED substitution (e.g. the ``"'`` inside ``"$(printf '%d' "'$c")"``)
+    be read against the OUTER string instead — one stray quote could then
+    make depth never return to zero, silently swallowing everything to the
+    end of the command. Recursing gives every nesting level its own
+    independent quote state, even inside a ``"…"`` string. ``$((…))`` needs
+    no special case: the recursion's own depth counting closes the extra
+    ``(`` the same as any other nested paren — it is never itself a ``$(``.
+    ``terminated`` is ``False`` when the region runs off the end of
+    ``command`` with ``depth`` still open (at any nesting level) — the
+    caller must fail closed on that, never silently accept a truncated
+    region.
+    """
+    depth = 1
+    quote: str | None = None
+    escaped = False
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if char == "$" and quote != "'" and command[index + 1 : index + 2] == "(":
+            index, ok = _substitution_end(command, index + 2)
+            if not ok:
+                return index, False
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char == "(":
+            depth += 1
+            index += 1
+            continue
+        if char == ")":
+            depth -= 1
+            index += 1
+            if depth == 0:
+                return index, True
+            continue
+        index += 1
+    return index, False
+
+
+def _split_segments(command: str) -> tuple[list[str], bool]:
     """Split a command line into top-level segments on shell operators.
 
-    An unescaped, unquoted ``(`` or ``)`` is a segment separator too (exactly
-    like ``;``) — a subshell, a ``{ ...; }`` brace-group trailer, or a
-    function body must not hide a nested command from the walk. The one
-    exception is a ``$(...)``/``$((...))`` command-substitution region: it is
-    copied through intact (depth-counting nested parens; quotes inside are
-    copied verbatim, not tracked against the outer quote state) so
-    :func:`_strip_substitutions` still sees it exactly as before. Parens
-    inside quotes and backslash-escaped parens keep today's handling — both
-    are already consumed by the quote/escape branches below, before either
-    kind of paren handling is reached. Backticks are unchanged.
+    Returns ``(segments, unterminated)``. An unescaped, unquoted ``(`` or
+    ``)`` is a segment separator too (exactly like ``;``) — a subshell, a
+    ``{ ...; }`` brace-group trailer, or a function body must not hide a
+    nested command from the walk. The one exception is a
+    ``$(...)``/``$((...))`` command-substitution region: it is copied
+    through intact (:func:`_substitution_end` does the depth/quote counting,
+    recursing into a nested ``$(`` so it carries its own quote state — see
+    its docstring) so :func:`_strip_substitutions` still sees it exactly as
+    before. Parens inside quotes and backslash-escaped parens keep today's
+    handling — both are already consumed by the quote/escape branches below,
+    before either kind of paren handling is reached. Backticks are
+    unchanged.
+
+    T6: when a region never terminates (``_substitution_end`` runs off the
+    end of ``command``), ``unterminated`` is set — the caller (``walk_command``)
+    folds it into the existing ambiguity floor so an unterminated region
+    fails closed (AUTH) rather than being silently accepted. The swallowed
+    text (from just after the ``$(`` to the end of the string) is ALSO
+    recursively split and its segments folded in here, so a destructive
+    command hidden inside the swallowed text is still walked and can still
+    raise the AUTH floor to BLOCK.
     """
     segments: list[str] = []
     current: list[str] = []
     quote: str | None = None
     escaped = False
+    unterminated = False
     index = 0
     while index < len(command):
         char = command[index]
@@ -405,29 +478,18 @@ def _split_segments(command: str) -> list[str]:
             index += 1
             continue
         if char == "$" and command[index + 1 : index + 2] == "(":
-            current.append(char)
-            current.append("(")
-            index += 2
-            depth = 1
-            region_quote: str | None = None
-            region_escaped = False
-            while index < len(command) and depth > 0:
-                inner = command[index]
-                current.append(inner)
-                if region_escaped:
-                    region_escaped = False
-                elif inner == "\\" and region_quote != "'":
-                    region_escaped = True
-                elif region_quote is not None:
-                    if inner == region_quote:
-                        region_quote = None
-                elif inner in {"'", '"'}:
-                    region_quote = inner
-                elif inner == "(":
-                    depth += 1
-                elif inner == ")":
-                    depth -= 1
-                index += 1
+            start = index
+            region_start = index + 2
+            end, ok = _substitution_end(command, region_start)
+            if ok:
+                current.append(command[start:end])
+                index = end
+                continue
+            unterminated = True
+            nested_segments, nested_unterminated = _split_segments(command[region_start:end])
+            segments.extend(nested_segments)
+            unterminated = unterminated or nested_unterminated
+            index = end
             continue
 
         operator_width = 2 if command[index : index + 2] in {"&&", "||"} else 0
@@ -446,7 +508,7 @@ def _split_segments(command: str) -> list[str]:
     segment = "".join(current).strip()
     if segment:
         segments.append(segment)
-    return segments
+    return segments, unterminated
 
 
 #: Shell syntax words/tokens that carry no security meaning of their own —
@@ -487,12 +549,13 @@ def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
     ``{``/``}``, ``function <name>``, ...) ARE dropped here, though — they
     carry no security meaning of their own, and left in argv[0] they would
     hide the nested command (see ``_SHELL_SYNTAX_TOKENS``) from every
-    consumer of this walk. Unbalanced input and the shared work-cap surface
-    through ``ambiguous``. No command is executed.
+    consumer of this walk. Unbalanced input, the shared work-cap, and an
+    unterminated ``$(`` region (T6 — see ``_split_segments``) surface through
+    ``ambiguous``. No command is executed.
     """
-    pending = _split_segments(command)
+    pending, unterminated = _split_segments(command)
     segments: list[list[str]] = []
-    ambiguous = False
+    ambiguous = unterminated
     processed = 0
 
     while pending and processed < _MAX_COMMAND_SEGMENTS:
@@ -500,7 +563,9 @@ def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
         segment = pending.pop()
         stripped, bodies = _strip_substitutions(segment)
         for body in bodies:
-            pending.extend(_split_segments(body))
+            body_segments, body_unterminated = _split_segments(body)
+            pending.extend(body_segments)
+            ambiguous = ambiguous or body_unterminated
         try:
             tokens = shlex.split(stripped, comments=True, posix=True)
         except ValueError:
