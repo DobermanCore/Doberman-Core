@@ -2095,31 +2095,30 @@ def _cancel_pending_after(root: Any) -> None:
 
 
 def _finalize_dialog(root: Any) -> None:
-    """Cancel pending timers, destroy ``root``, then force the cyclic GC to
-    run NOW, on this (worker) thread (SECURITY #399 follow-up).
+    """Cancel pending timers, then destroy ``root`` (SECURITY #399 follow-up).
 
-    Every real dialog runs on a background daemon thread (see
-    :func:`_open_root`'s docstring). A button's ``command=``/``bind()``
-    closure routinely closes over the very widget it is attached to (e.g.
-    :func:`_wire_keyboard`'s handlers close over ``root``), and a
-    ``PhotoImage`` kept alive via ``root._icon_ref``/``row._logo_ref`` sits
-    in the same widget tree -- reference CYCLES that plain refcounting
-    cannot collect. Left alone, they are only reclaimed whenever the cyclic
-    GC next runs, which is not guaranteed to be this thread: Python
-    guarantees a final collection at interpreter shutdown, which happens on
-    the MAIN thread. ``Image.__del__`` then calls back into a Tcl
-    interpreter that thread never entered, and Tcl aborts the whole process
-    ("main thread is not in main loop") instead of letting it exit with
-    whatever code the caller actually raised. Calling ``gc.collect()``
-    HERE -- still on the thread that created these objects, before this
-    function (and so the dialog's worker thread) returns -- finalizes them
-    on the right thread instead.
+    Deliberately does NOT call ``gc.collect()`` itself: while this runs,
+    ``root`` is still reachable from the caller's own local variable, so any
+    reference CYCLE rooted here (a button's ``command=``/``bind()`` closure
+    routinely closes over the very widget it is attached to -- e.g.
+    :func:`_wire_keyboard`'s handlers close over ``root`` -- and a
+    ``PhotoImage`` kept alive via ``root._icon_ref``/``row._logo_ref`` sits in
+    the same widget tree) is not yet garbage; a collection here could not
+    reclaim it. Every real caller runs on a background daemon thread (see
+    :func:`_open_root`'s docstring), so a cycle left alive past this call is
+    only reclaimed whenever the cyclic GC next runs -- not guaranteed to be
+    this thread: Python guarantees a final collection at interpreter
+    shutdown, on the MAIN thread, where ``Image.__del__`` calls back into a
+    Tcl interpreter that thread never entered and Tcl aborts the whole
+    process ("main thread is not in main loop") instead of letting it exit
+    with whatever code the caller actually raised. :func:`_show_outcome_window`
+    and :func:`_run_dialog` each call this from an inner closure and force
+    ``gc.collect()`` themselves ONLY after that closure -- and so ``root`` --
+    has gone out of scope, so the collection runs once the cycle is truly
+    unreachable, still on this (worker) thread.
     """
     _cancel_pending_after(root)
-    try:
-        root.destroy()
-    finally:
-        gc.collect()
+    root.destroy()
 
 
 def _show_outcome_window(
@@ -2156,38 +2155,53 @@ def _show_outcome_window(
     pin a background thread's Tk mainloop open forever. ``max_wait_ms``
     overrides that ceiling — tests pass a small value so nothing in the
     suite can wait minutes for what is only ever a safety net.
+
+    SECURITY (#399 follow-up): the window's whole life -- ``root`` included
+    -- runs inside a nested closure so that name goes out of scope (and any
+    Tk reference cycle rooted at it becomes truly unreachable) the instant
+    that closure returns, BEFORE the ``gc.collect()`` below runs. See
+    :func:`_finalize_dialog`.
     """
-    try:
-        root = _open_root()
-    except PrompterUnavailableError:
-        return
-    try:
-        root.title(f"Doberman - {outcome}")
-        root.configure(bg=_BG)
-        root.resizable(False, False)
-        root.attributes("-topmost", True)
-        root.bind("<Escape>", lambda _e: root.quit())
-        root.bind("<Button-1>", lambda _e: root.quit())
-        _populate_outcome_notice(root, text, outcome)
-        root.update_idletasks()
-        # Item 10: the toast prefers the FOCUSED window's monitor over the
-        # mouse's -- falls back to the mouse-pointer monitor (this module's
-        # usual placement, still used by every real challenge dialog) when
-        # there's no foreground window to ask, and from there to the primary
-        # screen exactly as :func:`_center_on_screen` always has.
-        monitor = _monitor_rect_for(_hmonitor_for_foreground_window() or _hmonitor_under_cursor())
-        _center_on_screen(root, monitor=monitor)
-        if outcome in _PERSISTENT_OUTCOMES:
-            root.after(
-                _PERSISTENT_OUTCOME_MAX_MS if max_wait_ms is None else max_wait_ms, root.quit
+
+    def _run() -> None:
+        try:
+            root = _open_root()
+        except PrompterUnavailableError:
+            return
+        try:
+            root.title(f"Doberman - {outcome}")
+            root.configure(bg=_BG)
+            root.resizable(False, False)
+            root.attributes("-topmost", True)
+            root.bind("<Escape>", lambda _e: root.quit())
+            root.bind("<Button-1>", lambda _e: root.quit())
+            _populate_outcome_notice(root, text, outcome)
+            root.update_idletasks()
+            # Item 10: the toast prefers the FOCUSED window's monitor over the
+            # mouse's -- falls back to the mouse-pointer monitor (this module's
+            # usual placement, still used by every real challenge dialog) when
+            # there's no foreground window to ask, and from there to the primary
+            # screen exactly as :func:`_center_on_screen` always has.
+            monitor = _monitor_rect_for(
+                _hmonitor_for_foreground_window() or _hmonitor_under_cursor()
             )
-        else:
-            root.after(_OUTCOME_DISPLAY_MS, root.quit)
-        root.mainloop()
-    except Exception:  # noqa: S110 — cosmetic only, must never affect the decided outcome
-        pass
+            _center_on_screen(root, monitor=monitor)
+            if outcome in _PERSISTENT_OUTCOMES:
+                root.after(
+                    _PERSISTENT_OUTCOME_MAX_MS if max_wait_ms is None else max_wait_ms, root.quit
+                )
+            else:
+                root.after(_OUTCOME_DISPLAY_MS, root.quit)
+            root.mainloop()
+        except Exception:  # noqa: S110 — cosmetic only, must never affect the decided outcome
+            pass
+        finally:
+            _finalize_dialog(root)
+
+    try:
+        _run()
     finally:
-        _finalize_dialog(root)
+        gc.collect()
 
 
 def _run_dialog(
@@ -2218,24 +2232,38 @@ def _run_dialog(
     itself changing shape (every existing caller of the ``_confirm_dialog*``/
     ``_code_dialog*`` wrappers below, including tests that monkeypatch them,
     still gets back exactly the bare answer it always has).
+
+    SECURITY (#399 follow-up): the dialog's whole life -- ``root``, ``answer``,
+    and every closure ``populate`` creates -- runs inside a nested closure so
+    those names go out of scope (and any Tk reference cycle rooted at them
+    becomes truly unreachable) the instant that closure returns, BEFORE the
+    ``gc.collect()`` below runs. See :func:`_finalize_dialog`.
     """
-    root = _open_root()
+
+    def _run() -> Any:
+        root = _open_root()
+        try:
+            _configure_window(root)
+            answer: dict = {}
+            populate(root, answer, timeout_s)
+            root.protocol("WM_DELETE_WINDOW", root.quit)
+            _center_on_screen(root)
+            _flash_and_bell(root)
+            root.mainloop()
+            value = answer.get("value", None if want_code else False)
+            # window closed without ever resolving -> denied
+            reason = answer.get("reason", "denied")
+            logger.info("auth dialog outcome=%s action=%s", reason, action_id)
+            if reason_out is not None:
+                reason_out["reason"] = reason
+            return value
+        finally:
+            _finalize_dialog(root)
+
     try:
-        _configure_window(root)
-        answer: dict = {}
-        populate(root, answer, timeout_s)
-        root.protocol("WM_DELETE_WINDOW", root.quit)
-        _center_on_screen(root)
-        _flash_and_bell(root)
-        root.mainloop()
-        value = answer.get("value", None if want_code else False)
-        reason = answer.get("reason", "denied")  # window closed without ever resolving -> denied
-        logger.info("auth dialog outcome=%s action=%s", reason, action_id)
-        if reason_out is not None:
-            reason_out["reason"] = reason
-        return value
+        return _run()
     finally:
-        _finalize_dialog(root)
+        gc.collect()
 
 
 def _confirm_dialog(
