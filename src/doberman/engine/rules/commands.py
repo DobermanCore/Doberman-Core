@@ -246,6 +246,25 @@ _INLINE_SHELL_SPAWN = re.compile(
 _INLINE_PROCESS_KILL = re.compile(r"os[.]kill(?:pg)?[(]|process[.]kill[(]", re.IGNORECASE)
 _PSUTIL_KILL_TERMINATE = re.compile(r"[.]kill[(]|[.]terminate[(]", re.IGNORECASE)
 
+# T2 (privilege half) — os.setuid/seteuid/setreuid/setresuid and the gid
+# equivalents. Unambiguous process-privilege changes on their own.
+_INLINE_PRIVILEGE_OP = re.compile(r"os[.]set(?:e|re|res)?[ug]id[(]", re.IGNORECASE)
+
+# T3 — an interpreter one-liner that hands a COMMAND LINE to a subprocess
+# (subprocess.*, os.system/popen/exec*/spawn*, pty.spawn, pexpect, Node's
+# child_process/execSync/spawnSync/execFile(Sync), perl/ruby's bare
+# system(). Distinct from _INLINE_SHELL_SPAWN above (that one is the
+# reverse-shell conjunction term, paired with a socket op): this one gates
+# _interpreter_spawn_literals, which walks the command-line string/list
+# literals the call passes so the shared destructive-command walk can see
+# what the spawned subprocess would actually run.
+_INLINE_PROCESS_SPAWN = re.compile(
+    r"subprocess[.]|os[.]system[(]|os[.]popen[(]|os[.]exec[lv]p?e?[(]|os[.]spawn[lv]p?e?[(]|"
+    r"pty[.]spawn[(]|pexpect[.]|child_process|execSync[(]|spawnSync[(]|execFile(?:Sync)?[(]|"
+    r"system[(]",
+    re.IGNORECASE,
+)
+
 # Shared work bound for every static command walk. Exhaustion is ambiguity,
 # never silent success.
 _MAX_COMMAND_SEGMENTS = 256
@@ -427,6 +446,16 @@ def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
             ambiguous = True
             continue
         while tokens:
+            if tokens[0] == "coproc":
+                tokens = tokens[1:]
+                # Bash grammar: `coproc [NAME] compound-command` — a NAME may
+                # only precede a compound command. `coproc wipe { ...; }`
+                # leaves `wipe` as argv[0] (hiding the body) unless it's
+                # dropped here too; `coproc ls -la` (a simple command, no
+                # NAME) must NOT have its own argv[0] eaten.
+                if len(tokens) >= 2 and tokens[1] == "{":
+                    tokens = tokens[1:]
+                continue
             if tokens[0] in _SHELL_SYNTAX_TOKENS:
                 tokens = tokens[1:]
                 continue
@@ -745,10 +774,16 @@ def _control_plane_in_windows_form(command: str, root: str) -> bool:
     return _segment_targets_control_plane(tokens, root)
 
 
-def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResult | None:
-    """BLOCK obvious control-plane or destructive interpreter one-liners."""
+def _inline_payloads(tokens: list[str]) -> list[str]:
+    """Every inline-code payload an interpreter's ``-c``/``-e``/``--eval``/``-p``/
+    ``--print`` flag(s) carry. Empty (not just falsy) when ``tokens[0]`` isn't a
+    recognized interpreter or no inline-code flag is present. Shared by
+    :func:`_interpreter_payload_verdict` and :func:`_interpreter_spawn_literals` —
+    both need the interpreter's inline source text, just to run different checks
+    over it.
+    """
     if not tokens or tokens[0] not in _INTERPRETERS:
-        return None
+        return []
     payloads: list[str] = []
     for index in range(1, len(tokens)):
         token = tokens[index]
@@ -759,6 +794,59 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
             payloads.append(token[2:])
         elif token.startswith(_LONG_INLINE_CODE_FLAG_PREFIXES):
             payloads.append(token.split("=", 1)[1])
+    return payloads
+
+
+#: Every single- or double-quoted string literal's *contents* (quotes stripped).
+_QUOTED_LITERAL_RE = re.compile(r"'([^'\\]*(?:\\.[^'\\]*)*)'|\"([^\"\\]*(?:\\.[^\"\\]*)*)\"")
+#: A ``[ ... ]`` list literal's contents (no nested-bracket support needed —
+#: the shapes T3 targets are flat argv lists like ``['rm', '-rf', '/']``).
+_BRACKET_LIST_RE = re.compile(r"\[([^\[\]]*)\]")
+
+#: Cap on how many command-line candidates one interpreter payload can push
+#: back onto the walk — same "exhaustion is ambiguity, never silent success"
+#: posture as _MAX_COMMAND_SEGMENTS, scoped to a single payload.
+_MAX_SPAWN_LITERAL_CANDIDATES = 32
+
+
+def _quoted_literals(text: str) -> list[str]:
+    """Every single-/double-quoted string literal in ``text``, contents only, in order."""
+    return [
+        single if single is not None else double
+        for single, double in _QUOTED_LITERAL_RE.findall(text)
+    ]
+
+
+def _interpreter_spawn_literals(tokens: list[str]) -> list[str] | None:
+    """Command-line candidates an interpreter payload hands to a subprocess spawn.
+
+    ``None`` unless ``tokens[0]`` is an interpreter AND some inline payload
+    matches :data:`_INLINE_PROCESS_SPAWN` (a subprocess/exec/spawn call is
+    actually present) — the caller uses ``is not None`` to distinguish "not a
+    spawn call at all" from "a spawn call with nothing vettable in it" (an
+    empty list). When it *is* a spawn call, returns every quoted string
+    literal in the payload individually, plus — for each ``[ ... ]`` list
+    literal — its string literals space-joined into one command line (so
+    ``['rm', '-rf', '/']`` also yields the single candidate ``"rm -rf /"``).
+    Stripped, empties dropped, capped at 32.
+    """
+    payloads = _inline_payloads(tokens)
+    if not any(_INLINE_PROCESS_SPAWN.search(payload) for payload in payloads):
+        return None
+    candidates: list[str] = []
+    for payload in payloads:
+        candidates.extend(_quoted_literals(payload))
+        for bracket_match in _BRACKET_LIST_RE.finditer(payload):
+            list_literals = _quoted_literals(bracket_match.group(1))
+            if list_literals:
+                candidates.append(" ".join(list_literals))
+    cleaned = [c.strip() for c in candidates if c.strip()]
+    return cleaned[:_MAX_SPAWN_LITERAL_CANDIDATES]
+
+
+def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResult | None:
+    """BLOCK obvious control-plane or destructive interpreter one-liners."""
+    payloads = _inline_payloads(tokens)
     if not payloads:
         return None
 
@@ -793,6 +881,11 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
         return _auth(
             ReasonCode.destructive_command,
             "Interpreter inline payload signals or kills a process; authentication required.",
+        )
+    if any(_INLINE_PRIVILEGE_OP.search(payload) for payload in payloads):
+        return _auth(
+            ReasonCode.destructive_command,
+            "Interpreter inline payload changes process privileges; authentication required.",
         )
     return None
 
@@ -1509,6 +1602,15 @@ class DestructiveCommandRule:
 
         pending, saw_unparseable, _ = walk_command(_normalize_windows_backslashes(command))
         processed = 0
+        # Set when an interpreter payload spawns a subprocess whose command
+        # line we walk (see the block below) — the generic opaque_command AUTH
+        # floor for that shape is applied AFTER the loop, only if nothing more
+        # specific (e.g. the walked literal itself raising to BLOCK, or a
+        # pushed literal segment like `env` earning its own reason code) already
+        # raised `worst` past PASS. Applying it immediately would out-tie a
+        # same-tier finding discovered on a later iteration (this module's
+        # existing same-tier merge — _max_result — keeps the first result).
+        saw_interpreter_spawn = False
         while pending and processed < _MAX_COMMAND_SEGMENTS:
             processed += 1
             raw_segment = pending.pop()
@@ -1545,6 +1647,23 @@ class DestructiveCommandRule:
                     saw_unparseable = saw_unparseable or payload_ambiguous
                 continue
 
+            # T3 — an interpreter payload that hands a subprocess a command
+            # line (subprocess.*, os.system, child_process, ...): same rung as
+            # bash -c's opaque payload above — push the command-line string/
+            # list literals it passes back onto the walk so a catastrophic one
+            # still raises this AUTH to BLOCK. Falls through (no continue) so
+            # the rmtree/socket/control-plane checks in _segment_verdict still
+            # run on THIS segment too.
+            spawn_literals = _interpreter_spawn_literals(tokens)
+            if spawn_literals is not None:
+                saw_interpreter_spawn = True
+                for literal in spawn_literals:
+                    literal_segments, literal_ambiguous, _ = walk_command(
+                        _normalize_windows_backslashes(literal)
+                    )
+                    pending.extend(literal_segments)
+                    saw_unparseable = saw_unparseable or literal_ambiguous
+
             verdict = _segment_verdict(tokens, self._protected, bulk_threshold, root)
             if verdict is not None:
                 worst = _max_result(worst, verdict)
@@ -1553,6 +1672,13 @@ class DestructiveCommandRule:
 
         if pending:
             saw_unparseable = True
+
+        if saw_interpreter_spawn and worst.verdict is Verdict.PASS:
+            worst = _auth(
+                ReasonCode.opaque_command,
+                "Interpreter inline payload spawns a subprocess whose command line "
+                "cannot be statically vetted; authentication required.",
+            )
 
         # ``curl ... | sh`` arrives as two segments; if the line both fetches
         # and pipes into a shell, escalate (defense-in-depth at the line level).
