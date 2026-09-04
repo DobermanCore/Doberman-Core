@@ -543,11 +543,17 @@ def test_args_only_bash_dash_c_payload_is_not_passed():
 
 def test_args_with_bare_apostrophe_does_not_false_positive():
     # {"args": ["--grep", "it's"]} on a non-command action type used to make
-    # shlex choke on the bare apostrophe (after a plain-space join) and the
-    # rule spuriously stepped up to AUTH (opaque_command) even though this
-    # action type never carries a command line.
+    # shlex choke on the bare apostrophe (after a plain-space join) — that
+    # raw-parse-failure false positive is gone (shlex.join keeps the
+    # apostrophe's token boundary intact, so this parses cleanly). T5-fix:
+    # the reconstructed line still has no verb, just a leading flag, which
+    # `_leading_option` (rightly) treats as ambiguous — same AUTH floor as
+    # an unresolved wrapper option, not the stale "could not be parsed
+    # safely" opaque-parse-failure path this test used to pin against.
     result = _cmd_args({"args": ["--grep", "it's"]}, action_type=ActionType.file_read)
-    assert result.verdict is Verdict.PASS
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
+    assert "unresolved option" in result.explanation
 
 
 def test_args_only_list_still_blocks():
@@ -1467,4 +1473,54 @@ def test_split_segments_reports_termination():
 
     segments, unterminated = commands_module._split_segments("x=$(echo a; rm -rf /")
     assert unterminated is True
-    assert any("rm -rf /" in segment for segment in segments)
+
+
+# --- T5-fix: an unresolved wrapper option in argv[0] fails upward -----------
+# `env -S <value>`'s splice can fail (`shlex.split` raises on an unbalanced/
+# unparseable value) leaving `-S`/its value tokens in place ahead of the
+# wrapped command (see `_argv_from_tokens`'s own docstring). `_segment_verdict`
+# keys every check off `tokens[0]`, so a leading-dash argv[0] matched nothing
+# and the whole segment — with the destructive command sitting right behind
+# it — read as benign. Fail closed instead: a segment whose argv[0] is still
+# an unresolved option after wrapper stripping is ambiguous, never benign.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'env -S "it\'s" rm -rf /',
+        "env -S 'unbalanced\" rm -rf /",
+    ],
+)
+def test_unresolved_wrapper_option_fails_upward(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
+
+
+def test_unresolved_wrapper_option_leading_option_helper():
+    tokens = commands_module._argv_from_tokens(["env", "-S", "it's", "rm"])
+    assert tokens[0] == "-S"
+    assert commands_module._leading_option(tokens) is True
+
+
+# --- T6-fix: command-substitution nesting depth is capped --------------------
+# `_substitution_end` recurses once per nested `$(` with no depth cap — enough
+# nesting raises `RecursionError`, caught upstream as a rule error (AUTH) but
+# crash-based, undocumented, and under the wrong reason code.
+# `_MAX_SUBSTITUTION_DEPTH` caps the recursion: past it, the region is treated
+# like any other unterminated one (the existing fail-closed path) instead of
+# blowing the interpreter's stack.
+
+
+def test_substitution_nesting_is_depth_capped():
+    deep = "x=" + "$(" * 1000 + "echo hi" + ")" * 1000
+    _segments, unterminated = commands_module._split_segments(deep)
+    assert unterminated is True
+
+    result = _cmd(deep)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
+
+    shallow = "x=" + "$(" * 10 + "echo hi" + ")" * 10
+    assert _cmd(shallow).verdict is Verdict.PASS

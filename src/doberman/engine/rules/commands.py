@@ -362,27 +362,44 @@ def _strip_substitutions(segment: str) -> tuple[str, list[str]]:
     return stripped, bodies
 
 
-def _substitution_end(command: str, index: int) -> tuple[int, bool]:
+#: T6-fix: cap on how many ``$(`` nesting levels ``_substitution_end`` will
+#: recurse through. Without it, a command string with enough nesting can
+#: exhaust the interpreter's own call stack (``RecursionError``) — crash-based,
+#: undocumented, and reported under the wrong reason code. Past the cap the
+#: region is treated exactly like any other unterminated one (see below),
+#: never by letting Python's own recursion limit decide the outcome.
+_MAX_SUBSTITUTION_DEPTH = 64
+
+
+def _substitution_end(command: str, index: int, depth: int = 0) -> tuple[int, bool]:
     """Scan a ``$(...)`` region starting at ``index`` (the position just after
     the opening ``$(``); return ``(index just after the matching ')', terminated)``.
 
-    T6: tracks ``depth``/``quote``/``escaped`` exactly like the flat scanner
-    this replaces, with ONE addition — whenever it sees ``$`` followed by
-    ``(`` and ``quote`` is not ``'``, it RECURSES. That's the fix: a flat
-    single ``quote`` variable for the whole region let a quote belonging to a
-    NESTED substitution (e.g. the ``"'`` inside ``"$(printf '%d' "'$c")"``)
-    be read against the OUTER string instead — one stray quote could then
-    make depth never return to zero, silently swallowing everything to the
-    end of the command. Recursing gives every nesting level its own
-    independent quote state, even inside a ``"…"`` string. ``$((…))`` needs
-    no special case: the recursion's own depth counting closes the extra
-    ``(`` the same as any other nested paren — it is never itself a ``$(``.
-    ``terminated`` is ``False`` when the region runs off the end of
-    ``command`` with ``depth`` still open (at any nesting level) — the
-    caller must fail closed on that, never silently accept a truncated
-    region.
+    T6: tracks ``paren_depth``/``quote``/``escaped`` exactly like the flat
+    scanner this replaces, with ONE addition — whenever it sees ``$``
+    followed by ``(`` and ``quote`` is not ``'``, it RECURSES. That's the
+    fix: a flat single ``quote`` variable for the whole region let a quote
+    belonging to a NESTED substitution (e.g. the ``"'`` inside
+    ``"$(printf '%d' "'$c")"``) be read against the OUTER string instead —
+    one stray quote could then make depth never return to zero, silently
+    swallowing everything to the end of the command. Recursing gives every
+    nesting level its own independent quote state, even inside a ``"…"``
+    string. ``$((…))`` needs no special case: the recursion's own depth
+    counting closes the extra ``(`` the same as any other nested paren — it
+    is never itself a ``$(``. ``terminated`` is ``False`` when the region
+    runs off the end of ``command`` with ``paren_depth`` still open (at any
+    nesting level) — the caller must fail closed on that, never silently
+    accept a truncated region.
+
+    T6-fix: ``depth`` counts RECURSION levels (nested ``$(``), separate from
+    ``paren_depth``'s plain-paren counting within one level. Past
+    ``_MAX_SUBSTITUTION_DEPTH`` we stop recursing and report the region as
+    unterminated — the existing fail-closed path — instead of recursing
+    further.
     """
-    depth = 1
+    if depth >= _MAX_SUBSTITUTION_DEPTH:
+        return index, False
+    paren_depth = 1
     quote: str | None = None
     escaped = False
     while index < len(command):
@@ -396,7 +413,7 @@ def _substitution_end(command: str, index: int) -> tuple[int, bool]:
             index += 1
             continue
         if char == "$" and quote != "'" and command[index + 1 : index + 2] == "(":
-            index, ok = _substitution_end(command, index + 2)
+            index, ok = _substitution_end(command, index + 2, depth + 1)
             if not ok:
                 return index, False
             continue
@@ -410,13 +427,13 @@ def _substitution_end(command: str, index: int) -> tuple[int, bool]:
             index += 1
             continue
         if char == "(":
-            depth += 1
+            paren_depth += 1
             index += 1
             continue
         if char == ")":
-            depth -= 1
+            paren_depth -= 1
             index += 1
-            if depth == 0:
+            if paren_depth == 0:
                 return index, True
             continue
         index += 1
@@ -679,6 +696,23 @@ def _argv_from_tokens(tokens: list[str], *, keep: frozenset[str] = frozenset()) 
             if tokens:
                 tokens.pop(0)
     return tokens
+
+
+def _leading_option(tokens: list[str]) -> bool:
+    """True when ``tokens`` is non-empty and ``tokens[0]`` still looks like an
+    option (``-``-prefixed) after :func:`_argv_from_tokens` has stripped every
+    env-assignment/wrapper prefix it can resolve.
+
+    T5-fix: this happens when a wrapper's value-option splice itself fails
+    (e.g. ``env -S <value>`` where ``<value>`` doesn't ``shlex.split`` —
+    see ``_argv_from_tokens``'s own docstring) and the option/value tokens
+    are left in place, unresolved, ahead of whatever command follows. A
+    leading option can never be the command being run, so a caller that
+    keys classification off ``tokens[0]`` (``_segment_verdict``,
+    ``delete_class_operands_and_dynamic``) must treat this as ambiguous
+    rather than silently reading the segment as benign.
+    """
+    return bool(tokens) and tokens[0].startswith("-")
 
 
 def _argv(segment: str) -> list[str] | None:
@@ -1792,7 +1826,10 @@ def delete_class_operands_and_dynamic(command: str) -> tuple[list[str] | None, b
     found = False
     for raw_segment in segments:
         tokens = _argv_from_tokens(raw_segment)
-        if not tokens:
+        if not tokens or _leading_option(tokens):
+            # T5-fix: an unresolved leading option (a failed wrapper-option
+            # splice) is never a delete-class command — skip it rather than
+            # risk misreading it as one; see `_leading_option`.
             continue
         cmd = tokens[0]
         if cmd == "rm":
@@ -1934,6 +1971,22 @@ class DestructiveCommandRule:
                 continue
             tokens = _argv_from_tokens(raw_segment)
             if not tokens:
+                continue
+            if _leading_option(tokens):
+                # T5-fix: a wrapper's own option-value splice failed (e.g.
+                # `env -S <value>` where `<value>` doesn't shlex.split), so
+                # `_argv_from_tokens` left the option/value tokens in place —
+                # tokens[0] is still an option, never the command. Every
+                # check below keys off tokens[0]; reading it as benign would
+                # hide whatever command actually follows. Fail upward.
+                worst = _max_result(
+                    worst,
+                    _auth(
+                        ReasonCode.opaque_command,
+                        "Command begins with an unresolved option after wrapper "
+                        "stripping; authentication required.",
+                    ),
+                )
                 continue
             if _opaque_shell_payload(tokens):
                 # We cannot statically vet a -c payload → escalate, never guess.
