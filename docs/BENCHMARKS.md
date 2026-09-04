@@ -300,24 +300,24 @@ the protection is exactly as strong as the human answering the prompt (`deny-all
 stops everything; `approve-all` stops nothing). This is a smoke gate, not a
 coverage claim.
 
-### Detection corpus (deterministic, n = 126 attack / 34 benign)
+### Detection corpus (deterministic, n = 130 attack / 38 benign)
 
 Run: `python -m tests.benchmarks.run --suite corpus --corpus` (2026-09-03, doberman-core built-ins only, balanced mode unless noted). Every row's `SecurityObject` is built by the same `mapping.to_security_object` the RedCode/MSB/LLMail-Inject suites use (the H1 harness-parity fix), so these numbers reflect the same command-egress classification production applies.
 
 | Category | n (attack) | TPR (AUTH∪BLOCK) | tpr_strict (BLOCK) | FPR |
 |---|---|---|---|---|
 | secrets | 7 | **1.00** | 0.43 | — |
-| destructive | 21 | 0.90 | 0.29 | — |
-| encoded / smuggling | 79 | 0.82 | 0.00 | — |
+| destructive | 21 | 0.90 | 0.43 | — |
+| encoded / smuggling | 83 | 0.83 | 0.00 | — |
 | exfiltration (balanced) | 9 | 0.44 | 0.00 | — |
 | exfiltration (**strict**) | 9 | **1.00** | 0.00 | — |
 | injection (natural-language) | 8 | **0.00** *(documented gap)* | 0.00 | — |
 | dependency | 2 | **1.00** | 0.50 | — |
-| benign | — (34) | — | — | **0.03** (1/34) |
-| **Overall (balanced)** | 126 | 0.77 | 0.08 | 0.03 |
-| **Overall (strict)** | 126 | 0.81 | 0.36 | 0.12 |
+| benign | — (38) | — | — | **0.03** (1/38) |
+| **Overall (balanced)** | 130 | 0.78 | 0.10 | 0.03 |
+| **Overall (strict)** | 130 | 0.82 | 0.37 | 0.11 |
 
-The corpus's 34 total benign entries split across two rows above: 32 are `kind: benign`
+The corpus's 38 total benign entries split across two rows above: 36 are `kind: benign`
 (the `benign` row), and 2 more are `kind: dependency, is_attack: false` (folded into the
 `dependency` row's own FPR, not broken out separately here). `destructive` grew from 10 to
 21 rows across this revision: 9 HK.5.6 raw-socket-egress candidates (`/dev/tcp`/`/dev/udp`,
@@ -326,7 +326,7 @@ candidates (`git commit --no-verify`, a test-file delete) moved into the generat
 the original 10, diluting its TPR/tpr_strict ratios without changing the underlying
 detections.
 
-Read honestly: precision is **0.99** and benign FPR is **1/34** — production's shell-egress
+Read honestly: precision is **0.99** and benign FPR is **1/38** — production's shell-egress
 classifier steps a bare `nc` port-probe (`ben-0020`, `nc -zv localhost 22`) up to `AUTH`
 (`egress_requires_auth`), the same conservative, already-documented step-up the README's
 egress bullet describes for any unresolvable-host `nc`/`ncat` invocation. The row's guard

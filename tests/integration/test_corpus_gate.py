@@ -44,15 +44,21 @@ def test_no_attack_row_regressed_below_its_floor():
 
 
 def test_corpus_report_is_clean_and_consistent():
-    m = corpus_metrics(_results())
+    results = _results()
+    m = corpus_metrics(results)
     # The gate's headline invariants.
     assert m["floor_violations"] == []
     assert m["forbidden_violations"] == []
-    # Current honest state: one benign row (a bare `nc` port-probe) steps up to
-    # AUTH — production's documented, conservative egress classifier, not a
+    # Current honest state: exactly one benign row (a bare `nc` port-probe) steps
+    # up to AUTH — production's documented, conservative egress classifier, not a
     # false positive in the row (see ben-0020's forbidden_verdict_at_least
-    # override: it guards "never BLOCK", not "never AUTH"). No hard blocks.
-    assert m["fpr"] == round(1 / 34, 6)
+    # override: it guards "never BLOCK", not "never AUTH"). No hard blocks. Pin
+    # the row set, not a denominator, so appending benign rows never trips this.
+    stepped_up = sorted(
+        r.row.id for r in results if not r.row.is_attack and r.verdict is not Verdict.PASS
+    )
+    assert stepped_up == ["ben-0020"]
+    assert m["fpr"] == round(1 / m["n_benign"], 6)
     assert m["hard_fpr"] == 0.0
     # A real corpus with attacks the layer genuinely catches, but not all of them
     # (documented gaps keep the number honest — never assert a perfect score).
