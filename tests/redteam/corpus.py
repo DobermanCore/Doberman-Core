@@ -992,7 +992,6 @@ def build_corpus(seed: int = 1337) -> list[dict]:
     # see module docstring for why this is a no-regression baseline, NOT robustness)
     items.extend(_gen_zero_width_soft(rng))
     items.extend(_gen_mixed_script(rng))
-    items.extend(_gen_whole_script_confusable(rng))
     items.extend(_gen_nfkc_delta(rng))
     items.extend(_gen_glitch_fragment(rng))
     items.extend(_gen_private_use(rng))
@@ -1006,5 +1005,10 @@ def build_corpus(seed: int = 1337) -> list[dict]:
 
     # Evasion set (genuine deterministic bypasses — documented gap #2)
     items.extend(_gen_soft_evasions(rng))
+
+    # Whole-script confusable rows (#141) — appended LAST so every pre-existing
+    # row above keeps its id across regenerations (see _gen_whole_script_confusable
+    # docstring for why these are evasion rows, not the known-signature baseline).
+    items.extend(_gen_whole_script_confusable(rng))
 
     return items
