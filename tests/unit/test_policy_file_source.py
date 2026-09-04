@@ -30,7 +30,13 @@ from doberman.cli.main import app
 from doberman.hosthooks import spine
 from doberman.models import ReasonCode, Verdict
 from doberman.policy.drift import read_policy_changes
-from doberman.policy.sources import effective_policy, load_file_policy
+from doberman.policy.sources import (
+    PolicySnapshot,
+    _glob_state_map,
+    _load_raw_file,
+    effective_policy,
+    load_file_policy,
+)
 
 runner = CliRunner()
 
@@ -102,6 +108,56 @@ def test_role_block_plus_file_sensitive_on_same_path_is_block(tmp_path):
         "fs_read", {"path": "myteamshared/secret.txt"}, cwd=str(tmp_path), raw_session_id=None
     )
     assert result.acted is Verdict.BLOCK
+
+
+# --- 2b. a category change is a pure tighten/weaken, never "mixed" ---------
+
+
+def test_sensitive_to_blocked_is_a_pure_tighten_applies_immediately(tmp_path):
+    _write_policy_file(tmp_path, sensitive=["catmove/**"])
+    load_file_policy(str(tmp_path))  # adopt: pinned as sensitive
+
+    _write_policy_file(tmp_path, blocked=["catmove/**"])  # promote to blocked
+    src = load_file_policy(str(tmp_path))
+    assert src.snapshot().blocked_globs == ("catmove/**",)
+    assert "catmove/**" not in src.snapshot().sensitive_globs
+
+    pin = json.loads(_pin_path(tmp_path).read_text(encoding="utf-8"))
+    assert pin["blocked"] == ["catmove/**"]  # pin rewritten -- auto-tighten, no gate
+    assert pin["sensitive"] == []
+
+    result = runner.invoke(app, ["policy-file", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Pending" not in result.stdout  # nothing pending: it already applied
+
+
+def test_blocked_to_sensitive_is_held_until_accept_block_still_wins(tmp_path):
+    _write_policy_file(tmp_path, blocked=["catmove/**"])
+    load_file_policy(str(tmp_path))  # adopt: pinned as blocked
+
+    _write_policy_file(tmp_path, sensitive=["catmove/**"])  # demote to sensitive
+    src = load_file_policy(str(tmp_path))
+    # The pin's blocked entry stays in force -- BLOCK still wins even though
+    # the file itself now only asks for AUTH.
+    assert "catmove/**" in src.snapshot().blocked_globs
+
+    pin = json.loads(_pin_path(tmp_path).read_text(encoding="utf-8"))
+    assert pin["blocked"] == ["catmove/**"]  # unchanged -- held, not auto-applied
+
+    result = spine.evaluate_action(
+        "fs_read", {"path": "catmove/secret.txt"}, cwd=str(tmp_path), raw_session_id=None
+    )
+    assert result.acted is Verdict.BLOCK
+
+    # --accept still sees this as a pending weaken (never a no-op).
+    from doberman.policy.drift import Classification, classify_change
+
+    pin_snapshot = PolicySnapshot(blocked_globs=pin["blocked"], sensitive_globs=pin["sensitive"])
+    file_snapshot, _ = _load_raw_file(str(tmp_path))
+    assert (
+        classify_change(_glob_state_map(pin_snapshot), _glob_state_map(file_snapshot))
+        is Classification.weaken
+    )
 
 
 # --- 3. adding a glob applies immediately and rewrites the pin --------------

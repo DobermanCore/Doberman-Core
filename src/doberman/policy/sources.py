@@ -364,17 +364,22 @@ def _load_raw_file(repo_root: str) -> tuple[PolicySnapshot, str]:
     return PolicySnapshot(blocked_globs=blocked_raw, sensitive_globs=sensitive_raw), digest
 
 
-def _glob_rank_map(snapshot: PolicySnapshot) -> dict[str, str]:
-    """``{key: state}`` shaped for ``classify_change``'s raise-only rank table.
+def _glob_state_map(snapshot: PolicySnapshot) -> dict[str, str]:
+    """``{"file:<glob>": state}`` keyed by GLOB (not category) for
+    ``classify_change``'s raise-only rank table -- shared by the pin/file
+    raise-only check below AND ``doberman policy-file --accept``'s gate, so
+    both agree on what counts as a drop.
 
-    A glob changing CATEGORY (sensitive -> blocked or back) changes its key,
-    so classify_change sees a removal + an addition rather than a same-key
-    rank change -- a mixed change, which its "ambiguous/mixed -> weaken"
-    fail-safe rule already covers correctly (deliberate; matches every other
-    drift chokepoint in this codebase).
+    A glob present in both lists ranks as ``"enforce"`` (blocked wins), so a
+    single glob moving sensitive -> blocked is a same-key rank INCREASE
+    (correctly a strengthen: a pure tightening, auto-applies) and blocked ->
+    sensitive/absent is a same-key rank DECREASE (correctly a weaken: held
+    until a human accepts it). Category-keyed maps got this backwards --
+    every category change looked like a mixed remove+add and classified as
+    weaken even when it was a pure tightening.
     """
-    m = {f"blocked:{g}": "enforce" for g in snapshot.blocked_globs}
-    m.update({f"sensitive:{g}": "monitor" for g in snapshot.sensitive_globs})
+    m = {f"file:{g}": "monitor" for g in snapshot.sensitive_globs}
+    m.update({f"file:{g}": "enforce" for g in snapshot.blocked_globs})
     return m
 
 
@@ -403,7 +408,7 @@ def load_file_policy(repo_root: str) -> FilePolicySource | None:
         return FilePolicySource(file_snapshot)
 
     pin_snapshot = PolicySnapshot(blocked_globs=pin["blocked"], sensitive_globs=pin["sensitive"])
-    classification = classify_change(_glob_rank_map(pin_snapshot), _glob_rank_map(file_snapshot))
+    classification = classify_change(_glob_state_map(pin_snapshot), _glob_state_map(file_snapshot))
 
     if classification is Classification.weaken:
         effective = PolicySnapshot(

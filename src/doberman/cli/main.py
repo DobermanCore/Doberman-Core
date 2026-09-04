@@ -80,6 +80,7 @@ from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.policy.sources import (
     POLICY_FILE_NAME,
     PolicySnapshot,
+    _glob_state_map,
     _load_raw_file,
     _read_pin,
     _write_pin,
@@ -833,10 +834,10 @@ def policy_file(
             )
         return
 
-    before = {f"file:blocked:{g}": "enforce" for g in pin_snapshot.blocked_globs}
-    before.update({f"file:sensitive:{g}": "monitor" for g in pin_snapshot.sensitive_globs})
-    after = {f"file:blocked:{g}": "enforce" for g in file_snapshot.blocked_globs}
-    after.update({f"file:sensitive:{g}": "monitor" for g in file_snapshot.sensitive_globs})
+    # Same glob-keyed view load_file_policy() uses for its own raise-only
+    # check, so the loader and this gate always agree on what's a drop.
+    before = _glob_state_map(pin_snapshot)
+    after = _glob_state_map(file_snapshot)
 
     classification = classify_change(before, after)
     if classification is not Classification.weaken:
