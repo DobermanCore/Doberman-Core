@@ -28,6 +28,8 @@ jobs:
       - run: ruff format --check .
       - name: Offline Markdown link check
         run: python scripts/check_markdown_links.py
+      - name: Changelog fragments
+        run: python scripts/compile_changelog.py --check
       - name: Architecture & repo boundaries
         run: lint-imports
       - name: Parity matrix is current

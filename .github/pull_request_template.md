@@ -10,6 +10,9 @@
 ## Tests added (run in CI)
 -
 
+## Changelog
+- [ ] `changelog.d/<PR>.<type>.md` fragment added (one line per user-visible change, see `changelog.d/README.md`), or this change is invisible to users
+
 ## Public-release safety (doberman-core only)
 - [ ] Contains nothing from the "not allowed" list: no enterprise/hosted code, no proprietary detection, no customer data, no secrets, no commercial-license code
 - [ ] Core still builds/tests/runs with NO enterprise package installed
