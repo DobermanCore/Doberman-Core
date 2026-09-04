@@ -8,6 +8,8 @@ warrant a step-up but not a hard block:
 
 * ``mixed_script_confusable`` — homoglyph spoofing (a Cyrillic ``а`` in a Latin
   word),
+* ``whole_script_confusable`` — a whole token spoofed in one non-Latin script
+  (e.g. an all-Cyrillic look-alike of "paypal"),
 * ``glitch_fragment``         — known under-trained ("glitch") token fragments,
 * ``nfkc_delta``              — text that gains ASCII under NFKC normalization
   (compatibility-form smuggling),
