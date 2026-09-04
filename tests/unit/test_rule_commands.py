@@ -1357,6 +1357,10 @@ def test_keyword_argument_literal_fix_does_not_weaken_real_join():
 # demote it. `_N1_PAD` is the review's reproducer shape: `;y=[1,x,x,...,x]`
 # with 200 filler items, which re.split()s into > 128 candidates on its own.
 _N1_PAD = ";y=[1," + ",".join(["x"] * 200) + "]"
+# Round 3: the same filler PREPENDED. A truncate-and-scan cap keeps the first
+# N candidates, so leading filler pushes the genuine tokens out of the scanned
+# window -- the only sound shape is "scan every candidate, floor at AUTH".
+_N1_PAD_FRONT = "y=[1," + ",".join(["x"] * 200) + "];"
 
 
 @pytest.mark.parametrize(
@@ -1387,11 +1391,53 @@ def test_fragmentation_cap_never_demotes_a_stronger_verdict(
     assert plain.verdict is expected_verdict
     assert expected_reason in plain.reason_codes
 
-    padded = _cmd(f'python -c "{base}{_N1_PAD}"')
-    assert padded.verdict is plain.verdict, (
-        f"padding lowered the verdict: {plain.verdict} (plain) -> {padded.verdict} (padded)"
-    )
-    assert padded.reason_codes == plain.reason_codes
+    for padded_payload in (f"{base}{_N1_PAD}", f"{_N1_PAD_FRONT}{base}"):
+        padded = _cmd(f'python -c "{padded_payload}"')
+        assert padded.verdict is plain.verdict, (
+            f"padding lowered the verdict: {plain.verdict} (plain) -> {padded.verdict} (padded)"
+        )
+        assert padded.reason_codes == plain.reason_codes
+
+
+# Round 3 (N1, cost half): a candidate that is absolute / `~` / `..` needs a
+# filesystem resolve (symlink following) that costs ~0.6ms each on Windows, so
+# thousands of distinct such fillers are a stall. The scan therefore matches
+# EVERY candidate textually and follows the filesystem for only the first
+# _MAX_PAYLOAD_PATH_RESOLVES of them; past that budget the payload floors at
+# AUTH. A control-plane path hidden behind the filler is still found by text.
+_FS_PAD = "".join(f",/p{i}" for i in range(2500))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "print(1)" + _FS_PAD,
+        "print(1)" + "".join(f",../q{i}" for i in range(2500)),
+        "print(1)" + "".join(f",~/r{i}" for i in range(2500)),
+    ],
+    ids=["absolute", "traversal", "home"],
+)
+def test_filesystem_resolution_budget_bounds_the_payload_scan(payload):
+    start = time.perf_counter()
+    result = _cmd(f'python -c "{payload}"')
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"took {elapsed:.3f}s — filesystem resolves are not budgeted"
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "target",
+    [".doberman/policies.yaml", "../x/../.doberman/policies.yaml", "./.doberman/policies.yaml"],
+    ids=["relative", "traversal", "dot-relative"],
+)
+def test_control_plane_path_behind_filesystem_filler_still_blocks(target):
+    # The write is placed mid-payload (not last) so the shell-level whole-token
+    # path check cannot catch it by accident -- only the payload scan can.
+    payload = f"y=[{_FS_PAD[1:]}];open('{target}','w');z=1"
+    result = _cmd(f'python -c "{payload}"')
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.protected_path_blocked in result.reason_codes
 
 
 # --- I6 + M4: bound the WORK of _spawn_literal_candidates, not just its -----

@@ -35,7 +35,7 @@ import re
 import shlex
 from collections.abc import Iterable
 
-from doberman.engine.rules.paths import names_control_plane
+from doberman.engine.rules.paths import names_control_plane, needs_filesystem_resolution
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -1049,6 +1049,32 @@ def _segment_targets_control_plane(tokens: list[str], root: str) -> bool:
     return False
 
 
+def _payload_targets_control_plane(candidates: list[str], root: str) -> tuple[bool, bool]:
+    """``(hit, unresolved)`` for an inline-payload candidate list.
+
+    Same token handling as :func:`_segment_targets_control_plane`, but the
+    input is attacker-sized: every candidate is matched textually and only the
+    first :data:`_MAX_PAYLOAD_PATH_RESOLVES` that need the filesystem are
+    canonicalized; ``unresolved`` reports that at least one was not, so the
+    caller floors its verdict at AUTH instead of trusting a partial scan.
+    """
+    resolves_left = _MAX_PAYLOAD_PATH_RESOLVES
+    unresolved = False
+    for token in candidates:
+        for candidate in _token_path_candidates(token):
+            if not candidate or candidate.startswith("-"):
+                continue
+            resolve = needs_filesystem_resolution(candidate)
+            if resolve:
+                if resolves_left > 0:
+                    resolves_left -= 1
+                else:
+                    resolve, unresolved = False, True
+            if names_control_plane(candidate, root, resolve=resolve):
+                return True, unresolved
+    return False, unresolved
+
+
 def _control_plane_in_windows_form(command: str, root: str) -> bool:
     """True if the command names the control plane using ``\\`` separators.
 
@@ -1115,6 +1141,11 @@ _MAX_SPAWN_LITERAL_CANDIDATES = 32
 #: (measured: 0.9s for a 20KB adversarial payload, 4x per doubling). Both
 #: caps trade candidate completeness for bounded work, never a silent PASS —
 #: see the AUTH-floor note on `_MAX_SPAWN_LITERAL_WORK_CANDIDATES`.
+#: Round 3 (N1): filesystem resolves (symlink following for an absolute / `~` /
+#: `..` token, ~0.6ms each on Windows) an inline payload's control-plane scan
+#: may spend. Every candidate is still matched TEXTUALLY; past this budget the
+#: payload floors at AUTH (`opaque_command`) — a bound on work, never a skip.
+_MAX_PAYLOAD_PATH_RESOLVES = 32
 _MAX_SPAWN_LITERAL_STACK_DEPTH = 32
 #: Stop the scan itself once this many raw candidates have been collected —
 #: a larger, separate bound from the final output cap above (4x it) so a
@@ -1235,25 +1266,21 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
             candidate for candidate in re.split(r"[\s'\"`(){}\[\],;]+", payload) if candidate
         ]
         if len(candidates) > _MAX_SPAWN_LITERAL_WORK_CANDIDATES:
-            # N1: the cap bounds cost, it must never be a short-circuit that
-            # pre-empts a stronger verdict — an early `return` here skipped
-            # every check below (the destructive/socket/kill/privilege scans,
-            # which are plain O(n) regex searches over the payload string with
-            # no cost argument for skipping) AND every later payload's own
-            # control-plane check, so attacker-supplied filler could demote a
-            # real BLOCK to this AUTH. Attacker padding is appended after the
-            # real payload text, so the first _MAX_SPAWN_LITERAL_WORK_CANDIDATES
-            # candidates still carry every genuine token; only the (unbounded,
-            # attacker-sized) tail is dropped from the control-plane scan —
-            # cost stays capped at the same ceiling either way.
-            # `too_fragmented` floors the verdict at AUTH only if nothing
-            # stronger below ever fires — a floor, never a short-circuit.
+            # N1 (rounds 2-3): the cap is a FLOOR, never a short-circuit and
+            # never a truncation. An early `return` here skipped the checks
+            # below and every later payload; keeping only the first N
+            # candidates let LEADING filler push the genuine tokens out of
+            # the scanned window. So every candidate is control-plane-checked
+            # (cheap now: names_control_plane() only touches the filesystem
+            # for absolute/`~`/`..` tokens) and `too_fragmented` merely floors
+            # the verdict at AUTH if nothing stronger below ever fires.
             too_fragmented = True
-            candidates = candidates[:_MAX_SPAWN_LITERAL_WORK_CANDIDATES]
-        if _segment_targets_control_plane(candidates, root):
+        hit, unresolved = _payload_targets_control_plane(candidates, root)
+        if hit:
             return _block_control_plane(
                 "Interpreter inline payload references Doberman's own control plane."
             )
+        too_fragmented = too_fragmented or unresolved
     if any(_DESTRUCTIVE_INTERPRETER_OP.search(payload) for payload in payloads):
         return _block("Interpreter inline payload contains a destructive filesystem operation.")
     if any(

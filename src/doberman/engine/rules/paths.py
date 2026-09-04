@@ -24,6 +24,7 @@ rejected at construction so a misconfiguration can never make everything match
 """
 
 import fnmatch
+import posixpath
 import re
 from collections.abc import Iterable, Sequence
 
@@ -304,29 +305,81 @@ def _is_delete_or_rename(action_type: ActionType, tool_name: str) -> bool:
     )
 
 
-#: N3(b) — every pattern in CONTROL_PLANE_GLOBS (read them: ".doberman",
-#: ".claude/settings.json", "**/doberman/totp.secret", ...) contains at least
-#: one literal "." or "/" that must appear verbatim in whatever string
-#: fnmatch matches it against. A token with none of "/", ".", "~" (the "~"
-#: is kept too since a raw "~/..." token is checked directly, never expanded)
-#: therefore cannot satisfy ANY of those patterns — neither the raw-token
-#: match below nor, since canonical.relposix is matched against the same
-#: pattern set, the canonical-form match after it. Skipping canonicalize()
-#: (a filesystem resolve — the expensive part; see N3) for such a token is
-#: safe UNLESS an existing on-disk symlink with no "/"/"."/"~" in its own
-#: name resolves onto the control plane: canonicalize() would have followed
-#: that symlink and found it, this pre-filter does not. Accepted alongside
-#: this function's other documented "runtime semantics" gaps below (a
-#: symlink is another form of indirection a command string doesn't show).
-_PLAUSIBLE_CONTROL_PLANE_CHARS = frozenset("/.~")
+#: N3(b) / round 3 — every pattern in CONTROL_PLANE_GLOBS (read them:
+#: ".doberman", ".claude/settings.json", "**/doberman/totp.secret", ".env",
+#: ...) contains one of these literal runs verbatim, and fnmatch can only
+#: match a string that contains that run too. A token containing none of them
+#: therefore cannot satisfy ANY pattern — neither the raw-token match nor,
+#: since canonical.relposix is matched against the same pattern set, the
+#: canonical-form match after it (``..``/``.``/trailing-dot normalisation
+#: never *creates* a stem; only symlink following could, see below).
+#: ``test_every_control_plane_glob_contains_a_prefilter_stem`` pins the
+#: invariant so a new glob cannot silently escape the pre-filter.
+#:
+#: canonicalize() (a filesystem realpath, the expensive part; see N3) then
+#: runs ONLY for a token that is absolute, ``~``-relative, drive-prefixed, or
+#: contains ``..``: those are the shapes whose landing spot depends on the
+#: root (confinement) or on climbing out of a subdirectory. Any other token
+#: resolves to ``root/<token>``, whose canonical form is its own lexical
+#: normpath, so it is matched without touching the filesystem. That keeps the
+#: interpreter-payload scan able to check EVERY candidate (no truncation —
+#: truncation let leading filler hide a control-plane write) at string-op
+#: cost. It is a deliberate NARROWING of what this function caught before:
+#: an on-disk symlink at a relative, traversal-free path that resolves onto
+#: the control plane was found by canonicalize() following it and is not
+#: found now. Accepted alongside the "runtime semantics" gaps in the
+#: docstring below (a symlink is another form of indirection a command
+#: string doesn't show); the OS file owner/mode and the file-target path rule
+#: remain the backstops.
+_CONTROL_PLANE_STEMS = (".claude", ".codex", ".cursor", ".env", "doberman")
+_DRIVE_PREFIX_RE = re.compile(r"^[a-z]:")  # the token is lower-cased first
 
 
 def _could_name_control_plane(token: str) -> bool:
-    return any(char in _PLAUSIBLE_CONTROL_PLANE_CHARS for char in token)
+    return any(stem in token for stem in _CONTROL_PLANE_STEMS)
 
 
-def names_control_plane(raw_path: str, root: str = _DEFAULT_ROOT) -> bool:
+def _normalize_token(raw_path: str) -> str:
+    return (raw_path or "").strip().strip("\"'").replace("\\", "/").lower()
+
+
+def _needs_filesystem_resolution(token: str) -> bool:
+    return token.startswith(("/", "~")) or ".." in token or bool(_DRIVE_PREFIX_RE.match(token))
+
+
+def needs_filesystem_resolution(raw_path: str) -> bool:
+    """True when :func:`names_control_plane` would have to touch the filesystem
+    for ``raw_path`` (absolute / ``~`` / drive-prefixed / ``..`` — the shapes
+    whose landing spot depends on the root or on a symlink). Lets a caller that
+    scans attacker-sized input budget those resolves (each is a realpath, ~0.6ms
+    on Windows) while still matching every token textually."""
+    token = _normalize_token(raw_path)
+    return bool(token) and _could_name_control_plane(token) and _needs_filesystem_resolution(token)
+
+
+def _lexical_relposix(token: str) -> str:
+    """The relposix canonicalize() would return for a root-relative token.
+
+    Mirrors canonicalize()'s lexical half only: normpath, then the per-component
+    ``rstrip(" .")`` (Windows drops trailing dots/spaces on open); a component
+    that strips to nothing is unmatchable there and here.
+    """
+    parts = []
+    for part in posixpath.normpath(token).split("/"):
+        stripped = part.rstrip(" .")
+        if not stripped:
+            return ""
+        parts.append(stripped)
+    return "/".join(parts)
+
+
+def names_control_plane(raw_path: str, root: str = _DEFAULT_ROOT, *, resolve: bool = True) -> bool:
     """True if a raw path token lands on Doberman's control plane.
+
+    ``resolve=False`` skips the filesystem step for a token that would need it
+    (see :func:`needs_filesystem_resolution`): the raw and lexical matches still
+    run, so every textual spelling of a control-plane path is caught and only
+    symlink following is forgone — the caller floors its verdict for that.
 
     Used by the command rule (HK.5.0b) so a shell command that writes/deletes the
     control plane (``echo > .claude/settings.json``, ``rm -rf .doberman``,
@@ -342,14 +395,23 @@ def names_control_plane(raw_path: str, root: str = _DEFAULT_ROOT) -> bool:
     (``X=.doberman; rm -rf $X``), shell glob / brace expansion (``rm -rf .dober*``),
     a scripting-interpreter payload (``python -c "...rmtree('.doberman')..."`` —
     ``python``/``node``/``perl`` are not shells, so the body is not scanned), or an
-    on-disk symlink named with none of ``/``/``.``/``~`` that resolves onto the
-    control plane (N3(b) — see :data:`_PLAUSIBLE_CONTROL_PLANE_CHARS`).
+    on-disk symlink at a relative, traversal-free path that resolves onto the
+    control plane (only absolute / ``~`` / drive-prefixed / ``..`` tokens go
+    through the filesystem — a deliberate narrowing, see
+    :data:`_CONTROL_PLANE_STEMS`).
     """
-    token = (raw_path or "").strip().strip("\"'").replace("\\", "/").lower()
+    token = _normalize_token(raw_path)
     if not token or not _could_name_control_plane(token):
         return False
     if _matches_any(token, _CONTROL_PLANE):
         return True
+    # Exact for a root-relative, traversal-free token (its canonical form IS
+    # this); for the rest a textual second chance (trailing-dot components)
+    # before — or instead of — the filesystem.
+    if _matches_any(_lexical_relposix(token), _CONTROL_PLANE):
+        return True
+    if not resolve or not _needs_filesystem_resolution(token):
+        return False
     canonical = canonicalize(raw_path, root=root)
     if canonical.escapes_root:
         return False

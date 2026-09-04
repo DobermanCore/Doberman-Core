@@ -212,3 +212,18 @@ def test_objective_guardrail_blocks_a_claude_settings_write(tmp_path):
     result = guardrail.evaluate(_action(".claude/settings.json"), _ctx(tmp_path))
     assert result.verdict is Verdict.BLOCK
     assert ReasonCode.protected_path_blocked in result.reason_codes
+
+
+def test_every_control_plane_glob_contains_a_prefilter_stem():
+    # names_control_plane() skips every match (and the filesystem) for a token
+    # that contains none of _CONTROL_PLANE_STEMS. That is only sound while
+    # every glob carries one of the stems verbatim -- pin it here so a new
+    # control-plane glob cannot silently fall outside the pre-filter.
+    from doberman.engine.rules.paths import _CONTROL_PLANE, _CONTROL_PLANE_STEMS
+
+    uncovered = [
+        glob
+        for glob in _CONTROL_PLANE
+        if not any(stem in glob.lower() for stem in _CONTROL_PLANE_STEMS)
+    ]
+    assert uncovered == []
