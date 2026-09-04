@@ -33,6 +33,7 @@ genuine call.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import time
@@ -68,10 +69,10 @@ def event_key(payload: dict) -> str | None:
 def _marker_path(key: str) -> str:
     # The keyed fingerprint carries an ``hmac:`` prefix; a colon in a filename is an
     # NTFS alternate-data-stream on Windows, where the marker rename then fails and
-    # the peer channel silently re-evaluates (a doubled AUTH prompt). Keep the
-    # filename portable.
-    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in key)
-    return os.path.join(tempfile.gettempdir(), f"doberman-sf-{safe}")
+    # the peer channel silently re-evaluates (a doubled AUTH prompt). Hash the key
+    # (already non-derivable) into a portable, collision-free filename.
+    name = hashlib.sha256(key.encode()).hexdigest()[:32]
+    return os.path.join(tempfile.gettempdir(), f"doberman-sf-{name}")
 
 
 def _content_mac(content: str) -> str | None:
@@ -110,6 +111,18 @@ def replay(key: str | None) -> str | None:
     if expected is None or stored_mac != expected:
         return None  # tampered / unverifiable -> re-evaluate (never trust it)
     return "" if content == _ABSTAIN else (content or None)
+
+
+def consume(key: str | None) -> None:
+    """Drop this call's marker after the peer channel replayed it, so a recorded
+    answer is used at most once (an approval stays single-use even if a channel
+    fires again within the TTL). Best-effort; a missing marker is fine."""
+    if not key:
+        return
+    try:
+        os.remove(_marker_path(key))
+    except OSError:
+        pass
 
 
 def record(key: str | None, answer: str | None) -> None:

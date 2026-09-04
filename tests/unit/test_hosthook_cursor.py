@@ -277,7 +277,6 @@ def test_shell_naming_the_hook_registration_is_denied(tmp_path):
         assert doc["permission"] == "deny", command
 
 
-@pytest.mark.guarantee("control-plane-self-protection", host="cursor")
 def test_rest_of_cursor_dir_requires_approval(tmp_path):
     # .cursor/rules etc. are harness configuration -> AUTH; with no channel to
     # present the challenge the answer is deny, never a silent allow.
@@ -536,6 +535,10 @@ def test_other_channel_replays_the_first_answer(tmp_path, monkeypatch):
     second = cursor.run_cursor(json.dumps(before))
     assert calls["n"] == 1, "one evaluation per tool call across both channels"
     assert first == second
+    # The marker is consumed by that replay: a further hit on the other channel
+    # (a host retry, a re-fire) is evaluated again, never waved through.
+    cursor.run_cursor(json.dumps(before))
+    assert calls["n"] == 2
 
 
 def test_same_channel_never_replays(tmp_path, monkeypatch):
@@ -573,11 +576,43 @@ def test_mcp_channels_share_one_flight(tmp_path, monkeypatch):
     assert calls["n"] == 1
 
 
+def test_read_pair_shares_the_path_decision_but_always_scans(tmp_path, monkeypatch):
+    # preToolUse/Read + beforeReadFile for one read: the path gate runs once (one
+    # AUTH dialog, one history row), but the content scan can never be replayed
+    # away — a credential in the file still denies the read.
+    calls = _count_evaluations(monkeypatch)
+    pre = _write(tmp_path, str(tmp_path / "config.ini"), tool="Read")
+    pre["tool_input"] = {"file_path": str(tmp_path / "config.ini"), "offset": 0}
+    before = _load("before_read.json", tmp_path)
+    before["conversation_id"], before["generation_id"] = (
+        pre["conversation_id"],
+        pre["generation_id"],
+    )
+    before["file_path"] = str(tmp_path / "config.ini")
+    before["content"] = f"aws_access_key_id={_OUTPUT_SECRET}\n"
+    assert _run(pre) == ({"permission": "allow"}, 0)
+    doc, code = _run(before)
+    assert doc["permission"] == "deny" and code == 2
+    assert _OUTPUT_SECRET not in json.dumps(doc)
+    assert calls["n"] == 1
+    # Benign content after a replayed path decision is allowed, still once.
+    pre2 = _write(tmp_path, str(tmp_path / "notes.txt"), tool="Read")
+    before2 = _load("before_read.json", tmp_path)
+    before2["conversation_id"], before2["generation_id"] = (
+        pre2["conversation_id"],
+        pre2["generation_id"],
+    )
+    before2["file_path"] = str(tmp_path / "notes.txt")
+    assert _run(pre2) == ({"permission": "allow"}, 0)
+    assert _run(before2) == ({"permission": "allow"}, 0)
+    assert calls["n"] == 2
+
+
 def test_no_ids_means_no_dedupe(tmp_path):
     payload = _shell(tmp_path, "echo hi")
     del payload["generation_id"]
     assert cursor.dedupe_key(cursor.EVENT_PRE_TOOL, payload) is None
-    assert cursor.dedupe_key(cursor.EVENT_READ, _load("before_read.json", tmp_path)) is None
+    assert cursor.dedupe_key(cursor.EVENT_READ, _load("before_read.json", tmp_path))
     assert cursor.dedupe_key(cursor.EVENT_PRE_TOOL, _write(tmp_path, "a.txt")) is None
 
 

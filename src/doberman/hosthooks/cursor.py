@@ -38,12 +38,14 @@ malformed document.
 
 **Single-flight.** A shell command reaches Doberman twice when both
 ``preToolUse`` and ``beforeShellExecution`` are registered (same for MCP via
-``beforeMCPExecution``). The first channel records its answer under a keyed
-marker derived from ``(conversation_id, generation_id, translated action)``;
-the OTHER channel replays it. The same channel never replays — a repeated
-identical action inside one generation is evaluated (and challenged) again, so
-an approval stays single-use. Marker security model:
-:mod:`doberman.hosthooks.singleflight`.
+``beforeMCPExecution``, and for a file read via ``preToolUse``/``Read`` +
+``beforeReadFile``). The first channel records its answer under a keyed marker
+derived from ``(conversation_id, generation_id, translated action)``; the OTHER
+channel replays it once and the marker is consumed. The same channel never
+replays — a repeated identical action inside one generation is evaluated (and
+challenged) again, so an approval stays single-use. A replayed read still
+runs the content scan: only the path decision is shared. Marker security
+model: :mod:`doberman.hosthooks.singleflight`.
 
 Speed contract as every adapter: only the light decision path is imported at
 module scope (never ``proxy.executor`` / numpy / scipy / river).
@@ -143,7 +145,10 @@ def _shell_args(mapping: dict[str, Any]) -> dict[str, Any] | None:
 
 def _mcp_args(raw: object) -> dict[str, Any] | None:
     """``tool_input`` for an MCP tool: a dict, or Cursor's JSON-string form.
-    ``None`` when the arguments cannot be seen (unparseable / wrong shape)."""
+    ``None`` when the arguments cannot be seen (unparseable / wrong shape). An
+    absent ``tool_input`` is a zero-argument tool (``list_allowed_directories``),
+    evaluated on its name exactly as the MCP proxy evaluates it — not an
+    invisible target."""
     if raw is None:
         return {}
     if isinstance(raw, str):
@@ -302,16 +307,23 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any]:
         return deny()
 
 
+#: ``preToolUse`` tools that have a second, ``before*`` channel to pair with.
+_PAIRED_BUILTINS: frozenset[str] = frozenset({"Shell", "Read"})
+
+
 def dedupe_key(event: object, payload: dict[str, Any]) -> str | None:
     """A keyed marker for the events Cursor can fire twice for one action — a
-    shell command (``preToolUse`` + ``beforeShellExecution``) or an MCP call
-    (``preToolUse`` + ``beforeMCPExecution``). ``None`` (no dedupe) for every
-    other event, an untranslatable payload, or an unavailable HMAC key."""
+    shell command (``preToolUse`` + ``beforeShellExecution``), an MCP call
+    (``preToolUse`` + ``beforeMCPExecution``) or a file read (``preToolUse`` +
+    ``beforeReadFile``). ``None`` (no dedupe) for every other event, an
+    untranslatable payload, or an unavailable HMAC key."""
     if event == EVENT_PRE_TOOL:
         name = payload.get("tool_name")
-        if not (isinstance(name, str) and (name == "Shell" or name.startswith(_MCP_PREFIX))):
+        if not (
+            isinstance(name, str) and (name in _PAIRED_BUILTINS or name.startswith(_MCP_PREFIX))
+        ):
             return None
-    elif event not in (EVENT_SHELL, EVENT_MCP):
+    elif event not in (EVENT_SHELL, EVENT_MCP, EVENT_READ):
         return None
     conv = payload.get("conversation_id")
     gen = payload.get("generation_id")
@@ -321,10 +333,13 @@ def dedupe_key(event: object, payload: dict[str, Any]) -> str | None:
     if translated is None:
         return None
     canonical, args = translated
+    # A read is paired on its path alone: ``preToolUse``/``Read`` may carry extra
+    # fields (offset, limit) that ``beforeReadFile`` does not.
+    keyed = {"path": args.get("path")} if canonical == "file_read" else args
     try:
         from doberman.storage.fingerprint import fingerprint  # keyed HMAC, lazy
 
-        body = json.dumps(args, sort_keys=True, default=str)
+        body = json.dumps(keyed, sort_keys=True, default=str)
         return fingerprint(f"cursor-event:{conv}:{gen}:{canonical}:{body}")[:32]
     except Exception:  # noqa: BLE001 — no key material -> no dedupe (safe)
         return None
@@ -346,6 +361,21 @@ def _replay_for(event: object, prior: str | None) -> dict[str, Any] | None:
         return None
 
 
+def _scan_after_replay(payload: dict[str, Any]) -> dict[str, Any]:
+    """``beforeReadFile`` whose path decision was replayed from ``preToolUse``:
+    the content scan is never skipped. Raw ``cwd`` / ``conversation_id`` go to the
+    scan the way Claude Code's PostToolUse hook passes its own; any failure
+    denies."""
+    try:
+        path = _first_path(payload)
+        cwd = repo_root_of(payload)
+        if path is None or cwd is None:
+            return deny()
+        return _scan_read_content(payload, path, cwd, payload.get("conversation_id"))
+    except Exception:  # noqa: BLE001 — fail closed
+        return deny()
+
+
 def run_cursor(stdin_text: str) -> tuple[str, int]:
     """Parse the hook stdin (BOM-tolerant), evaluate, and return
     ``(json_document, exit_code)`` for the CLI to emit."""
@@ -362,6 +392,9 @@ def run_cursor(stdin_text: str) -> tuple[str, int]:
     key = dedupe_key(event, payload)
     replayed = _replay_for(event, singleflight.replay(key))
     if replayed is not None:
+        singleflight.consume(key)  # one replay per recorded answer
+        if event == EVENT_READ and replayed.get("permission") == "allow":
+            replayed = _scan_after_replay(payload)  # the path passed; content still scanned
         return json.dumps(replayed), exit_code_for(replayed)
 
     response = evaluate(payload)

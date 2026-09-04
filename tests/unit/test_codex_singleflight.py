@@ -40,6 +40,15 @@ def test_marker_filename_is_portable():
     assert ":" not in name and name.startswith("doberman-sf-")
 
 
+def test_consume_drops_the_marker(isolated_fingerprint_key):
+    key = "sf-consume-" + uuid.uuid4().hex
+    singleflight.record(key, "{}")
+    assert singleflight.replay(key) == "{}"
+    singleflight.consume(key)
+    assert singleflight.replay(key) is None
+    singleflight.consume(key)  # idempotent
+
+
 def test_event_id_key_matches_capture():
     # The dedupe key is the captured per-call id, not the plan's placeholder.
     assert singleflight.EVENT_ID_KEY == "tool_use_id"

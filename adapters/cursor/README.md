@@ -74,11 +74,12 @@ Malformed input fails closed: a non-JSON or non-object payload, a missing or unk
 any engine error all deny. A leading UTF-8 BOM (which `cursor-agent` on Windows prefixes to hook
 stdin — Cursor forum #168407, staff-confirmed, no fix ETA) is stripped first.
 
-A shell or MCP call registered on both `preToolUse` and its `before*` event reaches Doberman
-twice. The first channel records its answer under a keyed marker for `(conversation_id,
-generation_id, action)` and the other channel replays it, so one approval never doubles. The same
-channel never replays: a repeated identical action inside one generation is evaluated (and
-challenged) again.
+A shell, MCP or read call registered on both `preToolUse` and its `before*` event reaches
+Doberman twice. The first channel records its answer under a keyed marker for
+`(conversation_id, generation_id, action)`; the other channel replays it once and the marker is
+consumed, so one approval never doubles and is never reused. The same channel never replays: a
+repeated identical action inside one generation is evaluated (and challenged) again. A replayed
+`beforeReadFile` still scans the file content; only the path decision is shared.
 
 `.cursor` and `.cursor/hooks.json` are part of Doberman's control plane: writes, deletes and shell
 commands naming them are hard-blocked in every host, and the rest of `.cursor/**` (rules, MCP
