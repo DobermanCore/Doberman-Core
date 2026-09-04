@@ -332,7 +332,7 @@ def serve(
     # imports run synchronously, before asyncio.run, so nothing loads in-loop.
     from mcp import StdioServerParameters
 
-    from doberman.proxy.serve import serve_http, serve_stdio
+    from doberman.proxy.serve import _redacted, serve_http, serve_stdio
 
     downstream_argv = list(ctx.args)
 
@@ -380,7 +380,16 @@ def serve(
         else:
             asyncio.run(serve_stdio(params, repo_root=path))
     except Exception as exc:  # noqa: BLE001 - surface a clean stderr error, never a raw traceback
-        typer.echo(f"error: doberman serve failed: {exc}", err=True)
+        if url is not None:
+            # Never echo `exc` here: transport errors embed the request URL (query
+            # string included) and can quote header values.
+            typer.echo(
+                f"error: doberman serve failed: could not serve {_redacted(url)} "
+                f"({type(exc).__name__})",
+                err=True,
+            )
+        else:
+            typer.echo(f"error: doberman serve failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
 

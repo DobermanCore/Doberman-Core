@@ -324,6 +324,33 @@ def test_url_failure_reports_cleanly(monkeypatch, _no_logging_mutation):
     assert result.exception is None or isinstance(result.exception, SystemExit)
 
 
+def test_url_failure_never_prints_the_query_or_header_values(monkeypatch, _no_logging_mutation):
+    # A transport error quoting the request URL and a header must not leak either.
+    async def _boom(*_a, **_k):
+        raise RuntimeError(
+            "connect failed: https://mcp.example.com/mcp?token=SECRETQUERY "
+            "(authorization: Bearer SECRETHEADER)"
+        )
+
+    monkeypatch.setattr(serve_mod, "serve_http", _boom)
+    result = runner.invoke(
+        cli.app,
+        [
+            "serve",
+            "--url",
+            "https://mcp.example.com/mcp?token=SECRETQUERY",
+            "-H",
+            "Authorization: Bearer SECRETHEADER",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "SECRETQUERY" not in result.output
+    assert "SECRETHEADER" not in result.output
+    assert "https://mcp.example.com/mcp" in result.output
+    assert "RuntimeError" in result.output
+
+
 # --- serve_http wiring -------------------------------------------------------------
 
 
