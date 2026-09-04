@@ -198,8 +198,9 @@ module map, and invariants: [Turn gate](docs/TURN_GATE.md).
 A suite-agnostic harness scores Doberman as a filter over labeled actions and reports attack bypass
 rate and benign over-block rate, running the real decision engine over each labeled tool call so the
 gated path is deterministic and offline. A labeled detection corpus turns it into a per-category
-detection-quality measurement, and CI gates on any regression. Commands, methodology, and published
-results (failure cases before wins): [Benchmarks](docs/BENCHMARKS.md).
+detection-quality measurement, and CI gates on any regression. Three more operator-supplied external
+suites — RedCode-Exec, MSB, and LLMail-Inject — are wired in the same way, alongside AgentDojo. Commands,
+methodology, and published results (failure cases before wins): [Benchmarks](docs/BENCHMARKS.md).
 
 ---
 

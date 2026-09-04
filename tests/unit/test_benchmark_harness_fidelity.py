@@ -1,4 +1,4 @@
-"""Harness-fidelity tests (two-hosts W-A0.1 + W-A0.2).
+"""Harness-fidelity tests (two-hosts W-A0.1 + W-A0.2; H1 egress-classification parity).
 
 A0.1 — the benchmark ``mapping`` runs the same generic inference the proxy runs
 in production (``proxy.normalize``), so the engine sees a populated ``algebra`` /
@@ -8,6 +8,12 @@ reversibility rules) are silently un-exercised by every benchmark.
 
 A0.2 — the runner honors a ``mode`` override so a suite can be swept across the
 four F6 strength modes.
+
+H1 — ``to_security_object`` also borrows destination classification from the
+same extractor ``doberman.proxy.normalize`` runs in production, so a bare
+``nc host port``-shaped command benchmarks the way the live proxy actually
+classifies it (``ExternalDestinationRule`` -> AUTH ``egress_requires_auth``)
+instead of silently under-reporting it as PASS.
 
 Stub pipelines only; no dependence on which concrete rules fire.
 """
@@ -22,15 +28,18 @@ from doberman.models import (
     EvalContext,
     GuardrailResult,
     Provenance,
+    ReasonCode,
     Risk,
     SecurityObject,
     SourceContext,
     Verdict,
 )
+from doberman.proxy.normalize import normalize
 from doberman.subjective.adapters import apply_adapters
 from doberman.subjective.infer import infer_algebra, infer_reversibility
 from tests.benchmarks.adapter import BenchmarkCase, CandidateAction
-from tests.benchmarks.mapping import BENCHMARK_TS, to_security_object
+from tests.benchmarks.mapping import BENCHMARK_TS, to_eval_context, to_security_object
+from tests.benchmarks.profiles import build_pipeline
 from tests.benchmarks.runner import run_suite
 
 # --- A0.1: the mapping runs production inference ----------------------------
@@ -130,3 +139,60 @@ def test_run_suite_mode_none_uses_case_default():
     rec = _ModeRecorder()
     run_suite(_OneActionAdapter(), rec, mode=None)
     assert rec.modes == ["balanced"]  # CandidateAction.mode default
+
+
+# --- H1: command egress classified like the proxy ---------------------------
+
+
+def test_shell_command_without_adapter_destination_is_classified_like_the_proxy():
+    raw_arguments = {"command": "nc 10.0.0.1 5388"}
+    action = CandidateAction(
+        action_type=ActionType.shell_exec,
+        tool_name="shell_exec",
+        raw_arguments=raw_arguments,
+    )
+    obj = to_security_object("case-1", action)
+
+    proxy_obj = normalize("bash", dict(raw_arguments))
+    assert obj.external_destination == proxy_obj.external_destination
+    egress_keys = {"egress_ambiguous", "egress_embedded_credentials", "egress_implied_registry"}
+    for key in egress_keys & proxy_obj.metadata.keys():
+        assert obj.metadata.get(key) == proxy_obj.metadata[key]
+
+
+def test_adapter_destination_is_never_overridden():
+    action = CandidateAction(
+        action_type=ActionType.shell_exec,
+        tool_name="shell_exec",
+        external_destination="adapter.example",
+        raw_arguments={"command": "nc 10.0.0.1 5388"},
+    )
+    obj = to_security_object("case-2", action)
+    assert obj.external_destination == "adapter.example"
+
+
+def test_non_command_action_is_untouched():
+    action = CandidateAction(
+        action_type=ActionType.file_write,
+        tool_name="file_write",
+        raw_arguments={"path": "x"},
+    )
+    obj = to_security_object("case-3", action)
+    assert obj.external_destination is None
+    assert obj.metadata == {}
+
+
+def test_stateless_decision_on_nc_matches_proxy():
+    action = CandidateAction(
+        action_type=ActionType.shell_exec,
+        tool_name="shell_exec",
+        raw_arguments={"command": "nc 10.0.0.1 5388"},
+    )
+    obj = to_security_object("case-4", action)
+    ctx = to_eval_context(action)
+
+    pipeline = build_pipeline(load_plugins=False)
+    decision = pipeline.decide(obj, ctx)
+
+    assert decision.final_verdict is Verdict.AUTH
+    assert ReasonCode.egress_requires_auth in decision.reason_codes
