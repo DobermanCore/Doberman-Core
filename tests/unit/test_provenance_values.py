@@ -2,6 +2,8 @@
 untrusted-value echo tripwire. Extraction only — no verdict authority here.
 """
 
+import pytest
+
 from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
 from doberman.storage.fingerprint import fingerprint
 
@@ -166,3 +168,44 @@ def test_bracketed_ipv6_url_form_is_still_extracted_as_a_host_value():
     # branch must not disturb that existing path.
     fps = untrusted_value_fingerprints("see http://[2001:db8::1]/status for the endpoint")
     assert fingerprint("2001:db8::1") in fps
+
+
+# --- T4: mail-address de-obfuscation (bracketed / bare-word / spaced forms) --
+# Attackers write an address as "user [at] host [dot] com" precisely to defeat
+# literal _EMAIL_RE matching. A de-obfuscated copy of the sample is scanned
+# through the SAME _EMAIL_RE + same path, so the plain address fingerprints
+# the same whether it arrived literal or obfuscated.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "contact [at] contact [dot] com",
+        "contact (at) contact (dot) com",
+        "contact{at}contact{dot}com",
+        "contact <at> contact <dot> com",
+        "contact AT contact DOT com",
+        "contact @ contact . com",
+    ],
+)
+def test_bracketed_at_dot_forms_fingerprint_the_plain_address(text):
+    fps = untrusted_value_fingerprints(text)
+    assert fingerprint("contact@contact.com") in fps
+
+
+def test_plain_address_is_fingerprinted_once():
+    # contact.com also matches the pre-existing bare-host branch -- the
+    # assertion is that the SECOND (de-obfuscation) pass adds nothing beyond
+    # what the first pass already produces for an already-plain address.
+    fps = untrusted_value_fingerprints("mail contact@contact.com now")
+    assert fps == {fingerprint("contact@contact.com"), fingerprint("contact.com")}
+
+
+def test_prose_at_dot_words_do_not_invent_an_address():
+    fps = untrusted_value_fingerprints("meet me at the cafe. dot your i's")
+    assert fps == set()
+
+
+def test_sentence_period_is_not_joined():
+    fps = untrusted_value_fingerprints("see you at end. Next line")
+    assert fingerprint("you@end.Next") not in fps
