@@ -543,17 +543,11 @@ def test_args_only_bash_dash_c_payload_is_not_passed():
 
 def test_args_with_bare_apostrophe_does_not_false_positive():
     # {"args": ["--grep", "it's"]} on a non-command action type used to make
-    # shlex choke on the bare apostrophe (after a plain-space join) — that
-    # raw-parse-failure false positive is gone (shlex.join keeps the
-    # apostrophe's token boundary intact, so this parses cleanly). T5-fix:
-    # the reconstructed line still has no verb, just a leading flag, which
-    # `_leading_option` (rightly) treats as ambiguous — same AUTH floor as
-    # an unresolved wrapper option, not the stale "could not be parsed
-    # safely" opaque-parse-failure path this test used to pin against.
+    # shlex choke on the bare apostrophe (after a plain-space join) and the
+    # rule spuriously stepped up to AUTH (opaque_command) even though this
+    # action type never carries a command line.
     result = _cmd_args({"args": ["--grep", "it's"]}, action_type=ActionType.file_read)
-    assert result.verdict is Verdict.AUTH
-    assert ReasonCode.opaque_command in result.reason_codes
-    assert "unresolved option" in result.explanation
+    assert result.verdict is Verdict.PASS
 
 
 def test_args_only_list_still_blocks():
@@ -1498,10 +1492,44 @@ def test_unresolved_wrapper_option_fails_upward(command):
     assert ReasonCode.opaque_command in result.reason_codes
 
 
+def test_wrapper_unknown_option_still_reaches_destructive_command():
+    # `sudo --bogus-option rm -rf /`: sudo's own unrecognized option is
+    # dropped as a bare flag (see `_argv_from_tokens`), never swallowing the
+    # `rm -rf /` behind it — the walk reaches it directly, so the verdict
+    # must never read as benign (BLOCK, reached via the destructive-command
+    # check itself, is fine — this isn't pinning on the leading-option floor).
+    result = _cmd("sudo --bogus-option rm -rf /")
+    assert result.verdict is not Verdict.PASS
+
+
 def test_unresolved_wrapper_option_leading_option_helper():
-    tokens = commands_module._argv_from_tokens(["env", "-S", "it's", "rm"])
+    raw_tokens = ["env", "-S", "it's", "rm"]
+    tokens = commands_module._argv_from_tokens(raw_tokens)
     assert tokens[0] == "-S"
-    assert commands_module._leading_option(tokens) is True
+    assert commands_module._leading_option(raw_tokens, tokens) is True
+
+
+# --- T7-fix: the leading-option floor fires only after a wrapper was --------
+# stripped. `_leading_option` used to be blanket: any segment whose argv[0]
+# starts with `-` after `_argv_from_tokens` was AUTH. A verbless line that
+# simply BEGINS with an option (`--grep it's`, `-rf / rm`) never had a
+# wrapper stripped — a real shell rejects it outright, and the tool-args
+# form (`{"args": ["--grep", "it's"]}`) is a common benign shape (Grep/
+# Glob-style tool calls) — so it must stay whatever the rest of the walk
+# decides, not blanket-AUTH.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "--help",
+        "-rf / rm",
+        '--grep "it\'s"',
+    ],
+)
+def test_verbless_leading_option_without_a_wrapper_stays_pass(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.PASS
 
 
 # --- T6-fix: command-substitution nesting depth is capped --------------------

@@ -698,10 +698,13 @@ def _argv_from_tokens(tokens: list[str], *, keep: frozenset[str] = frozenset()) 
     return tokens
 
 
-def _leading_option(tokens: list[str]) -> bool:
-    """True when ``tokens`` is non-empty and ``tokens[0]`` still looks like an
-    option (``-``-prefixed) after :func:`_argv_from_tokens` has stripped every
-    env-assignment/wrapper prefix it can resolve.
+def _leading_option(raw_tokens: list[str], tokens: list[str]) -> bool:
+    """True when ``tokens[0]`` still looks like an option (``-``-prefixed)
+    after :func:`_argv_from_tokens` has stripped every env-assignment/wrapper
+    prefix it can resolve, AND ``raw_tokens`` shows a wrapper actually sat in
+    front of it (its first non-env-assignment token did not itself start
+    with ``-``) — i.e. something was stripped and what's left is still an
+    option, never a verbless line that simply begins with a flag.
 
     T5-fix: this happens when a wrapper's value-option splice itself fails
     (e.g. ``env -S <value>`` where ``<value>`` doesn't ``shlex.split`` —
@@ -711,8 +714,17 @@ def _leading_option(tokens: list[str]) -> bool:
     keys classification off ``tokens[0]`` (``_segment_verdict``,
     ``delete_class_operands_and_dynamic``) must treat this as ambiguous
     rather than silently reading the segment as benign.
+
+    T7-fix: a verbless segment that simply BEGINS with an option
+    (``--grep it's``, ``-rf / rm``) never had a wrapper stripped — a real
+    shell would reject it outright, and the tool-args form is a benign,
+    common shape (Grep/Glob-style args lists) — so it must stay whatever the
+    rest of the walk decides, not blanket-AUTH.
     """
-    return bool(tokens) and tokens[0].startswith("-")
+    if not tokens or not tokens[0].startswith("-"):
+        return False
+    first_raw = next((t for t in raw_tokens if not _ENV_ASSIGNMENT.match(t)), None)
+    return first_raw is not None and not first_raw.startswith("-")
 
 
 def _argv(segment: str) -> list[str] | None:
@@ -1826,7 +1838,7 @@ def delete_class_operands_and_dynamic(command: str) -> tuple[list[str] | None, b
     found = False
     for raw_segment in segments:
         tokens = _argv_from_tokens(raw_segment)
-        if not tokens or _leading_option(tokens):
+        if not tokens or _leading_option(raw_segment, tokens):
             # T5-fix: an unresolved leading option (a failed wrapper-option
             # splice) is never a delete-class command — skip it rather than
             # risk misreading it as one; see `_leading_option`.
@@ -1972,7 +1984,7 @@ class DestructiveCommandRule:
             tokens = _argv_from_tokens(raw_segment)
             if not tokens:
                 continue
-            if _leading_option(tokens):
+            if _leading_option(raw_segment, tokens):
                 # T5-fix: a wrapper's own option-value splice failed (e.g.
                 # `env -S <value>` where `<value>` doesn't shlex.split), so
                 # `_argv_from_tokens` left the option/value tokens in place —
