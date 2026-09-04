@@ -122,3 +122,40 @@ def test_short_cyrillic_function_words_are_not_flagged() -> None:
     per-letter curated set, is what keeps these from false-positiving."""
     for word in ("он", "на", "то", "со"):
         assert "whole_script_confusable" not in _channels(word), word
+
+
+# --- Genuine-script discriminator (issue #141 controller review) -------------
+# A whole-script spoof only works if it is an *isolated* non-Latin token in
+# Latin context; genuine Cyrillic/Greek prose brings company — other
+# same-script tokens with letters outside the curated lookalike set. These
+# all-lookalike common words (Russian "тема"/"theme", Greek "θέμα"/"theme")
+# previously false-positived even though real prose surrounds them.
+
+
+def test_genuine_russian_sentence_with_lookalike_word_is_not_flagged() -> None:
+    assert "whole_script_confusable" not in _channels("Обновить тему в конфиге")
+
+
+def test_genuine_greek_sentence_with_lookalike_word_is_not_flagged() -> None:
+    assert "whole_script_confusable" not in _channels("Καλή μέρα, νέο θέμα σήμερα")
+
+
+def test_genuine_russian_prose_with_latin_identifier_is_not_flagged() -> None:
+    assert "whole_script_confusable" not in _channels("Исправить тему в config.py")
+
+
+def test_spoof_still_flagged_alongside_latin_company_only() -> None:
+    """The existing spoof fixtures, in Latin sentence context, still fire —
+    genuine evidence requires a same-script non-lookalike token, and none of
+    these sentences have one."""
+    for spoof, sentence in [
+        (CYRILLIC_PAYPAL, "transfer funds via раураӏ now"),
+        (CYRILLIC_ACCOUNT, "visit your ассоунт dashboard"),
+        ("ροχυ", "contact support at ροχυ helpdesk"),
+    ]:
+        assert spoof in sentence
+        assert "whole_script_confusable" in _channels(sentence), sentence
+
+
+def test_spoof_with_latin_company_and_punctuation_only_is_flagged() -> None:
+    assert "whole_script_confusable" in _channels("login: раураӏ")

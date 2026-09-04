@@ -159,12 +159,16 @@ _WHOLE_SCRIPT_CONFUSABLES: frozenset[str] = frozenset(
 #: secure, whole-word brand lookalikes) are all >= this length.
 #: ponytail: fixed length floor, not a script-aware stop-word list — raise if
 #: a short real-world attack token is later found to need catching.
-#: Residual gap: the curated set covers a large fraction of the Greek alphabet
-#: (11 of 24 letters, several high-frequency), so a genuine 4+ letter Greek
-#: word built entirely from it can still false-positive (verified: this is
-#: NOT a hypothetical — an earlier draft of this module's own test fixtures
-#: hit it). Defense-in-depth, not exhaustive; a full stop-word/dictionary
-#: exclusion list is the upgrade path if this proves too noisy in practice.
+#: Residual gap: a whole-script spoof only works if it fools a Latin reader,
+#: so it appears as an isolated non-Latin token in Latin context — genuine
+#: Cyrillic/Greek prose brings company (another same-script token with a
+#: letter outside the curated set). A text made up of nothing BUT
+#: all-lookalike Cyrillic/Greek words (e.g. the one-word message "тема")
+#: still has no such company and so still reports; conversely a spoof
+#: embedded inside genuine Cyrillic/Greek prose is not reported — by
+#: construction it cannot fool a Latin reader there either. Defense-in-depth,
+#: not exhaustive; a full stop-word/dictionary exclusion list is the upgrade
+#: path if this proves too noisy in practice.
 _WHOLE_SCRIPT_MIN_LEN = 4
 
 #: Seed list of well-known glitch / under-trained token fragments. Extensible
@@ -637,6 +641,21 @@ def _scan_mixed_script(text: str, report: OODTokenReport) -> None:
         )
 
 
+def _classify_script_token(token: str) -> tuple[set[str], list[str]]:
+    """A token's alphabetic script set and its alphabetic characters."""
+    scripts: set[str] = set()
+    alpha_chars: list[str] = []
+    for ch in token:
+        if not ch.isalpha():
+            continue
+        alpha_chars.append(ch)
+        try:
+            scripts.add(unicodedata.name(ch).split(" ", 1)[0])
+        except ValueError:
+            continue
+    return scripts, alpha_chars
+
+
 def _scan_whole_script_confusable(text: str, report: OODTokenReport) -> None:
     """Flag all-lookalike Cyrillic or Greek tokens without exposing them.
 
@@ -646,25 +665,32 @@ def _scan_whole_script_confusable(text: str, report: OODTokenReport) -> None:
     that mimics a Latin word (e.g. an all-Cyrillic look-alike of "paypal") has
     no script mixing and is NFKC-stable, so it is invisible to every other
     channel here — this is the whole-script gap that closes it.
+
+    Two passes over ``text.split()``: a spoof only works if it fools a Latin
+    reader, so it must appear as an *isolated* non-Latin token in otherwise
+    Latin context. Genuine Cyrillic/Greek prose brings company — another
+    same-script token with a letter outside the curated lookalike set (any
+    length; one such letter is enough). If the text shows that evidence,
+    the whole channel stays silent for it; otherwise the length-gated
+    all-lookalike tokens are reported exactly as before.
     """
-    suspicious = 0
-    for token in text.split():
-        if len(token) < _WHOLE_SCRIPT_MIN_LEN:
-            continue
-        scripts: set[str] = set()
-        alpha_chars: list[str] = []
-        for ch in token:
-            if not ch.isalpha():
-                continue
-            alpha_chars.append(ch)
-            try:
-                scripts.add(unicodedata.name(ch).split(" ", 1)[0])
-            except ValueError:
-                continue
-        if scripts in ({"CYRILLIC"}, {"GREEK"}) and all(
-            ch in _WHOLE_SCRIPT_CONFUSABLES for ch in alpha_chars
-        ):
-            suspicious += 1
+    classified = [(token, *_classify_script_token(token)) for token in text.split()]
+
+    genuine_evidence = any(
+        scripts in ({"CYRILLIC"}, {"GREEK"})
+        and not all(ch in _WHOLE_SCRIPT_CONFUSABLES for ch in alpha_chars)
+        for _, scripts, alpha_chars in classified
+    )
+    if genuine_evidence:
+        return
+
+    suspicious = sum(
+        1
+        for token, scripts, alpha_chars in classified
+        if len(token) >= _WHOLE_SCRIPT_MIN_LEN
+        and scripts in ({"CYRILLIC"}, {"GREEK"})
+        and all(ch in _WHOLE_SCRIPT_CONFUSABLES for ch in alpha_chars)
+    )
     if suspicious:
         report.findings.append(
             ChannelFinding(
