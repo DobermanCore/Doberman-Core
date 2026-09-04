@@ -6,6 +6,11 @@
 >
 > Research memo for issue #202 (Cursor is already scoped separately in
 > `docs/CONNECTOR_MEMO_CURSOR.md` and off this menu per the maintainer's 2026-08-17 comment [S1]).
+>
+> **Cursor status update (2026-09-04).** A live `cursor-agent` capture found Cursor's opt-in "Third
+> Party Hooks" setting *also* loads and invokes Claude Code hooks (Cursor's own payload shape, not
+> Claude Code's) — `doberman hook pre` now recognises and answers those calls through the Cursor
+> adapter (see `adapters/cursor/README.md`'s "Cursor also runs your Claude Code hooks").
 > Evidence gathered 2026-09-03 against Aider's docs/source (Aider-AI/aider, main branch), Continue's
 > docs/source (continuedev/continue, main branch), and Doberman's own `src/doberman/proxy/`. Every
 > claim below carries its source; anything I could not confirm is marked UNVERIFIED.
