@@ -78,6 +78,15 @@ CONTROL_PLANE_GLOBS: tuple[str, ...] = (
     "**/.codex/config.toml",
     "**/.codex/plugins",
     "**/.codex/plugins/**",
+    # The Cursor control plane (#202): ``hooks.json`` at project scope is the
+    # hook surface (it also carries the ``failClosed`` flag the fail-closed
+    # guarantee depends on), so it and the ``.cursor`` dir itself are
+    # hard-blocked like ``.codex/hooks.json``; the rest of ``.cursor/**``
+    # (rules, MCP config) is SENSITIVE (AUTH), below.
+    ".cursor",
+    ".cursor/hooks.json",
+    "**/.cursor",
+    "**/.cursor/hooks.json",
     # The per-user auth state (``doberman.auth.totp`` / ``doberman.auth.password``):
     # the TOTP seed, its lockout counter, and the password hash. These live OUTSIDE
     # any repo (``%LOCALAPPDATA%``/``$XDG_CONFIG_HOME``/``~/.config`` + ``doberman/``)
@@ -213,6 +222,10 @@ DEFAULT_SENSITIVE_GLOBS: tuple[str, ...] = (
     # first); everything else under .codex/ warrants authentication.
     ".codex/**",
     "**/.codex/**",
+    # The rest of the Cursor control directory (rules, mcp.json): harness
+    # configuration -> AUTH. hooks.json above is hard-blocked (checked first).
+    ".cursor/**",
+    "**/.cursor/**",
 )
 
 #: Used as the repo root when the context does not supply one. ".": the process

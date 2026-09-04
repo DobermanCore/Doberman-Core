@@ -1,0 +1,13 @@
+{
+  "conversation_id": "conv-00000000-0000-0000-0000-000000000001",
+  "generation_id": "gen-00000000-0000-0000-0000-000000000001",
+  "model": "example-model",
+  "hook_event_name": "beforeReadFile",
+  "cursor_version": "2.4.0",
+  "workspace_roots": ["/placeholder/project"],
+  "user_email": null,
+  "transcript_path": null,
+  "file_path": "/placeholder/project/notes.txt",
+  "content": "hello world",
+  "attachments": []
+}

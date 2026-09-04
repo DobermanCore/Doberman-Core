@@ -32,6 +32,23 @@ def _payload(tmp_path, tool_use_id=None):
     }
 
 
+def test_marker_filename_is_portable():
+    # A real event_key is ``hmac:<hex>``; the colon must never reach the filename
+    # (an NTFS alternate data stream on Windows -> the marker write fails silently
+    # and both channels evaluate, i.e. a doubled AUTH prompt).
+    name = os.path.basename(singleflight._marker_path("hmac:0123abcd"))
+    assert ":" not in name and name.startswith("doberman-sf-")
+
+
+def test_consume_drops_the_marker(isolated_fingerprint_key):
+    key = "sf-consume-" + uuid.uuid4().hex
+    singleflight.record(key, "{}")
+    assert singleflight.replay(key) == "{}"
+    singleflight.consume(key)
+    assert singleflight.replay(key) is None
+    singleflight.consume(key)  # idempotent
+
+
 def test_event_id_key_matches_capture():
     # The dedupe key is the captured per-call id, not the plan's placeholder.
     assert singleflight.EVENT_ID_KEY == "tool_use_id"

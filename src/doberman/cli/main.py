@@ -1474,6 +1474,27 @@ def hook_codex_pre() -> None:
     raise typer.Exit(0)
 
 
+@hook_app.command("cursor")
+def hook_cursor() -> None:
+    """Cursor hook - gate one Cursor event as allow / deny.
+
+    One command for every gating event (``preToolUse``, ``beforeShellExecution``,
+    ``beforeMCPExecution``, ``beforeReadFile``; ``sessionStart`` is acknowledged).
+    Reads Cursor's hook payload as JSON on stdin (a leading UTF-8 BOM is
+    tolerated) and writes Cursor's response document to stdout. A deny also
+    exits 2, which Cursor treats as a block even if the document is lost. Runs
+    only the fast deterministic objective floor and fails closed on any
+    malformed input or engine error. Register it in ``.cursor/hooks.json`` with
+    ``"failClosed": true`` (see adapters/cursor/README.md).
+    """
+    _configure_stderr_logging()
+    from doberman.hosthooks.cursor import run_cursor
+
+    text, code = run_cursor(sys.stdin.read())
+    sys.stdout.write(text + "\n")
+    raise typer.Exit(code)
+
+
 @password_app.command("set")
 def password_set(
     force: bool = typer.Option(

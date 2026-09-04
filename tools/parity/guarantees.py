@@ -7,7 +7,7 @@ guarantee/host that doesn't exist. Order here is the row order in
 """
 
 #: Columns — the hosts a guarantee can be proven on.
-HOSTS: tuple[str, ...] = ("claude-code", "codex", "mcp-proxy", "openclaw")
+HOSTS: tuple[str, ...] = ("claude-code", "codex", "cursor", "mcp-proxy", "openclaw")
 
 #: Rows — (key, human title). The key is what a test marker cites.
 GUARANTEES: tuple[tuple[str, str], ...] = (
