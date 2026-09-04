@@ -1467,6 +1467,7 @@ def test_split_segments_reports_termination():
 
     segments, unterminated = commands_module._split_segments("x=$(echo a; rm -rf /")
     assert unterminated is True
+    assert any("rm -rf /" in segment for segment in segments)
 
 
 # --- T5-fix: an unresolved wrapper option in argv[0] fails upward -----------
