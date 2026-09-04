@@ -977,8 +977,13 @@ def _dev_tcp_udp_auth() -> GuardrailResult:
 # `pgrep ... | xargs kill` shape). Compared case-insensitively.
 _PROCESS_KILL_COMMANDS = {"kill", "pkill", "killall", "taskkill", "stop-process", "spps"}
 
-# `kill`'s own list/probe/help flags — never a signal to a target.
-_KILL_PASS_FLAGS = {"-l", "-L", "--list", "-0", "-h", "--help"}
+# `kill`'s own list/probe/help flags — benign only as the SOLE option present
+# (T2-fix: `any(a in ... for a in args)` let a carve-out flag mixed with a
+# real signal, e.g. `kill -0 -9 <pid>` or `kill -s 0 -s KILL <pid>`, slip
+# through as PASS — see README's process-kill clause).
+_KILL_LIST_HELP_FLAGS = {"-l", "-L", "--list", "--table", "-h", "--help"}
+_KILL_VALUE_OPTIONS = {"-s", "-n", "--signal"}  # consume the next token as their value
+_KILL_PROBE_OPTIONS = {"-0", ("-s", "0"), ("-n", "0"), ("--signal", "0"), "--signal=0"}
 # The other kill-family tools carve out only their own bare help flag.
 _KILL_HELP_ONLY_FLAGS = {"-h", "--help", "-?", "/?"}
 # A `kill` operand naming the caller's OWN job/background process, never a
@@ -987,50 +992,140 @@ _KILL_HELP_ONLY_FLAGS = {"-h", "--help", "-?", "/?"}
 # surrounding quotes, so `"$!"` and `$!` tokenize identically.
 _KILL_OWN_JOB_TARGET_RE = re.compile(r"^(?:%\d+|%%|%\+|%-|\$!|\$\$)$")
 
+# xargs's own option vocabulary, so the process-kill check finds the command
+# xargs actually invokes instead of scanning every token for a kill-family
+# name (which false-fired on e.g. `xargs echo kill`).
+_XARGS_SHORT_VALUE_OPTS = {"-I", "-n", "-P", "-L", "-l", "-d", "-a", "-E", "-s"}
+_XARGS_LONG_VALUE_OPTS = {
+    "--max-args",
+    "--max-procs",
+    "--max-lines",
+    "--delimiter",
+    "--arg-file",
+    "--eof",
+    "--replace",
+    "--max-chars",
+}
 
-def _kill_operands(args: list[str]) -> list[str]:
-    """Non-flag operands to a ``kill`` argv, skipping ``-s``'s mandatory
-    signal-name value token so it is never mistaken for a target operand."""
+_KillOption = str | tuple[str, str | None]
+
+
+def _kill_parse_options(args: list[str]) -> tuple[list[_KillOption], list[str]]:
+    """Split a ``kill`` argv into ``(options, operands)``. A bare ``--`` ends
+    option parsing (dropped, not kept as an operand); ``-s``/``-n``/
+    ``--signal`` consume the next token as their value, folded into the
+    option as e.g. ``("-s", "0")`` (left valueless if nothing follows);
+    ``--signal=0`` is self-contained; every other ``-...`` token is a bare
+    flag option."""
+    options: list[_KillOption] = []
     operands: list[str] = []
-    skip_next = False
-    for token in args:
-        if skip_next:
-            skip_next = False
+    stop = False
+    i, n = 0, len(args)
+    while i < n:
+        token = args[i]
+        if not stop and token == "--":  # noqa: S105 — arg-parsing terminator, not a secret
+            stop = True
+            i += 1
             continue
-        if token == "-s":  # noqa: S105 — kill's signal-name flag, not a secret
-            skip_next = True
-            continue
-        if token.startswith("-"):
+        if not stop and token.startswith("-") and len(token) > 1:
+            if token in _KILL_VALUE_OPTIONS:
+                if i + 1 < n:
+                    options.append((token, args[i + 1]))
+                    i += 2
+                else:
+                    options.append((token, None))
+                    i += 1
+            else:
+                options.append(token)
+                i += 1
             continue
         operands.append(token)
-    return operands
+        i += 1
+    return options, operands
+
+
+def _kill_sole_option_is_carveout(options: list[_KillOption]) -> bool:
+    """True iff ``options`` holds exactly one option and it is a list/help
+    flag or a signal-0 probe — the only option-based carve-outs that hold no
+    matter what operand(s) accompany them (a probe/list never signals a
+    target, whatever the target is). A second option of any kind (another
+    probe, a real signal) forfeits the carve-out."""
+    return len(options) == 1 and (
+        options[0] in _KILL_LIST_HELP_FLAGS or options[0] in _KILL_PROBE_OPTIONS
+    )
 
 
 def _kill_is_benign(args: list[str]) -> bool:
     """PASS carve-outs for ``kill`` (never ``pkill``/``killall``/...): no args
-    at all (usage error), a list/help/probe flag, a ``-s 0`` no-op signal
-    probe, or every operand names the caller's own job — never someone else's
-    process. A `kill` whose operand can't be seen (a stripped `$(...)` leaves
-    no residual token) has no operands here either, so it correctly falls
-    through to AUTH rather than being read as the empty/usage-error case."""
+    at all (usage error: bare ``kill``), a list/help/probe flag as the SOLE
+    option (see ``_kill_sole_option_is_carveout``), or every operand names
+    the caller's own job — never someone else's process. A `kill` whose
+    operand can't be seen (a stripped `$(...)` leaves no residual token, e.g.
+    ``kill -SIGKILL $(pgrep sshd)``) has options but no operands here either;
+    that is deliberately NOT the bare-``kill`` usage-error case (ponytail:
+    keeps the pre-T2-fix fail-closed reading for this shape — args, not just
+    operands, must be empty — since a carve-out flag alone can't prove the
+    stripped operand was benign; widen only with a test proving it safe)."""
     if not args:
         return True
-    if any(a in _KILL_PASS_FLAGS for a in args):
+    options, operands = _kill_parse_options(args)
+    if _kill_sole_option_is_carveout(options):
         return True
-    if any(a == "-s" and args[i + 1] == "0" for i, a in enumerate(args[:-1])):
-        return True
-    operands = _kill_operands(args)
     return bool(operands) and all(_KILL_OWN_JOB_TARGET_RE.match(op) for op in operands)
+
+
+def _xargs_command_start(tokens: list[str]) -> int:
+    """Index of the first token after xargs's own option tokens — the
+    command xargs invokes. A value-consuming xargs option eats the next
+    token unless its value is attached (``-I{}``/``-n1``/``--max-args=1``);
+    every other ``-...`` token is a bare xargs flag."""
+    i, n = 0, len(tokens)
+    while i < n:
+        token = tokens[i]
+        if not (token.startswith("-") and len(token) > 1):
+            break
+        if token in _XARGS_SHORT_VALUE_OPTS or token in _XARGS_LONG_VALUE_OPTS:
+            i += 2 if i + 1 < n else 1
+        elif any(token.startswith(f"{opt}=") for opt in _XARGS_LONG_VALUE_OPTS) or any(
+            len(token) > len(opt) and token.startswith(opt) for opt in _XARGS_SHORT_VALUE_OPTS
+        ):
+            i += 1
+        else:
+            i += 1
+    return i
+
+
+def _xargs_invoked_command(tokens: list[str]) -> tuple[str, list[str]] | None:
+    """The command xargs will run, and the tokens after it — or ``None`` if
+    no command token follows xargs's own options. ``_argv_from_tokens``
+    strips env assignments and transparent wrappers first, so
+    ``xargs sudo kill -9`` still resolves to ``kill``."""
+    command_tokens = _argv_from_tokens(tokens[_xargs_command_start(tokens) :])
+    if not command_tokens:
+        return None
+    return command_tokens[0].lower(), command_tokens[1:]
 
 
 def _process_kill_verdict(tokens: list[str]) -> GuardrailResult | None:
     """Signal/kill commands step up to AUTH: ``kill``/``pkill``/``killall``/
-    ``taskkill``/``Stop-Process``, and ``xargs`` piping into one of these."""
+    ``taskkill``/``Stop-Process``, and ``xargs`` piping into one of these.
+    Nothing else on an ``xargs`` command line is inspected — only the
+    command it actually invokes."""
     if not tokens:
         return None
     cmd = tokens[0].lower()
     if cmd == "xargs":
-        if not any(t.lower() in _PROCESS_KILL_COMMANDS for t in tokens[1:]):
+        invoked = _xargs_invoked_command(tokens[1:])
+        if invoked is None:
+            return None
+        cmd, rest = invoked
+        if cmd not in _PROCESS_KILL_COMMANDS:
+            return None
+        if cmd == "kill":
+            options, _operands = _kill_parse_options(rest)
+            if _kill_sole_option_is_carveout(options):
+                return None
+        elif any(t in _KILL_HELP_ONLY_FLAGS for t in rest):
             return None
     elif cmd not in _PROCESS_KILL_COMMANDS:
         return None
