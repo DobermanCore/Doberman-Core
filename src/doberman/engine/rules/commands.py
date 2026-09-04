@@ -190,12 +190,16 @@ _DESTRUCTIVE_INTERPRETER_OP = re.compile(
 # does not otherwise see: a shell redirection into /dev/tcp or /dev/udp
 # (bash's built-in TCP/UDP pseudo-device), netcat/ncat used in exec-on-connect
 # (reverse/bind-shell) form, socat's EXEC:/SYSTEM: address type (socat's
-# equivalent of `nc -e`), and openssl's TLS client mode. AUTH-only, never
-# BLOCK: a routine port probe (`nc -zv host port`) and DNS-label exfil
-# (`dig`/`nslookup`) must stay indistinguishable from ordinary DevOps without
-# an entropy/calibration signal this module doesn't have (out of scope for
-# this slice — see docs/REASON_CODES.md and the README known-limitations
-# entry for `raw_socket_channel`).
+# equivalent of `nc -e`), and openssl's TLS client mode. Two tiers (ADR 0097):
+# the exec-on-connect subset — a network channel wired to command execution
+# (`nc -e`/`--sh-exec`, socat EXEC:/SYSTEM:, and, in an interpreter payload, a
+# socket AND a subprocess/shell spawn) — is an unambiguous reverse/bind shell
+# with no benign DevOps use, so it BLOCKs. Everything else here (a bare
+# `/dev/tcp` redirect, a routine port probe `nc -zv host port`, `openssl
+# s_client`, a bare inline socket, DNS-label exfil) stays AUTH: it must remain
+# indistinguishable from ordinary DevOps without an entropy/calibration signal
+# this module doesn't have. See docs/REASON_CODES.md and the README
+# known-limitations entry for `raw_socket_channel`.
 _DEV_TCP_UDP_RE = re.compile(r"/dev/(?:tcp|udp)/")
 _NC_LIKE_COMMANDS = {"nc", "ncat", "netcat"}
 # The exec-on-connect flags that turn a network tool into a reverse/bind
@@ -218,6 +222,19 @@ _SOCAT_EXEC_ADDRESS_RE = re.compile(r"(?i)\b(?:exec|system):")
 _INLINE_SOCKET_OP = re.compile(
     r"\bsocket\.|\bconnect\(|\bcreate_connection\(|\bhttp\.client\b|\brequests\.|"
     r"\burllib\.request\b|\burlopen\b|\bnet\.Socket\b|\bfetch\(",
+    re.IGNORECASE,
+)
+
+# Exec-on-connect / socket-wired-to-a-shell — the discrete reverse/bind-shell
+# signature (a network channel handed to command execution). Unlike a bare
+# socket, a port probe, or a /dev/tcp redirect (all indistinguishable from
+# ordinary DevOps, so AUTH), this shape has no benign use, so it BLOCKs (ADR
+# 0097). Interpreter side: a socket op (_INLINE_SOCKET_OP) AND a subprocess/
+# exec/pty spawn in the SAME inline payload. Best-effort shape match over source
+# text (an obfuscated variant is out of scope, same as the layer it sits on).
+_INLINE_SHELL_SPAWN = re.compile(
+    r"subprocess|os[.]system|os[.]popen|os[.]exec[lv][ep]*|os[.]dup2|"
+    r"pty[.]spawn|pexpect|child_process|execve?[(]|/bin/(?:sh|bash|zsh|dash)",
     re.IGNORECASE,
 )
 
@@ -670,6 +687,14 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
             )
     if any(_DESTRUCTIVE_INTERPRETER_OP.search(payload) for payload in payloads):
         return _block("Interpreter inline payload contains a destructive filesystem operation.")
+    if any(
+        _INLINE_SOCKET_OP.search(payload) and _INLINE_SHELL_SPAWN.search(payload)
+        for payload in payloads
+    ):
+        return _block_raw_socket_exec(
+            "Interpreter inline payload wires a network socket to command execution "
+            "(reverse/bind shell); blocked."
+        )
     if any(_INLINE_SOCKET_OP.search(payload) for payload in payloads):
         return _auth(
             ReasonCode.opaque_command,
@@ -799,6 +824,11 @@ def _segment_verdict(
         return _block("Force-push to a protected branch (rewrites shared history).")
     if ":(){" in "".join(tokens) or _looks_like_fork_bomb(tokens):
         return _block("Fork-bomb-style command.")
+    if _raw_socket_exec_on_connect(tokens):
+        return _block_raw_socket_exec(
+            "Command wires a network socket to command execution "
+            "(exec-on-connect reverse/bind shell); blocked."
+        )
 
     windows_delete = _windows_delete_verdict(tokens, bulk_threshold)
     if windows_delete is not None:
@@ -985,6 +1015,23 @@ def _nc_has_exec_flag(tokens: list[str]) -> bool:
     return False
 
 
+def _raw_socket_exec_on_connect(tokens: list[str]) -> bool:
+    """True for the exec-on-connect subset of the raw-socket shapes — a network
+    tool wired to spawn a subprocess/shell (nc/ncat -e/--sh-exec, socat
+    EXEC:/SYSTEM:). The discrete reverse/bind-shell predicate that earns a
+    BLOCK; the broader raw-socket shapes (a bare /dev/tcp redirect, a nc -zv
+    probe, openssl s_client) stay AUTH via
+    :func:`_raw_socket_channel_explanation`."""
+    if not tokens:
+        return False
+    cmd = tokens[0]
+    if cmd in _NC_LIKE_COMMANDS and _nc_has_exec_flag(tokens[1:]):
+        return True
+    if cmd == "socat" and any(_SOCAT_EXEC_ADDRESS_RE.search(t) for t in tokens[1:]):
+        return True
+    return False
+
+
 def _raw_socket_channel_explanation(tokens: list[str]) -> str | None:
     """Explanation fragment for a raw-socket/bare-TCP egress shape, or ``None``.
 
@@ -1052,6 +1099,20 @@ def _block(explanation: str) -> GuardrailResult:
         verdict=Verdict.BLOCK,
         risk=Risk.critical,
         reason_codes=[ReasonCode.destructive_command],
+        explanation=explanation,
+    )
+
+
+def _block_raw_socket_exec(explanation: str) -> GuardrailResult:
+    # A reverse/bind shell (socket wired to command execution). Keeps the
+    # raw_socket_channel reason code (it IS a raw network channel) but at the
+    # BLOCK tier: the exec-on-connect signature is unambiguous, unlike the
+    # AUTH-tier probe/redirect shapes. Explanation is a fixed literal — no
+    # host/port/shell path echoed (redaction).
+    return GuardrailResult(
+        verdict=Verdict.BLOCK,
+        risk=Risk.critical,
+        reason_codes=[ReasonCode.raw_socket_channel],
         explanation=explanation,
     )
 
