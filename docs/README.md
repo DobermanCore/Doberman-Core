@@ -19,6 +19,7 @@ Use this index to find the right Doberman documentation for your task.
 | [PLUGINS.md](PLUGINS.md) | Open this when writing a custom guardrail rule or forwarding Doberman's redacted audit log to your own pipeline. |
 | [EXTENDING.md](EXTENDING.md) | Open this when deciding which of Doberman's twelve entry-point seams (rules, detectors, policy sources, auth providers, audit sinks, and the rest) to plug a new integration into. |
 | [RECOVERY.md](RECOVERY.md) | Open this when clearing sticky taint, approving a changed MCP tool, resetting learned memory, or removing Doberman from a project. |
+| [BASELINE_SEEDING.md](BASELINE_SEEDING.md) | Open this when warming a fresh install's per-entity baseline from your own already-allowed traces with `doberman memory seed`. |
 | [TELEMETRY.md](TELEMETRY.md) | Open this when you want to understand what anonymous usage data Doberman sends, what it never sends, or how to control telemetry. |
 | [POLICY_VERSIONS.md](POLICY_VERSIONS.md) | Open this when you need to know which policy was in force at a given time, what a `pv1:` policy version id contains, or how to verify the policy catalogue. |
 | [TUNING.md](TUNING.md) | Open this when adjusting Doberman's strictness, enforcement, roles, preference weights, friction settings, or message tone to match your risk tolerance. |

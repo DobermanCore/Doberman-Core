@@ -221,7 +221,9 @@ Doberman ships with sane defaults, but every dial is yours to move: the strictne
 of them requires a possession factor (TOTP if enrolled, otherwise the local Doberman password) and is
 recorded in the append-only policy-change ledger; raising is always frictionless. Full reference:
 [Tune to your risk tolerance](docs/TUNING.md). Recovering from sticky taint, re-approving a changed
-tool, resetting learned memory, or fully removing a project: [Recover](docs/RECOVERY.md).
+tool, resetting learned memory, or fully removing a project: [Recover](docs/RECOVERY.md). Warming a
+fresh install's baseline from your own already-allowed traces instead of starting cold: `doberman
+memory seed --from traces.jsonl` ([format + invariants](docs/BASELINE_SEEDING.md)).
 
 ---
 
