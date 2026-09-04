@@ -1229,22 +1229,27 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
     if not payloads:
         return None
 
+    too_fragmented = False
     for payload in payloads:
         candidates = [
             candidate for candidate in re.split(r"[\s'\"`(){}\[\],;]+", payload) if candidate
         ]
         if len(candidates) > _MAX_SPAWN_LITERAL_WORK_CANDIDATES:
-            # I6: each candidate below is resolved against the filesystem
-            # (names_control_plane -> canonicalize), so an interpreter
-            # payload fragmented into hundreds of candidates makes THIS
-            # scan the DoS vector, independent of _spawn_literal_candidates.
-            # Exhaustion is ambiguity, never silent success — skip the scan
-            # and fail upward instead of paying (or skipping) it silently.
-            return _auth(
-                ReasonCode.opaque_command,
-                "Interpreter inline payload is too fragmented to fully vet; "
-                "authentication required.",
-            )
+            # N1: the cap bounds cost, it must never be a short-circuit that
+            # pre-empts a stronger verdict — an early `return` here skipped
+            # every check below (the destructive/socket/kill/privilege scans,
+            # which are plain O(n) regex searches over the payload string with
+            # no cost argument for skipping) AND every later payload's own
+            # control-plane check, so attacker-supplied filler could demote a
+            # real BLOCK to this AUTH. Attacker padding is appended after the
+            # real payload text, so the first _MAX_SPAWN_LITERAL_WORK_CANDIDATES
+            # candidates still carry every genuine token; only the (unbounded,
+            # attacker-sized) tail is dropped from the control-plane scan —
+            # cost stays capped at the same ceiling either way.
+            # `too_fragmented` floors the verdict at AUTH only if nothing
+            # stronger below ever fires — a floor, never a short-circuit.
+            too_fragmented = True
+            candidates = candidates[:_MAX_SPAWN_LITERAL_WORK_CANDIDATES]
         if _segment_targets_control_plane(candidates, root):
             return _block_control_plane(
                 "Interpreter inline payload references Doberman's own control plane."
@@ -1277,6 +1282,11 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
         return _auth(
             ReasonCode.destructive_command,
             "Interpreter inline payload changes process privileges; authentication required.",
+        )
+    if too_fragmented:
+        return _auth(
+            ReasonCode.opaque_command,
+            "Interpreter inline payload is too fragmented to fully vet; authentication required.",
         )
     return None
 
@@ -1562,7 +1572,18 @@ def _segment_verdict(
         return _block("Raw write to a block device (data-destroying dd).")
     if cmd == "git" and _git_force_push_to_protected(tokens, protected_branches):
         return _block("Force-push to a protected branch (rewrites shared history).")
-    if ":(){" in "".join(tokens) or _looks_like_fork_bomb(tokens):
+    # N2: the M1 false-positive fix removed the equivalent bare substring
+    # check from _classify_line's RAW-command pre-check but left this
+    # per-segment twin in place — it fires on ANY ":(){"-shaped substring
+    # in the joined segment tokens (no trailing `|`/`&`/`;` body required),
+    # so a quoted lookalike with no internal spaces (`grep -r ':(){' .`,
+    # `echo ':(){'`) still false-BLOCKed here even after M1 shipped. A real
+    # fork bomb never reaches this per-segment check intact in the first
+    # place — `(`/`)` are segment separators, so the raw whole-command
+    # check above (_FORK_BOMB_RE against the untouched string, before the
+    # paren-splitting walk) is what actually has to catch it; this call is
+    # a harmless backup using the same bounded regex.
+    if _looks_like_fork_bomb(tokens):
         return _block("Fork-bomb-style command.")
     if _raw_socket_exec_on_connect(tokens):
         return _block_raw_socket_exec(
@@ -1619,7 +1640,7 @@ def _segment_verdict(
 #: string, before the paren-splitting walk — see the call site in
 #: ``DestructiveCommandRule._classify_line`` for why the per-segment check
 #: below can no longer see it alone once ``(``/``)`` are segment separators.
-_FORK_BOMB_RE = re.compile(r":\s*[(]\s*[)]\s*[{].*[|]\s*:")
+_FORK_BOMB_RE = re.compile(r":\s*[(]\s*[)]\s*[{][^}]*[|&;]\s*:")
 
 
 def _looks_like_fork_bomb(tokens: list[str]) -> bool:

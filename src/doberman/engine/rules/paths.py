@@ -304,6 +304,27 @@ def _is_delete_or_rename(action_type: ActionType, tool_name: str) -> bool:
     )
 
 
+#: N3(b) — every pattern in CONTROL_PLANE_GLOBS (read them: ".doberman",
+#: ".claude/settings.json", "**/doberman/totp.secret", ...) contains at least
+#: one literal "." or "/" that must appear verbatim in whatever string
+#: fnmatch matches it against. A token with none of "/", ".", "~" (the "~"
+#: is kept too since a raw "~/..." token is checked directly, never expanded)
+#: therefore cannot satisfy ANY of those patterns — neither the raw-token
+#: match below nor, since canonical.relposix is matched against the same
+#: pattern set, the canonical-form match after it. Skipping canonicalize()
+#: (a filesystem resolve — the expensive part; see N3) for such a token is
+#: safe UNLESS an existing on-disk symlink with no "/"/"."/"~" in its own
+#: name resolves onto the control plane: canonicalize() would have followed
+#: that symlink and found it, this pre-filter does not. Accepted alongside
+#: this function's other documented "runtime semantics" gaps below (a
+#: symlink is another form of indirection a command string doesn't show).
+_PLAUSIBLE_CONTROL_PLANE_CHARS = frozenset("/.~")
+
+
+def _could_name_control_plane(token: str) -> bool:
+    return any(char in _PLAUSIBLE_CONTROL_PLANE_CHARS for char in token)
+
+
 def names_control_plane(raw_path: str, root: str = _DEFAULT_ROOT) -> bool:
     """True if a raw path token lands on Doberman's control plane.
 
@@ -319,11 +340,13 @@ def names_control_plane(raw_path: str, root: str = _DEFAULT_ROOT) -> bool:
     in-depth, tracked for HK.5.6; the OS file owner/mode and the file-target path
     rule are the backstops): a path built from a variable
     (``X=.doberman; rm -rf $X``), shell glob / brace expansion (``rm -rf .dober*``),
-    or a scripting-interpreter payload (``python -c "...rmtree('.doberman')..."`` —
-    ``python``/``node``/``perl`` are not shells, so the body is not scanned).
+    a scripting-interpreter payload (``python -c "...rmtree('.doberman')..."`` —
+    ``python``/``node``/``perl`` are not shells, so the body is not scanned), or an
+    on-disk symlink named with none of ``/``/``.``/``~`` that resolves onto the
+    control plane (N3(b) — see :data:`_PLAUSIBLE_CONTROL_PLANE_CHARS`).
     """
     token = (raw_path or "").strip().strip("\"'").replace("\\", "/").lower()
-    if not token:
+    if not token or not _could_name_control_plane(token):
         return False
     if _matches_any(token, _CONTROL_PLANE):
         return True
