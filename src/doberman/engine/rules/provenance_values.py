@@ -57,6 +57,62 @@ _IP_LITERAL_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 #: An RFC-shaped email address, bounded.
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}\b")
 
+#: T4 — common mail-address obfuscation forms, de-obfuscated before a SECOND
+#: _EMAIL_RE pass so "user [at] host [dot] com" fingerprints the same as the
+#: plain address. Three forms, case-insensitive: (1) bracketed — [at]/(at)/
+#: {at}/<at> and the same four pairs around "dot", inner+outer whitespace
+#: optional; (2) bare word — "at"/"dot" as a standalone word between two
+#: alphanumerics; (3) spaced separator — a literal "@"/"." with whitespace on
+#: BOTH sides between two alphanumerics (one-sided, e.g. a sentence-ending
+#: "end. Next", is left untouched).
+#:
+#: Every whitespace quantifier below is bounded to \s{0,4} (or \s{1,4} where
+#: at least one space is required) rather than \s*/\s+ — a real obfuscated
+#: address never has more than a couple of spaces around "at"/"dot", and an
+#: unbounded quantifier flanking a mandatory alternation backtracks
+#: quadratically: re.finditer/.sub retries the leading \s* one character
+#: shorter at EVERY start position once the alternation fails, so a large run
+#: of plain whitespace (attacker-controlled, up to _SCAN_MAX_CHARS) made
+#: _deobfuscated() run for tens of seconds on the hot untrusted-read path.
+#: Measured: 20,000 spaces took 7.8s pre-fix; bounded, the full 100,000-char
+#: bound finishes in milliseconds.
+#: Known ceiling: the bound also caps coverage at 4 spaces per gap (8 outside a
+#: bracket pair) -- a wider-spaced form is not de-obfuscated; raising the bound
+#: stays linear, it only costs a constant. The second pass can also mint
+#: prose-derived junk values ("ask Bob at example . com" -> bob@example.com):
+#: harmless as matches (HMAC-keyed; at most an extra AUTH on a later send to
+#: that exact address) but they count against the taint store's per-scope
+#: row budget.
+_DEOBFUSCATE_BRACKETED_AT_RE = re.compile(
+    r"\s{0,4}(?:\[\s{0,4}at\s{0,4}\]|\(\s{0,4}at\s{0,4}\)|\{\s{0,4}at\s{0,4}\}|<\s{0,4}at\s{0,4}>)\s{0,4}",
+    re.IGNORECASE,
+)
+_DEOBFUSCATE_BRACKETED_DOT_RE = re.compile(
+    r"\s{0,4}(?:\[\s{0,4}dot\s{0,4}\]|\(\s{0,4}dot\s{0,4}\)|\{\s{0,4}dot\s{0,4}\}|<\s{0,4}dot\s{0,4}>)\s{0,4}",
+    re.IGNORECASE,
+)
+_DEOBFUSCATE_WORD_AT_RE = re.compile(
+    r"(?<=[A-Za-z0-9])\s{1,4}at\s{1,4}(?=[A-Za-z0-9])", re.IGNORECASE
+)
+_DEOBFUSCATE_WORD_DOT_RE = re.compile(
+    r"(?<=[A-Za-z0-9])\s{1,4}dot\s{1,4}(?=[A-Za-z0-9])", re.IGNORECASE
+)
+_DEOBFUSCATE_SPACED_AT_RE = re.compile(r"(?<=[A-Za-z0-9])\s{1,4}@\s{1,4}(?=[A-Za-z0-9])")
+_DEOBFUSCATE_SPACED_DOT_RE = re.compile(r"(?<=[A-Za-z0-9])\s{1,4}\.\s{1,4}(?=[A-Za-z0-9])")
+
+
+def _deobfuscated(text: str) -> str:
+    """Undo the bracketed / bare-word / spaced-separator obfuscation forms
+    above, in that order. Plaintext never leaves this module."""
+    out = _DEOBFUSCATE_BRACKETED_AT_RE.sub("@", text)
+    out = _DEOBFUSCATE_BRACKETED_DOT_RE.sub(".", out)
+    out = _DEOBFUSCATE_WORD_AT_RE.sub("@", out)
+    out = _DEOBFUSCATE_WORD_DOT_RE.sub(".", out)
+    out = _DEOBFUSCATE_SPACED_AT_RE.sub("@", out)
+    out = _DEOBFUSCATE_SPACED_DOT_RE.sub(".", out)
+    return out
+
+
 # ponytail: common non-host file extensions the bare-host regex would otherwise
 # treat as a "TLD" (README.md, package.json). A fingerprint of a filename is
 # low-risk noise (nothing egresses to a destination literally named
@@ -218,6 +274,21 @@ def untrusted_value_fingerprints(
         if _is_excluded(_normalize_host(domain)):
             continue
         values.add(email)
+
+    # T4: a second _EMAIL_RE pass over a de-obfuscated copy, through the SAME
+    # path (same _MAX_VALUES cap, same `values` set — a duplicate of the
+    # plain-address loop above collapses for free). Skipped when nothing was
+    # obfuscated (deobfuscated == sample).
+    deobfuscated = _deobfuscated(sample)
+    if deobfuscated != sample:
+        for match in _EMAIL_RE.finditer(deobfuscated):
+            if len(values) >= _MAX_VALUES:
+                break
+            email = match.group(0).lower()
+            domain = email.rsplit("@", 1)[-1]
+            if _is_excluded(_normalize_host(domain)):
+                continue
+            values.add(email)
 
     out: set[str] = set()
     for value in list(values)[:_MAX_VALUES]:
