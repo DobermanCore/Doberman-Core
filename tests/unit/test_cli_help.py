@@ -37,6 +37,7 @@ CLI_HELP_TARGETS = (
     ("memory",),
     ("memory", "reset"),
     ("memory", "prune"),
+    ("memory", "seed"),
     ("policy-history",),
     ("policy-versions",),
     ("tune",),

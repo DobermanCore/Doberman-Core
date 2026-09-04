@@ -2478,6 +2478,94 @@ def memory_prune(
     )
 
 
+@memory_app.command("seed")
+def memory_seed(
+    from_file: str = typer.Option(
+        ...,
+        "--from",
+        help="Path to a JSONL file of ALLOWED-action traces (docs/BASELINE_SEEDING.md).",
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    now: str | None = typer.Option(
+        None,
+        "--now",
+        help="ISO-8601 timestamp to seed with (default: current UTC). Makes a run reproducible.",
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit the seed summary as one JSON document."
+    ),
+) -> None:
+    """Warm the per-entity streaming baseline from operator-supplied ALLOWED-action traces.
+
+    Issue #326 named this `doberman baseline seed`; it lives under `memory` instead because
+    `memory reset`/`memory prune` already own these same tables and a one-verb `baseline` group
+    would split the surface — see docs/BASELINE_SEEDING.md.
+
+    Every line of the trace file is validated BEFORE anything is written: any row that is not an
+    allowed trace (`verdict: "PASS"` / `allowed: true`), or that fails to parse or validate,
+    refuses the WHOLE file — nothing is observed, and the error names only the bad line numbers,
+    never row content. A clean file is replayed through the same `observe()` path the live proxy
+    calls, entity-scoped the same way (`entity_id(agent_role, repo_root)`), so a seeded baseline
+    is the one live traffic reads. This can only warm the surprise baseline: it never changes a
+    verdict, the mode, or `policies.yaml`.
+    """
+    # Imported here, not at module scope (same reasoning as `serve`'s lazy import above):
+    # doberman.subjective.baseline imports `river` at module load, which drags in the heavy
+    # numeric stack (river/numpy/scipy) — non-seed CLI commands (`--help`, `log`, `status`,
+    # `scan`, ...) must not pay that cold-start cost just because `memory seed` exists.
+    from doberman.subjective.seed import seed_baseline
+
+    stamp: datetime | None = None
+    if now is not None:
+        try:
+            stamp = datetime.fromisoformat(now)
+        except ValueError:
+            typer.echo(f"error: --now {now!r} is not a valid ISO-8601 timestamp", err=True)
+            raise typer.Exit(code=1) from None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+
+    try:
+        summary = asyncio.run(seed_baseline(from_file, repo_root=path, now=stamp))
+    except OSError as exc:
+        typer.echo(f"error: could not read {from_file!r}: {type(exc).__name__}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if summary.errors:
+        lines = ", ".join(str(e.line_no) for e in summary.errors)
+        typer.echo(
+            f"error: seed refused - {len(summary.errors)} invalid row(s) at line(s): {lines}; "
+            "nothing observed",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if as_json:
+        payload = {
+            "seeded": summary.seeded,
+            "entities": [
+                {
+                    "entity": e.entity,
+                    "seeded": e.seeded,
+                    "total_observations": e.total_observations,
+                    "warm": e.warm,
+                    "hst": e.hst,
+                }
+                for e in summary.entities
+            ],
+        }
+        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return
+
+    typer.echo(f"Seeded {summary.seeded} allowed-action trace(s).")
+    for e in summary.entities:
+        warm_label = "warm" if e.warm else "cold"
+        typer.echo(
+            f"  entity {e.entity}...  +{e.seeded} observation(s), total {e.total_observations} "
+            f"({warm_label}), HST {e.hst}"
+        )
+
+
 @app.command("policy-history", rich_help_panel="Policy internals")
 def policy_history(
     last: int = typer.Option(20, "--last", "-n", help="Show the most recent N changes."),
