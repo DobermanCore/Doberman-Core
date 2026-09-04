@@ -49,6 +49,7 @@ real main thread is a Cocoa-level hazard that :func:`_open_root` refuses before
 it ever happens — see that function for the full rationale.
 """
 
+import gc
 import importlib.resources as _ir
 import logging
 import math
@@ -2068,6 +2069,59 @@ def _populate_outcome_notice(root: Any, text: str, outcome: str = "denied") -> N
         tk.Frame(panel, bg=_PANEL, height=10).pack()  # symmetric bottom padding either way
 
 
+def _cancel_pending_after(root: Any) -> None:
+    """Cancel every ``after`` callback still queued on ``root``'s Tcl
+    interpreter (SECURITY #399 follow-up).
+
+    A countdown's ``_tick`` (:func:`_build_countdown`), the CRITICAL-approve
+    gate's 100ms tick (:func:`_gate_approve_for_critical`), or the outcome
+    window's auto-close can still be pending when the dialog closes early
+    (a button click ends ``mainloop()`` well before its own ``root.after``
+    would have fired next). ``root.destroy()`` does not cancel a still-queued
+    ``after`` callback -- Tcl fires it anyway during later event processing,
+    against widget/image names that no longer exist, raising ``invalid
+    command name "..."``. Querying the interpreter directly (``after info``)
+    catches every pending id in one place instead of threading each ``_tick``
+    call site's id through every populate function.
+    """
+    try:
+        for after_id in root.tk.call("after", "info"):
+            try:
+                root.after_cancel(after_id)
+            except Exception:  # noqa: S110 — best-effort cleanup only
+                pass
+    except Exception:  # noqa: S110 — root's interpreter may already be gone
+        pass
+
+
+def _finalize_dialog(root: Any) -> None:
+    """Cancel pending timers, destroy ``root``, then force the cyclic GC to
+    run NOW, on this (worker) thread (SECURITY #399 follow-up).
+
+    Every real dialog runs on a background daemon thread (see
+    :func:`_open_root`'s docstring). A button's ``command=``/``bind()``
+    closure routinely closes over the very widget it is attached to (e.g.
+    :func:`_wire_keyboard`'s handlers close over ``root``), and a
+    ``PhotoImage`` kept alive via ``root._icon_ref``/``row._logo_ref`` sits
+    in the same widget tree -- reference CYCLES that plain refcounting
+    cannot collect. Left alone, they are only reclaimed whenever the cyclic
+    GC next runs, which is not guaranteed to be this thread: Python
+    guarantees a final collection at interpreter shutdown, which happens on
+    the MAIN thread. ``Image.__del__`` then calls back into a Tcl
+    interpreter that thread never entered, and Tcl aborts the whole process
+    ("main thread is not in main loop") instead of letting it exit with
+    whatever code the caller actually raised. Calling ``gc.collect()``
+    HERE -- still on the thread that created these objects, before this
+    function (and so the dialog's worker thread) returns -- finalizes them
+    on the right thread instead.
+    """
+    _cancel_pending_after(root)
+    try:
+        root.destroy()
+    finally:
+        gc.collect()
+
+
 def _show_outcome_window(
     text: str, outcome: str = "denied", *, max_wait_ms: int | None = None
 ) -> None:
@@ -2133,7 +2187,7 @@ def _show_outcome_window(
     except Exception:  # noqa: S110 — cosmetic only, must never affect the decided outcome
         pass
     finally:
-        root.destroy()
+        _finalize_dialog(root)
 
 
 def _run_dialog(
@@ -2181,7 +2235,7 @@ def _run_dialog(
             reason_out["reason"] = reason
         return value
     finally:
-        root.destroy()
+        _finalize_dialog(root)
 
 
 def _confirm_dialog(
