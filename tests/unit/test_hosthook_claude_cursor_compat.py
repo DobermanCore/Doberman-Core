@@ -309,12 +309,28 @@ def test_real_shell_fixture_bytes_through_cli_are_not_denied_closed():
     assert result.stdout.strip() == ""
 
 
-def test_real_read_fixture_bytes_through_cli_denies_the_protected_path():
+def test_real_read_fixture_bytes_through_cli_denies_the_protected_path(tmp_path):
     from doberman.cli.main import app
 
     raw = (FIXTURES / "pre_tool_use_read.json").read_bytes()
-    assert raw.startswith(b"\xef\xbb\xbf")
-    result = CliRunner().invoke(app, ["hook", "pre"], input=raw)
+    assert raw.startswith(b"\xef\xbb\xbf")  # the capture itself still carries the real BOM
+
+    # The captured file_path/workspace_roots are a Windows absolute path
+    # (C:\Users\dev\proj\...) — on Linux that's just a relative filename with
+    # backslashes, not a protected path, so CI (ubuntu) sees an allow instead
+    # of the deny this test is proving. Swap in a real tmp_path (platform-
+    # neutral, and an actual file so the read is real) while re-encoding with
+    # a leading BOM so the bytes-decoding path this test exists for is still
+    # exercised.
+    payload = json.loads(raw.decode("utf-8-sig"))
+    hooks_json = tmp_path / ".cursor" / "hooks.json"
+    hooks_json.parent.mkdir(parents=True, exist_ok=True)
+    hooks_json.write_text("{}")
+    payload["tool_input"]["file_path"] = str(hooks_json)
+    payload["workspace_roots"] = [str(tmp_path)]
+    encoded = ("\ufeff" + json.dumps(payload)).encode("utf-8")
+
+    result = CliRunner().invoke(app, ["hook", "pre"], input=encoded)
     assert result.exit_code == 0
     out = json.loads(result.stdout.strip())
     reason = out["hookSpecificOutput"]["permissionDecisionReason"]
