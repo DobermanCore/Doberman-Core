@@ -123,7 +123,7 @@ supplied path stay out of the always-on CI gate and run on demand.
 | tool call kind (read/write/exec/http/git/install) | `CandidateAction.action_type` (`ActionType.*`) | pick the closest; use `ActionType.other` if unsure |
 | tool name | `tool_name` | free text |
 | file path / resource | `target` | the canonical rules read this |
-| destination URL / host | `external_destination` | drives the egress rule |
+| destination URL / host | `external_destination` | drives the egress rule; leave `None` for a command-shaped payload (`raw_arguments["command"]`/`cmd`/`script`/`args`) and `mapping.to_security_object` derives it from the proxy's own command-egress extractor, same as production — set it yourself only when the suite's own data already names a destination |
 | where the instruction came from | `source_context` (`SourceContext.*`) | `tool_output` / `webpage` / `email` for injected content |
 | raw tool arguments / body | `raw_arguments` (dict) | reaches `EvalContext.metadata["raw_arguments"]`; **may contain attack text** |
 | ground-truth attack vs benign | `BenchmarkCase.label` | the single most important field to get right |
