@@ -219,6 +219,40 @@ def test_session_start_is_acknowledged(tmp_path):
     assert _run(payload) == ({}, 0)
 
 
+def test_session_start_writes_a_parseable_utc_marker(tmp_path):
+    from datetime import datetime
+
+    payload = _load("pre_shell.json", tmp_path)
+    payload["hook_event_name"] = cursor.EVENT_SESSION_START
+    assert _run(payload) == ({}, 0)
+
+    marker = tmp_path / ".doberman" / cursor.SESSION_MARKER
+    assert marker.exists()
+    datetime.fromisoformat(marker.read_text(encoding="utf-8"))  # never raises
+
+
+def test_session_start_skips_the_marker_for_an_excluded_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(spine_module, "is_excluded", lambda cwd: True)
+    payload = _load("pre_shell.json", tmp_path)
+    payload["hook_event_name"] = cursor.EVENT_SESSION_START
+    assert _run(payload) == ({}, 0)
+    assert not (tmp_path / ".doberman" / cursor.SESSION_MARKER).exists()
+
+
+def test_session_start_swallows_a_write_failure(tmp_path, monkeypatch):
+    real_write_text = Path.write_text
+
+    def _flaky_write_text(self, *args, **kwargs):
+        if self.name == cursor.SESSION_MARKER:
+            raise OSError("disk full")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _flaky_write_text)
+    payload = _load("pre_shell.json", tmp_path)
+    payload["hook_event_name"] = cursor.EVENT_SESSION_START
+    assert _run(payload) == ({}, 0)  # a failed heartbeat must never fail a session start
+
+
 def test_missing_tool_name_fails_closed(tmp_path):
     payload = _shell(tmp_path, "echo hi")
     del payload["tool_name"]

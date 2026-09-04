@@ -118,7 +118,7 @@ After installing, run `doberman --install-completion` to enable shell tab comple
 | **Codex CLI** | Native PreToolUse hook *(experimental)* | `doberman install-hooks --host codex` |
 | **Claude Desktop / Cursor** | MCP proxy: wraps your tool server | `doberman serve -- <your-server>` → [guide](docs/SETUP.md) |
 | **OpenClaw** | Native plugin adapter | [guide](docs/SETUP.md) · [adapter](adapters/openclaw/README.md) |
-| **Cursor** | Native hooks adapter *(experimental)* | [adapter](adapters/cursor/README.md) |
+| **Cursor** | Native hooks adapter *(experimental)* | `doberman install-hooks --host cursor` · [adapter](adapters/cursor/README.md) |
 | **Any MCP-compatible agent** | MCP proxy | [guide](docs/SETUP.md) |
 
 **Fastest path (Claude Code):**

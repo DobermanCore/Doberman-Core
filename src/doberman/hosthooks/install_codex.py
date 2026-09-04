@@ -192,16 +192,22 @@ def protection_state(project_root: str) -> tuple[bool, str, list[tuple[str, str,
       ``"not_on_path"`` (wired somewhere, but this shell can't resolve
       ``doberman``).
     * ``hooks`` — the combined ``(scope, path, installed)`` list: Claude's
-      three scopes first, then Codex's two, prefixed ``"codex:"`` so a caller
-      can tell them apart, same as `doctor`'s "Host hooks" check already does.
+      three scopes first, then Codex's two, then Cursor's two, prefixed
+      ``"codex:"`` / ``"cursor:"`` so a caller can tell them apart, same as
+      `doctor`'s "Host hooks" check already does.
     """
     from doberman.hosthooks.install import hook_install_states
+    from doberman.hosthooks.install_cursor import cursor_hook_install_states
 
-    hooks = list(hook_install_states(project_root)) + [
-        (f"codex:{scope}", p, ok)
-        for scope, p, ok in codex_hook_install_states(project_root)
-        if scope != "plugin"
-    ]
+    hooks = (
+        list(hook_install_states(project_root))
+        + [
+            (f"codex:{scope}", p, ok)
+            for scope, p, ok in codex_hook_install_states(project_root)
+            if scope != "plugin"
+        ]
+        + [(f"cursor:{scope}", p, ok) for scope, p, ok in cursor_hook_install_states(project_root)]
+    )
     if not any(ok for _scope, _p, ok in hooks):
         return False, "no_hooks", hooks
     if shutil.which("doberman") is None:

@@ -77,8 +77,8 @@ Wiring commands plus the low-level per-host handlers they install.
 
 | Command | Purpose | Key flags |
 |---------|---------|-----------|
-| `doberman install-hooks` | Wire Doberman's hooks into a host so every tool call is gated before it runs. Idempotent. | `--global`/`-g`, `--local`, `--host`, `--path`/`-p`, `--dry-run` |
-| `doberman uninstall-hooks` | Remove Doberman's hooks from a host. Every other setting is left untouched. | `--global`/`-g`, `--local`, `--host`, `--path`/`-p`, `--dry-run` |
+| `doberman install-hooks` | Wire Doberman's hooks into a host so every tool call is gated before it runs. Idempotent. `--host claude\|codex\|cursor`. | `--global`/`-g`, `--local`, `--host`, `--path`/`-p`, `--dry-run` |
+| `doberman uninstall-hooks` | Remove Doberman's hooks from a host. Every other setting is left untouched. `--host claude\|codex\|cursor`. | `--global`/`-g`, `--local`, `--host`, `--path`/`-p`, `--dry-run` |
 | `doberman hook pre` | Claude Code PreToolUse hook: gate one tool call (allow/ask/deny). Reads the hook payload as JSON on stdin. | none |
 | `doberman hook post` | Claude Code PostToolUse hook: scan tool output for secrets and record history. | none |
 | `doberman hook openclaw` | OpenClaw `before_tool_call` plugin hook: gate one tool call. Always writes exactly one JSON verdict, unlike the Claude Code hooks above. | none |
