@@ -148,8 +148,12 @@ _CONFUSABLE_SCRIPT_PAIRS = (
 #: Curated Cyrillic and Greek characters with close Latin lookalikes, drawn
 #: from the standard IDN-homograph repertoire. Defense-in-depth, not exhaustive;
 #: requiring every letter in a token to be in this set is the FPR control.
+#: Case audit: real spoofs are lowercase, so every uppercase member's
+#: lowercase form is included when it is itself a Latin lookalike — Cyrillic
+#: к (k), Greek η (n), Greek μ (u). Greek ζ (zeta) is deliberately excluded:
+#: its lowercase form does not resemble any Latin letter.
 _WHOLE_SCRIPT_CONFUSABLES: frozenset[str] = frozenset(
-    "АВСЕНІЈКМОРЅТХавсеніјморѕтхуӏԁΑΒΕΖΗΙΚΜΝΟΡΤΥΧαβεικνορτυχ"
+    "АВСЕНІЈКМОРЅТХавсеніјкморѕтхуӏԁΑΒΕΖΗΙΚΜΝΟΡΤΥΧαβεηικμνορτυχ"
 )
 
 #: A token shorter than this is exempt even if every letter is a curated
@@ -159,16 +163,14 @@ _WHOLE_SCRIPT_CONFUSABLES: frozenset[str] = frozenset(
 #: secure, whole-word brand lookalikes) are all >= this length.
 #: ponytail: fixed length floor, not a script-aware stop-word list — raise if
 #: a short real-world attack token is later found to need catching.
-#: Residual gap: a whole-script spoof only works if it fools a Latin reader,
-#: so it appears as an isolated non-Latin token in Latin context — genuine
-#: Cyrillic/Greek prose brings company (another same-script token with a
-#: letter outside the curated set). A text made up of nothing BUT
-#: all-lookalike Cyrillic/Greek words (e.g. the one-word message "тема")
-#: still has no such company and so still reports; conversely a spoof
-#: embedded inside genuine Cyrillic/Greek prose is not reported — by
-#: construction it cannot fool a Latin reader there either. Defense-in-depth,
-#: not exhaustive; a full stop-word/dictionary exclusion list is the upgrade
-#: path if this proves too noisy in practice.
+#: Ceiling, stated plainly: one extra genuine Cyrillic/Greek letter or word
+#: anywhere in the same text silences this channel for the WHOLE text, not
+#: just that word — e.g. "transfer funds via раураӏ now мир" is not reported,
+#: because "мир" carries a non-lookalike Cyrillic letter. A text made up of
+#: nothing BUT all-lookalike Cyrillic/Greek words (e.g. the one-word message
+#: "тема") still has no such letter and so still reports. Accepted ceiling,
+#: defense-in-depth, not exhaustive; a full per-token stop-word/dictionary
+#: exclusion check is the upgrade path if this proves too noisy in practice.
 _WHOLE_SCRIPT_MIN_LEN = 4
 
 #: Seed list of well-known glitch / under-trained token fragments. Extensible

@@ -41,7 +41,9 @@ def test_whole_script_lookalikes_are_soft(spoof: str) -> None:
 
 
 def test_genuine_cyrillic_word_with_nonlookalike_is_not_reported() -> None:
-    assert "whole_script_confusable" not in _channels("секрет")
+    # "пароль" (password): п/л/ь fall outside the curated lookalike set even
+    # after this fix's lowercase-case audit (к/η/μ) — genuinely non-lookalike.
+    assert "whole_script_confusable" not in _channels("пароль")
 
 
 def test_genuine_greek_word_with_nonlookalike_is_not_reported() -> None:
@@ -159,3 +161,20 @@ def test_spoof_still_flagged_alongside_latin_company_only() -> None:
 
 def test_spoof_with_latin_company_and_punctuation_only_is_flagged() -> None:
     assert "whole_script_confusable" in _channels("login: раураӏ")
+
+
+# --- Case audit (issue #141 follow-up): lowercase confusables ----------------
+# The curated set previously had uppercase Cyrillic К and Greek Η/Μ without
+# their lowercase forms, even though real spoofs are lowercase.
+
+
+def test_lowercase_cyrillic_ka_spoof_is_flagged() -> None:
+    """ "аккаунт" (all-lookalike incl. the lowercase к added by this fix) in
+    otherwise-Latin context must fire."""
+    assert "whole_script_confusable" in _channels("visit your аккаунт login page")
+
+
+def test_genuine_russian_sentence_with_ka_spoof_word_is_not_flagged() -> None:
+    """The same all-lookalike word, surrounded by genuine Russian prose, stays
+    silent — the sentence's other words carry non-lookalike Cyrillic letters."""
+    assert "whole_script_confusable" not in _channels("Проверьте аккаунт и пароль")
