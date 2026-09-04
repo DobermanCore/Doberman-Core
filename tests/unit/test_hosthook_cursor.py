@@ -163,6 +163,33 @@ def test_malformed_stdin_fails_closed(bad):
     assert code == cursor.DENY_EXIT_CODE
 
 
+def test_raw_utf8_bytes_with_bom_are_decoded(tmp_path):
+    # The CLI hands over stdin BYTES. Under a cp1252 console (Windows default) a
+    # text read would turn the BOM into three mojibake characters and mangle any
+    # non-ASCII path; decoding here keeps both intact.
+    benign = _shell(tmp_path, "echo caf\u00e9")
+    raw = b"\xef\xbb\xbf" + json.dumps(benign, ensure_ascii=False).encode("utf-8")
+    text, code = cursor.run_cursor(raw)
+    assert json.loads(text) == {"permission": "allow"} and code == 0
+    dangerous = b"\xef\xbb\xbf" + json.dumps(_shell(tmp_path, "rm -rf /")).encode("utf-8")
+    text, code = cursor.run_cursor(dangerous)
+    assert json.loads(text)["permission"] == "deny" and code == 2
+    assert "BLOCK" in json.loads(text)["user_message"]  # evaluated, not the parse failsafe
+    assert (
+        cursor.strip_bom(b"\xff\xfe{") == "\ufffd\ufffd{"
+    )  # undecodable -> replaced, never raises
+
+
+def test_cli_reads_stdin_bytes_with_bom(tmp_path):
+    from doberman.cli.main import app
+
+    raw = b"\xef\xbb\xbf" + json.dumps(_shell(tmp_path, "rm -rf /")).encode("utf-8")
+    result = CliRunner().invoke(app, ["hook", "cursor"], input=raw)
+    assert result.exit_code == 2
+    doc = json.loads(result.stdout.strip().splitlines()[-1])
+    assert doc["permission"] == "deny" and "BLOCK" in doc["user_message"]
+
+
 def test_bom_prefixed_payload_is_parsed_not_denied(tmp_path):
     # cursor-agent on Windows prefixes stdin with a UTF-8 BOM (forum #168407).
     # Without the strip, every hook is a parse failure that Cursor fails OPEN on.

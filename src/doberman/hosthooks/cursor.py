@@ -106,10 +106,15 @@ _MCP_PREFIX = "MCP:"
 AUTH_PROMPTER: Prompter | None = None
 
 
-def strip_bom(text: str) -> str:
-    """Drop a leading UTF-8 BOM. ``cursor-agent`` on Windows prefixes hook stdin
-    with one, which otherwise turns every hook into a JSON parse failure that
-    Cursor fails OPEN on (forum #168407, staff-confirmed, no fix ETA)."""
+def strip_bom(text: str | bytes) -> str:
+    """Decode hook stdin as UTF-8 and drop a leading BOM. ``cursor-agent`` on
+    Windows prefixes hook stdin with one, which otherwise turns every hook into a
+    JSON parse failure that Cursor fails OPEN on (forum #168407, staff-confirmed,
+    no fix ETA). Bytes are decoded here, not by the console: under Windows'
+    default cp1252 stdin the BOM arrives as three mojibake characters and a
+    non-ASCII path or command is mangled, so the CLI hands over raw bytes."""
+    if isinstance(text, bytes):
+        return text.decode("utf-8-sig", errors="replace")
     return text.lstrip("\ufeff")
 
 
@@ -376,9 +381,9 @@ def _scan_after_replay(payload: dict[str, Any]) -> dict[str, Any]:
         return deny()
 
 
-def run_cursor(stdin_text: str) -> tuple[str, int]:
-    """Parse the hook stdin (BOM-tolerant), evaluate, and return
-    ``(json_document, exit_code)`` for the CLI to emit."""
+def run_cursor(stdin_text: str | bytes) -> tuple[str, int]:
+    """Parse the hook stdin (raw UTF-8 bytes preferred; BOM-tolerant), evaluate,
+    and return ``(json_document, exit_code)`` for the CLI to emit."""
     try:
         payload = json.loads(strip_bom(stdin_text))
     except Exception:  # noqa: BLE001 — unparseable input denies the unknown call

@@ -1490,7 +1490,10 @@ def hook_cursor() -> None:
     _configure_stderr_logging()
     from doberman.hosthooks.cursor import run_cursor
 
-    text, code = run_cursor(sys.stdin.read())
+    # Raw bytes: the adapter decodes UTF-8 itself (a cp1252 console would turn
+    # cursor-agent's Windows BOM into mojibake and fail every hook closed).
+    stream = getattr(sys.stdin, "buffer", None)
+    text, code = run_cursor(stream.read() if stream is not None else sys.stdin.read())
     sys.stdout.write(text + "\n")
     raise typer.Exit(code)
 
