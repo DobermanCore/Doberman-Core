@@ -492,3 +492,28 @@ def test_gate_passed_uninstall_removes_cursor_project_hooks(tmp_path, monkeypatc
 
     assert result.exit_code == 0, result.output
     assert "doberman hook cursor" not in hooks_path.read_text(encoding="utf-8")
+
+
+def test_event_and_marker_constants_match_the_adapter():
+    # Literals here (see the module comment) must never drift from the adapter.
+    from doberman.hosthooks import cursor, install_cursor
+
+    assert set(install_cursor.GATE_EVENTS) == cursor.GATED_EVENTS
+    assert install_cursor.EVENT_SESSION_START == cursor.EVENT_SESSION_START
+    assert install_cursor.SESSION_MARKER == cursor.SESSION_MARKER
+
+
+def test_installer_import_does_not_load_the_adapter_stack():
+    # The install-integrity check imports this module on every host's hook hot
+    # path; importing the adapter (config, policy, egress) there costs ~400 ms.
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, doberman.hosthooks.install_cursor; "
+        "print('doberman.hosthooks.cursor' in sys.modules)"
+    )
+    out = subprocess.run(  # noqa: S603 - fixed argv, our own interpreter
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert out == "False"

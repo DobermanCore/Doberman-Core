@@ -32,15 +32,19 @@ from pathlib import Path
 from typing import Any
 
 from doberman.auth.approval import DEFAULT_APPROVAL_TIMEOUT_S
-from doberman.hosthooks.cursor import (
-    EVENT_MCP,
-    EVENT_PRE_TOOL,
-    EVENT_READ,
-    EVENT_SESSION_START,
-    EVENT_SHELL,
-    SESSION_MARKER,
-)
 from doberman.hosthooks.install import load_settings
+
+# Event names and the marker filename are LITERALS, not imports from
+# doberman.hosthooks.cursor: that module pulls the whole adapter stack (config,
+# policy, egress - ~400 ms), and this one is imported on EVERY host's hook hot
+# path by the install-integrity check once a manifest exists.
+# tests/unit/test_install_hooks_cursor.py pins them to the adapter's constants.
+EVENT_PRE_TOOL = "preToolUse"
+EVENT_SHELL = "beforeShellExecution"
+EVENT_MCP = "beforeMCPExecution"
+EVENT_READ = "beforeReadFile"
+EVENT_SESSION_START = "sessionStart"
+SESSION_MARKER = "cursor_session"
 
 #: The command every Cursor hook entry runs.
 HOOK_COMMAND = "doberman hook cursor"
@@ -231,7 +235,7 @@ def registration_issues(settings: dict[str, Any]) -> list[tuple[str, bool]]:
         if not is_number or timeout < DEFAULT_APPROVAL_TIMEOUT_S:
             issues.append(
                 (
-                    f"{event}: timeout {timeout}s is below the "
+                    f"{event}: timeout {f'{timeout}s' if is_number else 'missing'} is below the "
                     f"{int(DEFAULT_APPROVAL_TIMEOUT_S)}s approval window "
                     "(an unanswered approval is denied early)",
                     False,
