@@ -162,6 +162,24 @@ def _deny(reason: str = _FAILSAFE_REASON) -> dict[str, Any]:
     return _hook_output("deny", reason)
 
 
+def _decode_stdin(stdin: str | bytes) -> str:
+    """Normalize hook stdin to text, tolerating a leading UTF-8 BOM either way.
+
+    ``cursor-agent`` prefixes every payload with a BOM (forum #168407) — the
+    same class of bug ``hosthooks.cursor.strip_bom`` fixed for ``hook cursor``
+    (#569). Bytes are decoded ``utf-8-sig`` (strips the BOM, replaces anything
+    undecodable rather than raising); a ``str`` already went through the
+    console's own text-mode decoding, so only the BOM *character* is stripped.
+    A plain local copy, not a call into ``hosthooks.cursor`` — that module
+    imports this one, and importing it here would both be a circular import
+    and defeat the point: the Claude hot path must not pay for the Cursor
+    adapter's weight on every ordinary tool call.
+    """
+    if isinstance(stdin, bytes):
+        return stdin.decode("utf-8-sig", errors="replace")
+    return stdin.lstrip("\ufeff")
+
+
 # Back-compat aliases: the flow moved to hosthooks.spine (W1.0a). The post-hook
 # path and existing tests still call these names.
 _resolve_root_and_mode = spine.resolve_root_and_mode
@@ -321,9 +339,14 @@ def _claude_output_for(response: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def run_pre_hook(stdin_text: str) -> str | None:
+def run_pre_hook(stdin: str | bytes) -> str | None:
     """Parse the hook stdin, evaluate, and return the JSON string to print to
     stdout — or ``None`` to abstain (print nothing).
+
+    ``stdin`` may be raw bytes (the CLI now reads ``sys.stdin.buffer`` so a
+    UTF-8 BOM — every ``cursor-agent`` payload carries one — decodes cleanly
+    instead of breaking ``json.loads`` before :func:`is_cursor_payload` ever
+    runs; see :func:`_decode_stdin`) or already-decoded text.
 
     A payload that does not parse to a JSON object is denied: an unidentifiable
     call fails closed rather than slipping through. A Cursor-shaped payload (see
@@ -333,7 +356,7 @@ def run_pre_hook(stdin_text: str) -> str | None:
     ``Shell`` tool name).
     """
     try:
-        payload = json.loads(stdin_text)
+        payload = json.loads(_decode_stdin(stdin))
     except Exception:  # noqa: BLE001 — unparseable input denies the unknown call
         return json.dumps(_deny())
     if not isinstance(payload, dict):
@@ -342,7 +365,8 @@ def run_pre_hook(stdin_text: str) -> str | None:
         from doberman.hosthooks import cursor  # lazy: the Claude hot path must not pay this import
 
         response = cursor.respond(payload, channel="claudeCompat")
-        out = _attach_integrity_warning(_claude_output_for(response), payload)
+        warn_payload = {**payload, "cwd": cursor.repo_root_of(payload) or ""}
+        out = _attach_integrity_warning(_claude_output_for(response), warn_payload)
         return json.dumps(out) if out is not None else None
     out = _attach_integrity_warning(evaluate_pre(payload), payload)
     return json.dumps(out) if out is not None else None
@@ -694,14 +718,17 @@ def _record_untrusted_value_fingerprints(
         pass
 
 
-def run_post_hook(stdin_text: str) -> str | None:
+def run_post_hook(stdin: str | bytes) -> str | None:
     """Parse the PostToolUse stdin, evaluate the tool output, and return the
     JSON decision string — or ``None`` to abstain (print nothing).
+
+    ``stdin`` may be raw bytes or already-decoded text — see
+    :func:`run_pre_hook` and :func:`_decode_stdin`.
 
     An unparseable payload or a non-object payload fails closed (block).
     """
     try:
-        payload = json.loads(stdin_text)
+        payload = json.loads(_decode_stdin(stdin))
     except Exception:  # noqa: BLE001 — unparseable input fails closed
         return json.dumps(_post_block(_POST_FAILSAFE_REASON))
     if not isinstance(payload, dict):

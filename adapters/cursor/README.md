@@ -115,6 +115,10 @@ never evaluated — or challenged — twice. The `SessionStart` →
 `sessionStart` mapping also fires `doberman session-summary` (Claude Code's SessionStart command); it
 ignores the Cursor-shaped stdin and always exits 0, so it runs harmlessly.
 
+With only the Claude Code hooks installed (no `install-hooks --host cursor`), a Cursor `Read` is
+gated by path only — no content scan — because the content scan runs on the native `beforeReadFile`
+event; installing the native hooks adds it.
+
 ## Known limits
 
 - **Doc-derived payload shapes.** Cursor's hook payloads are documented, and `Shell`'s

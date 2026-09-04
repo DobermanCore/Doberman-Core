@@ -1464,7 +1464,11 @@ def hook_pre() -> None:
     # the decision path on every `--help`/`status`/`log` invocation.
     from doberman.hosthooks.claude_code import run_pre_hook
 
-    out = run_pre_hook(sys.stdin.read())
+    # Raw bytes: run_pre_hook decodes UTF-8 itself (Cursor's Third Party Hooks
+    # feature calls this same command with cursor-agent's BOM-prefixed payload —
+    # a cp1252 console would turn it into mojibake and fail every hook closed).
+    stream = getattr(sys.stdin, "buffer", None)
+    out = run_pre_hook(stream.read() if stream is not None else sys.stdin.read())
     if out is not None:
         # The harness parses stdout as JSON; write ONLY the decision there, with a
         # trailing newline so a line-delimited reader sees a complete record.
@@ -1493,7 +1497,10 @@ def hook_post() -> None:
     _configure_stderr_logging()
     from doberman.hosthooks.claude_code import run_post_hook
 
-    out = run_post_hook(sys.stdin.read())
+    # Raw bytes: same reasoning as `hook pre` above (Cursor's compat path calls
+    # this command too, and its payloads carry a UTF-8 BOM).
+    stream = getattr(sys.stdin, "buffer", None)
+    out = run_post_hook(stream.read() if stream is not None else sys.stdin.read())
     if out is not None:
         sys.stdout.write(out + "\n")
     raise typer.Exit(0)

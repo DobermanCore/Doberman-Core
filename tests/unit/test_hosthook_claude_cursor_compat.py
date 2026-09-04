@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from doberman.hosthooks import claude_code, cursor, singleflight
 
@@ -285,3 +286,88 @@ def test_post_hook_cursor_read_abstains(tmp_path):
     payload = _load("pre_tool_use_read.json", tmp_path)
     payload["hook_event_name"] = "postToolUse"
     assert claude_code.run_post_hook(json.dumps(payload)) is None
+
+
+# --- BOM-prefixed stdin: `hook pre`/`hook post` read bytes, not text -------
+#
+# `cursor-agent` prefixes every hook payload with a UTF-8 BOM. `sys.stdin.read()`
+# (console text mode) plus a plain `json.loads` breaks on that BOM before
+# `is_cursor_payload` ever runs, so the CLI failed closed on every real Cursor
+# call even though the delegation above (fed already-decoded text) worked.
+# These exercise the real fixture BYTES (BOM included) through the actual
+# `hook pre` command, not the adapter function directly.
+
+
+def test_real_shell_fixture_bytes_through_cli_are_not_denied_closed():
+    from doberman.cli.main import app
+
+    raw = (FIXTURES / "pre_tool_use_shell.json").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")  # the BOM cursor-agent actually sends
+    result = CliRunner().invoke(app, ["hook", "pre"], input=raw)
+    assert result.exit_code == 0
+    # "echo hello-doberman" is benign -> abstain (nothing printed), not a deny.
+    assert result.stdout.strip() == ""
+
+
+def test_real_read_fixture_bytes_through_cli_denies_the_protected_path():
+    from doberman.cli.main import app
+
+    raw = (FIXTURES / "pre_tool_use_read.json").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    result = CliRunner().invoke(app, ["hook", "pre"], input=raw)
+    assert result.exit_code == 0
+    out = json.loads(result.stdout.strip())
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "protected_path_blocked" in reason
+    # Not the unparseable-input failsafe -> the payload really was evaluated.
+    assert "failing closed" not in reason
+
+
+def test_bom_prefixed_claude_payload_behaves_like_the_same_payload_without_it(tmp_path):
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "rm -rf /"},
+        "cwd": str(tmp_path),
+    }
+    plain = claude_code.run_pre_hook(json.dumps(payload))
+    with_str_bom = claude_code.run_pre_hook("﻿" + json.dumps(payload))
+    with_bytes_bom = claude_code.run_pre_hook(b"\xef\xbb\xbf" + json.dumps(payload).encode("utf-8"))
+    assert plain is not None
+    # Each call mints a fresh action id inside the reason text, so compare the
+    # decision + reason code rather than the literal string.
+    plain_hso = json.loads(plain)["hookSpecificOutput"]
+    for other in (with_str_bom, with_bytes_bom):
+        hso = json.loads(other)["hookSpecificOutput"]
+        assert hso["permissionDecision"] == plain_hso["permissionDecision"] == "deny"
+        assert "destructive_command" in hso["permissionDecisionReason"]
+        assert "destructive_command" in plain_hso["permissionDecisionReason"]
+
+
+# --- integrity-warning cwd: the Cursor workspace root, not the empty payload
+# --- cwd (Correction 4, MEDIUM) --------------------------------------------
+
+
+def test_integrity_warning_uses_the_cursor_workspace_root(tmp_path, monkeypatch):
+    # A genuine Cursor payload has no top-level `cwd` -- `_attach_integrity_warning`
+    # must not silently fall back to the process cwd; it must see the real
+    # `workspace_roots[0]`. Warning-only: must never change the verdict itself.
+    payload = _load("pre_tool_use_shell.json", tmp_path)
+    payload["tool_input"]["command"] = "rm -rf /"
+    payload["cwd"] = ""  # genuine Cursor shape: empty, not the process/tmp cwd
+
+    seen_cwd = {}
+    real_attach = claude_code._attach_integrity_warning
+
+    def spy(out, warn_payload):
+        seen_cwd["cwd"] = warn_payload.get("cwd")
+        return real_attach(out, warn_payload)
+
+    monkeypatch.setattr(claude_code, "_attach_integrity_warning", spy)
+    out = json.loads(claude_code.run_pre_hook(json.dumps(payload)))
+
+    assert seen_cwd["cwd"] == str(tmp_path)  # cursor.repo_root_of(payload), not ""
+    # The warning is systemMessage-only -- the deny verdict is untouched.
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "systemMessage" not in out  # tmp_path isn't a registered Doberman project
