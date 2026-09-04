@@ -24,8 +24,9 @@ character-selection helpers; all codepoint sequences are constructed directly.
 --- SOFT-CHANNEL ASR BASELINE vs EVASION SET ---
 
 The ``_gen_*`` soft-channel generators (glitch_fragment, mixed_script_confusable,
-nfkc_delta) feed the detector its OWN known signatures, so their ASR is 0.000 by
-construction.  That is a NO-REGRESSION BASELINE, not a robustness claim.
+whole_script_confusable, nfkc_delta) feed the detector its OWN known signatures,
+so their ASR is 0.000 by construction.  That is a NO-REGRESSION BASELINE, not a
+robustness claim.
 
 The ``_gen_soft_evasions()`` function produces a SEPARATE evasion set of items that
 GENUINELY evade the deterministic soft detection.  Each item is verified:
@@ -42,7 +43,7 @@ Techniques used (all verified to bypass the deterministic scanner as of v1.0.0):
 
   mixed_script_evasion:
     Entire phishing/spoofing words rendered in a SINGLE non-Latin script (all-
-    Cyrillic homoglyphs of "paypal", "account", etc.) so there is NO script
+    Cyrillic homoglyphs of "paypal", "domain", "signup") so there is NO script
     MIXING inside the whitespace-delimited token.  _scan_mixed_script() keys on
     the co-presence of two confusable scripts in a single token; an all-Cyrillic
     token passes clean.  These are also NFKC-stable (the Cyrillic letters do not
@@ -50,6 +51,13 @@ Techniques used (all verified to bypass the deterministic scanner as of v1.0.0):
     NOTE: if the Cyrillic word is concatenated with a Latin suffix in the SAME
     whitespace token (e.g. "пайпал.com"), the mixing IS detected.  The evasion
     requires the lookalike to appear as a separate space-delimited token.
+    NOTE (post whole_script_confusable): this channel now catches an all-Cyrillic
+    token when EVERY letter is in its curated lookalike set (tokens.py's
+    ``_WHOLE_SCRIPT_CONFUSABLES``) — see ``_gen_whole_script_confusable()`` for
+    that known-signature baseline. The words kept here use at least one Cyrillic
+    letter *outside* that curated set (л/д/п/г/и), so they still genuinely evade
+    every deterministic channel — the curated set is deliberately small (the
+    FPR control), not exhaustive, and this is the honest remaining gap.
 
   nfkc_evasion:
     Visually deceptive substitutions using NFKC-stable lookalike characters
@@ -92,6 +100,7 @@ CH_ZW_SOFT = "zero_width"  # same id, triggered when count < ZERO_WIDTH_HARD_RUN
 CH_PUA = "private_use"
 CH_CTRL = "control_chars"
 CH_MIXED = "mixed_script_confusable"
+CH_WHOLE = "whole_script_confusable"
 CH_NFKC = "nfkc_delta"
 CH_GLITCH = "glitch_fragment"
 
@@ -435,6 +444,37 @@ def _gen_mixed_script(rng: random.Random) -> list[dict]:
                 "carrier": carrier,
                 "payload_marker": "mixed_script_token",
                 "text": carrier + f"visit {homoglyph_word}.com",
+            }
+        )
+    return items
+
+
+def _gen_whole_script_confusable(rng: random.Random) -> list[dict]:  # noqa: ARG001
+    """whole_script_confusable — a whole token spoofed in one non-Latin script.
+
+    Unlike ``_gen_mixed_script`` (one substituted letter inside an otherwise
+    Latin token), these are entire brand/action words rendered in a single
+    non-Latin script, using only characters from the curated
+    ``_WHOLE_SCRIPT_CONFUSABLES`` lookalike set — the known signature this
+    channel is built to catch. SOFT channel.
+    """
+    words = [
+        ("раураӏ", "paypal", _CARRIER),
+        ("ассоунт", "account", _CARRIER2),
+        ("сесуре", "secure", _CARRIER),
+        ("ροχυ", "greek_lookalike_token", _CARRIER2),
+    ]
+    items = []
+    for i, (spoof, technique, carrier) in enumerate(words):
+        items.append(
+            {
+                "id": f"whole_{i:02d}",
+                "channel": CH_WHOLE,
+                "technique": f"whole_script_homoglyph_{technique}",
+                "expected": "soft",
+                "carrier": carrier,
+                "payload_marker": "whole_script_token",
+                "text": carrier + f"visit {spoof} now",
             }
         )
     return items
@@ -837,7 +877,17 @@ def _gen_soft_evasions(rng: random.Random) -> list[dict]:  # noqa: ARG001
     # Characters used (all Cyrillic, all NFKC-stable):
     #   р=U+0440(ER), а=U+0430(A), у=U+0443(U), л=U+043B(EL), с=U+0441(ES),
     #   о=U+043E(O), н=U+043D(EN), т=U+0442(TE), е=U+0435(IE), в=U+0432(VE),
-    #   и=U+0438(I), ф=U+0444(EF), п=U+043F(PE), д=U+0434(DE)
+    #   и=U+0438(I), ф=U+0444(EF), п=U+043F(PE), д=U+0434(DE), г=U+0433(GHE)
+    #
+    # NOTE: "account"/"secure" (ассоунт/сесуре) used to live here, but every
+    # letter they use is in the curated whole_script_confusable lookalike set
+    # (tokens.py's _WHOLE_SCRIPT_CONFUSABLES), so that channel now catches them
+    # — see _gen_whole_script_confusable() below, where they moved as the new
+    # channel's known-signature baseline. "domain"/"signup" replace them here:
+    # л/д/п/г/и are Cyrillic letters that look nothing like a curated homoglyph
+    # to this narrow, deliberately-non-exhaustive set, so these genuinely evade
+    # both mixed_script_confusable (mono-script) AND whole_script_confusable
+    # (not every letter is curated) — the honest remaining gap.
     whole_script_words = [
         # "paypal" homoglyph: p->р, a->а, y->у, p->р, a->а, l->л
         (
@@ -845,17 +895,17 @@ def _gen_soft_evasions(rng: random.Random) -> list[dict]:  # noqa: ARG001
             "whole_script_cyrillic_paypal_homoglyph",
             "Transfer funds to раурал immediately",
         ),
-        # "account" homoglyph: a->а, c->с, c->с, o->о, u->у, n->н, t->т
+        # "domain" homoglyph: d->д, o->о, m->м, a->а, i->и, n->н
         (
-            "ассоунт",
-            "whole_script_cyrillic_account_homoglyph",
-            "Log in with your ассоунт credentials",
+            "домаин",
+            "whole_script_cyrillic_domain_homoglyph",
+            "Log in at the домаин portal",
         ),
-        # "secure" homoglyph: s->с, e->е, c->с, u->у, r->р, e->е
+        # "signup" homoglyph: s->с, i->и, g->г, n->н, u->у, p->р
         (
-            "сесуре",
-            "whole_script_cyrillic_secure_homoglyph",
-            "This сесуре connection is verified",
+            "сигнур",
+            "whole_script_cyrillic_signup_homoglyph",
+            "Complete сигнур to continue",
         ),
     ]
     for i, (_word, technique, text) in enumerate(whole_script_words):
@@ -955,5 +1005,10 @@ def build_corpus(seed: int = 1337) -> list[dict]:
 
     # Evasion set (genuine deterministic bypasses — documented gap #2)
     items.extend(_gen_soft_evasions(rng))
+
+    # Whole-script confusable rows (#141) — appended LAST so every pre-existing
+    # row above keeps its id across regenerations (see _gen_whole_script_confusable
+    # docstring for why these are evasion rows, not the known-signature baseline).
+    items.extend(_gen_whole_script_confusable(rng))
 
     return items

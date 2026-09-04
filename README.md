@@ -58,6 +58,7 @@ Works with Claude Code, Codex, OpenClaw, and any MCP-compatible agent. Cursor is
 - [Turn gate](#turn-gate): the optional pre-inference chokepoint
 - [Benchmark](#benchmark): attack-block rate vs. false-positive friction
 - [Write a guardrail plugin](#write-a-guardrail-plugin): register your own rule or audit sink
+- [Policy as code](#policy-as-code): a repo-committed `doberman.policy.yaml`, reviewed like code
 - [Tune to your risk tolerance](#tune-to-your-risk-tolerance): strictness modes and the enforcement dial
 - [Who is this for](#who-is-this-for)
 - [Roadmap](#roadmap)
@@ -213,6 +214,27 @@ Full walkthrough: [Write a guardrail plugin](docs/PLUGINS.md).
 
 ---
 
+## Policy as code
+
+Commit a `doberman.policy.yaml` at the repo root and its `blocked`/`sensitive` globs resolve into
+every action decision alongside the local role — so a team reviews policy changes in the same PR as
+the code they govern, instead of a teammate's local `.doberman/` state:
+
+```yaml
+version: 1            # optional; if present must be 1
+blocked: ["secrets/**", "*.pem"]
+sensitive: ["infra/**"]
+```
+
+Raise-only across file edits too: a file that *drops* a glob the last-approved version enforced
+never silently loosens what is blocked/sensitive — the stricter set stays pinned locally
+(`.doberman/policy_file_pin.json`) and in force until a human runs `doberman policy-file --accept`,
+gated behind the same possession factor (2FA if enrolled, else the local password) as every other
+weakening. `doberman policy-file` with no flag shows what's applied and what's pending. A file placed
+under `.doberman/` instead of the repo root is ignored — this is git-reviewed policy, not local state.
+
+---
+
 ## Tune to your risk tolerance
 
 Doberman ships with sane defaults, but every dial is yours to move: the strictness `mode`
@@ -221,7 +243,9 @@ Doberman ships with sane defaults, but every dial is yours to move: the strictne
 of them requires a possession factor (TOTP if enrolled, otherwise the local Doberman password) and is
 recorded in the append-only policy-change ledger; raising is always frictionless. Full reference:
 [Tune to your risk tolerance](docs/TUNING.md). Recovering from sticky taint, re-approving a changed
-tool, resetting learned memory, or fully removing a project: [Recover](docs/RECOVERY.md).
+tool, resetting learned memory, or fully removing a project: [Recover](docs/RECOVERY.md). Warming a
+fresh install's baseline from your own already-allowed traces instead of starting cold: `doberman
+memory seed --from traces.jsonl` ([format + invariants](docs/BASELINE_SEEDING.md)).
 
 ---
 
@@ -246,7 +270,7 @@ For everything already shipped, see the **[changelog](CHANGELOG.md)**.
 
 Doberman is **defense-in-depth, not airtight**: no single rule is a guarantee. The concrete, currently-known gaps:
 
-- **Whole-script homoglyph confusables.** The deterministic check catches *intra-token* mixed-script confusables (e.g. `раypal`, which mixes Cyrillic and Latin). But a token rendered **entirely in one non-Latin script** that mimics a Latin word (e.g. an all-Cyrillic look-alike of `paypal`) is NFKC-stable and is **not** caught by the core deterministic check today. Closing it is planned via a perplexity/confusable detector.
+- **Whole-script homoglyph confusables — narrowed, not closed.** Alongside the *intra-token* `mixed_script_confusable` check (e.g. `раypal`, which mixes Cyrillic and Latin), the deterministic scanner now also carries a `whole_script_confusable` channel: a token rendered **entirely in one non-Latin script** that mimics a Latin word (e.g. an all-Cyrillic look-alike of `paypal`) is NFKC-stable and invisible to every other channel, so this one flags it directly — raise-only, like its sibling. It works off a small, curated set of Cyrillic/Greek letters with close Latin lookalikes (defense-in-depth, deliberately **not exhaustive**): a whole-script token using even one letter outside that set still evades both channels. A model-agnostic perplexity/confusable detector (its own issue, #234) is the planned path to closing the rest of this gap.
 - **Bare high-entropy hex and other structured ids.** To avoid flagging git SHAs, content/AST digests, MD5s, and UUIDs — the most common weak-path false positive, which also poisoned the multi-step taint ledger — the generic high-entropy heuristic ignores a token that is *entirely* hash-shaped hex (≥ 32 chars) or a dashed UUID. A real secret that is bare hex- or UUID-shaped with **no** surrounding credential name is therefore not stepped up by this heuristic alone; it is still caught when it carries a credential key-name (e.g. `API_KEY=…`), matches a known credential shape, or is later matched by the read-vs-send fingerprint. (Lowering the floor from 40 to 32 also lets a bare 128-bit hex value pass the weak path; the strong credential-shape path is unaffected.)
 
 - **Identifier, path, and `word+number` shapes are exempt from the weak path (a raise-only, measured cost).** Shannon entropy *per character* measures alphabet variety, not randomness, so an ordinary identifier, a relative path, or a build tag like `py311`/`x86` lands in the same 3.6–4.5 bits/char band as a short base64 token and used to trip a spurious `possible_high_entropy_secret` — roughly 6:1 in the field, the source of the alert fatigue that trains a human to approve without reading. A token is now exempt only when *every* separator-split segment is a word, a number, a short length-capped `word+number` atom, or a digest/UUID id; a long base64/JWT segment fails, so the token is judged whole and no secret is fragmented below the length floor. The measured cost: the fraction of a *bare* base64url secret (no key-name, no known prefix) whose every segment happens to pass rises from ~0.8% to ~3.6% at 24 chars, ~0.2% to ~0.9% at 32, and ~0.01% to ~0.1% at 43 — the strong credential-shape path is untouched. On an **egress** path the exemption is withheld for a word-joined token (a passphrase has the same shape) but kept for a `/`-bearing token, since a filesystem path, URL path, or git ref is not a passphrase — which is what stops every `gh api` call and branch ref from prompting on a push.

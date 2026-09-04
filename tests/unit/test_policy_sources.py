@@ -104,6 +104,27 @@ def test_merge_is_order_independent_and_raise_only():
     assert "x/**" in forward.blocked_globs
 
 
+def test_a_raising_source_is_skipped_not_crashed_on(caplog):
+    # This loop now runs on every action (#147): a registered plugin's
+    # snapshot() must never be able to take down the decision path -- it is
+    # logged and skipped, and the OTHER sources still resolve normally.
+    class _Boom(StaticSource):
+        def snapshot(self):
+            raise RuntimeError("boom")
+
+    boom = _Boom("boom", 50, PolicySnapshot(blocked_globs=["never/seen/**"]))
+    ok = StaticSource("ok", 0, PolicySnapshot(blocked_globs=["fine/**"]))
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="doberman.policy.sources"):
+        rp = resolve_policy([boom, ok], discover=False)
+
+    assert rp.blocked_globs == ("fine/**",)
+    assert "never/seen/**" not in rp.blocked_globs
+    assert any("boom" in r.message for r in caplog.records)
+
+
 def test_discovers_a_registered_source(patch_policy_sources):
     class _DiscoveredSource:
         name = "enterprise-hard-policy"

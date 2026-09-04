@@ -34,6 +34,8 @@ subjective layer, never a hard block here):
 * ``control_chars``             — C0 control characters outside tab/newline/CR.
 * ``mixed_script_confusable``   — a single token mixing visually confusable
   scripts (e.g. a Cyrillic ``а`` inside a Latin word — homoglyph spoofing).
+* ``whole_script_confusable``   — a non-Latin token made entirely from
+  Latin-lookalike Cyrillic or Greek characters (whole-script spoofing).
 * ``nfkc_delta``                — text that *gains* ASCII content under NFKC
   normalization (compatibility-form smuggling).
 * ``glitch_fragment``           — a known under-trained ("glitch") token
@@ -143,6 +145,34 @@ _CONFUSABLE_SCRIPT_PAIRS = (
     frozenset({"LATIN", "GREEK"}),
 )
 
+#: Curated Cyrillic and Greek characters with close Latin lookalikes, drawn
+#: from the standard IDN-homograph repertoire. Defense-in-depth, not exhaustive;
+#: requiring every letter in a token to be in this set is the FPR control.
+#: Case audit: real spoofs are lowercase, so every uppercase member's
+#: lowercase form is included when it is itself a Latin lookalike — Cyrillic
+#: к (k), Greek η (n), Greek μ (u). Greek ζ (zeta) is deliberately excluded:
+#: its lowercase form does not resemble any Latin letter.
+_WHOLE_SCRIPT_CONFUSABLES: frozenset[str] = frozenset(
+    "АВСЕНІЈКМОРЅТХавсеніјкморѕтхуӏԁΑΒΕΖΗΙΚΜΝΟΡΤΥΧαβεηικμνορτυχ"
+)
+
+#: A token shorter than this is exempt even if every letter is a curated
+#: lookalike — short function words in genuine Cyrillic/Greek prose (e.g.
+#: Russian "он"/"на", Greek "το"/"την") are otherwise indistinguishable from
+#: a spoof at this letter-set granularity. Attack samples (paypal, account,
+#: secure, whole-word brand lookalikes) are all >= this length.
+#: ponytail: fixed length floor, not a script-aware stop-word list — raise if
+#: a short real-world attack token is later found to need catching.
+#: Ceiling, stated plainly: one extra genuine Cyrillic/Greek letter or word
+#: anywhere in the same text silences this channel for the WHOLE text, not
+#: just that word — e.g. "transfer funds via раураӏ now мир" is not reported,
+#: because "мир" carries a non-lookalike Cyrillic letter. A text made up of
+#: nothing BUT all-lookalike Cyrillic/Greek words (e.g. the one-word message
+#: "тема") still has no such letter and so still reports. Accepted ceiling,
+#: defense-in-depth, not exhaustive; a full per-token stop-word/dictionary
+#: exclusion check is the upgrade path if this proves too noisy in practice.
+_WHOLE_SCRIPT_MIN_LEN = 4
+
 #: Seed list of well-known glitch / under-trained token fragments. Extensible
 #: via :class:`GlitchFragmentStore`; tokenizer-specific per-model lists can be
 #: generated with the "Fishing for Magikarp" methodology and supplied at
@@ -178,6 +208,7 @@ SOFT_CHANNELS = frozenset(
         "private_use",
         "control_chars",
         "mixed_script_confusable",
+        "whole_script_confusable",
         "nfkc_delta",
         "glitch_fragment",
     }
@@ -462,6 +493,7 @@ def scan_text(text: str, glitch_store: GlitchFragmentStore | None = None) -> OOD
         )
 
     _scan_mixed_script(text, report)
+    _scan_whole_script_confusable(text, report)
 
     try:
         nfkc = unicodedata.normalize("NFKC", text)
@@ -607,5 +639,67 @@ def _scan_mixed_script(text: str, report: OODTokenReport) -> None:
                 "soft",
                 suspicious,
                 "single tokens mixing visually confusable scripts (homoglyph spoofing)",
+            )
+        )
+
+
+def _classify_script_token(token: str) -> tuple[set[str], list[str]]:
+    """A token's alphabetic script set and its alphabetic characters."""
+    scripts: set[str] = set()
+    alpha_chars: list[str] = []
+    for ch in token:
+        if not ch.isalpha():
+            continue
+        alpha_chars.append(ch)
+        try:
+            scripts.add(unicodedata.name(ch).split(" ", 1)[0])
+        except ValueError:
+            continue
+    return scripts, alpha_chars
+
+
+def _scan_whole_script_confusable(text: str, report: OODTokenReport) -> None:
+    """Flag all-lookalike Cyrillic or Greek tokens without exposing them.
+
+    Complements :func:`_scan_mixed_script`: that check only fires when two
+    confusable scripts co-occur in one token (e.g. a Cyrillic ``а`` inside an
+    otherwise-Latin word). A token rendered *entirely* in one non-Latin script
+    that mimics a Latin word (e.g. an all-Cyrillic look-alike of "paypal") has
+    no script mixing and is NFKC-stable, so it is invisible to every other
+    channel here — this is the whole-script gap that closes it.
+
+    Two passes over ``text.split()``: a spoof only works if it fools a Latin
+    reader, so it must appear as an *isolated* non-Latin token in otherwise
+    Latin context. Genuine Cyrillic/Greek prose brings company — another
+    same-script token with a letter outside the curated lookalike set (any
+    length; one such letter is enough). If the text shows that evidence,
+    the whole channel stays silent for it; otherwise the length-gated
+    all-lookalike tokens are reported exactly as before.
+    """
+    classified = [(token, *_classify_script_token(token)) for token in text.split()]
+
+    genuine_evidence = any(
+        scripts in ({"CYRILLIC"}, {"GREEK"})
+        and not all(ch in _WHOLE_SCRIPT_CONFUSABLES for ch in alpha_chars)
+        for _, scripts, alpha_chars in classified
+    )
+    if genuine_evidence:
+        return
+
+    suspicious = sum(
+        1
+        for token, scripts, alpha_chars in classified
+        if len(token) >= _WHOLE_SCRIPT_MIN_LEN
+        and scripts in ({"CYRILLIC"}, {"GREEK"})
+        and all(ch in _WHOLE_SCRIPT_CONFUSABLES for ch in alpha_chars)
+    )
+    if suspicious:
+        report.findings.append(
+            ChannelFinding(
+                "whole_script_confusable",
+                "soft",
+                suspicious,
+                "single-script tokens made entirely of Latin-lookalike characters "
+                "(whole-script homoglyph spoofing)",
             )
         )

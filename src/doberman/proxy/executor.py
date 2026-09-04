@@ -69,6 +69,7 @@ from doberman.models import (
     Verdict,
 )
 from doberman.policy.drift import acted_verdict, effective_enforcement
+from doberman.policy.sources import effective_policy
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import normalize
 from doberman.storage import tool_pins
@@ -300,20 +301,28 @@ def _build_ctx(
     (F7), the precomputed per-entity surprise (SL4), and the step-up budget
     verdict ride along too — everything async (DB reads) happens here in the
     proxy so the synchronous subjective guardrail never touches the database.
+
+    ``resolved_policy`` (#147) is set ONLY when non-empty — a repo with no
+    committed ``doberman.policy.yaml`` and no registered policy-source plugin
+    is byte-identical to before this seam existed (``PolicySourceRule`` abstains).
     """
+    metadata = {
+        "raw_arguments": dict(arguments or {}),
+        "repo_root": REPO_ROOT,
+        "elevations": grants,
+        "surprise": surprise_score,
+        "budget_ok": budget_ok,
+        "scope_token": scope_token,
+        "entity_id": eid,
+        "preferences": load_preferences(REPO_ROOT),
+    }
+    policy = effective_policy(REPO_ROOT)
+    if not policy.is_empty:
+        metadata["resolved_policy"] = policy
     return EvalContext(
         role=load_active_role(REPO_ROOT),
         mode=load_mode(REPO_ROOT),
-        metadata={
-            "raw_arguments": dict(arguments or {}),
-            "repo_root": REPO_ROOT,
-            "elevations": grants,
-            "surprise": surprise_score,
-            "budget_ok": budget_ok,
-            "scope_token": scope_token,
-            "entity_id": eid,
-            "preferences": load_preferences(REPO_ROOT),
-        },
+        metadata=metadata,
     )
 
 

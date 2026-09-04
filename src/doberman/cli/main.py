@@ -77,6 +77,15 @@ from doberman.policy.drift import (
 from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
+from doberman.policy.sources import (
+    PIN_CORRUPT,
+    POLICY_FILE_NAME,
+    PolicySnapshot,
+    glob_state_map,
+    load_raw_file,
+    read_pin,
+    write_pin,
+)
 from doberman.render import (
     format_utc_timestamp,
     humanize_auth_result,
@@ -778,6 +787,133 @@ def mode(
             )
         raise typer.Exit(code=1)
     typer.echo(f"mode set to {saved}")
+
+
+@app.command("policy-file", rich_help_panel="Policy")
+def policy_file(
+    accept: bool = typer.Option(
+        False, "--accept", help="Approve a pending drop, gated behind a possession factor."
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show ``doberman.policy.yaml``'s status, or accept a pending drop (#147).
+
+    ``doberman.policy.yaml`` at the repo root is a team-committed policy file:
+    its ``blocked``/``sensitive`` globs are resolved into every action decision
+    alongside the local role. Raise-only across file EDITS too -- a file that
+    drops a glob the last-approved version enforced never silently loosens
+    what is blocked/sensitive; the stricter, pinned set stays in force until a
+    human explicitly accepts the drop here. Accepting is gated the same way as
+    `doberman mode`/`doberman memory reset`: confirmation of the rendered diff
+    plus the strongest enrolled possession factor (a 2FA code if enrolled,
+    otherwise the local password) -- there is no `--yes` bypass and no
+    confirm-only path.
+    """
+    file_snapshot, _digest, rejected, reason = load_raw_file(path)
+    pin = read_pin(path)
+    pin_corrupt = pin is PIN_CORRUPT
+    pin_snapshot = (
+        PolicySnapshot(blocked_globs=pin["blocked"], sensitive_globs=pin["sensitive"])
+        if isinstance(pin, dict)
+        else PolicySnapshot()
+    )
+
+    if not accept:
+        present = (Path(path) / POLICY_FILE_NAME).exists()
+        typer.echo(f"{POLICY_FILE_NAME}: {'present' if present else 'absent'}")
+        if rejected:
+            # A rejected file (unreadable/malformed) is NOT the same as a
+            # legitimately empty one -- reporting "Applied: 0" here would let
+            # a one-character typo read as an intentional empty policy, and
+            # nothing is "pending" for a file that was never actually parsed.
+            typer.echo(f"{POLICY_FILE_NAME}: rejected ({reason})")
+            return
+        typer.echo(
+            f"Applied: {len(file_snapshot.blocked_globs)} blocked, "
+            f"{len(file_snapshot.sensitive_globs)} sensitive glob(s)."
+        )
+        dropped = (set(pin_snapshot.blocked_globs) | set(pin_snapshot.sensitive_globs)) - (
+            set(file_snapshot.blocked_globs) | set(file_snapshot.sensitive_globs)
+        )
+        if dropped:
+            typer.echo(
+                f"Pending: {len(dropped)} glob(s) still enforced from the last approval but "
+                f"no longer in the file: {', '.join(sorted(dropped))}. Run `doberman "
+                "policy-file --accept` to approve the drop."
+            )
+        return
+
+    if rejected:
+        # Refuse outright: nothing was actually decided, so there is nothing
+        # to gate or ledger, and definitely nothing to pin -- the failure
+        # mode this guards is `--accept` writing an EMPTY pin from a
+        # malformed file and disarming enforcement.
+        typer.echo(f"error: {POLICY_FILE_NAME} rejected ({reason}); nothing to accept", err=True)
+        raise typer.Exit(code=1)
+
+    # Same glob-keyed view load_file_policy() uses for its own raise-only
+    # check, so the loader and this gate always agree on what's a drop.
+    before = glob_state_map(pin_snapshot)
+    after = glob_state_map(file_snapshot)
+
+    classification = classify_change(before, after)
+    if not pin_corrupt and classification is not Classification.weaken:
+        typer.echo("nothing to accept")
+        raise typer.Exit(code=0)
+    if pin_corrupt:
+        # The prior approved state is unknown, not merely empty --
+        # classify_change can only ever call an empty "before" a strengthen,
+        # never a weaken, but re-pinning from an unreadable pin must not be
+        # waved through as if it were a verified strengthening. Route it
+        # through the same confirm + possession-factor gate as any other
+        # weaken, and record it as one.
+        classification = Classification.weaken
+
+    if not totp.is_enrolled() and not password.is_enrolled():
+        # Same check `memory reset`/`taint clear` make before ever rendering a
+        # diff: with nothing enrolled the gate can never succeed regardless of
+        # how confirm() is answered, so deny right away instead of showing a
+        # WEAKENING diff for a decision the possession-factor step could never
+        # actually reach.
+        typer.echo(
+            "error: accepting doberman.policy.yaml requires an enrolled possession "
+            "factor - run `doberman 2fa setup` or `doberman password set` first",
+            err=True,
+        )
+        asyncio.run(
+            record_change(
+                before,
+                after,
+                classification,
+                "accept doberman.policy.yaml",
+                repo_root=path,
+                approved=False,
+                method="no_factor_enrolled",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    approved, method = _run_weaken_gate(before, after, "accept doberman.policy.yaml", CliPrompter())
+    asyncio.run(
+        record_change(
+            before,
+            after,
+            classification,
+            "accept doberman.policy.yaml",
+            repo_root=path,
+            approved=approved,
+            method=method,
+        )
+    )
+    if not approved:
+        typer.echo(f"error: doberman.policy.yaml accept denied ({method}); unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    write_pin(path, file_snapshot)
+    typer.echo(
+        f"doberman.policy.yaml accepted; pin updated ({len(file_snapshot.blocked_globs)} "
+        f"blocked, {len(file_snapshot.sensitive_globs)} sensitive glob(s))."
+    )
 
 
 _ENFORCEMENT_STATES = ("enforce", "monitor", "off")
@@ -2476,6 +2612,94 @@ def memory_prune(
         f"Memory pruned: {entities} stale entity class(es), {total_rows} row(s) across "
         f"{len(result)} table(s) untouched for {older_than_days}+ day(s)."
     )
+
+
+@memory_app.command("seed")
+def memory_seed(
+    from_file: str = typer.Option(
+        ...,
+        "--from",
+        help="Path to a JSONL file of ALLOWED-action traces (docs/BASELINE_SEEDING.md).",
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    now: str | None = typer.Option(
+        None,
+        "--now",
+        help="ISO-8601 timestamp to seed with (default: current UTC). Makes a run reproducible.",
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit the seed summary as one JSON document."
+    ),
+) -> None:
+    """Warm the per-entity streaming baseline from operator-supplied ALLOWED-action traces.
+
+    Issue #326 named this `doberman baseline seed`; it lives under `memory` instead because
+    `memory reset`/`memory prune` already own these same tables and a one-verb `baseline` group
+    would split the surface — see docs/BASELINE_SEEDING.md.
+
+    Every line of the trace file is validated BEFORE anything is written: any row that is not an
+    allowed trace (`verdict: "PASS"` / `allowed: true`), or that fails to parse or validate,
+    refuses the WHOLE file — nothing is observed, and the error names only the bad line numbers,
+    never row content. A clean file is replayed through the same `observe()` path the live proxy
+    calls, entity-scoped the same way (`entity_id(agent_role, repo_root)`), so a seeded baseline
+    is the one live traffic reads. This can only warm the surprise baseline: it never changes a
+    verdict, the mode, or `policies.yaml`.
+    """
+    # Imported here, not at module scope (same reasoning as `serve`'s lazy import above):
+    # doberman.subjective.baseline imports `river` at module load, which drags in the heavy
+    # numeric stack (river/numpy/scipy) — non-seed CLI commands (`--help`, `log`, `status`,
+    # `scan`, ...) must not pay that cold-start cost just because `memory seed` exists.
+    from doberman.subjective.seed import seed_baseline
+
+    stamp: datetime | None = None
+    if now is not None:
+        try:
+            stamp = datetime.fromisoformat(now)
+        except ValueError:
+            typer.echo(f"error: --now {now!r} is not a valid ISO-8601 timestamp", err=True)
+            raise typer.Exit(code=1) from None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+
+    try:
+        summary = asyncio.run(seed_baseline(from_file, repo_root=path, now=stamp))
+    except OSError as exc:
+        typer.echo(f"error: could not read {from_file!r}: {type(exc).__name__}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if summary.errors:
+        lines = ", ".join(str(e.line_no) for e in summary.errors)
+        typer.echo(
+            f"error: seed refused - {len(summary.errors)} invalid row(s) at line(s): {lines}; "
+            "nothing observed",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if as_json:
+        payload = {
+            "seeded": summary.seeded,
+            "entities": [
+                {
+                    "entity": e.entity,
+                    "seeded": e.seeded,
+                    "total_observations": e.total_observations,
+                    "warm": e.warm,
+                    "hst": e.hst,
+                }
+                for e in summary.entities
+            ],
+        }
+        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return
+
+    typer.echo(f"Seeded {summary.seeded} allowed-action trace(s).")
+    for e in summary.entities:
+        warm_label = "warm" if e.warm else "cold"
+        typer.echo(
+            f"  entity {e.entity}...  +{e.seeded} observation(s), total {e.total_observations} "
+            f"({warm_label}), HST {e.hst}"
+        )
 
 
 @app.command("policy-history", rich_help_panel="Policy internals")
