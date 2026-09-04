@@ -2,7 +2,8 @@
 
 This page covers Doberman's plugin seams: registering your own rule, and forwarding the redacted
 audit log to your own pipeline. Both work the same way, a Python entry-point group core discovers
-at runtime, so core never imports a plugin package by name.
+at runtime, so core never imports a plugin package by name. For the full catalogue of every
+entry-point group (rules, detectors, audit sinks, and the rest), see [EXTENDING.md](EXTENDING.md).
 
 ## Opt in by name first
 
