@@ -19,3 +19,6 @@ now live captured (BOM preserved, `user_email` scrubbed) in `../cursor_payloads/
 this folder's doc-derived `pre_shell.json` (removed). `before_shell.json`, `before_read.json`,
 `before_mcp.json`, and `pre_write.json` here are still doc-derived — no live capture exists yet for
 `beforeShellExecution` / `beforeReadFile` / `beforeMCPExecution` or a `Write` call.
+
+The three captured fixtures also had this machine's real `user_email` and workspace-root path scrubbed
+(`user@example.com` and `C:\Users\dev\proj` respectively) before being committed.
