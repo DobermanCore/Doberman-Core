@@ -78,12 +78,13 @@ from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
 from doberman.policy.sources import (
+    PIN_CORRUPT,
     POLICY_FILE_NAME,
     PolicySnapshot,
-    _glob_state_map,
-    _load_raw_file,
-    _read_pin,
-    _write_pin,
+    glob_state_map,
+    load_raw_file,
+    read_pin,
+    write_pin,
 )
 from doberman.render import (
     format_utc_timestamp,
@@ -808,17 +809,25 @@ def policy_file(
     otherwise the local password) -- there is no `--yes` bypass and no
     confirm-only path.
     """
-    file_snapshot, _digest = _load_raw_file(path)
-    pin = _read_pin(path)
+    file_snapshot, _digest, rejected, reason = load_raw_file(path)
+    pin = read_pin(path)
+    pin_corrupt = pin is PIN_CORRUPT
     pin_snapshot = (
         PolicySnapshot(blocked_globs=pin["blocked"], sensitive_globs=pin["sensitive"])
-        if pin is not None
+        if isinstance(pin, dict)
         else PolicySnapshot()
     )
 
     if not accept:
         present = (Path(path) / POLICY_FILE_NAME).exists()
         typer.echo(f"{POLICY_FILE_NAME}: {'present' if present else 'absent'}")
+        if rejected:
+            # A rejected file (unreadable/malformed) is NOT the same as a
+            # legitimately empty one -- reporting "Applied: 0" here would let
+            # a one-character typo read as an intentional empty policy, and
+            # nothing is "pending" for a file that was never actually parsed.
+            typer.echo(f"{POLICY_FILE_NAME}: rejected ({reason})")
+            return
         typer.echo(
             f"Applied: {len(file_snapshot.blocked_globs)} blocked, "
             f"{len(file_snapshot.sensitive_globs)} sensitive glob(s)."
@@ -834,15 +843,31 @@ def policy_file(
             )
         return
 
+    if rejected:
+        # Refuse outright: nothing was actually decided, so there is nothing
+        # to gate or ledger, and definitely nothing to pin -- the failure
+        # mode this guards is `--accept` writing an EMPTY pin from a
+        # malformed file and disarming enforcement.
+        typer.echo(f"error: {POLICY_FILE_NAME} rejected ({reason}); nothing to accept", err=True)
+        raise typer.Exit(code=1)
+
     # Same glob-keyed view load_file_policy() uses for its own raise-only
     # check, so the loader and this gate always agree on what's a drop.
-    before = _glob_state_map(pin_snapshot)
-    after = _glob_state_map(file_snapshot)
+    before = glob_state_map(pin_snapshot)
+    after = glob_state_map(file_snapshot)
 
     classification = classify_change(before, after)
-    if classification is not Classification.weaken:
+    if not pin_corrupt and classification is not Classification.weaken:
         typer.echo("nothing to accept")
         raise typer.Exit(code=0)
+    if pin_corrupt:
+        # The prior approved state is unknown, not merely empty --
+        # classify_change can only ever call an empty "before" a strengthen,
+        # never a weaken, but re-pinning from an unreadable pin must not be
+        # waved through as if it were a verified strengthening. Route it
+        # through the same confirm + possession-factor gate as any other
+        # weaken, and record it as one.
+        classification = Classification.weaken
 
     if not totp.is_enrolled() and not password.is_enrolled():
         # Same check `memory reset`/`taint clear` make before ever rendering a
@@ -884,7 +909,7 @@ def policy_file(
         typer.echo(f"error: doberman.policy.yaml accept denied ({method}); unchanged", err=True)
         raise typer.Exit(code=1)
 
-    _write_pin(path, file_snapshot)
+    write_pin(path, file_snapshot)
     typer.echo(
         f"doberman.policy.yaml accepted; pin updated ({len(file_snapshot.blocked_globs)} "
         f"blocked, {len(file_snapshot.sensitive_globs)} sensitive glob(s))."

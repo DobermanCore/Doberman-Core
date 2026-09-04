@@ -27,7 +27,7 @@ import json
 import logging
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -201,7 +201,19 @@ def resolve_policy(
     sensitive: set[str] = set()
     contributors: list[tuple[str, int]] = []
     for source in sources:
-        snap = source.snapshot()
+        # This loop runs on every decision now (#147). A registered plugin's
+        # snapshot() must never be able to crash the decision path -- skip it
+        # and keep the other sources' union, the same defensive-loading
+        # behaviour discover_policy_sources() already gives load/construct.
+        try:
+            snap = source.snapshot()
+        except Exception as exc:  # noqa: BLE001 - isolate one bad plugin from the decision path
+            logger.warning(
+                "policy source %r snapshot() failed, skipping it: %s",
+                getattr(source, "name", "?"),
+                exc,
+            )
+            continue
         blocked.update(snap.blocked_globs)
         sensitive.update(snap.sensitive_globs)
         contributors.append(
@@ -234,12 +246,23 @@ _PIN_FILE_NAME = "policy_file_pin.json"
 _MISSING_DIGEST = "<missing>"
 _KNOWN_FILE_KEYS = frozenset({"version", "blocked", "sensitive"})
 
+#: Sentinel: a pin file exists on disk but could not be parsed/validated --
+#: distinct from ``None`` (no pin file at all, a legitimate first run). A
+#: corrupt pin means the PRIOR approved state is unknown, not that nothing
+#: was ever approved; collapsing the two let a corrupt pin plus a same-turn
+#: dropping file re-adopt the smaller set with no gate at all. See
+#: ``read_pin``/``load_file_policy``.
+PIN_CORRUPT = object()
+
 #: Per-(repo_root, file-content-digest) dedup so a malformed/dropping file
 #: warns once, not once per action (the loader runs on every decision).
 _warned_states: set[tuple[str, str]] = set()
 #: Per-(repo_root, policy-file digest, pin digest) memoization so entry-point
-#: discovery does not re-run on every action; a cache entry is only ever
-#: reused while BOTH files are byte-identical to when it was computed.
+#: discovery does not re-run on every action. Stored ONLY under the digests
+#: actually read AFTER load_file_policy() runs (it can itself write the
+#: pin) -- never under a pre-call guess -- so a lookup that doesn't match a
+#: stored entry is always a genuine miss: deleting the pin out from under a
+#: cached result can never serve stale policy or skip recreating it.
 _effective_policy_cache: dict[tuple[str, str, str], ResolvedPolicy] = {}
 
 
@@ -270,28 +293,35 @@ def _warn_once(repo_root: str, digest: str, message: str) -> None:
     logger.warning(message)
 
 
-def _read_pin(repo_root: str) -> dict[str, list[str]] | None:
-    """The last-approved ``{blocked, sensitive}`` snapshot, or ``None``.
+def read_pin(repo_root: str) -> dict[str, list[str]] | None | object:
+    """The last-approved ``{blocked, sensitive}`` snapshot.
 
-    ``None`` covers both "never adopted" and "unreadable" -- an unreadable
-    LOCAL pin is treated the same as a fresh adoption rather than guessed at:
-    the file itself (git-reviewed) is the source of truth, and the next valid
-    load re-establishes the pin from it.
+    Three distinct outcomes -- callers must not collapse them:
+
+    * a valid pin dict -- the normal case.
+    * ``None`` -- no pin file exists at all: a legitimate first run, nothing
+      was ever approved, so adopting the file fresh is safe.
+    * :data:`PIN_CORRUPT` -- a pin file exists but can't be parsed: a PRIOR
+      approved state existed and is now unknown. Treating this like ``None``
+      would let a same-turn dropping file edit re-adopt a smaller set with no
+      gate at all -- the fail-open a fresh review caught.
     """
     path = _pin_path(repo_root)
+    if not path.exists():
+        return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
+        return PIN_CORRUPT
     if not isinstance(raw, dict):
-        return None
+        return PIN_CORRUPT
     blocked, sensitive = raw.get("blocked"), raw.get("sensitive")
     if not isinstance(blocked, list) or not isinstance(sensitive, list):
-        return None
+        return PIN_CORRUPT
     return {"blocked": [str(g) for g in blocked], "sensitive": [str(g) for g in sensitive]}
 
 
-def _write_pin(repo_root: str, snapshot: PolicySnapshot) -> None:
+def write_pin(repo_root: str, snapshot: PolicySnapshot) -> None:
     """Atomically persist *snapshot* as the new last-approved pin."""
     path = _pin_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -304,54 +334,65 @@ def _write_pin(repo_root: str, snapshot: PolicySnapshot) -> None:
     tmp.replace(path)
 
 
-def _load_raw_file(repo_root: str) -> tuple[PolicySnapshot, str]:
+class FileLoad(NamedTuple):
+    """The result of parsing ``doberman.policy.yaml``; never raises.
+
+    ``rejected`` distinguishes "the file exists but is invalid" from both
+    "no file" and "a validly-empty file" -- collapsing all three into one
+    empty snapshot is how a one-character typo (e.g. ``version 1`` with the
+    colon missing, which parses as a YAML string rather than a mapping)
+    could get silently ``--accept``-ed as an intentional empty policy,
+    writing an empty pin and disarming enforcement.
+    """
+
+    snapshot: PolicySnapshot
+    digest: str
+    rejected: bool = False
+    reason: str = ""
+
+
+def load_raw_file(repo_root: str) -> FileLoad:
     """Parse+validate ``doberman.policy.yaml``; never raises.
 
-    Returns ``(snapshot, digest)``. Missing, unreadable, non-mapping, a bad
-    ``version``, or a non-list ``blocked``/``sensitive`` all yield an EMPTY
-    snapshot (the file contributes nothing new this load) and log one warning
-    (deduped by *digest* -- the caller may warn again under the same digest
-    for the raise-only drop check, which the dedup then silently absorbs, so
-    a bad file state is still exactly one warning end to end). An unknown
-    top-level key warns too but does not reject the recognized keys.
+    Missing -> ``FileLoad(PolicySnapshot(), digest)`` with ``rejected=False``
+    (no file is not a rejection, it's simply absent). Unreadable (including a
+    non-UTF-8/binary file), non-mapping, a bad ``version``, or a non-list
+    ``blocked``/``sensitive`` -> ``rejected=True`` with a one-line ``reason``,
+    an EMPTY snapshot, and one warning (deduped by *digest* -- the caller may
+    warn again under the same digest for the raise-only drop check, which the
+    dedup then silently absorbs, so a bad file state is still exactly one
+    warning end to end). An unknown top-level key warns too but is not a
+    rejection -- the recognized keys still apply.
     """
     import yaml
 
     path = _policy_file_path(repo_root)
     digest = _digest(path)
     if digest == _MISSING_DIGEST:
-        return PolicySnapshot(), digest
+        return FileLoad(PolicySnapshot(), digest)
+
+    def _reject(reason: str) -> FileLoad:
+        _warn_once(repo_root, digest, f"{POLICY_FILE_NAME} {reason}; ignoring it")
+        return FileLoad(PolicySnapshot(), digest, rejected=True, reason=reason)
 
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        _warn_once(repo_root, digest, f"{POLICY_FILE_NAME} could not be read ({exc}); ignoring it")
-        return PolicySnapshot(), digest
+    except (OSError, yaml.YAMLError, UnicodeDecodeError, ValueError) as exc:
+        return _reject(f"could not be read ({exc})")
 
     data = raw if raw is not None else {}
     if not isinstance(data, dict):
-        _warn_once(repo_root, digest, f"{POLICY_FILE_NAME} is not a mapping; ignoring it")
-        return PolicySnapshot(), digest
+        return _reject("is not a mapping")
 
     version = data.get("version")
     if version is not None and version != 1:
-        _warn_once(
-            repo_root,
-            digest,
-            f"{POLICY_FILE_NAME} has unsupported version {version!r} (expected 1); ignoring it",
-        )
-        return PolicySnapshot(), digest
+        return _reject(f"has unsupported version {version!r} (expected 1)")
 
     blocked_raw = data.get("blocked", [])
     sensitive_raw = data.get("sensitive", [])
     for key_name, value in (("blocked", blocked_raw), ("sensitive", sensitive_raw)):
         if not isinstance(value, list) or not all(isinstance(g, str) for g in value):
-            _warn_once(
-                repo_root,
-                digest,
-                f"{POLICY_FILE_NAME}'s {key_name!r} must be a list of strings; ignoring it",
-            )
-            return PolicySnapshot(), digest
+            return _reject(f"{key_name!r} must be a list of strings")
 
     unknown = sorted(set(data) - _KNOWN_FILE_KEYS)
     if unknown:
@@ -361,10 +402,12 @@ def _load_raw_file(repo_root: str) -> tuple[PolicySnapshot, str]:
             f"{POLICY_FILE_NAME} has unknown key(s) {unknown}; the recognized keys still apply",
         )
 
-    return PolicySnapshot(blocked_globs=blocked_raw, sensitive_globs=sensitive_raw), digest
+    return FileLoad(
+        PolicySnapshot(blocked_globs=blocked_raw, sensitive_globs=sensitive_raw), digest
+    )
 
 
-def _glob_state_map(snapshot: PolicySnapshot) -> dict[str, str]:
+def glob_state_map(snapshot: PolicySnapshot) -> dict[str, str]:
     """``{"file:<glob>": state}`` keyed by GLOB (not category) for
     ``classify_change``'s raise-only rank table -- shared by the pin/file
     raise-only check below AND ``doberman policy-file --accept``'s gate, so
@@ -386,29 +429,49 @@ def _glob_state_map(snapshot: PolicySnapshot) -> dict[str, str]:
 def load_file_policy(repo_root: str) -> FilePolicySource | None:
     """Load ``doberman.policy.yaml`` layered raise-only over the local pin.
 
-    * No pin and nothing in the file today -> ``None`` (nothing to adopt;
-      matches today's behavior byte-for-byte with no file at all).
-    * No pin, file has something -> adopt it: apply + write the initial pin.
-    * Pin exists, file only adds/keeps (or is identical) -> apply the file,
-      rewrite the pin (auto-tighten is always allowed, no gate).
-    * Pin exists, file drops anything (including "file is now gone/invalid")
-      -> the effective snapshot is ``pin UNION file`` so nothing already
-      enforced is lost; the pin is left untouched; warn once. The human path
-      back down is ``doberman policy-file --accept`` (gated).
+    * No pin file and nothing in the file today -> ``None`` (nothing to
+      adopt; matches today's behavior byte-for-byte with no file at all).
+    * No pin file, file has something -> adopt it: apply + write the initial
+      pin (a legitimate first run).
+    * Pin file exists but is CORRUPT (unreadable/invalid) -> the prior
+      approved state is unknown: apply the file AS-IS (never less protective
+      than the file itself; nothing to union with since nothing trustworthy
+      survives), leave the corrupt bytes on disk untouched, and warn once.
+      The human path to re-establish a real pin is
+      ``doberman policy-file --accept`` (gated, same as any other re-pin).
+    * Pin exists and is valid, file only adds/keeps (or is identical) ->
+      apply the file, rewrite the pin (auto-tighten is always allowed, no
+      gate).
+    * Pin exists and is valid, file drops anything (including "file is now
+      gone/invalid") -> the effective snapshot is ``pin UNION file`` so
+      nothing already enforced is lost; the pin is left untouched; warn
+      once. The human path back down is ``doberman policy-file --accept``
+      (gated).
     """
     from doberman.policy.drift import Classification, classify_change
 
-    file_snapshot, digest = _load_raw_file(repo_root)
-    pin = _read_pin(repo_root)
+    file_snapshot, digest, _rejected, _reason = load_raw_file(repo_root)
+    pin = read_pin(repo_root)
+
+    if pin is PIN_CORRUPT:
+        _warn_once(
+            repo_root,
+            _digest(_pin_path(repo_root)),
+            "the local doberman.policy.yaml pin is unreadable; applying the file as-is and "
+            "leaving the pin untouched -- run `doberman policy-file --accept` to re-pin",
+        )
+        if not file_snapshot.blocked_globs and not file_snapshot.sensitive_globs:
+            return None
+        return FilePolicySource(file_snapshot)
 
     if pin is None:
         if not file_snapshot.blocked_globs and not file_snapshot.sensitive_globs:
             return None
-        _write_pin(repo_root, file_snapshot)
+        write_pin(repo_root, file_snapshot)
         return FilePolicySource(file_snapshot)
 
     pin_snapshot = PolicySnapshot(blocked_globs=pin["blocked"], sensitive_globs=pin["sensitive"])
-    classification = classify_change(_glob_state_map(pin_snapshot), _glob_state_map(file_snapshot))
+    classification = classify_change(glob_state_map(pin_snapshot), glob_state_map(file_snapshot))
 
     if classification is Classification.weaken:
         effective = PolicySnapshot(
@@ -427,20 +490,21 @@ def load_file_policy(repo_root: str) -> FilePolicySource | None:
         return FilePolicySource(effective)
 
     if classification is Classification.strengthen:
-        _write_pin(repo_root, file_snapshot)
+        write_pin(repo_root, file_snapshot)
     return FilePolicySource(file_snapshot)
 
 
 def effective_policy(repo_root: str) -> ResolvedPolicy:
     """The merged, effective policy for *repo_root* (F4.4 layering + #147's file).
 
-    Memoized per (resolved repo root, policy-file digest, pin digest) so
-    entry-point discovery does not re-run on every action; the key changes
-    the instant either file's bytes change on disk (including a
-    ``policy-file --accept`` rewriting the pin), so a stale cache entry can
-    never mask a real update. With no file and nothing registered, sets
-    nothing new: :attr:`ResolvedPolicy.is_empty` is then ``True``, exactly as
-    it was before this source existed.
+    Memoized per (resolved repo root, policy-file digest, pin digest) --
+    stored ONLY under the digests read AFTER ``load_file_policy()`` runs (it
+    can itself write the pin), never under a pre-call guess. A lookup that
+    doesn't match a stored entry is therefore always a genuine miss: deleting
+    the pin out from under a cached result can never serve a stale policy or
+    skip recreating it. With no file and nothing registered, sets nothing
+    new: :attr:`ResolvedPolicy.is_empty` is then ``True``, exactly as it was
+    before this source existed.
     """
     root = str(Path(repo_root).resolve())
     file_path, pin_path = _policy_file_path(root), _pin_path(root)
@@ -449,13 +513,8 @@ def effective_policy(repo_root: str) -> ResolvedPolicy:
     if cached is not None:
         return cached
 
-    # load_file_policy() can itself WRITE the pin (first adoption / auto-
-    # tighten) -- re-digest afterwards so the stored key reflects that, not
-    # the pre-write state captured in lookup_key above.
     file_source = load_file_policy(root)
     result = resolve_policy([file_source] if file_source else [], discover=True)
     store_key = (root, _digest(file_path), _digest(pin_path))
     _effective_policy_cache[store_key] = result
-    if store_key != lookup_key:
-        _effective_policy_cache[lookup_key] = result
     return result

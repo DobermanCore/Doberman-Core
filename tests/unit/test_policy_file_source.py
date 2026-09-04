@@ -31,11 +31,13 @@ from doberman.hosthooks import spine
 from doberman.models import ReasonCode, Verdict
 from doberman.policy.drift import read_policy_changes
 from doberman.policy.sources import (
+    PIN_CORRUPT,
     PolicySnapshot,
-    _glob_state_map,
-    _load_raw_file,
     effective_policy,
+    glob_state_map,
     load_file_policy,
+    load_raw_file,
+    read_pin,
 )
 
 runner = CliRunner()
@@ -153,9 +155,9 @@ def test_blocked_to_sensitive_is_held_until_accept_block_still_wins(tmp_path):
     from doberman.policy.drift import Classification, classify_change
 
     pin_snapshot = PolicySnapshot(blocked_globs=pin["blocked"], sensitive_globs=pin["sensitive"])
-    file_snapshot, _ = _load_raw_file(str(tmp_path))
+    file_snapshot, _digest, _rejected, _reason = load_raw_file(str(tmp_path))
     assert (
-        classify_change(_glob_state_map(pin_snapshot), _glob_state_map(file_snapshot))
+        classify_change(glob_state_map(pin_snapshot), glob_state_map(file_snapshot))
         is Classification.weaken
     )
 
@@ -245,6 +247,108 @@ def test_unknown_top_level_key_warns_but_known_keys_still_apply(tmp_path, caplog
     assert any("unknown key" in r.message for r in caplog.records)
 
 
+def test_utf16_file_is_rejected_not_raised_pin_still_applies(tmp_path, caplog):
+    _write_policy_file(tmp_path, blocked=["a/**"])
+    load_file_policy(str(tmp_path))  # adopt
+
+    # A UTF-16/binary file raises UnicodeDecodeError out of a naive
+    # read_text(encoding="utf-8") -- it must be REJECTED, not propagate out
+    # of the ctx builders that call this on every action.
+    (tmp_path / "doberman.policy.yaml").write_text("blocked: ['x/**']\n", encoding="utf-16")
+
+    with caplog.at_level(logging.WARNING, logger="doberman.policy.sources"):
+        src = load_file_policy(str(tmp_path))  # must not raise
+
+    assert src is not None
+    assert "a/**" in src.snapshot().blocked_globs  # pin still applies
+
+    file_snapshot, _digest, rejected, reason = load_raw_file(str(tmp_path))
+    assert file_snapshot.blocked_globs == ()
+    assert rejected
+    assert "could not be read" in reason
+
+
+# --- 5b. rejected is distinct from emptied ----------------------------------
+
+
+def test_status_reports_rejected_file_not_applied_or_pending(tmp_path):
+    _write_policy_file(tmp_path, blocked=["a/**"], sensitive=["s/**"])
+    load_file_policy(str(tmp_path))  # adopt: pin now holds a/** + s/**
+
+    # A one-character typo -- "version 1" with the colon missing -- parses
+    # as a YAML STRING, not a mapping. This must read as REJECTED, never as
+    # "Applied: 0" (a legitimately empty file) with the pin's globs listed
+    # as "Pending" (an intentional drop a human is being asked to accept).
+    _write_policy_file(tmp_path, text="version 1\n")
+
+    result = runner.invoke(app, ["policy-file", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "rejected" in result.stdout
+    assert "Applied" not in result.stdout
+    assert "Pending" not in result.stdout
+
+
+def test_accept_refuses_a_rejected_file_writes_nothing(tmp_path):
+    _write_policy_file(tmp_path, blocked=["a/**"], sensitive=["s/**"])
+    load_file_policy(str(tmp_path))  # adopt
+    pin_before = _pin_path(tmp_path).read_text(encoding="utf-8")
+
+    _write_policy_file(tmp_path, text="version 1\n")
+
+    result = runner.invoke(app, ["policy-file", "--accept", "--path", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "rejected" in result.output
+    # Nothing was actually decided -- the pin (in particular) must not have
+    # been overwritten with an EMPTY snapshot, which would disarm
+    # enforcement after a one-character typo.
+    assert _pin_path(tmp_path).read_text(encoding="utf-8") == pin_before
+
+
+# --- 5c. a corrupt pin means "unknown", never "never adopted" --------------
+
+
+def test_corrupt_pin_applies_file_as_is_leaves_pin_untouched(tmp_path, caplog):
+    _write_policy_file(tmp_path, blocked=["a/**", "b/**"])
+    load_file_policy(str(tmp_path))  # adopt both -- pin now holds a/** + b/**
+
+    # Corrupt the pin -- the prior approved state is now UNKNOWN, not "never
+    # adopted".
+    _pin_path(tmp_path).write_text("{not json", encoding="utf-8")
+    corrupt_bytes = _pin_path(tmp_path).read_text(encoding="utf-8")
+    assert read_pin(str(tmp_path)) is PIN_CORRUPT
+
+    _write_policy_file(tmp_path, blocked=["a/**"])  # drop b/** in the same turn
+
+    with caplog.at_level(logging.WARNING, logger="doberman.policy.sources"):
+        src = load_file_policy(str(tmp_path))
+
+    # The file's own globs apply as-is (never less protective than the file
+    # itself), but the corrupt pin bytes are left completely untouched -- no
+    # silent re-adoption of the smaller set as a fresh, ungated baseline.
+    assert src.snapshot().blocked_globs == ("a/**",)
+    assert _pin_path(tmp_path).read_text(encoding="utf-8") == corrupt_bytes
+    assert any("unreadable" in r.message for r in caplog.records)
+
+
+def test_accept_rewrites_a_corrupt_pin_when_gated(tmp_path, monkeypatch):
+    _write_policy_file(tmp_path, blocked=["a/**"])
+    load_file_policy(str(tmp_path))
+
+    _pin_path(tmp_path).write_text("{not json", encoding="utf-8")
+    password.enroll(_PASSWORD)
+    _use_prompter(monkeypatch, lambda: _Approve(_PASSWORD))
+
+    result = runner.invoke(app, ["policy-file", "--accept", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+
+    pin = json.loads(_pin_path(tmp_path).read_text(encoding="utf-8"))
+    assert pin["blocked"] == ["a/**"]  # re-pinned from the file's current content
+
+    rows = asyncio.run(read_policy_changes(str(tmp_path)))  # newest first
+    assert rows[0]["classification"] == "weaken"
+    assert rows[0]["approved"] == 1
+
+
 # --- 6. `doberman policy-file --accept` ------------------------------------
 
 
@@ -286,6 +390,35 @@ def test_accept_nothing_pending_exits_zero(tmp_path):
     result = runner.invoke(app, ["policy-file", "--accept", "--path", str(tmp_path)])
     assert result.exit_code == 0
     assert "nothing to accept" in result.stdout
+
+
+def test_accept_with_enrolled_totp_valid_code_passes_wrong_code_denied(tmp_path, monkeypatch):
+    # TOTP must win when both factors are enrolled (mirrors
+    # test_cli_lowering_gate.py's `mode`/`prefs` coverage of this same gate).
+    _write_policy_file(tmp_path, blocked=["a/**", "b/**"])
+    load_file_policy(str(tmp_path))  # adopt both
+
+    _write_policy_file(tmp_path, blocked=["a/**"])  # drop b/**
+    password.enroll(_PASSWORD)
+    code = _enrolled_code()
+
+    # A non-TOTP-shaped code is denied -- no accidental accept.
+    _use_prompter(monkeypatch, lambda: _Approve("wrong password"))
+    result = runner.invoke(app, ["policy-file", "--accept", "--path", str(tmp_path)])
+    assert result.exit_code == 1
+    pin = json.loads(_pin_path(tmp_path).read_text(encoding="utf-8"))
+    assert set(pin["blocked"]) == {"a/**", "b/**"}  # unchanged
+
+    # The correct current TOTP code passes and rewrites the pin.
+    _use_prompter(monkeypatch, lambda: _Approve(code))
+    result = runner.invoke(app, ["policy-file", "--accept", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    pin = json.loads(_pin_path(tmp_path).read_text(encoding="utf-8"))
+    assert pin["blocked"] == ["a/**"]
+
+    rows = asyncio.run(read_policy_changes(str(tmp_path)))  # newest first
+    assert rows[0]["approval_method"] == "two_factor"
+    assert rows[0]["approved"] == 1
 
 
 def test_accept_with_valid_factor_rewrites_pin_and_ledgers_weaken(tmp_path, monkeypatch):
@@ -404,3 +537,22 @@ def test_effective_policy_memoizes_discovery(tmp_path, monkeypatch):
     _write_policy_file(tmp_path, blocked=["a/**", "c/**"])
     effective_policy(str(tmp_path))
     assert calls["n"] == 2
+
+
+def test_deleting_the_pin_is_a_genuine_cache_miss_and_recreates_it(tmp_path):
+    # A cache entry must only ever be looked up by the digests actually READ
+    # after load_file_policy() runs -- never by a pre-call guess. Storing a
+    # result under a pre-call key too let a later lookup with the SAME
+    # pre-call shape (pin missing) hit that stale entry after the pin was
+    # deleted, so the pin was never recreated on disk.
+    _write_policy_file(tmp_path, blocked=["a/**"])
+    effective_policy(str(tmp_path))  # first-ever call: adopts, writes the pin
+    assert _pin_path(tmp_path).exists()
+
+    _pin_path(tmp_path).unlink()
+    rp = effective_policy(str(tmp_path))
+
+    assert "a/**" in rp.blocked_globs
+    assert _pin_path(tmp_path).exists()  # recreated -- not served from a stale cache hit
+    pin = json.loads(_pin_path(tmp_path).read_text(encoding="utf-8"))
+    assert pin["blocked"] == ["a/**"]
