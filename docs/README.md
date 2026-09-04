@@ -8,6 +8,7 @@ Use this index to find the right Doberman documentation for your task.
 | [CLI.md](CLI.md) | Open this when you need to find a `doberman` command, understand its options, or script against its JSON output and exit codes. |
 | [REASON_CODES.md](REASON_CODES.md) | Open this when reading a Doberman decision or log and you need to understand why an action received `AUTH` or `BLOCK`. |
 | [PARITY.md](PARITY.md) | Open this when checking which security guarantees are proven on each supported host and where coverage gaps remain. |
+| [CONTROL_COVERAGE.md](CONTROL_COVERAGE.md) | Open this when mapping Doberman's guardrails to the OWASP Top 10 for LLM Applications or the NIST AI RMF, e.g. for a security review or a compliance questionnaire. |
 | [ADAPTER_GUIDE.md](ADAPTER_GUIDE.md) | Open this when building or understanding a coding-agent host integration and need to see how tool calls flow through Doberman's decision spine. |
 | [CONNECTOR_MEMO_CURSOR.md](CONNECTOR_MEMO_CURSOR.md) | Open this when deciding whether and how to guard Cursor: the hook capability matrix, the fail-closed honesty test, and the envelope a v1 connector would use. |
 | [CONNECTOR_MEMO_202_HOSTS.md](CONNECTOR_MEMO_202_HOSTS.md) | Open this before picking up the rest of #202: why the generic MCP bridge is mostly `doberman serve` already (transport gap only), why Continue CLI waits on upstream wiring, and why Aider has no supported interception surface. |
