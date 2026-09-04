@@ -29,6 +29,7 @@ never import ``doberman.proxy`` (enforced by the ``lint-imports`` contract).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +63,30 @@ _ALGEBRA_KEYS = frozenset(
         "classification_confidence",
     }
 )
+
+#: A Windows drive-letter root (``C:\`` / ``C:/``). Checked in addition to POSIX ``/`` and
+#: ``\\`` (UNC) so `target` can only ever be a repo-relative class, on any OS.
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _is_repo_relative_target(target: str) -> bool:
+    """True when ``target`` is shaped like a repo-relative class, never an escaping path.
+
+    `_path_bucket()` in ``baseline.py`` stores a `target`'s directory + extension bucket
+    VERBATIM (by design — the live proxy's targets are already repo-relative, confined
+    upstream). An operator-supplied trace has no such confinement, so an absolute path
+    (POSIX ``/...``, a Windows drive, or a UNC share), a ``~``-prefixed path, or a ``..``
+    escape segment would land in ``baseline_counts`` as-is. Reject those at parse time
+    instead of touching `_path_bucket()` itself.
+    """
+    if (
+        target.startswith(("/", "~"))
+        or target.startswith("\\\\")
+        or _WINDOWS_DRIVE_RE.match(target)
+    ):
+        return False
+    return ".." not in re.split(r"[\\/]", target)
+
 
 # The HST (see baseline.py's SL4.2 section) is process-lifetime only — never rehydrated from the
 # DB — so a `doberman memory seed` run (a short-lived CLI process) cannot durably warm it; the
@@ -141,7 +166,19 @@ def _parse_algebra(raw: object, line_no: int, errors: list[TraceError]) -> Algeb
 
 
 def _is_pass(row: dict) -> bool:
-    return row.get("verdict") == "PASS" or row.get("allowed") is True
+    """Allowed-only, contradiction-safe: ``verdict`` wins whenever it's present.
+
+    ``verdict`` present and not exactly ``"PASS"`` -> not pass, no matter what ``allowed``
+    says (this was the bug: the old OR let ``allowed: true`` override a ``BLOCK`` verdict).
+    ``verdict: "PASS"`` with an explicit ``allowed: false`` is a contradiction, not a pass.
+    ``verdict`` absent -> ``allowed`` decides alone, and must be exactly ``True``.
+    """
+    verdict = row.get("verdict")
+    if verdict is not None:
+        if verdict != "PASS":
+            return False
+        return "allowed" not in row or row["allowed"] is True
+    return row.get("allowed") is True
 
 
 def parse_traces(text: str) -> list[Trace]:
@@ -193,6 +230,9 @@ def parse_traces(text: str) -> list[Trace]:
 
         target = row.get("target")
         if target is not None and not isinstance(target, str):
+            errors.append(TraceError(line_no, "invalid_target"))
+            continue
+        if target is not None and not _is_repo_relative_target(target):
             errors.append(TraceError(line_no, "invalid_target"))
             continue
         destination = row.get("external_destination")
@@ -263,7 +303,14 @@ async def seed_baseline(path: str, *, repo_root: str, now: datetime | None = Non
     row through :func:`~doberman.subjective.baseline.observe`, in file order, entity-scoped the
     same way the live proxy would (``entity_id(row.agent_role, repo_root)``) so the seeded
     baseline is the one live traffic reads.
+
+    ``now``, if given, must be timezone-aware — deterministic seeding depends on one unambiguous
+    stamp, the same way :class:`~doberman.models.SecurityObject` rejects a naive ``ts``. Raises
+    :class:`TraceValidationError` before the file is even read (no writes) on a naive ``now``.
     """
+    if now is not None and now.tzinfo is None:
+        raise TraceValidationError([TraceError(0, "naive_now")])
+
     text = Path(path).read_text(encoding="utf-8-sig")  # utf-8-sig tolerates a leading BOM
     try:
         traces = parse_traces(text)
@@ -271,23 +318,38 @@ async def seed_baseline(path: str, *, repo_root: str, now: datetime | None = Non
         return SeedSummary(seeded=0, errors=tuple(exc.errors))
 
     stamp = now or datetime.now(timezone.utc)
-    seeded_by_entity: dict[str, int] = {}
+
+    # `seeded` must be a CONFIRMED count, not an attempt count: observe() swallows its own
+    # storage failures (never raises — see its docstring), so counting calls would overstate a
+    # partial write as a full one. Read each entity's total before touching it, replay, then
+    # diff — the delta is what actually landed.
+    attempted_by_entity: dict[str, int] = {}
+    for trace in traces:
+        attempted_by_entity.setdefault(entity_id(trace.agent_role, repo_root), 0)
+    before_by_entity = {
+        eid: await total_observations(entity_id=eid, repo_root=repo_root)
+        for eid in attempted_by_entity
+    }
+
     for trace in traces:
         eid = entity_id(trace.agent_role, repo_root)
         obj = _to_security_object(trace, stamp)
         await observe(obj, entity_id=eid, repo_root=repo_root, now=stamp)
-        seeded_by_entity[eid] = seeded_by_entity.get(eid, 0) + 1
+        attempted_by_entity[eid] += 1
 
     entities = []
-    for eid, seeded in seeded_by_entity.items():
-        total = await total_observations(entity_id=eid, repo_root=repo_root)
+    total_seeded = 0
+    for eid in attempted_by_entity:
+        after = await total_observations(entity_id=eid, repo_root=repo_root)
+        confirmed = after - before_by_entity[eid]
+        total_seeded += confirmed
         entities.append(
             EntitySummary(
                 entity=eid[:12],
-                seeded=seeded,
-                total_observations=total,
-                warm=total >= K_OBSERVATIONS,
+                seeded=confirmed,
+                total_observations=after,
+                warm=after >= K_OBSERVATIONS,
                 hst=HST_STATUS,
             )
         )
-    return SeedSummary(seeded=len(traces), entities=tuple(entities))
+    return SeedSummary(seeded=total_seeded, entities=tuple(entities))

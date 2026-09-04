@@ -60,16 +60,31 @@ the tables below makes that row invalid (a typo must not silently pass).
 
 | Field | Required | Type | Notes |
 | --- | --- | --- | --- |
-| `verdict` | one of `verdict`/`allowed` | `"PASS"` exactly | The trace must be an allowed action. |
-| `allowed` | one of `verdict`/`allowed` | `true` exactly | Alias for `verdict: "PASS"`. |
+| `verdict` | one of `verdict`/`allowed` | `"PASS"` exactly | When present, `verdict` decides — see below. |
+| `allowed` | one of `verdict`/`allowed` | `true` exactly | Only consulted when `verdict` is absent. |
 | `agent_role` | yes | non-empty string | Combined with the repo root into the seeded `entity_id`. |
 | `action_type` | yes | an `ActionType` value | e.g. `file_write`, `shell_exec`, `network_request`. |
 | `tool_name` | yes | non-empty string | The tool the trace records. |
-| `target` | no | string | Class-level only (e.g. `src/*.py`) — stored as a dir+extension bucket, never the raw path. |
+| `target` | no | string | Class-level, REPO-RELATIVE only (e.g. `src/*.py`) — see below. |
 | `external_destination` | no | string | Fingerprinted (keyed HMAC) before storage — never stored raw. |
 | `reversibility` | no | a `Reversibility` value | Defaults to `medium`. |
 | `target_count` | no | integer ≥ 1 | Feeds the numeric volume stat (`SecurityObject.metadata["target_count"]`). |
 | `algebra` | no | object | See below. Omit it to let `infer_algebra()` (the production inference) classify the row. |
+
+**`verdict`/`allowed`.** If `verdict` is present it must be exactly `"PASS"` or the row is
+invalid, no matter what `allowed` says — `allowed` never overrides a non-`PASS` verdict.
+`allowed` is only consulted when `verdict` is absent, and must be exactly `true`. `verdict:
+"PASS"` together with an explicit `allowed: false` is a contradiction, not a pass, and is
+invalid. (There is no path where the two fields disagree and the row is still accepted.)
+
+**`target` must be repo-relative.** The stored key is the SAME bucket the live proxy computes
+(`baseline.py`'s `_path_bucket()`): the directory plus `*.ext` — but an extension-less filename
+(e.g. `docker/Dockerfile`) keeps its exact name, verbatim, the same way the live path does. That
+bucket is stored AS GIVEN, with no confinement of its own (the live proxy's targets are already
+repo-relative by the time they reach it; a seeded trace has no such guarantee). An absolute path
+(POSIX `/...`, a Windows drive `C:\`/`C:/`, or a UNC share `\\...`), a `~`-prefixed path, or any
+`..` segment is refused — the whole file, line number only, never the path itself. Write targets
+as repo-relative classes only.
 
 `algebra`, when present, may set any subset of: `capability`, `target_class`, `destination_class`,
 `blast_radius`, `provenance`, `classification_confidence` — each validated against its enum (an

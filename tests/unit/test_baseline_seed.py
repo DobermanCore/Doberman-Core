@@ -30,9 +30,9 @@ from doberman.models import (
 )
 from doberman.policy.drift import read_policy_changes
 from doberman.storage.db import open_db
-from doberman.subjective.baseline import entity_id, total_observations
+from doberman.subjective.baseline import _path_bucket, entity_id, total_observations
 from doberman.subjective.drift import K_OBSERVATIONS, surprise_blended
-from doberman.subjective.seed import parse_traces, seed_baseline
+from doberman.subjective.seed import TraceValidationError, parse_traces, seed_baseline
 
 runner = CliRunner()
 
@@ -152,9 +152,135 @@ def test_seed_refuses_whole_file_on_bad_action_type(tmp_path):
 
 def test_parse_traces_raises_on_non_json_line():
     text = json.dumps(_row()) + "\nnot json at all\n"
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(TraceValidationError) as exc_info:
         parse_traces(text)
     assert [e.line_no for e in exc_info.value.errors] == [2]
+
+
+# --- item 1: verdict/allowed contradictions are refused, never ORed --------------------
+
+
+@pytest.mark.parametrize(
+    "verdict_fields",
+    [
+        {"verdict": "BLOCK", "allowed": True},  # verdict wins: BLOCK, not allowed:true
+        {"allowed": False},  # no verdict: allowed alone must be exactly True
+        {"verdict": "PASS", "allowed": False},  # contradiction: PASS but allowed:false
+    ],
+    ids=["block-with-allowed-true", "allowed-false-no-verdict", "pass-with-allowed-false"],
+)
+def test_seed_refuses_contradictory_or_false_verdict_shapes(tmp_path, verdict_fields):
+    root = str(tmp_path)
+    trace_file = tmp_path / "traces.jsonl"
+    row = {
+        "agent_role": "frontend",
+        "action_type": "file_write",
+        "tool_name": "fs_write",
+        "target": "src/app.py",
+        **verdict_fields,
+    }
+    trace_file.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    summary = asyncio.run(seed_baseline(str(trace_file), repo_root=root, now=_NOW))
+    assert [e.line_no for e in summary.errors] == [1]
+    eid = entity_id("frontend", root)
+    assert asyncio.run(total_observations(entity_id=eid, repo_root=root)) == 0
+
+
+# --- item 2: target must be a repo-relative class, never an absolute/escaping path ------
+
+
+@pytest.mark.parametrize(
+    "bad_target",
+    [
+        "/etc/passwd",
+        "C:\\Windows\\System32",
+        "C:/Windows/System32",
+        "\\\\server\\share\\file",
+        "~/secrets/id_rsa",
+        "src/../../../etc/passwd",
+    ],
+)
+def test_seed_rejects_non_repo_relative_targets(tmp_path, bad_target):
+    root = str(tmp_path)
+    trace_file = tmp_path / "traces.jsonl"
+    trace_file.write_text(json.dumps(_row(target=bad_target)) + "\n", encoding="utf-8")
+
+    summary = asyncio.run(seed_baseline(str(trace_file), repo_root=root, now=_NOW))
+    assert [e.line_no for e in summary.errors] == [1]
+
+
+def test_seed_accepts_relative_extensionless_target_matching_path_bucket(tmp_path):
+    root = str(tmp_path)
+    trace_file = tmp_path / "traces.jsonl"
+    target = "docker/Dockerfile"
+    trace_file.write_text(
+        json.dumps(_row(action_type="file_write", target=target)) + "\n", encoding="utf-8"
+    )
+
+    summary = asyncio.run(seed_baseline(str(trace_file), repo_root=root, now=_NOW))
+    assert not summary.errors
+
+    live_action = SecurityObject(
+        id="live-1",
+        ts=_NOW,
+        agent_role="frontend",
+        action_type=ActionType.file_write,
+        tool_name="fs_write",
+        target=target,
+    )
+    expected_key = f"path_class:{_path_bucket(live_action)}"
+
+    eid = entity_id("frontend", root)
+
+    async def _feature_keys():
+        async with open_db(root) as conn:
+            async with conn.execute(
+                "SELECT feature_key FROM baseline_counts WHERE entity_id = ?", (eid,)
+            ) as cur:
+                return {r[0] for r in await cur.fetchall()}
+
+    assert expected_key in asyncio.run(_feature_keys())
+
+
+def test_seed_refuses_absolute_path_target_and_never_leaks_it(tmp_path, caplog):
+    root = str(tmp_path)
+    trace_file = tmp_path / "traces.jsonl"
+    secret_target = "/home/alice/.ssh/id_rsa"  # noqa: S105 — extension-less AND absolute test fixture, not a real secret
+    row = _row(action_type="file_read", target=secret_target)
+    trace_file.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    caplog.set_level(logging.DEBUG)
+    result = runner.invoke(
+        app,
+        [
+            "memory",
+            "seed",
+            "--from",
+            str(trace_file),
+            "--path",
+            root,
+            "--now",
+            _NOW.isoformat(),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "id_rsa" not in result.output
+    assert "alice" not in result.output
+    for record in caplog.records:
+        assert "id_rsa" not in record.getMessage()
+        assert "alice" not in record.getMessage()
+
+    eid = entity_id("frontend", root)
+
+    async def _feature_keys():
+        async with open_db(root) as conn:
+            async with conn.execute(
+                "SELECT feature_key FROM baseline_counts WHERE entity_id = ?", (eid,)
+            ) as cur:
+                return [r[0] for r in await cur.fetchall()]
+
+    assert asyncio.run(_feature_keys()) == []
 
 
 # --- redaction: a secret in target/external_destination never leaks --------------------
@@ -307,3 +433,42 @@ def test_seed_never_touches_policy_mode_or_ledger(tmp_path):
     assert load_mode(root) == mode_before
     changes_after = asyncio.run(read_policy_changes(root))
     assert changes_after == changes_before
+
+
+# --- item 3: seed_baseline validates `now` itself (naive datetime => no writes) ---------
+
+
+async def test_seed_baseline_rejects_a_naive_now(tmp_path):
+    root = str(tmp_path)
+    trace_file = tmp_path / "traces.jsonl"
+    trace_file.write_text(json.dumps(_row()) + "\n", encoding="utf-8")
+
+    with pytest.raises(TraceValidationError):
+        await seed_baseline(str(trace_file), repo_root=root, now=datetime(2026, 6, 9))  # naive
+
+    eid = entity_id("frontend", root)
+    assert await total_observations(entity_id=eid, repo_root=root) == 0
+
+
+# --- item 4: `seeded` is a confirmed delta, not an attempt count -----------------------
+
+
+async def test_seeded_count_is_confirmed_not_attempted(tmp_path, monkeypatch):
+    from doberman.subjective import seed as seed_module
+
+    calls = []
+
+    async def _noop_observe(action, *, entity_id, repo_root, now=None):
+        calls.append(entity_id)
+
+    monkeypatch.setattr(seed_module, "observe", _noop_observe)
+
+    root = str(tmp_path)
+    trace_file = tmp_path / "traces.jsonl"
+    rows = [_row(target=f"src/file_{i}.py") for i in range(3)]
+    _write(trace_file, rows)
+
+    summary = await seed_baseline(str(trace_file), repo_root=root, now=_NOW)
+    assert not summary.errors
+    assert len(calls) == 3  # attempted every row
+    assert summary.seeded == 0  # nothing actually landed (observe() was a no-op)
