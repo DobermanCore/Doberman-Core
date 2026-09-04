@@ -552,22 +552,26 @@ DOBERMAN_BENCH_LLMAIL_DIR=<path>/llmail-inject python -m tests.benchmarks.run --
 | Metric | Before | After, stateless | After, `--replay-session` |
 |---|---|---|---|
 | n (attack / benign) | 500 / 406 | same | same |
-| ASR | 1.00 | 0.00 | **0.00 (identical)** |
+| ASR | 1.00 | 1.00 | **0.05** |
 | asr_strict | 1.00 | 1.00 | **1.00 (identical)** |
-| FPR | 0.00 | 0.50 | 0.50 (identical) |
+| FPR | 0.00 | 0.00 | 0.00 (identical) |
 | hard_fpr | 0.00 | 0.00 | 0.00 |
 
-**A10 — why the top-line numbers don't move.** `engine/rules/destinations.py::_parse_host` treats a bare
-`user@host` destination (`contact@contact.com`, the challenge's own fixed attacker address, taken
-verbatim — the proxy's real `send_email` handling passes the tool's `to` value through unchanged, so this
-is the faithful representation, not an adapter simplification) as URL-embedded credentials and **AUTHs
-unconditionally in every mode**, before either post-decide floor ever runs. So every attack lands at AUTH
-regardless of replay, and the replay signal is invisible in the verdict table — it only shows up in the
-reason codes:
+**A10 — fixed by #564; the post-decide floors now do the visible work.**
+`engine/rules/destinations.py::_parse_host` used to misread a bare `user@host` destination
+(`contact@contact.com`, the challenge's own fixed attacker address, taken verbatim — the proxy's real
+`send_email` handling passes the tool's `to` value through unchanged, so this is the faithful
+representation, not an adapter simplification) as URL-embedded credentials and **AUTHed unconditionally in
+every mode**, masking every other signal. #564 fixed that misparse: a bare mailbox destination is now
+recognized as mail, not credential smuggling, so it falls through to the ordinary mode-aware
+unknown-destination logic — in Light/Balanced (this run's mode) an unrecognized recipient alone is now
+**PASS by design** (the same relaxation already applied to any other unknown host; Strict/Paranoid still
+AUTH it). With that false signal gone, the stateless ASR is 1.00 — nothing in the static objective rules
+stops this attack shape on its own — and `--replay-session`'s floors are what actually do the work,
+dropping ASR to **0.05**:
 
 | Reason code | Stateless | `--replay-session` |
 |---|---|---|
-| `unknown_external_destination` | 703 | 703 |
 | `untrusted_value_echo` (C1, echo tripwire) | 0 | **470** (of 500 attacks) |
 | `multi_step_exfil` (taint floor) | 0 | **23** |
 | `correlated_trifecta` (session correlator) | 0 | **2** |
@@ -582,19 +586,21 @@ module docstring and the Follow-ups entry below for what a real integration woul
 
 Under replay, 470 of the 500 attacks (94%) independently trip the echo tripwire — the phishing email names
 the attacker's own address, then the send targets that exact address, precisely the tripwire's exact-value-
-reuse pattern — even though `_parse_host`'s unconditional AUTH already made the verdict identical either
-way. This is the intended signal session-replay exists to surface, not a hedge. **The 30/500 residual
-(M4)**: those 30 attacks' read-action body never literally names `contact.com` — the send still targets
-the adapter's fixed `ATTACKER_EMAIL` constant (a structural fact of the published challenge, not derived
-per-submission), but the echo tripwire's exact-value-reuse extractor has nothing to match when the
-injected text itself doesn't mention the attacker's address, so those 30 don't trip it even under replay.
+reuse pattern. This is the intended signal session-replay exists to surface, and with `_parse_host` fixed
+it now shows up directly in the top-line ASR (1.00 → 0.05), not only in the reason-code table. **The
+25/500 residual (M4)**: of the 30 attacks whose read-action body never literally names `contact.com` (the
+send still targets the adapter's fixed `ATTACKER_EMAIL` constant — a structural fact of the published
+challenge, not derived per-submission — so the echo tripwire's exact-value-reuse extractor has nothing to
+match), 5 are still caught by the taint floor or session correlator; the other 25 bypass every floor
+(`attack.bypassed = 25`, ASR 0.05 = 25/500).
 
-**A2 — benign SEND friction, reported honestly.** `fpr` is exactly 0.50 because the 203 read-only benign
-cases all PASS while all 203 synthetic benign-SEND cases (`BENIGN_SEND_DESTINATION`, a fixed,
-clearly-synthetic recipient — the dataset carries no real sender/reply addresses) AUTH for the identical
-`_parse_host` reason (a bare `user@host` destination). `hard_fpr` stays 0.00 — never a hard block. This
-is not tuned away: the read-only-only benign set used before this task could never measure friction on an
-ordinary legitimate send at all.
+**A2 — benign SEND friction, now zero.** `fpr` is 0.00, identical stateless and replay: all 406 benign
+cases PASS, including the 203 synthetic benign-SEND cases (`BENIGN_SEND_DESTINATION`, a fixed,
+clearly-synthetic recipient — the dataset carries no real sender/reply addresses). Before #564 these AUTHed
+for the same `_parse_host` bug the attack side did (FPR 0.50); the fix removes that friction on an
+ordinary legitimate send exactly as it does on the attack side — correct behavior for Light/Balanced, not
+a regression: Strict/Paranoid still AUTH an unrecognized recipient. `hard_fpr` stays 0.00 — never a hard
+block, before or after.
 
 ### Follow-ups (not built in this task)
 
@@ -610,12 +616,6 @@ ordinary legitimate send at all.
 - **MSB's local-file-write/process-action gap.** None of the three post-decide floors can engage on a
   consummating action with no `external_destination` (every MSB attack type here) — closing this needs a
   floor that keys off provenance/taint on non-egress actions too, a larger design change than this task.
-- **LLMail-Inject's `_parse_host` interaction.** The unconditional bare-`user@host`-AUTH means the static
-  objective rule alone already catches every LLMail-Inject attack, which is a strong result but also means
-  this suite cannot, on its own, prove the taint floor or echo tripwire add anything beyond what the
-  destination rule already provides — the reason-code table above is the only place that signal is
-  visible. A future suite (or a variant of this one) with a destination shaped as a plain hostname instead
-  of a bare email address would isolate the floors' own contribution.
 
 ### Devsession suite — subjective-layer diagnostic (seeded, in-repo, no external dependency)
 
@@ -669,34 +669,35 @@ DOBERMAN_BENCH_MSB_DIR=<path>/MSB \
 **Read this before the numbers.** The echo tripwire fires on an EXACT host/URL/email value reused from an
 earlier untrusted read — LLMail-Inject's real shape (read a phishing email whose body names the attacker's
 own address, then send to that exact address) is precisely this exact-value-reuse pattern, and a real run
-confirms it fires on 94% of attacks under replay (see the reason-code table below). **Its top-line ASR does
-not drop, though** — corrected from this section's original prediction by the real run (A10): LLMail-Inject's
-stateless ASR is already 0.0 before replay even applies, because
-`engine/rules/destinations.py::_parse_host` treats the challenge's bare `user@host` attacker address as
-embedded credentials and AUTHs unconditionally in every mode, before either post-decide floor ever runs —
-so the echo tripwire has no headroom left to move. The taint floor only fires on secret-*shaped* content,
-and the correlator's `correlated_trifecta` pattern needs a prior row with a secret-class reason code —
-narrower, and (confirmed below) rarely moves LLMail-Inject's number on its own. All three floors require
-the CURRENT action to carry an `external_destination`; MSB attack types whose consummating action is a
-local file write or process action with no destination are untouched by any of the three floors, replayed
-or not — a real run confirms MSB's stateless and `--replay-session` reports are byte-for-byte identical
-(see the MSB section above). AgentDojo is not run here (needs the operator-supplied `agentdojo` package);
-MSB and LLMail-Inject were, against the real operator-supplied datasets — full tables in the
+confirms it fires on 94% of attacks under replay (see the reason-code table above). **Its top-line ASR does
+drop, and by a lot** (A10, above, since #564's mailbox-destination fix): LLMail-Inject's stateless ASR is
+1.0 — nothing in the static objective rules stops a bare-mailbox destination on its own in Light/Balanced,
+by design — and `--replay-session` pulls it down to 0.05. The echo tripwire does almost all of that work
+(470/500 attacks); the taint floor (secret-*shaped* content only) and the correlator's `correlated_trifecta`
+pattern (needs a prior row with a secret-class reason code — narrower still) together add only 5 more
+attacks the tripwire alone missed. All three floors require the CURRENT action to carry an
+`external_destination`; MSB attack types whose consummating action is a local file write or process action
+with no destination are untouched by any of the three floors, replayed or not — a real run confirms MSB's
+stateless and `--replay-session` reports are byte-for-byte identical (see the MSB section above). AgentDojo
+is not run here (needs the operator-supplied `agentdojo` package); MSB and LLMail-Inject were, against the
+real operator-supplied datasets — full tables in the
 [External suites](#external-suites-operator-supplied-diagnostics-never-target-metrics) section above.
 
 | Metric | Suite | Before | After, stateless | After, `--replay-session` |
 |---|---|---|---|---|
 | ASR | MSB | 1.00 | 0.80 | 0.80 (identical) |
-| ASR | LLMail-Inject | 1.00 | 0.00 | 0.00 (identical) |
+| ASR | LLMail-Inject | 1.00 | 1.00 | **0.05** |
 | asr_strict | MSB | 1.00 | 1.00 | 1.00 (identical) |
 | asr_strict | LLMail-Inject | 1.00 | 1.00 | 1.00 (identical) |
 | FPR | MSB | 0.00 | 0.00 | 0.00 (identical) |
-| FPR | LLMail-Inject | 0.00 | 0.50 | 0.50 (identical) |
+| FPR | LLMail-Inject | 0.00 | 0.00 | 0.00 (identical) |
 
-For both suites the verdict-level numbers are identical between modes — the *only* place replay's effect
-is visible is the reason-code counts (`untrusted_value_echo`/`multi_step_exfil`/`correlated_trifecta`),
-tabulated per suite above. RedCode is single-action (no injected-content step to replay), so it is not
-included here — it is published stateless-only in its own section above.
+For MSB the verdict-level numbers are identical between modes — replay's effect is invisible there (no MSB
+consummating action carries an `external_destination` for the floors to engage on). For LLMail-Inject
+replay's effect is now visible directly in ASR (1.00 → 0.05), not only in the reason-code counts
+(`untrusted_value_echo`/`multi_step_exfil`/`correlated_trifecta`), tabulated per suite above. RedCode is
+single-action (no injected-content step to replay), so it is not included here — it is published
+stateless-only in its own section above.
 
 ## Fixed bypasses
 

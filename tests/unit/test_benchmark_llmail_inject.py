@@ -16,7 +16,7 @@ import random
 
 import pytest
 
-from doberman.models import ActionType, ReasonCode, SourceContext, Verdict
+from doberman.models import ActionType, SourceContext, Verdict
 from tests.benchmarks.adapter import SuiteAdapter
 from tests.benchmarks.mapping import to_eval_context, to_security_object
 from tests.benchmarks.profiles import build_pipeline
@@ -106,12 +106,13 @@ def test_load_filters_to_api_triggered_and_builds_two_action_cases(tmp_path):
     assert send_case.attacker_goal_index is None
 
 
-def test_benign_send_variant_shows_honest_auth_friction_never_a_hard_block(tmp_path):
-    """A2 (LLMail-Inject review carry-forward): the synthetic benign SEND
-    variant must not be tuned away. It is a bare `user@host` destination, so
-    the real objective destination rule AUTHs it (embedded-credentials smell,
-    `unknown_external_destination`) in every mode -- never a hard BLOCK. Report
-    both honestly rather than trimming the benign set to avoid the friction."""
+def test_benign_send_variant_passes_in_balanced_mode_since_mailbox_fix(tmp_path):
+    """A2 (LLMail-Inject review carry-forward), updated after #564: the synthetic
+    benign SEND variant is a bare `user@host` destination. #564 fixed
+    `_parse_host` to recognize that shape as mail, not embedded credentials, so
+    it falls through to the ordinary mode-aware unknown-destination logic --
+    Light/Balanced (this suite's default mode) PASS an unrecognized recipient
+    alone, same as any other unknown host. Never a hard BLOCK, before or after."""
     root = _write_dataset(tmp_path)
     cases = list(LlmailInjectAdapter(data_dir=root, sample_size=10).load())
     send_case = next(c for c in cases if c.case_id == "llmail-benign-send-00000")
@@ -122,8 +123,8 @@ def test_benign_send_variant_shows_honest_auth_friction_never_a_hard_block(tmp_p
         to_security_object("probe:llmail-benign-send", action), to_eval_context(action)
     )
 
-    assert decision.final_verdict is Verdict.AUTH
-    assert ReasonCode.unknown_external_destination in decision.reason_codes
+    assert decision.final_verdict is Verdict.PASS
+    assert decision.final_verdict is not Verdict.BLOCK
 
 
 def _write_dataset_with_n_qualifying_attacks(tmp_path: pathlib.Path, n: int) -> pathlib.Path:
