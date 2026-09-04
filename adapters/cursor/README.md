@@ -89,11 +89,13 @@ any engine error all deny. A leading UTF-8 BOM (which `cursor-agent` on Windows 
 stdin — Cursor forum #168407, staff-confirmed, no fix ETA) is stripped first.
 
 A shell, MCP or read call registered on both `preToolUse` and its `before*` event reaches
-Doberman twice. The first channel records its answer under a keyed marker for
-`(conversation_id, generation_id, action)`; the other channel replays it once and the marker is
-consumed, so one approval never doubles and is never reused. The same channel never replays: a
-repeated identical action inside one generation is evaluated (and challenged) again. A replayed
-`beforeReadFile` still scans the file content; only the path decision is shared.
+Doberman twice — or three times if the Claude-compat path below is also wired. The first call
+records its answer under a keyed marker for `(conversation_id, generation_id, action)`; every other
+call replays it, but only the closing `before*` event consumes the marker (never a `preToolUse`
+replay), so the answer survives until the last call, not just the second, and one approval never
+doubles or is reused. The same channel never replays: a repeated identical action inside one
+generation is evaluated (and challenged) again. A replayed `beforeReadFile` still scans the file
+content; only the path decision is shared.
 
 `.cursor` and `.cursor/hooks.json` are part of Doberman's control plane: writes, deletes and shell
 commands naming them are hard-blocked in every host, and the rest of `.cursor/**` (rules, MCP
@@ -107,8 +109,9 @@ files and calls them with Cursor's own payload shape (event names remapped: `Pre
 where Doberman's **global Claude Code hooks** are installed (`doberman install-hooks --global`),
 `doberman hook pre` receives Cursor's `preToolUse` calls too — and now recognises and answers them
 through this Cursor adapter, so a project is gated even *before* `install-hooks --host cursor` is run
-there. Installing both is fine: whichever hook fires first evaluates the call and the other replays
-that answer (single-flight), so it is never evaluated — or challenged — twice. The `SessionStart` →
+there. Installing both is fine: whichever call fires first evaluates the action and every later call
+(up to three total for a paired shell/MCP/read action) replays that answer (single-flight), so it is
+never evaluated — or challenged — twice. The `SessionStart` →
 `sessionStart` mapping also fires `doberman session-summary` (Claude Code's SessionStart command); it
 ignores the Cursor-shaped stdin and always exits 0, so it runs harmlessly.
 

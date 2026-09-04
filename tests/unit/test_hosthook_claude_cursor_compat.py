@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from doberman.hosthooks import claude_code, cursor
+from doberman.hosthooks import claude_code, cursor, singleflight
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "cursor_payloads"
 
@@ -142,6 +142,79 @@ def test_compat_then_native_shares_one_flight(tmp_path, monkeypatch):
     hso = json.loads(compat_out)["hookSpecificOutput"]
     assert hso["permissionDecision"] == "deny"
     assert json.loads(native_text)["permission"] == "deny" and native_code == 2
+
+
+def _before_shell(pre_payload: dict, command: str) -> dict:
+    """A native ``beforeShellExecution`` payload pairing with *pre_payload*'s
+    ``preToolUse``/``Shell`` call: same conversation/generation id and command,
+    so it shares the same dedupe key. Mirrors the doc-derived
+    ``tests/fixtures/cursor/before_shell.json`` shape."""
+    return {
+        "hook_event_name": cursor.EVENT_SHELL,
+        "conversation_id": pre_payload["conversation_id"],
+        "generation_id": pre_payload["generation_id"],
+        "command": command,
+        "cwd": pre_payload.get("cwd") or pre_payload["workspace_roots"][0],
+        "workspace_roots": pre_payload["workspace_roots"],
+        "cursor_version": pre_payload.get("cursor_version", "2026.09.02-c22c1a3"),
+    }
+
+
+def test_compat_pre_before_shares_one_flight(tmp_path, monkeypatch):
+    # Both hook sources installed: a Shell call reaches respond() THREE times —
+    # compat preToolUse, native preToolUse, native beforeShellExecution (the
+    # closing event of the pair). Still exactly one evaluation.
+    calls = _count_evaluations(monkeypatch)
+    pre = _load("pre_tool_use_shell.json", tmp_path)
+    pre["tool_input"]["command"] = "rm -rf /"
+    before = _before_shell(pre, "rm -rf /")
+
+    compat_out = claude_code.run_pre_hook(json.dumps(pre))
+    native_pre_text, native_pre_code = cursor.run_cursor(json.dumps(pre))
+    native_before_text, native_before_code = cursor.run_cursor(json.dumps(before))
+
+    assert calls["n"] == 1
+    assert json.loads(compat_out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert json.loads(native_pre_text)["permission"] == "deny" and native_pre_code == 2
+    assert json.loads(native_before_text)["permission"] == "deny" and native_before_code == 2
+    key = cursor.dedupe_key(cursor.EVENT_SHELL, before)
+    assert singleflight.replay(key) is None  # consumed by the closing event
+
+
+def test_pre_compat_before_shares_one_flight(tmp_path, monkeypatch):
+    calls = _count_evaluations(monkeypatch)
+    pre = _load("pre_tool_use_shell.json", tmp_path)
+    pre["tool_input"]["command"] = "rm -rf /"
+    before = _before_shell(pre, "rm -rf /")
+
+    native_pre_text, native_pre_code = cursor.run_cursor(json.dumps(pre))
+    compat_out = claude_code.run_pre_hook(json.dumps(pre))
+    native_before_text, native_before_code = cursor.run_cursor(json.dumps(before))
+
+    assert calls["n"] == 1
+    assert json.loads(native_pre_text)["permission"] == "deny" and native_pre_code == 2
+    assert json.loads(compat_out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert json.loads(native_before_text)["permission"] == "deny" and native_before_code == 2
+    key = cursor.dedupe_key(cursor.EVENT_SHELL, before)
+    assert singleflight.replay(key) is None  # consumed by the closing event
+
+
+def test_marker_survives_compat_then_native_pre_until_the_closing_event(tmp_path):
+    # A replay by preToolUse (either channel) must NOT consume the marker —
+    # only the closing native beforeShellExecution/beforeMCPExecution/
+    # beforeReadFile does, so the marker is still there for whichever of those
+    # arrives last.
+    pre = _load("pre_tool_use_shell.json", tmp_path)
+    pre["tool_input"]["command"] = "git status"
+    before = _before_shell(pre, "git status")
+    key = cursor.dedupe_key(cursor.EVENT_PRE_TOOL, pre)
+
+    claude_code.run_pre_hook(json.dumps(pre))  # records (compat channel)
+    cursor.run_cursor(json.dumps(pre))  # replays (native preToolUse) — must not consume
+    assert singleflight.replay(key) is not None  # still there
+
+    cursor.run_cursor(json.dumps(before))  # the closing event — replays AND consumes
+    assert singleflight.replay(key) is None
 
 
 # --- unpaired-tool dedupe (tool_use_id fallback) ----------------------------
