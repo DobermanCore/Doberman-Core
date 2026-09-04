@@ -98,6 +98,20 @@ OpenTelemetry sink (config-gated via `.doberman/audit_otel.yaml`, see [the OTel 
 a sink that isn't shaped like an `AuditSink` (no callable `emit`), or whose `emit` raises, is logged
 and skipped, and never affects the decision itself.
 
+## Cost observers
+
+Cost/budget monitoring packages register through the **`doberman.cost_observers`** entry-point
+group (`CostObserver` in `src/doberman/storage/cost.py`), opted in the same way: `doberman plugins
+enable <name>`. Every registered observer's `on_cost` is called with a copy of each redacted
+`CostEvent` after a successful ledger write — advisory only, off the decision path, never raising
+into or delaying the record. An observer may **optionally** also expose `on_loop_anomaly(anomaly)`
+to receive the loop-anomaly detector's readout: after a tool-call event, if at least one observer is
+installed, Doberman checks the recent ledger for a runaway/looping burn and, when it flags one, fans
+the advisory `LoopAnomaly` out to every observer exposing that hook (`notify_loop_anomaly()`). The
+hook is duck-typed, not a required Protocol member, so an observer with only `on_cost` keeps working
+unchanged; with no observer installed the detector never runs, so there's no extra ledger read on the
+hot path.
+
 ## Auth providers
 
 Alternative backends (SSO/RBAC, hosted/push approvals) register through the **`doberman.auth_providers`**
