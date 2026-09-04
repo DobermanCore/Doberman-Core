@@ -76,6 +76,13 @@ _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]
 #: _deobfuscated() run for tens of seconds on the hot untrusted-read path.
 #: Measured: 20,000 spaces took 7.8s pre-fix; bounded, the full 100,000-char
 #: bound finishes in milliseconds.
+#: Known ceiling: the bound also caps coverage at 4 spaces per gap (8 outside a
+#: bracket pair) -- a wider-spaced form is not de-obfuscated; raising the bound
+#: stays linear, it only costs a constant. The second pass can also mint
+#: prose-derived junk values ("ask Bob at example . com" -> bob@example.com):
+#: harmless as matches (HMAC-keyed; at most an extra AUTH on a later send to
+#: that exact address) but they count against the taint store's per-scope
+#: row budget.
 _DEOBFUSCATE_BRACKETED_AT_RE = re.compile(
     r"\s{0,4}(?:\[\s{0,4}at\s{0,4}\]|\(\s{0,4}at\s{0,4}\)|\{\s{0,4}at\s{0,4}\}|<\s{0,4}at\s{0,4}>)\s{0,4}",
     re.IGNORECASE,
