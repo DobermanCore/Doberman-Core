@@ -88,7 +88,8 @@ def _check_hooks(path: str) -> CheckResult:
     return CheckResult(
         "Host hooks",
         CheckStatus.FAIL,
-        "not installed in any scope - run `doberman install-hooks` (add `--host codex` for Codex)",
+        "not installed in any scope - run `doberman install-hooks` (add `--host codex` for "
+        "Codex, `--host cursor` for Cursor)",
         critical=True,
     )
 
@@ -155,6 +156,7 @@ def _check_hook_integrity(path: str) -> CheckResult:
     """#239: has Doberman's own hook registration changed since install-hooks?"""
     from doberman.hosthooks.install import hook_install_states
     from doberman.hosthooks.install_codex import codex_hook_install_states
+    from doberman.hosthooks.install_cursor import cursor_hook_install_states
     from doberman.hosthooks.integrity import check_all
 
     name = "Hook integrity"
@@ -177,8 +179,10 @@ def _check_hook_integrity(path: str) -> CheckResult:
         if seen:
             detail += f" - a divergence was seen at {max(seen)}; re-run install-hooks to clear"
         return CheckResult(name, CheckStatus.OK, detail)
-    installed = any(ok for _s, _p, ok in hook_install_states(path)) or any(
-        ok for s, _p, ok in codex_hook_install_states(path) if s != "plugin"
+    installed = (
+        any(ok for _s, _p, ok in hook_install_states(path))
+        or any(ok for s, _p, ok in codex_hook_install_states(path) if s != "plugin")
+        or any(ok for _s, _p, ok in cursor_hook_install_states(path))
     )
     if installed:
         return CheckResult(
@@ -188,6 +192,72 @@ def _check_hook_integrity(path: str) -> CheckResult:
             "to record a manifest",
         )
     return CheckResult(name, CheckStatus.OK, "nothing to verify (no hooks installed)")
+
+
+def _check_cursor_hooks(path: str) -> CheckResult:
+    """Weak-registration + liveness self-check for the Cursor adapter (slice 2).
+
+    Unlike Claude/Codex, Cursor's own hook contract can fail OPEN (a crash or
+    timeout runs the tool) unless every gating entry carries ``failClosed:
+    true`` and a timeout that outlasts Doberman's approval dialog - so this
+    check inspects the LIVE hooks.json content, not just "is something
+    installed". A weak registration is a critical FAIL (Doberman may not
+    actually be gating); a missing sessionStart callback is only a WARN (it
+    means "unverified", not "unprotected" - `doctor` cannot always tell them
+    apart from the file alone).
+    """
+    from doberman.hosthooks.install import load_settings
+    from doberman.hosthooks.install_cursor import (
+        cursor_hook_install_states,
+        last_session_start,
+        registration_issues,
+    )
+
+    name = "Cursor hooks"
+    states = cursor_hook_install_states(path)
+    installed_scopes = [scope for scope, _p, ok in states if ok]
+    if not installed_scopes:
+        return CheckResult(name, CheckStatus.OK, "not installed (only needed for `--host cursor`)")
+
+    criticals: list[str] = []
+    warnings: list[str] = []
+    for scope, hooks_path, ok in states:
+        if not ok:
+            continue
+        try:
+            settings = load_settings(Path(hooks_path))
+        except ValueError:
+            criticals.append(f"{scope}: hooks.json unreadable")
+            continue
+        for message, critical in registration_issues(settings):
+            (criticals if critical else warnings).append(f"{scope} {message}")
+
+    if criticals:
+        return CheckResult(
+            name,
+            CheckStatus.FAIL,
+            f"weak registration ({'; '.join(criticals)}) - run `doberman install-hooks "
+            "--host cursor` to restore",
+            critical=True,
+        )
+    if warnings:
+        return CheckResult(name, CheckStatus.WARN, "; ".join(warnings))
+
+    seen = last_session_start(path)
+    if seen:
+        return CheckResult(
+            name,
+            CheckStatus.OK,
+            f"wired ({', '.join(installed_scopes)}); failClosed on every gating event; "
+            f"last session start {seen}",
+        )
+    return CheckResult(
+        name,
+        CheckStatus.WARN,
+        f"wired ({', '.join(installed_scopes)}) but no Cursor session has called back yet - "
+        "open this project in Cursor and re-run doctor (Cursor hooks are known to "
+        "intermittently not fire)",
+    )
 
 
 def _check_codex_version() -> CheckResult:
@@ -427,6 +497,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("Host hooks", True, lambda: _check_hooks(path)),
         _safe_check("Hook command", True, lambda: _check_hook_command(path)),
         _safe_check("Hook integrity", True, lambda: _check_hook_integrity(path)),
+        _safe_check("Cursor hooks", True, lambda: _check_cursor_hooks(path)),
         _safe_check("Config", True, lambda: _check_config(path)),
         _safe_check("Decision DB", True, lambda: _check_db(path)),
         _safe_check("Enforcement", False, lambda: _check_enforcement(path)),

@@ -17,8 +17,9 @@ payload's ``hook_event_name``:
   Claude Code's ``PostToolUse`` output scan — a credential in the file never
   reaches the model, and the session is tainted + fingerprinted so a later
   egress of that value is a confirmed exfil.
-* ``sessionStart`` — acknowledged with ``{}`` (the heartbeat lands with the
-  installer slice).
+* ``sessionStart`` — acknowledged with ``{}`` and a best-effort liveness
+  heartbeat written to ``.doberman/`` (see :func:`record_session_start`), so
+  ``doberman doctor`` can tell whether Cursor is actually calling the hook.
 
 Verdict mapping: ``PASS`` -> ``{"permission": "allow"}`` and exit 0. ``BLOCK`` ->
 ``{"permission": "deny", "user_message": ..., "agent_message": ...}`` AND exit
@@ -62,6 +63,11 @@ from doberman.models import Verdict
 
 if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth stack
     from doberman.auth.challenge import Prompter
+
+#: File under `.doberman/` the sessionStart heartbeat writes into (install_cursor
+#: imports THIS name to build the doctor-facing path; defined here, not there, so
+#: this module never has to import install_cursor).
+SESSION_MARKER = "cursor_session"
 
 EVENT_PRE_TOOL = "preToolUse"
 EVENT_SHELL = "beforeShellExecution"
@@ -218,6 +224,23 @@ def repo_root_of(payload: dict[str, Any]) -> str | None:
     return cwd if isinstance(cwd, str) and cwd else None
 
 
+def record_session_start(project_root: str) -> None:
+    """Best-effort liveness record for `doberman doctor`: write the UTC ISO time into
+    <root>/.doberman/cursor_session (dir created 0o700). Any OSError is swallowed - a
+    heartbeat may never fail a session start."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from doberman.storage.db import CONFIG_DIR
+
+    try:
+        marker = Path(project_root) / CONFIG_DIR / SESSION_MARKER
+        marker.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        marker.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _from_host_output(host_out: dict[str, Any]) -> dict[str, Any]:
     """Map the shared ``hookSpecificOutput`` shape onto Cursor's document."""
     hso = host_out.get("hookSpecificOutput") or {}
@@ -262,6 +285,9 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         event = payload.get("hook_event_name")
         if event == EVENT_SESSION_START:
+            cwd = repo_root_of(payload)
+            if cwd and not spine.is_excluded(cwd):
+                record_session_start(cwd)
             return {}
         if event not in GATED_EVENTS:
             return deny()  # no identifiable action -> refuse
