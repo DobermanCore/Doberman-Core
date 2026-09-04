@@ -18,6 +18,7 @@ CLI_HELP_TARGETS = (
     ("scan",),
     ("review",),
     ("mode",),
+    ("policy-file",),
     ("enforcement",),
     ("prefs",),
     ("egress-velocity",),

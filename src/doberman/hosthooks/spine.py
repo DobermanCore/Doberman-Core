@@ -30,6 +30,7 @@ from doberman.engine.taint_floor import apply_echo_tripwire, apply_taint_floor
 from doberman.models import Decision, EvalContext, SecurityObject, Verdict
 from doberman.policy.drift import acted_verdict
 from doberman.policy.modes import DEFAULT_MODE
+from doberman.policy.sources import effective_policy
 from doberman.proxy.normalize import normalize
 
 
@@ -93,10 +94,17 @@ def evaluate_action(
     # The objective rules inspect the UN-redacted call via metadata['raw_arguments']
     # (in-memory only, never logged). The active role rides along (parity with
     # the proxy's own ctx-build path); no .doberman/role.yaml -> role=None (opt-in).
+    metadata: dict[str, Any] = {"raw_arguments": args, "repo_root": repo_root}
+    # #147: resolved_policy set ONLY when non-empty -- a repo with no committed
+    # doberman.policy.yaml and no registered policy-source plugin is
+    # byte-identical to before this seam existed (PolicySourceRule abstains).
+    policy = effective_policy(repo_root)
+    if not policy.is_empty:
+        metadata["resolved_policy"] = policy
     ctx = EvalContext(
         role=load_active_role(repo_root),
         mode=mode,
-        metadata={"raw_arguments": args, "repo_root": repo_root},
+        metadata=metadata,
     )
     decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
     decision = apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)

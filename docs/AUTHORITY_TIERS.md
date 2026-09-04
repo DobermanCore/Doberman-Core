@@ -23,7 +23,7 @@ security mode:
 | `protected_path_blocked` | `engine/rules/paths.py::ProtectedPathRule` (also reached from `commands.py` for a control-plane-tamper command) | canonicalized target matches a `DEFAULT_BLOCKED_GLOBS` entry |
 | `destructive_command` | `engine/rules/commands.py::DestructiveCommandRule` | a fixed catastrophic-command signature: recursive+force delete of a root/home target, disk-wipe, raw write to a block device, force-push to a protected branch, fork bomb |
 | `role_blocked_target` | `engine/rules/role_boundary.py::RoleBoundaryRule` | target classifies as `blocked` against the active role's glob boundary — **opt-in**: abstains with no active role |
-| `policy_source_blocked` | `engine/rules/policy_source.py::PolicySourceRule` | target matches a resolved policy source's `blocked_globs` — **opt-in**: abstains with no registered policy source |
+| `policy_source_blocked` | `engine/rules/policy_source.py::PolicySourceRule` | target matches a resolved policy source's `blocked_globs` — **opt-in**: abstains with neither a repo-committed `doberman.policy.yaml` nor a registered policy-source plugin |
 
 `tests/unit/test_authority_tiers.py` keeps this table honest: every code above is proven reachable as a
 `BLOCK` (three through the shipped detection corpus, `role_blocked_target`/`policy_source_blocked`

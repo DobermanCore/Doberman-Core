@@ -113,6 +113,27 @@ hook is duck-typed, not a required Protocol member, so an observer with only `on
 unchanged; with no observer installed the detector never runs, so there's no extra ledger read on the
 hot path.
 
+## Policy sources (org authority layering + the repo-committed file)
+
+A `PolicySource` (`doberman.policy.sources`) contributes `blocked`/`sensitive` globs that are
+resolved into **every** action decision alongside the local role — previously a dormant seam:
+nothing in core ever set `EvalContext.metadata["resolved_policy"]`, so a registered source had no
+effect until now. Two ways to add one, both raise-only (a source can only ever *add* constraints,
+never remove one another source already set):
+
+- **The repo-committed file** — `doberman.policy.yaml` at the repo root (not `.doberman/`, which is
+  gitignored). No plugin, no entry point: just commit the file. Schema, the raise-only pin across
+  file edits, and `doberman policy-file --accept`: see [README's "Policy as code"](../README.md).
+- **A registered plugin** — third-party sources (e.g. an org/enterprise hard policy) register
+  through the **`doberman.policy_sources`** entry-point group (`POLICY_SOURCE_GROUP` in
+  `src/doberman/engine/registry.py`), opted in the same way as every other seam:
+  `doberman plugins enable <name>`. A source that fails to import, fails to construct, or isn't
+  policy-source-shaped (no `snapshot`/`authority`) is logged and skipped, never crashes core.
+
+Both merge via `resolve_policy()`'s raise-only UNION: `blocked` always wins over `sensitive` on a
+tie, and a lower-authority source can never remove what a higher-authority one set — authority only
+orders the audit-trail `contributors` list, it never decides which constraints apply.
+
 ## Auth providers
 
 Alternative backends (SSO/RBAC, hosted/push approvals) register through the **`doberman.auth_providers`**

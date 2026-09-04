@@ -58,6 +58,7 @@ Works with Claude Code, Codex, OpenClaw, and any MCP-compatible agent. Cursor is
 - [Turn gate](#turn-gate): the optional pre-inference chokepoint
 - [Benchmark](#benchmark): attack-block rate vs. false-positive friction
 - [Write a guardrail plugin](#write-a-guardrail-plugin): register your own rule or audit sink
+- [Policy as code](#policy-as-code): a repo-committed `doberman.policy.yaml`, reviewed like code
 - [Tune to your risk tolerance](#tune-to-your-risk-tolerance): strictness modes and the enforcement dial
 - [Who is this for](#who-is-this-for)
 - [Roadmap](#roadmap)
@@ -210,6 +211,27 @@ five-minute worked example lives at
 [`examples/plugin-guardrail/`](examples/plugin-guardrail/), and the same entry-point pattern
 (`doberman.audit_sinks`) forwards the redacted audit log to your own pipeline, for example a webhook.
 Full walkthrough: [Write a guardrail plugin](docs/PLUGINS.md).
+
+---
+
+## Policy as code
+
+Commit a `doberman.policy.yaml` at the repo root and its `blocked`/`sensitive` globs resolve into
+every action decision alongside the local role — so a team reviews policy changes in the same PR as
+the code they govern, instead of a teammate's local `.doberman/` state:
+
+```yaml
+version: 1            # optional; if present must be 1
+blocked: ["secrets/**", "*.pem"]
+sensitive: ["infra/**"]
+```
+
+Raise-only across file edits too: a file that *drops* a glob the last-approved version enforced
+never silently loosens what is blocked/sensitive — the stricter set stays pinned locally
+(`.doberman/policy_file_pin.json`) and in force until a human runs `doberman policy-file --accept`,
+gated behind the same possession factor (2FA if enrolled, else the local password) as every other
+weakening. `doberman policy-file` with no flag shows what's applied and what's pending. A file placed
+under `.doberman/` instead of the repo root is ignored — this is git-reviewed policy, not local state.
 
 ---
 

@@ -77,6 +77,13 @@ from doberman.policy.drift import (
 from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
+from doberman.policy.sources import (
+    POLICY_FILE_NAME,
+    PolicySnapshot,
+    _load_raw_file,
+    _read_pin,
+    _write_pin,
+)
 from doberman.render import (
     format_utc_timestamp,
     humanize_auth_result,
@@ -778,6 +785,109 @@ def mode(
             )
         raise typer.Exit(code=1)
     typer.echo(f"mode set to {saved}")
+
+
+@app.command("policy-file", rich_help_panel="Policy")
+def policy_file(
+    accept: bool = typer.Option(
+        False, "--accept", help="Approve a pending drop, gated behind a possession factor."
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show ``doberman.policy.yaml``'s status, or accept a pending drop (#147).
+
+    ``doberman.policy.yaml`` at the repo root is a team-committed policy file:
+    its ``blocked``/``sensitive`` globs are resolved into every action decision
+    alongside the local role. Raise-only across file EDITS too -- a file that
+    drops a glob the last-approved version enforced never silently loosens
+    what is blocked/sensitive; the stricter, pinned set stays in force until a
+    human explicitly accepts the drop here. Accepting is gated the same way as
+    `doberman mode`/`doberman memory reset`: confirmation of the rendered diff
+    plus the strongest enrolled possession factor (a 2FA code if enrolled,
+    otherwise the local password) -- there is no `--yes` bypass and no
+    confirm-only path.
+    """
+    file_snapshot, _digest = _load_raw_file(path)
+    pin = _read_pin(path)
+    pin_snapshot = (
+        PolicySnapshot(blocked_globs=pin["blocked"], sensitive_globs=pin["sensitive"])
+        if pin is not None
+        else PolicySnapshot()
+    )
+
+    if not accept:
+        present = (Path(path) / POLICY_FILE_NAME).exists()
+        typer.echo(f"{POLICY_FILE_NAME}: {'present' if present else 'absent'}")
+        typer.echo(
+            f"Applied: {len(file_snapshot.blocked_globs)} blocked, "
+            f"{len(file_snapshot.sensitive_globs)} sensitive glob(s)."
+        )
+        dropped = (set(pin_snapshot.blocked_globs) | set(pin_snapshot.sensitive_globs)) - (
+            set(file_snapshot.blocked_globs) | set(file_snapshot.sensitive_globs)
+        )
+        if dropped:
+            typer.echo(
+                f"Pending: {len(dropped)} glob(s) still enforced from the last approval but "
+                f"no longer in the file: {', '.join(sorted(dropped))}. Run `doberman "
+                "policy-file --accept` to approve the drop."
+            )
+        return
+
+    before = {f"file:blocked:{g}": "enforce" for g in pin_snapshot.blocked_globs}
+    before.update({f"file:sensitive:{g}": "monitor" for g in pin_snapshot.sensitive_globs})
+    after = {f"file:blocked:{g}": "enforce" for g in file_snapshot.blocked_globs}
+    after.update({f"file:sensitive:{g}": "monitor" for g in file_snapshot.sensitive_globs})
+
+    classification = classify_change(before, after)
+    if classification is not Classification.weaken:
+        typer.echo("nothing to accept")
+        raise typer.Exit(code=0)
+
+    if not totp.is_enrolled() and not password.is_enrolled():
+        # Same check `memory reset`/`taint clear` make before ever rendering a
+        # diff: with nothing enrolled the gate can never succeed regardless of
+        # how confirm() is answered, so deny right away instead of showing a
+        # WEAKENING diff for a decision the possession-factor step could never
+        # actually reach.
+        typer.echo(
+            "error: accepting doberman.policy.yaml requires an enrolled possession "
+            "factor - run `doberman 2fa setup` or `doberman password set` first",
+            err=True,
+        )
+        asyncio.run(
+            record_change(
+                before,
+                after,
+                classification,
+                "accept doberman.policy.yaml",
+                repo_root=path,
+                approved=False,
+                method="no_factor_enrolled",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    approved, method = _run_weaken_gate(before, after, "accept doberman.policy.yaml", CliPrompter())
+    asyncio.run(
+        record_change(
+            before,
+            after,
+            classification,
+            "accept doberman.policy.yaml",
+            repo_root=path,
+            approved=approved,
+            method=method,
+        )
+    )
+    if not approved:
+        typer.echo(f"error: doberman.policy.yaml accept denied ({method}); unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    _write_pin(path, file_snapshot)
+    typer.echo(
+        f"doberman.policy.yaml accepted; pin updated ({len(file_snapshot.blocked_globs)} "
+        f"blocked, {len(file_snapshot.sensitive_globs)} sensitive glob(s))."
+    )
 
 
 _ENFORCEMENT_STATES = ("enforce", "monitor", "off")
