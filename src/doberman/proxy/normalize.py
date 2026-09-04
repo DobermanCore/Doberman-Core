@@ -253,7 +253,7 @@ def _command_name(token: str) -> str:
     return token.replace("\\", "/").rsplit("/", 1)[-1].lower()
 
 
-def _command_verb(tokens: list[str]) -> tuple[str | None, list[str]]:
+def _command_verb(tokens: list[str]) -> tuple[str | None, list[str], bool]:
     """Return the visible executable + arguments without losing the input tokens.
 
     T5: shares ``_argv_from_tokens`` with the destructive-command rule (the
@@ -261,11 +261,20 @@ def _command_verb(tokens: list[str]) -> tuple[str | None, list[str]]:
     option (``sudo -u root``, ``timeout 5``, ...) is consumed instead of
     misread as the command — the wrapped command's egress verb/host is then
     recovered the same way a bare invocation's is.
+
+    The third element (C1) is True when ``_argv_from_tokens`` consumed at
+    least one wrapper OPTION (not just a bare wrapper name) to reach that
+    verb — ``sudo -H``/``sudo -u <user>``/``nice -n 10`` change exactly the
+    thing (HOME, acting uid) that decides which config file a package
+    manager's default-route fetch actually resolves against, so the caller
+    must not treat this segment as if the bare command had been typed.
     """
-    rest = _argv_from_tokens(tokens)
+    consumed_option: list[bool] = []
+    rest = _argv_from_tokens(tokens, consumed_any_option=consumed_option)
+    wrapper_resolved = bool(consumed_option)
     if not rest:
-        return None, []
-    return _command_name(rest[0]), rest[1:]
+        return None, [], wrapper_resolved
+    return _command_name(rest[0]), rest[1:], wrapper_resolved
 
 
 def _is_egress_verb(verb: str | None, arguments: list[str]) -> bool:
@@ -473,9 +482,11 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
     had_credentials = False
     route_override = False
     unresolved_wrapper = False
+    wrapper_resolved = False
 
     for tokens in segments:
-        verb, arguments = _command_verb(tokens)
+        verb, arguments, resolved = _command_verb(tokens)
+        wrapper_resolved = wrapper_resolved or resolved
         # T5: `_command_verb` now sees through a wrapper's own options, so a
         # leading `-` token only survives here in the one narrow case
         # `_argv_from_tokens` deliberately leaves unresolved (`env -S` whose
@@ -540,6 +551,7 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
         and not dynamic_walk
         and not route_override
         and not had_credentials
+        and not wrapper_resolved
         and not _ambient_proxy_present()
         and not _ambient_registry_override()
     ):
