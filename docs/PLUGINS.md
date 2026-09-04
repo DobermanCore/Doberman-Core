@@ -2,7 +2,8 @@
 
 This page covers Doberman's plugin seams: registering your own rule, and forwarding the redacted
 audit log to your own pipeline. Both work the same way, a Python entry-point group core discovers
-at runtime, so core never imports a plugin package by name.
+at runtime, so core never imports a plugin package by name. For the full catalogue of every
+entry-point group (rules, detectors, audit sinks, and the rest), see [EXTENDING.md](EXTENDING.md).
 
 ## Opt in by name first
 
@@ -97,6 +98,41 @@ every enabled plugin-registered sink first, then the built-in webhook sink and t
 OpenTelemetry sink (config-gated via `.doberman/audit_otel.yaml`, see [the OTel guide](audit_otel.md));
 a sink that isn't shaped like an `AuditSink` (no callable `emit`), or whose `emit` raises, is logged
 and skipped, and never affects the decision itself.
+
+## Cost observers
+
+Cost/budget monitoring packages register through the **`doberman.cost_observers`** entry-point
+group (`CostObserver` in `src/doberman/storage/cost.py`), opted in the same way: `doberman plugins
+enable <name>`. Every registered observer's `on_cost` is called with a copy of each redacted
+`CostEvent` after a successful ledger write — advisory only, off the decision path, never raising
+into or delaying the record. An observer may **optionally** also expose `on_loop_anomaly(anomaly)`
+to receive the loop-anomaly detector's readout: after a tool-call event, if at least one observer is
+installed, Doberman checks the recent ledger for a runaway/looping burn and, when it flags one, fans
+the advisory `LoopAnomaly` out to every observer exposing that hook (`notify_loop_anomaly()`). The
+hook is duck-typed, not a required Protocol member, so an observer with only `on_cost` keeps working
+unchanged; with no observer installed the detector never runs, so there's no extra ledger read on the
+hot path.
+
+## Policy sources (org authority layering + the repo-committed file)
+
+A `PolicySource` (`doberman.policy.sources`) contributes `blocked`/`sensitive` globs that are
+resolved into **every** action decision alongside the local role — previously a dormant seam:
+nothing in core ever set `EvalContext.metadata["resolved_policy"]`, so a registered source had no
+effect until now. Two ways to add one, both raise-only (a source can only ever *add* constraints,
+never remove one another source already set):
+
+- **The repo-committed file** — `doberman.policy.yaml` at the repo root (not `.doberman/`, which is
+  gitignored). No plugin, no entry point: just commit the file. Schema, the raise-only pin across
+  file edits, and `doberman policy-file --accept`: see [README's "Policy as code"](../README.md).
+- **A registered plugin** — third-party sources (e.g. an org/enterprise hard policy) register
+  through the **`doberman.policy_sources`** entry-point group (`POLICY_SOURCE_GROUP` in
+  `src/doberman/engine/registry.py`), opted in the same way as every other seam:
+  `doberman plugins enable <name>`. A source that fails to import, fails to construct, or isn't
+  policy-source-shaped (no `snapshot`/`authority`) is logged and skipped, never crashes core.
+
+Both merge via `resolve_policy()`'s raise-only UNION: `blocked` always wins over `sensitive` on a
+tie, and a lower-authority source can never remove what a higher-authority one set — authority only
+orders the audit-trail `contributors` list, it never decides which constraints apply.
 
 ## Auth providers
 

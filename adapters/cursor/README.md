@@ -7,24 +7,30 @@ gating event. Each tool call reaches Doberman **before** it runs and is answered
 [`docs/CONNECTOR_MEMO_CURSOR.md`](../../docs/CONNECTOR_MEMO_CURSOR.md).
 
 > **Status: experimental.** The adapter is built from Cursor's documentation and two staff-confirmed
-> forum details, not from a live capture; `doberman install-hooks --host cursor`, the manifest
-> scope, the `sessionStart` heartbeat and the `doctor` checks arrive in the next slice. Until then
-> the registration below is manual.
+> forum details, not from a live capture.
 
-## Register the hook
+## Install
 
-Create `.cursor/hooks.json` at the project root (or `~/.cursor/hooks.json` for every project) with
-`"failClosed": true` on every entry — Cursor's own default is **fail-open** on a hook crash or
-timeout, and this flag is what turns that into a deny:
+```bash
+doberman install-hooks --host cursor              # project .cursor/hooks.json
+doberman install-hooks --host cursor --global      # ~/.cursor/hooks.json (every project)
+```
+
+Then restart your Cursor session so it reloads `hooks.json` — Cursor loads hooks at startup only.
+`doberman uninstall-hooks --host cursor` reverses it; the install manifest also records the write,
+so a plain `doberman uninstall` cleans up the project scope too.
+
+What it writes — every gating event carries `"failClosed": true` (Cursor's own default is
+**fail-open** on a hook crash or timeout, and this flag is what turns that into a deny):
 
 ```json
 {
   "version": 1,
   "hooks": {
-    "preToolUse":          [{ "command": "doberman hook cursor", "timeout": 60, "failClosed": true }],
-    "beforeShellExecution": [{ "command": "doberman hook cursor", "timeout": 60, "failClosed": true }],
-    "beforeMCPExecution":  [{ "command": "doberman hook cursor", "timeout": 60, "failClosed": true }],
-    "beforeReadFile":      [{ "command": "doberman hook cursor", "timeout": 60, "failClosed": true }],
+    "preToolUse":          [{ "command": "doberman hook cursor", "timeout": 120, "failClosed": true }],
+    "beforeShellExecution": [{ "command": "doberman hook cursor", "timeout": 120, "failClosed": true }],
+    "beforeMCPExecution":  [{ "command": "doberman hook cursor", "timeout": 120, "failClosed": true }],
+    "beforeReadFile":      [{ "command": "doberman hook cursor", "timeout": 120, "failClosed": true }],
     "sessionStart":        [{ "command": "doberman hook cursor", "timeout": 10, "failClosed": false }]
   }
 }
@@ -32,10 +38,18 @@ timeout, and this flag is what turns that into a deny:
 
 `timeout` is in seconds and must cover Doberman's own approval dialog: an `AUTH` verdict pops the
 GUI/TTY challenge **inside** the hook, so a value shorter than the human's reaction time turns every
-approval into a deny. Sixty seconds matches the approval deadline; raise it if you set a longer one.
-`doberman` must be on the `PATH` Cursor launches hooks with (a `pipx` install is).
+approval into a deny. 120s comfortably outlasts the 90s approval window; `sessionStart` is a cosmetic
+liveness heartbeat (`failClosed: false` — a failed write never aborts a session), so its timeout is
+short. `doberman` must be on the `PATH` Cursor launches hooks with (a `pipx` install is).
 
-Restart Cursor after editing the file. Cursor loads hooks at startup only.
+## Self-check
+
+`doberman doctor`'s **"Cursor hooks"** line reports the live registration, not just "is something
+installed": a weak registration (a missing gating event, or `failClosed` not `true`) is a **FAIL**;
+wired but no session has called `sessionStart` back yet is a **WARN** ("open this project in Cursor
+and re-run doctor"); a low timeout is a non-critical WARN. The install-integrity manifest also covers
+`.cursor/hooks.json` (including `failClosed` and `timeout`, not just presence), so a hand-weakened
+file is reported the next time a surviving hook runs, and by `doctor`'s "Hook integrity" check.
 
 ## Verify it is wired
 
@@ -62,7 +76,7 @@ echo "exit $?"   # -> {"permission": "deny", ...} and exit 2
 | `beforeShellExecution` | `bash` | `command` + `cwd` |
 | `beforeMCPExecution` | `<tool_name>` | `tool_input` is a JSON string; unparseable → deny |
 | `beforeReadFile` | `file_read`, then an **output scan** of `content` | a credential in the file never reaches the model; the session is tainted and the value fingerprinted, so a later egress of it is a confirmed exfil |
-| `sessionStart` | acknowledged with `{}` | heartbeat lands with the installer slice |
+| `sessionStart` | acknowledged with `{}` | best-effort liveness heartbeat written to `.doberman/`, read by `doberman doctor` |
 
 Verdicts: `PASS` → `{"permission": "allow"}` (explicit, exit 0). `BLOCK` → `deny` **and** exit code 2
 (Cursor treats either as a block, so a lost document still blocks). `AUTH` → Doberman's own
@@ -75,15 +89,35 @@ any engine error all deny. A leading UTF-8 BOM (which `cursor-agent` on Windows 
 stdin — Cursor forum #168407, staff-confirmed, no fix ETA) is stripped first.
 
 A shell, MCP or read call registered on both `preToolUse` and its `before*` event reaches
-Doberman twice. The first channel records its answer under a keyed marker for
-`(conversation_id, generation_id, action)`; the other channel replays it once and the marker is
-consumed, so one approval never doubles and is never reused. The same channel never replays: a
-repeated identical action inside one generation is evaluated (and challenged) again. A replayed
-`beforeReadFile` still scans the file content; only the path decision is shared.
+Doberman twice — or three times if the Claude-compat path below is also wired. The first call
+records its answer under a keyed marker for `(conversation_id, generation_id, action)`; every other
+call replays it, but only the closing `before*` event consumes the marker (never a `preToolUse`
+replay), so the answer survives until the last call, not just the second, and one approval never
+doubles or is reused. The same channel never replays: a repeated identical action inside one
+generation is evaluated (and challenged) again. A replayed `beforeReadFile` still scans the file
+content; only the path decision is shared.
 
 `.cursor` and `.cursor/hooks.json` are part of Doberman's control plane: writes, deletes and shell
 commands naming them are hard-blocked in every host, and the rest of `.cursor/**` (rules, MCP
 config) requires approval.
+
+## Cursor also runs your Claude Code hooks
+
+Cursor's **"Third Party Hooks"** setting loads Claude Code hooks straight out of the Claude settings
+files and calls them with Cursor's own payload shape (event names remapped: `PreToolUse` →
+`preToolUse`, `PostToolUse` → `postToolUse`, `SessionStart` → `sessionStart`, …). So on any machine
+where Doberman's **global Claude Code hooks** are installed (`doberman install-hooks --global`),
+`doberman hook pre` receives Cursor's `preToolUse` calls too — and now recognises and answers them
+through this Cursor adapter, so a project is gated even *before* `install-hooks --host cursor` is run
+there. Installing both is fine: whichever call fires first evaluates the action and every later call
+(up to three total for a paired shell/MCP/read action) replays that answer (single-flight), so it is
+never evaluated — or challenged — twice. The `SessionStart` →
+`sessionStart` mapping also fires `doberman session-summary` (Claude Code's SessionStart command); it
+ignores the Cursor-shaped stdin and always exits 0, so it runs harmlessly.
+
+With only the Claude Code hooks installed (no `install-hooks --host cursor`), a Cursor `Read` is
+gated by path only — no content scan — because the content scan runs on the native `beforeReadFile`
+event; installing the native hooks adds it.
 
 ## Known limits
 
@@ -93,9 +127,7 @@ config) requires approval.
   adapter does not know is **denied**, never waved through — report it and it will be added.
 - **`beforeReadFile` attachments are not gated.** Cursor sends `attachments` alongside the file;
   v1 scans `content` only.
-- **`sessionStart` is acknowledged, not recorded** until the installer slice adds the heartbeat.
-- **No self-check yet.** `doberman doctor` does not inspect `.cursor/hooks.json` until the installer
-  slice; verify the wiring by hand (above) after every Cursor update.
+- **`doberman setup` does not offer Cursor yet** — use `install-hooks --host cursor` directly.
 - **Enterprise / Team hooks win.** Cursor merges hooks Enterprise > Team > Project > User; an
   organisation policy can remove the registration. Re-verify after a policy change.
 - **Trust model.** As with every hook-based host, Cursor itself is trusted: a Cursor release that

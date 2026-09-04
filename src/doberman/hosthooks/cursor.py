@@ -17,8 +17,9 @@ payload's ``hook_event_name``:
   Claude Code's ``PostToolUse`` output scan — a credential in the file never
   reaches the model, and the session is tainted + fingerprinted so a later
   egress of that value is a confirmed exfil.
-* ``sessionStart`` — acknowledged with ``{}`` (the heartbeat lands with the
-  installer slice).
+* ``sessionStart`` — acknowledged with ``{}`` and a best-effort liveness
+  heartbeat written to ``.doberman/`` (see :func:`record_session_start`), so
+  ``doberman doctor`` can tell whether Cursor is actually calling the hook.
 
 Verdict mapping: ``PASS`` -> ``{"permission": "allow"}`` and exit 0. ``BLOCK`` ->
 ``{"permission": "deny", "user_message": ..., "agent_message": ...}`` AND exit
@@ -39,13 +40,20 @@ malformed document.
 **Single-flight.** A shell command reaches Doberman twice when both
 ``preToolUse`` and ``beforeShellExecution`` are registered (same for MCP via
 ``beforeMCPExecution``, and for a file read via ``preToolUse``/``Read`` +
-``beforeReadFile``). The first channel records its answer under a keyed marker
-derived from ``(conversation_id, generation_id, translated action)``; the OTHER
-channel replays it once and the marker is consumed. The same channel never
-replays — a repeated identical action inside one generation is evaluated (and
-challenged) again, so an approval stays single-use. A replayed read still
-runs the content scan: only the path decision is shared. Marker security
-model: :mod:`doberman.hosthooks.singleflight`.
+``beforeReadFile``) — or up to THREE times if the Claude-compat path is also
+wired (:func:`respond`'s ``channel`` argument, driven by
+``doberman.hosthooks.claude_code``, when Cursor's third-party-hooks setting
+fires ``doberman hook pre`` on the same call): compat ``preToolUse``, native
+``preToolUse``, native ``before*``. The first call records its answer under a
+keyed marker derived from ``(conversation_id, generation_id, translated
+action)``; every OTHER call on a different channel replays it — but only the
+closing ``before*`` event (never a ``preToolUse`` replay, compat or native)
+CONSUMES the marker, so the answer survives until the last of up to three
+calls, not just the second. The same channel never replays — a repeated
+identical action inside one generation is evaluated (and challenged) again, so
+an approval stays single-use. A replayed read still runs the content scan:
+only the path decision is shared. Marker security model:
+:mod:`doberman.hosthooks.singleflight`.
 
 Speed contract as every adapter: only the light decision path is imported at
 module scope (never ``proxy.executor`` / numpy / scipy / river).
@@ -62,6 +70,11 @@ from doberman.models import Verdict
 
 if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth stack
     from doberman.auth.challenge import Prompter
+
+#: File under `.doberman/` the sessionStart heartbeat writes into (install_cursor
+#: imports THIS name to build the doctor-facing path; defined here, not there, so
+#: this module never has to import install_cursor).
+SESSION_MARKER = "cursor_session"
 
 EVENT_PRE_TOOL = "preToolUse"
 EVENT_SHELL = "beforeShellExecution"
@@ -218,6 +231,23 @@ def repo_root_of(payload: dict[str, Any]) -> str | None:
     return cwd if isinstance(cwd, str) and cwd else None
 
 
+def record_session_start(project_root: str) -> None:
+    """Best-effort liveness record for `doberman doctor`: write the UTC ISO time into
+    <root>/.doberman/cursor_session (dir created 0o700). Any OSError is swallowed - a
+    heartbeat may never fail a session start."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from doberman.storage.db import CONFIG_DIR
+
+    try:
+        marker = Path(project_root) / CONFIG_DIR / SESSION_MARKER
+        marker.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        marker.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _from_host_output(host_out: dict[str, Any]) -> dict[str, Any]:
     """Map the shared ``hookSpecificOutput`` shape onto Cursor's document."""
     hso = host_out.get("hookSpecificOutput") or {}
@@ -262,6 +292,9 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         event = payload.get("hook_event_name")
         if event == EVENT_SESSION_START:
+            cwd = repo_root_of(payload)
+            if cwd and not spine.is_excluded(cwd):
+                record_session_start(cwd)
             return {}
         if event not in GATED_EVENTS:
             return deny()  # no identifiable action -> refuse
@@ -381,6 +414,75 @@ def _scan_after_replay(payload: dict[str, Any]) -> dict[str, Any]:
         return deny()
 
 
+def _tool_use_dedupe_key(event: object, payload: dict[str, Any]) -> str | None:
+    """Fallback dedupe for an unpaired ``preToolUse`` tool (``dedupe_key`` returns
+    ``None`` for one, e.g. a file write): keyed on ``tool_use_id`` alone, so a
+    duplicated ``preToolUse`` of ANY tool seen by two hook channels (Cursor's own
+    ``doberman hook cursor`` and the Claude-compat path in ``hook pre``) collapses
+    to one evaluation. ``None`` when the event isn't ``preToolUse``, the payload
+    carries no non-empty string ``tool_use_id``, or the HMAC key is unavailable."""
+    if event != EVENT_PRE_TOOL:
+        return None
+    tool_use_id = payload.get("tool_use_id")
+    if not (isinstance(tool_use_id, str) and tool_use_id):
+        return None
+    try:
+        from doberman.storage.fingerprint import fingerprint  # keyed HMAC, lazy
+
+        return fingerprint(f"cursor-tool-use:{tool_use_id}")[:32]
+    except Exception:  # noqa: BLE001 — no key material -> no dedupe (safe)
+        return None
+
+
+#: Events that are the CLOSING half of a native preToolUse/before* pair — the
+#: only replays allowed to consume a shared-flight marker. With BOTH the
+#: native ``doberman hook cursor`` install AND the Claude-compat path wired
+#: (global Claude Code hooks + Cursor's third-party-hooks setting), a paired
+#: action reaches :func:`respond` up to THREE times: compat ``preToolUse``,
+#: native ``preToolUse``, native ``before*``. Consuming on the first replay
+#: (whichever of the two ``preToolUse`` calls loses the race) would leave no
+#: marker for the third call, which would then re-evaluate from scratch and
+#: re-run an already-approved AUTH challenge a second time. Only the closing
+#: ``before*`` event consumes; a replay by either ``preToolUse`` leaves the
+#: marker in place for the ``before*`` call still to come.
+_CLOSING_EVENTS: frozenset[str] = frozenset({EVENT_SHELL, EVENT_MCP, EVENT_READ})
+
+
+def respond(payload: dict[str, Any], *, channel: str | None = None) -> dict[str, Any]:
+    """Evaluate one already-parsed Cursor payload, replaying the OTHER channel's
+    recorded answer when this action was already decided.
+
+    ``channel`` names the caller for the single-flight "same channel never
+    replays" check (see :func:`_replay_for`); ``None`` (the native
+    ``doberman hook cursor`` path) uses the payload's own ``hook_event_name``, so
+    two different native events pairing the same action (``preToolUse`` +
+    ``beforeShellExecution``) keep behaving exactly as before. The Claude-compat
+    path (``doberman.hosthooks.claude_code.run_pre_hook``) passes
+    ``channel="claudeCompat"`` so it and the native ``preToolUse`` channel share
+    one flight regardless of which runs first. A replay only CONSUMES the
+    marker when *this* call's own ``hook_event_name`` is a closing ``before*``
+    event (see :data:`_CLOSING_EVENTS`) — a ``preToolUse`` replay (native or
+    compat) leaves the marker for the ``before*`` call still to come. An
+    unpaired ``preToolUse``-only tool (no ``before*`` event ever fires for it)
+    never consumes either way; its marker just expires by TTL, which is safe —
+    a fresh call gets a fresh ``tool_use_id`` and can never collide with it.
+    """
+    event = payload.get("hook_event_name")
+    key = dedupe_key(event, payload) or _tool_use_dedupe_key(event, payload)
+    effective_channel = channel or event
+    replayed = _replay_for(effective_channel, singleflight.replay(key))
+    if replayed is not None:
+        if event in _CLOSING_EVENTS:
+            singleflight.consume(key)  # the closing native event: one replay per recorded answer
+        if event == EVENT_READ and replayed.get("permission") == "allow":
+            replayed = _scan_after_replay(payload)  # the path passed; content still scanned
+        return replayed
+
+    response = evaluate(payload)
+    singleflight.record(key, json.dumps({"channel": effective_channel, "response": response}))
+    return response
+
+
 def run_cursor(stdin_text: str | bytes) -> tuple[str, int]:
     """Parse the hook stdin (raw UTF-8 bytes preferred; BOM-tolerant), evaluate,
     and return ``(json_document, exit_code)`` for the CLI to emit."""
@@ -393,15 +495,5 @@ def run_cursor(stdin_text: str | bytes) -> tuple[str, int]:
         response = deny()
         return json.dumps(response), exit_code_for(response)
 
-    event = payload.get("hook_event_name")
-    key = dedupe_key(event, payload)
-    replayed = _replay_for(event, singleflight.replay(key))
-    if replayed is not None:
-        singleflight.consume(key)  # one replay per recorded answer
-        if event == EVENT_READ and replayed.get("permission") == "allow":
-            replayed = _scan_after_replay(payload)  # the path passed; content still scanned
-        return json.dumps(replayed), exit_code_for(replayed)
-
-    response = evaluate(payload)
-    singleflight.record(key, json.dumps({"channel": event, "response": response}))
+    response = respond(payload)
     return json.dumps(response), exit_code_for(response)

@@ -36,7 +36,20 @@ MANIFEST_ENV = "DOBERMAN_INSTALL_MANIFEST"
 MANIFEST_VERSION = 1
 #: Events whose Doberman group is the gate itself. Losing one means Doberman is
 #: no longer gating calls on that host; anything else (SessionStart) is cosmetic.
-CRITICAL_EVENTS = frozenset({"PreToolUse", "PostToolUse"})
+#: Cursor's four gating events (see doberman.hosthooks.cursor) are the gate
+#: itself; its `sessionStart` is cosmetic, same as Claude/Codex's. Literal set,
+#: not an import of doberman.hosthooks.cursor's constants — this module runs on
+#: the hook hot path.
+CRITICAL_EVENTS = frozenset(
+    {
+        "PreToolUse",
+        "PostToolUse",
+        "preToolUse",
+        "beforeShellExecution",
+        "beforeMCPExecution",
+        "beforeReadFile",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -228,13 +241,16 @@ def note_divergence(host: str, scope: str, settings_path: Path, events: tuple[st
 
 #: Every tracked (host, scope) registration. Codex's scopes are "repo" (the
 #: project-settings analog) and "user" (the global-settings analog) -- see
-#: doberman.hosthooks.install_codex.resolve_codex_hooks_path.
+#: doberman.hosthooks.install_codex.resolve_codex_hooks_path. Cursor's scopes are
+#: "project" and "user" -- see doberman.hosthooks.install_cursor.resolve_cursor_hooks_path.
 _SCOPES: tuple[tuple[str, str], ...] = (
     ("claude", "project"),
     ("claude", "global"),
     ("claude", "local"),
     ("codex", "repo"),
     ("codex", "user"),
+    ("cursor", "project"),
+    ("cursor", "user"),
 )
 
 
@@ -249,6 +265,14 @@ def _live_groups(
 
         path = resolve_settings_path(scope, project_root)
         return path, doberman_groups(load_settings(path))
+    if host == "cursor":
+        from doberman.hosthooks.install_cursor import (
+            cursor_doberman_groups,
+            resolve_cursor_hooks_path,
+        )
+
+        path = resolve_cursor_hooks_path(scope, project_root)
+        return path, cursor_doberman_groups(load_settings(path))
     from doberman.hosthooks.install_codex import codex_doberman_groups, resolve_codex_hooks_path
 
     path = resolve_codex_hooks_path(scope, project_root)

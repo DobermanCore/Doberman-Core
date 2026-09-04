@@ -11,6 +11,7 @@ need to exercise key generation/rotation override this with their own
 import json as _json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -22,6 +23,44 @@ from doberman.hosthooks.integrity import MANIFEST_ENV
 from doberman.storage import fingerprint as _fingerprint_module
 from doberman.storage.device_metrics import HOME_ENV
 from doberman.storage.fingerprint import KEY_FILE_ENV
+
+# Captured at import time, before any fixture runs, so real_user_settings_untouched
+# below has a pre-test baseline to compare against.
+_REAL_USER_SETTINGS = Path.home() / ".claude" / "settings.json"
+_REAL_USER_SETTINGS_BEFORE = (
+    _REAL_USER_SETTINGS.read_bytes() if _REAL_USER_SETTINGS.exists() else None
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_user_home(tmp_path, monkeypatch):
+    """Point ``Path.home()``/``expanduser`` at a throwaway dir for every test.
+
+    A prior suite run reached the real ``~/.claude/settings.json`` through a CLI
+    path (install-hooks/uninstall/doctor) and overwrote it, wiping live hooks.
+    Nothing here isolated the user home, so this fixture now does.
+    """
+    user_home = tmp_path / "user-home"
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+    return user_home
+
+
+@pytest.fixture(scope="session", autouse=True)
+def real_user_settings_untouched():
+    """Fail the run if any test wrote to the real user-level Claude settings file.
+
+    ``isolated_user_home`` above should make this unreachable; this is the backstop
+    that proves it — a per-test fixture can't itself assert after every other test's
+    teardown has already run.
+    """
+    yield
+    after = _REAL_USER_SETTINGS.read_bytes() if _REAL_USER_SETTINGS.exists() else None
+    assert after == _REAL_USER_SETTINGS_BEFORE, (
+        "the test suite modified the real user-level Claude settings file — a test reached Path.home()"
+    )
 
 
 @pytest.fixture(autouse=True)

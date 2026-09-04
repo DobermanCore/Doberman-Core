@@ -14,7 +14,8 @@ Asserts:
 
 The _gen_*soft* generators produce items where the targeted soft channel WILL fire
 because they use the exact known signatures (SEED_GLITCH_FRAGMENTS, the known
-confusable map, NFKC-transformable codepoints).  Their ASR == 0.0 is a no-regression
+confusable map, the curated whole-script lookalike set, NFKC-transformable
+codepoints).  Their ASR == 0.0 is a no-regression
 baseline that confirms the implementation is consistent with its own seed list.  It
 is NOT evidence the defense is airtight against novel variants.
 
@@ -42,6 +43,7 @@ SOFT_CHANNELS = {
     "private_use",
     "control_chars",
     "mixed_script_confusable",
+    "whole_script_confusable",
     "nfkc_delta",
     "glitch_fragment",
 }

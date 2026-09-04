@@ -51,6 +51,12 @@ class CostObserver(Protocol):
     not raise into the caller. Observers receive the same frozen
     ``CostEvent`` instance — immutability is the redaction guarantee, not a
     defensive copy.
+
+    An observer may **optionally** also expose ``on_loop_anomaly(self, anomaly:
+    LoopAnomaly) -> None`` to receive the CB.3 loop-anomaly readout (see
+    :func:`notify_loop_anomaly`). It is deliberately **not** a Protocol member —
+    duck-typed only — so an existing observer exposing just ``on_cost`` keeps
+    type-checking and working unchanged.
     """
 
     def on_cost(self, event: CostEvent) -> None: ...
@@ -80,10 +86,56 @@ def notify_cost_observers(event: CostEvent) -> None:
             logger.warning("cost observer %r raised; skipping", type(observer).__name__)
 
 
+def notify_loop_anomaly(anomaly: LoopAnomaly) -> None:
+    """Fan a :class:`LoopAnomaly` (CB.3) out to every registered cost observer
+    that exposes an optional ``on_loop_anomaly`` hook.
+
+    Mirrors :func:`notify_cost_observers`: never raises and never affects the
+    record path. Duck-typed and silent — an observer exposing only ``on_cost``
+    (no ``on_loop_anomaly``) is skipped without a warning, since the hook is
+    optional. A raising ``on_loop_anomaly`` is logged and skipped. With none
+    installed, or none exposing the hook, this is a no-op.
+    """
+    from doberman.engine.registry import discover_cost_observers
+
+    for observer in discover_cost_observers():
+        on_loop_anomaly = getattr(observer, "on_loop_anomaly", None)
+        if not callable(on_loop_anomaly):
+            continue
+        try:
+            on_loop_anomaly(anomaly)
+        except Exception:  # noqa: BLE001 — an observer can never break the record path
+            logger.warning(
+                "cost observer %r raised on_loop_anomaly; skipping", type(observer).__name__
+            )
+
+
 _INSERT_COST_EVENT = (
     "INSERT INTO cost_events (ts, action_id, kind, units, model, entity_id) "
     "VALUES (?, ?, ?, ?, ?, ?)"
 )
+
+
+async def _maybe_flag_loop_anomaly(event: CostEvent, *, repo_root: str) -> None:
+    """After a tool-call event, advise observers of a runaway loop (CB.3 wiring).
+
+    Never raises and never delays the caller — a failure anywhere here is
+    logged and swallowed. Skipped entirely (no detector read at all) when the
+    just-recorded event isn't a tool call, or when no cost observer is
+    installed — the hot path pays no extra DB read with nothing subscribed.
+    """
+    if event.kind is not CostKind.tool_call:
+        return
+    from doberman.engine.registry import discover_cost_observers
+
+    try:
+        if not discover_cost_observers():
+            return
+        anomaly = await detect_loop_anomaly(repo_root, entity_id=event.entity_id)
+        if anomaly.is_anomaly:
+            notify_loop_anomaly(anomaly)
+    except Exception:  # noqa: BLE001 — advisory check must never break the record path
+        logger.warning("loop-anomaly check failed for action %s; continuing", event.action_id)
 
 
 async def record_cost_event(event: CostEvent, *, repo_root: str) -> None:
@@ -108,6 +160,7 @@ async def record_cost_event(event: CostEvent, *, repo_root: str) -> None:
             )
             await conn.commit()
         notify_cost_observers(event)
+        await _maybe_flag_loop_anomaly(event, repo_root=repo_root)
     except Exception:  # noqa: BLE001 — the cost meter must never break execution
         logger.warning("cost meter write failed for action %s; continuing", event.action_id)
 

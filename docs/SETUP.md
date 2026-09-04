@@ -308,6 +308,34 @@ claude mcp add doberman -- doberman serve -- npx -y @modelcontextprotocol/server
 Cursor, Codex, or any MCP-compatible client uses the same `mcpServers` format in its own config
 file; substitute your own tool server command after `--`.
 
+**Remote servers.** A server reached over the network instead of spawned as a subprocess —
+Streamable HTTP (default) or legacy SSE — is fronted with `--url` instead of a command after `--`:
+
+```bash
+doberman serve --url https://mcp.example.com/mcp
+doberman serve --url https://mcp.example.com/sse --transport sse   # legacy SSE endpoint
+```
+
+A bearer token (or any credential) goes through `--header`/`-H` (repeatable, `"Name: value"`),
+expanded by your shell so it never lands in argv or shell/process history:
+
+```bash
+doberman serve --url https://mcp.example.com/mcp -H "Authorization: Bearer $MCP_TOKEN"
+```
+
+Agent config JSON points `args` at `--url` instead of a spawned command:
+
+```json
+{
+  "mcpServers": {
+    "doberman": {
+      "command": "doberman",
+      "args": ["serve", "--url", "https://mcp.example.com/mcp"]
+    }
+  }
+}
+```
+
 The proxy protects only the tools you route through it. To gate the agent's built-in tools too
 (`Bash`, `Edit`, `Write`, ...), use [Claude Code hooks](#claude-code-hooks) where your host
 supports them.

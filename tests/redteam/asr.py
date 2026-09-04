@@ -11,8 +11,9 @@ in any return value. Verdict objects and reason codes are metadata, never payloa
 
 The ``per_channel`` section of the report will show soft-channel ASR of 0.000
 for known-signature channels (glitch_fragment, mixed_script_confusable,
-nfkc_delta).  This is a NO-REGRESSION BASELINE: the corpus feeds the detector
-its own known signatures, so a tautological 0% bypass is expected and correct.
+whole_script_confusable, nfkc_delta).  This is a NO-REGRESSION BASELINE: the
+corpus feeds the detector its own known signatures, so a tautological 0%
+bypass is expected and correct.
 It means the implementation is consistent, NOT that the defense is airtight.
 
 The REAL adaptive red-team result is in the ``evasion`` section of the report:

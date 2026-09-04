@@ -77,6 +77,15 @@ from doberman.policy.drift import (
 from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
 from doberman.policy.preferences import DIMENSIONS, preset_name
+from doberman.policy.sources import (
+    PIN_CORRUPT,
+    POLICY_FILE_NAME,
+    PolicySnapshot,
+    glob_state_map,
+    load_raw_file,
+    read_pin,
+    write_pin,
+)
 from doberman.render import (
     format_utc_timestamp,
     humanize_auth_result,
@@ -283,12 +292,42 @@ def serve(
     path: str = typer.Option(
         ".", "--path", "-p", help="Repo root whose .doberman/ policy governs decisions."
     ),
+    url: str | None = typer.Option(
+        None,
+        "--url",
+        help=(
+            "Front a remote MCP server at this http(s) URL instead of spawning a command "
+            "(Streamable HTTP by default)."
+        ),
+    ),
+    transport: str = typer.Option(
+        "http",
+        "--transport",
+        help="With --url: 'http' (Streamable HTTP, default) or 'sse' (legacy SSE).",
+    ),
+    header: list[str] = typer.Option(  # noqa: B008 — Typer's Option() factory, not a mutable default
+        [],
+        "--header",
+        "-H",
+        help=(
+            "With --url: extra request header, 'Name: value' (repeatable). Pass secrets via "
+            "your shell's env expansion; argv is visible to local processes."
+        ),
+    ),
 ) -> None:
     """Run Doberman as an MCP proxy in front of a downstream MCP server.
 
     Everything after `--` is the downstream server command, for example:
 
         doberman serve -- npx -y @modelcontextprotocol/server-filesystem /path/to/repo
+
+    Or front a remote MCP server directly (Streamable HTTP by default; `--transport sse` for
+    legacy endpoints):
+
+        doberman serve --url https://mcp.example.com/mcp
+
+    A bearer token goes through a header, expanded by your shell so it never lands in argv or
+    shell history: `doberman serve --url ... -H "Authorization: Bearer $MCP_TOKEN"`.
 
     Point your agent's MCP config at this instead of the real server. AUTH prompts appear on
     your terminal; with no terminal attached (headless) an AUTH action is denied (fail closed).
@@ -302,20 +341,64 @@ def serve(
     # imports run synchronously, before asyncio.run, so nothing loads in-loop.
     from mcp import StdioServerParameters
 
-    from doberman.proxy.serve import serve_stdio
+    from doberman.proxy.serve import _redacted, serve_http, serve_stdio
 
     downstream_argv = list(ctx.args)
-    if not downstream_argv:
+
+    if url is not None and downstream_argv:
+        typer.echo("error: use --url or a downstream command after '--', not both", err=True)
+        raise typer.Exit(code=2)
+    if url is None and not downstream_argv:
         typer.echo("error: provide the downstream server command after `--`", err=True)
         raise typer.Exit(code=2)
-    params = StdioServerParameters(command=downstream_argv[0], args=downstream_argv[1:])
+
+    if url is not None and not (url.startswith("http://") or url.startswith("https://")):
+        typer.echo("error: --url must be an http(s) URL", err=True)
+        raise typer.Exit(code=2)
+    if transport not in ("http", "sse"):
+        typer.echo("error: --transport must be 'http' or 'sse'", err=True)
+        raise typer.Exit(code=2)
+
+    headers: dict[str, str] | None = None
+    if url is None:
+        # A downstream command was given (the checks above ruled out "neither").
+        if header:
+            typer.echo("error: --header only applies with --url", err=True)
+            raise typer.Exit(code=2)
+        if transport != "http":
+            typer.echo("error: --transport only applies with --url", err=True)
+            raise typer.Exit(code=2)
+        params = StdioServerParameters(command=downstream_argv[0], args=downstream_argv[1:])
+    else:
+        parsed_headers: dict[str, str] = {}
+        for entry in header:
+            name, _sep, value = entry.partition(":")
+            name, value = name.strip(), value.strip()
+            if not _sep or not name or not value:
+                typer.echo("error: --header expects 'Name: value'", err=True)
+                raise typer.Exit(code=2)
+            parsed_headers[name] = value
+        headers = parsed_headers or None
+
     _configure_stderr_logging()
     if _stderr_is_tty():  # a human ran it; a client-spawned process gets a pipe
         typer.echo(f"doberman: {_SERVE_WAITING_HINT}", err=True)
     try:
-        asyncio.run(serve_stdio(params, repo_root=path))
+        if url is not None:
+            asyncio.run(serve_http(url, repo_root=path, headers=headers, transport=transport))
+        else:
+            asyncio.run(serve_stdio(params, repo_root=path))
     except Exception as exc:  # noqa: BLE001 - surface a clean stderr error, never a raw traceback
-        typer.echo(f"error: doberman serve failed: {exc}", err=True)
+        if url is not None:
+            # Never echo `exc` here: transport errors embed the request URL (query
+            # string included) and can quote header values.
+            typer.echo(
+                f"error: doberman serve failed: could not serve {_redacted(url)} "
+                f"({type(exc).__name__})",
+                err=True,
+            )
+        else:
+            typer.echo(f"error: doberman serve failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
 
@@ -704,6 +787,133 @@ def mode(
             )
         raise typer.Exit(code=1)
     typer.echo(f"mode set to {saved}")
+
+
+@app.command("policy-file", rich_help_panel="Policy")
+def policy_file(
+    accept: bool = typer.Option(
+        False, "--accept", help="Approve a pending drop, gated behind a possession factor."
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+) -> None:
+    """Show ``doberman.policy.yaml``'s status, or accept a pending drop (#147).
+
+    ``doberman.policy.yaml`` at the repo root is a team-committed policy file:
+    its ``blocked``/``sensitive`` globs are resolved into every action decision
+    alongside the local role. Raise-only across file EDITS too -- a file that
+    drops a glob the last-approved version enforced never silently loosens
+    what is blocked/sensitive; the stricter, pinned set stays in force until a
+    human explicitly accepts the drop here. Accepting is gated the same way as
+    `doberman mode`/`doberman memory reset`: confirmation of the rendered diff
+    plus the strongest enrolled possession factor (a 2FA code if enrolled,
+    otherwise the local password) -- there is no `--yes` bypass and no
+    confirm-only path.
+    """
+    file_snapshot, _digest, rejected, reason = load_raw_file(path)
+    pin = read_pin(path)
+    pin_corrupt = pin is PIN_CORRUPT
+    pin_snapshot = (
+        PolicySnapshot(blocked_globs=pin["blocked"], sensitive_globs=pin["sensitive"])
+        if isinstance(pin, dict)
+        else PolicySnapshot()
+    )
+
+    if not accept:
+        present = (Path(path) / POLICY_FILE_NAME).exists()
+        typer.echo(f"{POLICY_FILE_NAME}: {'present' if present else 'absent'}")
+        if rejected:
+            # A rejected file (unreadable/malformed) is NOT the same as a
+            # legitimately empty one -- reporting "Applied: 0" here would let
+            # a one-character typo read as an intentional empty policy, and
+            # nothing is "pending" for a file that was never actually parsed.
+            typer.echo(f"{POLICY_FILE_NAME}: rejected ({reason})")
+            return
+        typer.echo(
+            f"Applied: {len(file_snapshot.blocked_globs)} blocked, "
+            f"{len(file_snapshot.sensitive_globs)} sensitive glob(s)."
+        )
+        dropped = (set(pin_snapshot.blocked_globs) | set(pin_snapshot.sensitive_globs)) - (
+            set(file_snapshot.blocked_globs) | set(file_snapshot.sensitive_globs)
+        )
+        if dropped:
+            typer.echo(
+                f"Pending: {len(dropped)} glob(s) still enforced from the last approval but "
+                f"no longer in the file: {', '.join(sorted(dropped))}. Run `doberman "
+                "policy-file --accept` to approve the drop."
+            )
+        return
+
+    if rejected:
+        # Refuse outright: nothing was actually decided, so there is nothing
+        # to gate or ledger, and definitely nothing to pin -- the failure
+        # mode this guards is `--accept` writing an EMPTY pin from a
+        # malformed file and disarming enforcement.
+        typer.echo(f"error: {POLICY_FILE_NAME} rejected ({reason}); nothing to accept", err=True)
+        raise typer.Exit(code=1)
+
+    # Same glob-keyed view load_file_policy() uses for its own raise-only
+    # check, so the loader and this gate always agree on what's a drop.
+    before = glob_state_map(pin_snapshot)
+    after = glob_state_map(file_snapshot)
+
+    classification = classify_change(before, after)
+    if not pin_corrupt and classification is not Classification.weaken:
+        typer.echo("nothing to accept")
+        raise typer.Exit(code=0)
+    if pin_corrupt:
+        # The prior approved state is unknown, not merely empty --
+        # classify_change can only ever call an empty "before" a strengthen,
+        # never a weaken, but re-pinning from an unreadable pin must not be
+        # waved through as if it were a verified strengthening. Route it
+        # through the same confirm + possession-factor gate as any other
+        # weaken, and record it as one.
+        classification = Classification.weaken
+
+    if not totp.is_enrolled() and not password.is_enrolled():
+        # Same check `memory reset`/`taint clear` make before ever rendering a
+        # diff: with nothing enrolled the gate can never succeed regardless of
+        # how confirm() is answered, so deny right away instead of showing a
+        # WEAKENING diff for a decision the possession-factor step could never
+        # actually reach.
+        typer.echo(
+            "error: accepting doberman.policy.yaml requires an enrolled possession "
+            "factor - run `doberman 2fa setup` or `doberman password set` first",
+            err=True,
+        )
+        asyncio.run(
+            record_change(
+                before,
+                after,
+                classification,
+                "accept doberman.policy.yaml",
+                repo_root=path,
+                approved=False,
+                method="no_factor_enrolled",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    approved, method = _run_weaken_gate(before, after, "accept doberman.policy.yaml", CliPrompter())
+    asyncio.run(
+        record_change(
+            before,
+            after,
+            classification,
+            "accept doberman.policy.yaml",
+            repo_root=path,
+            approved=approved,
+            method=method,
+        )
+    )
+    if not approved:
+        typer.echo(f"error: doberman.policy.yaml accept denied ({method}); unchanged", err=True)
+        raise typer.Exit(code=1)
+
+    write_pin(path, file_snapshot)
+    typer.echo(
+        f"doberman.policy.yaml accepted; pin updated ({len(file_snapshot.blocked_globs)} "
+        f"blocked, {len(file_snapshot.sensitive_globs)} sensitive glob(s))."
+    )
 
 
 _ENFORCEMENT_STATES = ("enforce", "monitor", "off")
@@ -1390,7 +1600,11 @@ def hook_pre() -> None:
     # the decision path on every `--help`/`status`/`log` invocation.
     from doberman.hosthooks.claude_code import run_pre_hook
 
-    out = run_pre_hook(sys.stdin.read())
+    # Raw bytes: run_pre_hook decodes UTF-8 itself (Cursor's Third Party Hooks
+    # feature calls this same command with cursor-agent's BOM-prefixed payload —
+    # a cp1252 console would turn it into mojibake and fail every hook closed).
+    stream = getattr(sys.stdin, "buffer", None)
+    out = run_pre_hook(stream.read() if stream is not None else sys.stdin.read())
     if out is not None:
         # The harness parses stdout as JSON; write ONLY the decision there, with a
         # trailing newline so a line-delimited reader sees a complete record.
@@ -1419,7 +1633,10 @@ def hook_post() -> None:
     _configure_stderr_logging()
     from doberman.hosthooks.claude_code import run_post_hook
 
-    out = run_post_hook(sys.stdin.read())
+    # Raw bytes: same reasoning as `hook pre` above (Cursor's compat path calls
+    # this command too, and its payloads carry a UTF-8 BOM).
+    stream = getattr(sys.stdin, "buffer", None)
+    out = run_post_hook(stream.read() if stream is not None else sys.stdin.read())
     if out is not None:
         sys.stdout.write(out + "\n")
     raise typer.Exit(0)
@@ -1486,6 +1703,8 @@ def hook_cursor() -> None:
     only the fast deterministic objective floor and fails closed on any
     malformed input or engine error. Register it in ``.cursor/hooks.json`` with
     ``"failClosed": true`` (see adapters/cursor/README.md).
+
+    Wire it in with ``doberman install-hooks --host cursor``.
     """
     _configure_stderr_logging()
     from doberman.hosthooks.cursor import run_cursor
@@ -2395,6 +2614,94 @@ def memory_prune(
     )
 
 
+@memory_app.command("seed")
+def memory_seed(
+    from_file: str = typer.Option(
+        ...,
+        "--from",
+        help="Path to a JSONL file of ALLOWED-action traces (docs/BASELINE_SEEDING.md).",
+    ),
+    path: str = typer.Option(".", "--path", "-p", help="Repository root."),
+    now: str | None = typer.Option(
+        None,
+        "--now",
+        help="ISO-8601 timestamp to seed with (default: current UTC). Makes a run reproducible.",
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit the seed summary as one JSON document."
+    ),
+) -> None:
+    """Warm the per-entity streaming baseline from operator-supplied ALLOWED-action traces.
+
+    Issue #326 named this `doberman baseline seed`; it lives under `memory` instead because
+    `memory reset`/`memory prune` already own these same tables and a one-verb `baseline` group
+    would split the surface — see docs/BASELINE_SEEDING.md.
+
+    Every line of the trace file is validated BEFORE anything is written: any row that is not an
+    allowed trace (`verdict: "PASS"` / `allowed: true`), or that fails to parse or validate,
+    refuses the WHOLE file — nothing is observed, and the error names only the bad line numbers,
+    never row content. A clean file is replayed through the same `observe()` path the live proxy
+    calls, entity-scoped the same way (`entity_id(agent_role, repo_root)`), so a seeded baseline
+    is the one live traffic reads. This can only warm the surprise baseline: it never changes a
+    verdict, the mode, or `policies.yaml`.
+    """
+    # Imported here, not at module scope (same reasoning as `serve`'s lazy import above):
+    # doberman.subjective.baseline imports `river` at module load, which drags in the heavy
+    # numeric stack (river/numpy/scipy) — non-seed CLI commands (`--help`, `log`, `status`,
+    # `scan`, ...) must not pay that cold-start cost just because `memory seed` exists.
+    from doberman.subjective.seed import seed_baseline
+
+    stamp: datetime | None = None
+    if now is not None:
+        try:
+            stamp = datetime.fromisoformat(now)
+        except ValueError:
+            typer.echo(f"error: --now {now!r} is not a valid ISO-8601 timestamp", err=True)
+            raise typer.Exit(code=1) from None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+
+    try:
+        summary = asyncio.run(seed_baseline(from_file, repo_root=path, now=stamp))
+    except OSError as exc:
+        typer.echo(f"error: could not read {from_file!r}: {type(exc).__name__}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if summary.errors:
+        lines = ", ".join(str(e.line_no) for e in summary.errors)
+        typer.echo(
+            f"error: seed refused - {len(summary.errors)} invalid row(s) at line(s): {lines}; "
+            "nothing observed",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if as_json:
+        payload = {
+            "seeded": summary.seeded,
+            "entities": [
+                {
+                    "entity": e.entity,
+                    "seeded": e.seeded,
+                    "total_observations": e.total_observations,
+                    "warm": e.warm,
+                    "hst": e.hst,
+                }
+                for e in summary.entities
+            ],
+        }
+        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        return
+
+    typer.echo(f"Seeded {summary.seeded} allowed-action trace(s).")
+    for e in summary.entities:
+        warm_label = "warm" if e.warm else "cold"
+        typer.echo(
+            f"  entity {e.entity}...  +{e.seeded} observation(s), total {e.total_observations} "
+            f"({warm_label}), HST {e.hst}"
+        )
+
+
 @app.command("policy-history", rich_help_panel="Policy internals")
 def policy_history(
     last: int = typer.Option(20, "--last", "-n", help="Show the most recent N changes."),
@@ -2604,7 +2911,9 @@ def install_hooks(
     local: bool = typer.Option(
         False, "--local", help="Install into .claude/settings.local.json (Claude only)."
     ),
-    host: str = typer.Option("claude", "--host", help="Which host to wire: claude | codex."),
+    host: str = typer.Option(
+        "claude", "--host", help="Which host to wire: claude | codex | cursor."
+    ),
     path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print what would change; write nothing."
@@ -2616,19 +2925,27 @@ def install_hooks(
     PostToolUse + SessionStart into a `settings.json` (`--global` user-wide,
     `--local` project-local, else project `.claude/settings.json`). Codex CLI
     (`--host codex`): a PreToolUse hook into a `hooks.json` (`--global` ->
-    `~/.codex/hooks.json`, else `<repo>/.codex/hooks.json`).
+    `~/.codex/hooks.json`, else `<repo>/.codex/hooks.json`). Cursor
+    (`--host cursor`): the five Cursor events into `.cursor/hooks.json`
+    (`--global` -> `~/.cursor/hooks.json`, else `<repo>/.cursor/hooks.json`)
+    with `failClosed: true` on every gating event.
 
-    `--host` here is claude or codex only - mcp and openclaw don't write a hook
-    file, so there's nothing for this command to wire; `doberman setup --host
-    mcp`/`--host openclaw` prints the pointer for those instead.
+    `--host` here is claude, codex, or cursor only - mcp and openclaw don't write
+    a hook file, so there's nothing for this command to wire; `doberman setup
+    --host mcp`/`--host openclaw` prints the pointer for those instead.
 
     New here? `doberman setup` runs this for you and asks which hosts to guard.
     """
     if host == "codex":
         _install_codex(global_=global_, local=local, path=path, dry_run=dry_run)
         return
+    if host == "cursor":
+        _install_cursor(global_=global_, local=local, path=path, dry_run=dry_run)
+        return
     if host != "claude":
-        typer.echo(f"error: unknown --host {host!r}; expected 'claude' or 'codex'.", err=True)
+        typer.echo(
+            f"error: unknown --host {host!r}; expected 'claude', 'codex', or 'cursor'.", err=True
+        )
         raise typer.Exit(2)
 
     from doberman.hosthooks.install import (
@@ -2794,6 +3111,132 @@ def _uninstall_codex(*, global_: bool, local: bool, path: str, dry_run: bool) ->
     )
 
 
+def _write_cursor_hook(scope: str, path: str, *, show_verify: bool = True) -> tuple[Path, bool]:
+    """Write Doberman's Cursor hooks for *scope* and print the notice.
+
+    Shared by ``install-hooks --host cursor`` (:func:`_install_cursor`) and, in
+    future, a ``setup`` wizard cursor step. Mirrors :func:`_write_codex_hook`'s
+    already-wired/wrote/manifest/exclusion shape. Returns ``(hooks_path,
+    already_wired)``.
+    """
+    from doberman.hosthooks.install import load_settings, write_settings
+    from doberman.hosthooks.install_cursor import (
+        cursor_doberman_groups,
+        merge_cursor_hooks,
+        resolve_cursor_hooks_path,
+    )
+
+    hooks_path = resolve_cursor_hooks_path(scope, path)
+
+    try:
+        current = load_settings(hooks_path)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    merged = merge_cursor_hooks(current)
+    already_wired = merged == current
+    if already_wired:
+        typer.echo(style_text(f"already wired: {hooks_path}", bold=True))
+    else:
+        write_settings(hooks_path, merged)
+        typer.echo(style_text(f"wrote {hooks_path}", bold=True))
+    _record_manifest("cursor", scope, hooks_path, cursor_doberman_groups(merged))
+    if remove_exclusion(path):
+        typer.echo("This project is no longer excluded from global hooks.")
+    typer.echo("")
+    typer.echo("Restart your Cursor session so it reloads hooks.json.")
+    typer.echo(
+        "Doberman now gates Cursor's built-in tools, shell commands, MCP calls and file reads "
+        "in this scope (failClosed: a hook crash or timeout denies)."
+    )
+    if show_verify:
+        typer.echo("Verify it's live: ask Cursor to `cat .env` and confirm it is blocked.")
+    return hooks_path, already_wired
+
+
+def _install_cursor(*, global_: bool, local: bool, path: str, dry_run: bool) -> None:
+    """`install-hooks --host cursor`: wire ``doberman hook cursor`` into a
+    Cursor hooks.json. ``--global`` -> ``~/.cursor/hooks.json`` (user), else
+    ``<repo>/.cursor/hooks.json`` (project). ``--local`` has no Cursor equivalent."""
+    if local:
+        typer.echo(
+            "error: --local has no Cursor equivalent; use --global (user) or the default "
+            "(project).",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    scope = "user" if global_ else "project"
+
+    if dry_run:
+        from doberman.hosthooks.cursor import EVENT_SESSION_START
+        from doberman.hosthooks.install_cursor import (
+            GATE_EVENTS,
+            GATE_TIMEOUT_S,
+            SESSION_START_TIMEOUT_S,
+            resolve_cursor_hooks_path,
+        )
+
+        hooks_path = resolve_cursor_hooks_path(scope, path)
+        typer.echo(f"[dry-run] target: {hooks_path}")
+        typer.echo("[dry-run] would add:")
+        for event in (*GATE_EVENTS, EVENT_SESSION_START):
+            timeout = SESSION_START_TIMEOUT_S if event == EVENT_SESSION_START else GATE_TIMEOUT_S
+            typer.echo(f"  {event} -> doberman hook cursor (failClosed, {timeout}s)")
+        return
+
+    _write_cursor_hook(scope, path)  # returns (path, already_wired); install-hooks needs neither
+
+
+def _uninstall_cursor(*, global_: bool, local: bool, path: str, dry_run: bool) -> None:
+    """`uninstall-hooks --host cursor`: remove Doberman's Cursor hook entries."""
+    if local:
+        typer.echo("error: --local has no Cursor equivalent.", err=True)
+        raise typer.Exit(2)
+    from doberman.hosthooks.cursor import EVENT_SESSION_START
+    from doberman.hosthooks.install import load_settings, write_settings
+    from doberman.hosthooks.install_cursor import (
+        GATE_EVENTS,
+        _is_doberman_entry,
+        remove_cursor_hooks,
+        resolve_cursor_hooks_path,
+    )
+
+    scope = "user" if global_ else "project"
+    hooks_path = resolve_cursor_hooks_path(scope, path)
+
+    try:
+        current = load_settings(hooks_path)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    hooks_section = current.get("hooks") or {}
+    had_doberman = any(
+        _is_doberman_entry(entry)
+        for entries in hooks_section.values()
+        if isinstance(entries, list)
+        for entry in entries
+    )
+    if not had_doberman:
+        typer.echo("No Doberman Cursor hooks found - nothing to remove.")
+        return
+
+    cleaned = remove_cursor_hooks(current)
+    if dry_run:
+        typer.echo(f"[dry-run] target: {hooks_path}")
+        typer.echo("[dry-run] would remove:")
+        for event in (*GATE_EVENTS, EVENT_SESSION_START):
+            typer.echo(f"  {event} -> doberman hook cursor")
+        return
+
+    _clear_manifest("cursor", scope, hooks_path)
+    write_settings(hooks_path, cleaned)
+    typer.echo(f"wrote {hooks_path}")
+    typer.echo("Doberman Cursor hooks removed.")
+
+
 @app.command("uninstall-hooks", rich_help_panel="Leaving")
 def uninstall_hooks(
     global_: bool = typer.Option(
@@ -2805,7 +3248,9 @@ def uninstall_hooks(
     local: bool = typer.Option(
         False, "--local", help="Remove from .claude/settings.local.json (Claude only)."
     ),
-    host: str = typer.Option("claude", "--host", help="Which host to unwire: claude | codex."),
+    host: str = typer.Option(
+        "claude", "--host", help="Which host to unwire: claude | codex | cursor."
+    ),
     path: str = typer.Option(".", "--path", "-p", help="Project root (default: current dir)."),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print what would change; write nothing."
@@ -2815,13 +3260,19 @@ def uninstall_hooks(
 
     Idempotent - safe to run even when hooks are not present.  Non-Doberman hooks
     and every other setting are left untouched. ``--host codex`` removes the Codex
-    hook group instead of the Claude Code hooks.
+    hook group instead of the Claude Code hooks; ``--host cursor`` removes the
+    Cursor hook entries.
     """
     if host == "codex":
         _uninstall_codex(global_=global_, local=local, path=path, dry_run=dry_run)
         return
+    if host == "cursor":
+        _uninstall_cursor(global_=global_, local=local, path=path, dry_run=dry_run)
+        return
     if host != "claude":
-        typer.echo(f"error: unknown --host {host!r}; expected 'claude' or 'codex'.", err=True)
+        typer.echo(
+            f"error: unknown --host {host!r}; expected 'claude', 'codex', or 'cursor'.", err=True
+        )
         raise typer.Exit(2)
 
     from doberman.hosthooks.install import (
@@ -2888,6 +3339,7 @@ def _project_uninstall_targets(path: str) -> list[tuple[str, str]]:
     project-scoped only.
     """
     from doberman.hosthooks.install_codex import codex_hook_install_states
+    from doberman.hosthooks.install_cursor import cursor_hook_install_states
 
     targets: list[tuple[str, str]] = []
     for scope, settings_path, installed in _hook_install_states(path):
@@ -2896,6 +3348,9 @@ def _project_uninstall_targets(path: str) -> list[tuple[str, str]]:
     for scope, hooks_path, installed in codex_hook_install_states(path):
         if scope == "repo" and installed:
             targets.append(("Codex CLI hooks (repo)", hooks_path))
+    for scope, hooks_path, installed in cursor_hook_install_states(path):
+        if scope == "project" and installed:
+            targets.append(("Cursor hooks (project)", hooks_path))
     doberman_dir = Path(path) / CONFIG_DIR
     if doberman_dir.exists():
         targets.append((".doberman/ (policy + decision database)", str(doberman_dir)))
@@ -2933,10 +3388,12 @@ def _format_command(argv: list[str]) -> str:
 def _global_uninstall_targets(path: str) -> tuple[list[tuple[str, str]], str, list[str]]:
     """Every global-uninstall plan entry, including absent and read-only targets."""
     from doberman.hosthooks.install_codex import codex_hook_install_states
+    from doberman.hosthooks.install_cursor import cursor_hook_install_states
     from doberman.storage import device_metrics, fingerprint
 
     claude_states = {scope: settings_path for scope, settings_path, _ in _hook_install_states(path)}
     codex_states = {scope: hooks_path for scope, hooks_path, _ in codex_hook_install_states(path)}
+    cursor_states = {scope: hooks_path for scope, hooks_path, _ in cursor_hook_install_states(path)}
     kind, argv = _package_remover()
     targets = [
         ("Claude Code hooks (global)", claude_states["global"]),
@@ -2945,6 +3402,8 @@ def _global_uninstall_targets(path: str) -> tuple[list[tuple[str, str]], str, li
         ("Codex CLI hooks (user)", codex_states["user"]),
         ("Codex CLI hooks (repo)", codex_states["repo"]),
         ("Codex CLI hooks (plugin scope; not writable)", codex_states["plugin"]),
+        ("Cursor hooks (user)", cursor_states["user"]),
+        ("Cursor hooks (project)", cursor_states["project"]),
         (".doberman/ (policy + decision database)", str(Path(path) / CONFIG_DIR)),
         ("TOTP enrollment", str(totp.resolve_path())),
         ("password enrollment", str(password.resolve_path())),
@@ -3003,6 +3462,11 @@ def _uninstall_global(path: str, yes: bool, dry_run: bool, keep_package: bool) -
         codex_hook_install_states,
         remove_codex_hooks,
         resolve_codex_hooks_path,
+    )
+    from doberman.hosthooks.install_cursor import (
+        cursor_hook_install_states,
+        remove_cursor_hooks,
+        resolve_cursor_hooks_path,
     )
     from doberman.storage import device_metrics, fingerprint
 
@@ -3073,6 +3537,20 @@ def _uninstall_global(path: str, yes: bool, dry_run: bool, keep_package: bool) -
             current = load_settings(target)
             _clear_manifest("codex", scope, target)
             write_settings(target, remove_codex_hooks(current))
+        except (ValueError, OSError) as exc:
+            errors.append(f"{target}: {exc}")
+
+    cursor_installed = {
+        scope: installed for scope, _hooks_path, installed in cursor_hook_install_states(path)
+    }
+    for scope in ("user", "project"):
+        if not cursor_installed.get(scope):
+            continue
+        target = resolve_cursor_hooks_path(scope, path)
+        try:
+            current = load_settings(target)
+            _clear_manifest("cursor", scope, target)
+            write_settings(target, remove_cursor_hooks(current))
         except (ValueError, OSError) as exc:
             errors.append(f"{target}: {exc}")
 
@@ -3162,6 +3640,11 @@ def uninstall(
         remove_codex_hooks,
         resolve_codex_hooks_path,
     )
+    from doberman.hosthooks.install_cursor import (
+        cursor_hook_install_states,
+        remove_cursor_hooks,
+        resolve_cursor_hooks_path,
+    )
 
     targets = _project_uninstall_targets(path)
     if not targets:
@@ -3249,6 +3732,16 @@ def uninstall(
             current = load_settings(resolve_codex_hooks_path(scope, path))
             _clear_manifest("codex", scope, resolve_codex_hooks_path(scope, path))
             write_settings(resolve_codex_hooks_path(scope, path), remove_codex_hooks(current))
+        except (ValueError, OSError) as exc:
+            errors.append(f"{hooks_path}: {exc}")
+
+    for scope, hooks_path, installed in cursor_hook_install_states(path):
+        if scope != "project" or not installed:
+            continue
+        try:
+            current = load_settings(resolve_cursor_hooks_path(scope, path))
+            _clear_manifest("cursor", scope, resolve_cursor_hooks_path(scope, path))
+            write_settings(resolve_cursor_hooks_path(scope, path), remove_cursor_hooks(current))
         except (ValueError, OSError) as exc:
             errors.append(f"{hooks_path}: {exc}")
 

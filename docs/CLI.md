@@ -39,7 +39,7 @@ Day-to-day posture, status, and review commands.
 | `doberman telemetry off` | Opt out. Sends one final best-effort disabled event only if telemetry had already minted an id (nothing to send, and no id minted, if this is the very first choice made on a fresh install). | none |
 | `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches; a disabled reading names `doberman telemetry on` to opt back in, symmetric with the default-on reading's own `doberman telemetry off` pointer. | none |
 | `doberman session-summary` | Print the device-global session-guard summary and exit. Always exits 0; never blocks a session. | none |
-| `doberman serve` | Run Doberman as an MCP proxy in front of a downstream MCP tool server. | `--path`/`-p` |
+| `doberman serve` | Run Doberman as an MCP proxy in front of a downstream MCP tool server (spawned over stdio) or a remote server. | `--path`/`-p`, `--url`, `--transport`, `--header`/`-H` |
 | `doberman version` | Print the installed Doberman version. `doberman --version` / `-V` does the same. | none |
 
 ## Auth enrollment
@@ -77,8 +77,8 @@ Wiring commands plus the low-level per-host handlers they install.
 
 | Command | Purpose | Key flags |
 |---------|---------|-----------|
-| `doberman install-hooks` | Wire Doberman's hooks into a host so every tool call is gated before it runs. Idempotent. | `--global`/`-g`, `--local`, `--host`, `--path`/`-p`, `--dry-run` |
-| `doberman uninstall-hooks` | Remove Doberman's hooks from a host. Every other setting is left untouched. | `--global`/`-g`, `--local`, `--host`, `--path`/`-p`, `--dry-run` |
+| `doberman install-hooks` | Wire Doberman's hooks into a host so every tool call is gated before it runs. Idempotent. `--host claude\|codex\|cursor`. | `--global`/`-g`, `--local`, `--host`, `--path`/`-p`, `--dry-run` |
+| `doberman uninstall-hooks` | Remove Doberman's hooks from a host. Every other setting is left untouched. `--host claude\|codex\|cursor`. | `--global`/`-g`, `--local`, `--host`, `--path`/`-p`, `--dry-run` |
 | `doberman hook pre` | Claude Code PreToolUse hook: gate one tool call (allow/ask/deny). Reads the hook payload as JSON on stdin. | none |
 | `doberman hook post` | Claude Code PostToolUse hook: scan tool output for secrets and record history. | none |
 | `doberman hook openclaw` | OpenClaw `before_tool_call` plugin hook: gate one tool call. Always writes exactly one JSON verdict, unlike the Claude Code hooks above. | none |

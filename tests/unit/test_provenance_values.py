@@ -2,6 +2,10 @@
 untrusted-value echo tripwire. Extraction only — no verdict authority here.
 """
 
+import time
+
+import pytest
+
 from doberman.engine.rules.provenance_values import untrusted_value_fingerprints
 from doberman.storage.fingerprint import fingerprint
 
@@ -166,3 +170,81 @@ def test_bracketed_ipv6_url_form_is_still_extracted_as_a_host_value():
     # branch must not disturb that existing path.
     fps = untrusted_value_fingerprints("see http://[2001:db8::1]/status for the endpoint")
     assert fingerprint("2001:db8::1") in fps
+
+
+# --- T4: mail-address de-obfuscation (bracketed / bare-word / spaced forms) --
+# Attackers write an address as "user [at] host [dot] com" precisely to defeat
+# literal _EMAIL_RE matching. A de-obfuscated copy of the sample is scanned
+# through the SAME _EMAIL_RE + same path, so the plain address fingerprints
+# the same whether it arrived literal or obfuscated.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "contact [at] contact [dot] com",
+        "contact ( at ) contact ( dot ) com",
+        "contact (at) contact (dot) com",
+        "contact{at}contact{dot}com",
+        "contact <at> contact <dot> com",
+        "contact AT contact DOT com",
+        "contact @ contact . com",
+    ],
+)
+def test_bracketed_at_dot_forms_fingerprint_the_plain_address(text):
+    fps = untrusted_value_fingerprints(text)
+    assert fingerprint("contact@contact.com") in fps
+
+
+def test_plain_address_is_fingerprinted_once():
+    # contact.com also matches the pre-existing bare-host branch -- the
+    # assertion is that the SECOND (de-obfuscation) pass adds nothing beyond
+    # what the first pass already produces for an already-plain address.
+    fps = untrusted_value_fingerprints("mail contact@contact.com now")
+    assert fps == {fingerprint("contact@contact.com"), fingerprint("contact.com")}
+
+
+def test_prose_at_dot_words_do_not_invent_an_address():
+    fps = untrusted_value_fingerprints("meet me at the cafe. dot your i's")
+    assert fps == set()
+
+
+def test_sentence_period_is_not_joined():
+    fps = untrusted_value_fingerprints("see you at end. Next line")
+    assert fps == set()
+
+
+# --- T4 perf follow-up: de-obfuscation must stay linear on adversarial
+# whitespace -------------------------------------------------------------
+# The bracketed de-obfuscation patterns had unbounded \s* flanking a
+# mandatory alternation -- on a long run of plain whitespace the regex
+# engine backtracks quadratically (every start position re-tries the
+# leading \s* one char shorter). Every de-obfuscation pattern's whitespace
+# is now bounded (\s{0,4} / \s{1,4}), so even a worst-case _SCAN_MAX_CHARS
+# (100k) payload finishes in milliseconds, not tens of seconds.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        " " * 100_000,
+        "[ " * 30_000,
+        " at " * 25_000,
+        ("a" + " " * 50) * 2_000,
+        "[ at " * 20_000,
+    ],
+    # explicit short ids: pytest's default id is the raw string, and Windows
+    # caps an env var at 32767 chars -- PYTEST_CURRENT_TEST would overflow it.
+    ids=[
+        "all_spaces",
+        "bracket_space",
+        "spaced_at_word",
+        "letter_plus_50_spaces",
+        "near_miss_bracket",
+    ],
+)
+def test_deobfuscation_is_linear_on_adversarial_whitespace(text):
+    start = time.perf_counter()
+    untrusted_value_fingerprints(text)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"took {elapsed:.2f}s on a {len(text)}-char adversarial input"

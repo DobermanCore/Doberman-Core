@@ -13,8 +13,9 @@ Asserts:
 --- SOFT-CHANNEL ASR 0.0 IS A BASELINE, NOT A ROBUSTNESS CLAIM ---
 
 The per_channel soft-channel results (glitch_fragment, mixed_script_confusable,
-nfkc_delta) show ASR==0.0 because the corpus feeds the detector its OWN known
-signatures.  That is a no-regression baseline, not evidence the defense is airtight.
+whole_script_confusable, nfkc_delta) show ASR==0.0 because the corpus feeds the
+detector its OWN known signatures. That is a no-regression baseline, not
+evidence the defense is airtight.
 
 The evasion set (evasion_glitch_*, evasion_mixed_*, evasion_nfkc_*) uses techniques
 that GENUINELY bypass the deterministic scanner.  The bypass rate there is EXPECTED
@@ -46,6 +47,7 @@ _SOFT_CHANNELS = {
     "private_use",
     "control_chars",
     "mixed_script_confusable",
+    "whole_script_confusable",
     "nfkc_delta",
     "glitch_fragment",
 }
