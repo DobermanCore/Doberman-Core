@@ -39,7 +39,7 @@ Day-to-day posture, status, and review commands.
 | `doberman telemetry off` | Opt out. Sends one final best-effort disabled event only if telemetry had already minted an id (nothing to send, and no id minted, if this is the very first choice made on a fresh install). | none |
 | `doberman telemetry status` | Show effective state, the random distinct id, and active kill switches; a disabled reading names `doberman telemetry on` to opt back in, symmetric with the default-on reading's own `doberman telemetry off` pointer. | none |
 | `doberman session-summary` | Print the device-global session-guard summary and exit. Always exits 0; never blocks a session. | none |
-| `doberman serve` | Run Doberman as an MCP proxy in front of a downstream MCP tool server. | `--path`/`-p` |
+| `doberman serve` | Run Doberman as an MCP proxy in front of a downstream MCP tool server (spawned over stdio) or a remote server. | `--path`/`-p`, `--url`, `--transport`, `--header`/`-H` |
 | `doberman version` | Print the installed Doberman version. `doberman --version` / `-V` does the same. | none |
 
 ## Auth enrollment

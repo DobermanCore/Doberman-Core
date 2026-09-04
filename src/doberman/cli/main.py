@@ -283,12 +283,42 @@ def serve(
     path: str = typer.Option(
         ".", "--path", "-p", help="Repo root whose .doberman/ policy governs decisions."
     ),
+    url: str | None = typer.Option(
+        None,
+        "--url",
+        help=(
+            "Front a remote MCP server at this http(s) URL instead of spawning a command "
+            "(Streamable HTTP by default)."
+        ),
+    ),
+    transport: str = typer.Option(
+        "http",
+        "--transport",
+        help="With --url: 'http' (Streamable HTTP, default) or 'sse' (legacy SSE).",
+    ),
+    header: list[str] = typer.Option(  # noqa: B008 — Typer's Option() factory, not a mutable default
+        [],
+        "--header",
+        "-H",
+        help=(
+            "With --url: extra request header, 'Name: value' (repeatable). Pass secrets via "
+            "your shell's env expansion; argv is visible to local processes."
+        ),
+    ),
 ) -> None:
     """Run Doberman as an MCP proxy in front of a downstream MCP server.
 
     Everything after `--` is the downstream server command, for example:
 
         doberman serve -- npx -y @modelcontextprotocol/server-filesystem /path/to/repo
+
+    Or front a remote MCP server directly (Streamable HTTP by default; `--transport sse` for
+    legacy endpoints):
+
+        doberman serve --url https://mcp.example.com/mcp
+
+    A bearer token goes through a header, expanded by your shell so it never lands in argv or
+    shell history: `doberman serve --url ... -H "Authorization: Bearer $MCP_TOKEN"`.
 
     Point your agent's MCP config at this instead of the real server. AUTH prompts appear on
     your terminal; with no terminal attached (headless) an AUTH action is denied (fail closed).
@@ -302,18 +332,53 @@ def serve(
     # imports run synchronously, before asyncio.run, so nothing loads in-loop.
     from mcp import StdioServerParameters
 
-    from doberman.proxy.serve import serve_stdio
+    from doberman.proxy.serve import serve_http, serve_stdio
 
     downstream_argv = list(ctx.args)
-    if not downstream_argv:
+
+    if url is not None and downstream_argv:
+        typer.echo("error: use --url or a downstream command after '--', not both", err=True)
+        raise typer.Exit(code=2)
+    if url is None and not downstream_argv:
         typer.echo("error: provide the downstream server command after `--`", err=True)
         raise typer.Exit(code=2)
-    params = StdioServerParameters(command=downstream_argv[0], args=downstream_argv[1:])
+
+    if url is not None and not (url.startswith("http://") or url.startswith("https://")):
+        typer.echo("error: --url must be an http(s) URL", err=True)
+        raise typer.Exit(code=2)
+    if transport not in ("http", "sse"):
+        typer.echo("error: --transport must be 'http' or 'sse'", err=True)
+        raise typer.Exit(code=2)
+
+    headers: dict[str, str] | None = None
+    if url is None:
+        # A downstream command was given (the checks above ruled out "neither").
+        if header:
+            typer.echo("error: --header only applies with --url", err=True)
+            raise typer.Exit(code=2)
+        if transport != "http":
+            typer.echo("error: --transport only applies with --url", err=True)
+            raise typer.Exit(code=2)
+        params = StdioServerParameters(command=downstream_argv[0], args=downstream_argv[1:])
+    else:
+        parsed_headers: dict[str, str] = {}
+        for entry in header:
+            name, _sep, value = entry.partition(":")
+            name, value = name.strip(), value.strip()
+            if not _sep or not name or not value:
+                typer.echo("error: --header expects 'Name: value'", err=True)
+                raise typer.Exit(code=2)
+            parsed_headers[name] = value
+        headers = parsed_headers or None
+
     _configure_stderr_logging()
     if _stderr_is_tty():  # a human ran it; a client-spawned process gets a pipe
         typer.echo(f"doberman: {_SERVE_WAITING_HINT}", err=True)
     try:
-        asyncio.run(serve_stdio(params, repo_root=path))
+        if url is not None:
+            asyncio.run(serve_http(url, repo_root=path, headers=headers, transport=transport))
+        else:
+            asyncio.run(serve_stdio(params, repo_root=path))
     except Exception as exc:  # noqa: BLE001 - surface a clean stderr error, never a raw traceback
         typer.echo(f"error: doberman serve failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
