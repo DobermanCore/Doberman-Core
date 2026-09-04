@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from doberman.models import EvalContext, SecurityObject
+from doberman.models import ActionType, EvalContext, SecurityObject
 from doberman.proxy.normalize import _command_text, _extract_egress_destination, _redact_args
 from doberman.subjective.adapters import apply_adapters
 from doberman.subjective.infer import infer_algebra, infer_reversibility
@@ -53,7 +53,11 @@ def to_security_object(action_id: str, action: CandidateAction) -> SecurityObjec
         source_context=action.source_context,
     )
     raw_arguments = dict(action.raw_arguments) if action.raw_arguments else {}
-    if base.external_destination is None and _command_text(raw_arguments) is not None:
+    if (
+        base.external_destination is None
+        and action.action_type is not ActionType.network_request
+        and _command_text(raw_arguments) is not None
+    ):
         try:
             destination, egress_metadata = _extract_egress_destination(
                 _redact_args(raw_arguments), raw_arguments
@@ -61,7 +65,8 @@ def to_security_object(action_id: str, action: CandidateAction) -> SecurityObjec
             base = base.model_copy(
                 update={
                     "external_destination": destination,
-                    "metadata": {**base.metadata, **egress_metadata},
+                    # adapter-supplied metadata is never overridden by the borrowed classifier
+                    "metadata": {**egress_metadata, **base.metadata},
                 }
             )
         except Exception:  # noqa: BLE001, S110 — a benchmark case must never drop on an
