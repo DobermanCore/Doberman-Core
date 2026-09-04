@@ -211,7 +211,7 @@ def test_prose_at_dot_words_do_not_invent_an_address():
 
 def test_sentence_period_is_not_joined():
     fps = untrusted_value_fingerprints("see you at end. Next line")
-    assert fingerprint("you@end.Next") not in fps
+    assert fps == set()
 
 
 # --- T4 perf follow-up: de-obfuscation must stay linear on adversarial
