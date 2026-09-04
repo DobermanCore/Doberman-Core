@@ -987,6 +987,79 @@ def test_git_config_unrelated_key_is_not_a_bypass():
     assert ReasonCode.verification_bypass_flag not in result.reason_codes
 
 
+# --- Process-kill commands and interpreter kill calls require AUTH ----------
+# A coding agent that can only `rm -rf` under a prompt but can kill the
+# operator's database, IDE, or CI runner with no prompt has a gap that exists
+# regardless of any benchmark. Killing a process is risky-but-recoverable ->
+# AUTH (the same rung as `git reset --hard`), never BLOCK; the user's OWN
+# background jobs (job specs, $!/$$) and probes (-l/-L/-0/--help) stay PASS.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "kill -9 1234",
+        "kill 1234",
+        "kill -TERM 1234",
+        "kill -s KILL 1234",
+        "kill -SIGKILL $(pgrep sshd)",
+        "kill -9 $pid",
+        "pkill sshd",
+        "pkill -9 -f postgres",
+        "killall -9 nginx",
+        "killall node",
+        "pgrep node | xargs kill -9",
+        "taskkill /F /IM node.exe",
+        "Stop-Process -Name node -Force",
+        "sudo kill -9 1",
+        "for p in $(pgrep sshd); do kill -9 $p; done",
+        'python -c "import os; os.kill(1234, 9)"',
+        'python -c "import os, signal; os.killpg(os.getpgid(1), signal.SIGKILL)"',
+        'python -c "import psutil; [p.kill() for p in psutil.process_iter()]"',
+        'python -c "import psutil; psutil.Process(1).terminate()"',
+        "node -e \"process.kill(1234, 'SIGKILL')\"",
+    ],
+)
+def test_process_kill_requires_auth(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "kill -l",
+        "kill -L",
+        "kill -0 1234",
+        "kill %1",
+        "kill %%",
+        "kill $!",
+        "kill -9 $!",
+        'kill "$!"',
+        "kill $$",
+        "kill",
+        "pkill --help",
+        "ls | grep kill",
+        'echo "kill -9 1"',
+        "git log --grep kill",
+        "man kill",
+        "python -c \"print('kill')\"",
+        'python -c "import psutil; print(psutil.cpu_percent())"',
+        'node -e "console.log(process.pid)"',
+    ],
+)
+def test_process_kill_benign_forms_stay_pass(command):
+    assert _cmd(command).verdict is Verdict.PASS
+
+
+@pytest.mark.parametrize("command", ["kill -9 987654", "pkill -f secretservice"])
+def test_process_kill_explanation_is_redacted(command):
+    result = _cmd(command)
+    assert "987654" not in result.explanation
+    assert "secretservice" not in result.explanation
+
+
 # --- Known-gap characterization: shell-level test-file deletion -------------
 # ProtectedPathRule.test_file_removal (paths.py) only ever sees a file_delete/
 # rename TOOL action; a shell `rm`/`git rm` of a test file is a COMMAND LINE,

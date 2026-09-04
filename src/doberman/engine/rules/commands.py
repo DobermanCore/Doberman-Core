@@ -238,6 +238,14 @@ _INLINE_SHELL_SPAWN = re.compile(
     re.IGNORECASE,
 )
 
+# T2 — process-kill vocabulary. `os.kill`/`os.killpg` (Python) and
+# `process.kill` (Node) are unambiguous kill calls on their own. `.kill(`/
+# `.terminate(` alone are too common non-destructively (a subprocess handle, a
+# promise) to flag by themselves, so they only count when the payload also
+# names `psutil` — the process-management library this shape targets.
+_INLINE_PROCESS_KILL = re.compile(r"os[.]kill(?:pg)?[(]|process[.]kill[(]", re.IGNORECASE)
+_PSUTIL_KILL_TERMINATE = re.compile(r"[.]kill[(]|[.]terminate[(]", re.IGNORECASE)
+
 # Shared work bound for every static command walk. Exhaustion is ambiguity,
 # never silent success.
 _MAX_COMMAND_SEGMENTS = 256
@@ -777,6 +785,15 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
             ReasonCode.opaque_command,
             "Interpreter inline payload opens a network socket directly; authentication required.",
         )
+    if any(
+        _INLINE_PROCESS_KILL.search(payload)
+        or (_PSUTIL_KILL_TERMINATE.search(payload) and "psutil" in payload)
+        for payload in payloads
+    ):
+        return _auth(
+            ReasonCode.destructive_command,
+            "Interpreter inline payload signals or kills a process; authentication required.",
+        )
     return None
 
 
@@ -857,6 +874,81 @@ def _dev_tcp_udp_auth() -> GuardrailResult:
         ReasonCode.raw_socket_channel,
         "Command opens a raw network channel outside the normal tool path "
         "(bare-TCP/UDP device redirection); authentication required.",
+    )
+
+
+# T2 — process-kill vocabulary (risky-but-recoverable, the same AUTH rung as
+# `git reset --hard`). An agent gated on `rm -rf` but free to kill the
+# operator's database, IDE, or CI runner has a gap that exists regardless of
+# any benchmark. `xargs` piping into one of these is covered too (a common
+# `pgrep ... | xargs kill` shape). Compared case-insensitively.
+_PROCESS_KILL_COMMANDS = {"kill", "pkill", "killall", "taskkill", "stop-process", "spps"}
+
+# `kill`'s own list/probe/help flags — never a signal to a target.
+_KILL_PASS_FLAGS = {"-l", "-L", "--list", "-0", "-h", "--help"}
+# The other kill-family tools carve out only their own bare help flag.
+_KILL_HELP_ONLY_FLAGS = {"-h", "--help", "-?", "/?"}
+# A `kill` operand naming the caller's OWN job/background process, never a
+# foreign target: a job spec (`%1`, `%%`, `%+`, `%-`) or the last-background-
+# pid / current-shell-pid shell parameters (`$!`, `$$`). shlex already strips
+# surrounding quotes, so `"$!"` and `$!` tokenize identically.
+_KILL_OWN_JOB_TARGET_RE = re.compile(r"^(?:%\d+|%%|%\+|%-|\$!|\$\$)$")
+
+
+def _kill_operands(args: list[str]) -> list[str]:
+    """Non-flag operands to a ``kill`` argv, skipping ``-s``'s mandatory
+    signal-name value token so it is never mistaken for a target operand."""
+    operands: list[str] = []
+    skip_next = False
+    for token in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "-s":  # noqa: S105 — kill's signal-name flag, not a secret
+            skip_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        operands.append(token)
+    return operands
+
+
+def _kill_is_benign(args: list[str]) -> bool:
+    """PASS carve-outs for ``kill`` (never ``pkill``/``killall``/...): no args
+    at all (usage error), a list/help/probe flag, a ``-s 0`` no-op signal
+    probe, or every operand names the caller's own job — never someone else's
+    process. A `kill` whose operand can't be seen (a stripped `$(...)` leaves
+    no residual token) has no operands here either, so it correctly falls
+    through to AUTH rather than being read as the empty/usage-error case."""
+    if not args:
+        return True
+    if any(a in _KILL_PASS_FLAGS for a in args):
+        return True
+    if any(a == "-s" and args[i + 1] == "0" for i, a in enumerate(args[:-1])):
+        return True
+    operands = _kill_operands(args)
+    return bool(operands) and all(_KILL_OWN_JOB_TARGET_RE.match(op) for op in operands)
+
+
+def _process_kill_verdict(tokens: list[str]) -> GuardrailResult | None:
+    """Signal/kill commands step up to AUTH: ``kill``/``pkill``/``killall``/
+    ``taskkill``/``Stop-Process``, and ``xargs`` piping into one of these."""
+    if not tokens:
+        return None
+    cmd = tokens[0].lower()
+    if cmd == "xargs":
+        if not any(t.lower() in _PROCESS_KILL_COMMANDS for t in tokens[1:]):
+            return None
+    elif cmd not in _PROCESS_KILL_COMMANDS:
+        return None
+    elif cmd == "kill":
+        if _kill_is_benign(tokens[1:]):
+            return None
+    elif any(t in _KILL_HELP_ONLY_FLAGS for t in tokens[1:]):
+        return None
+    return _auth(
+        ReasonCode.destructive_command,
+        "Command signals or kills a process; authentication required.",
     )
 
 
@@ -946,6 +1038,9 @@ def _segment_verdict(
             f"Command opens a raw network channel outside the normal tool path ({channel}); "
             "authentication required.",
         )
+    process_kill = _process_kill_verdict(tokens)
+    if process_kill is not None:
+        return process_kill
     return None
 
 
