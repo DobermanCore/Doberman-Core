@@ -83,8 +83,9 @@ Wiring commands plus the low-level per-host handlers they install.
 | `doberman hook post` | Claude Code PostToolUse hook: scan tool output for secrets and record history. | none |
 | `doberman hook openclaw` | OpenClaw `before_tool_call` plugin hook: gate one tool call. Always writes exactly one JSON verdict, unlike the Claude Code hooks above. | none |
 | `doberman hook codex-pre` | Codex CLI PreToolUse hook: gate one tool call. Shares `hook pre`'s decision spine and deny shape. | none |
+| `doberman hook cursor` | Cursor hook *(experimental)*: one command for `preToolUse` / `beforeShellExecution` / `beforeMCPExecution` / `beforeReadFile` (`sessionStart` acknowledged). Answers `{"permission": "allow" \| "deny"}`; a deny also exits `2`. | none |
 
-All four `hook` subcommands run only the fast deterministic objective floor, so they add minimal latency, and fail closed on any malformed input or engine error.
+All five `hook` subcommands run only the fast deterministic objective floor, so they add minimal latency, and fail closed on any malformed input or engine error.
 
 ## Output conventions
 
@@ -211,6 +212,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `decision-log-prune` | `2` | Neither `--older-than-days` nor `--max-rows` was provided. |
 | `decision-log-prune` | `1` | The DB prune operation failed. |
 | `uninstall` | `1` | No possession factor enrolled, confirmation declined, name mismatch, gate denied, or some items were not removed. |
+| `hook cursor` | `2` | The gated Cursor event was denied. The JSON document says `deny` as well; Cursor treats either signal as a block, so a lost document still blocks. |
 
 Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.
 

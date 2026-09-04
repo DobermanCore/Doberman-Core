@@ -66,7 +66,12 @@ def event_key(payload: dict) -> str | None:
 
 
 def _marker_path(key: str) -> str:
-    return os.path.join(tempfile.gettempdir(), f"doberman-sf-{key}")
+    # The keyed fingerprint carries an ``hmac:`` prefix; a colon in a filename is an
+    # NTFS alternate-data-stream on Windows, where the marker rename then fails and
+    # the peer channel silently re-evaluates (a doubled AUTH prompt). Keep the
+    # filename portable.
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in key)
+    return os.path.join(tempfile.gettempdir(), f"doberman-sf-{safe}")
 
 
 def _content_mac(content: str) -> str | None:

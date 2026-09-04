@@ -38,7 +38,7 @@ AI agent ──▶ Doberman ──▶ real tools (files, shell, MCP servers, API
                  └─ normalize → risk engine → PASS / AUTH / BLOCK
 ```
 
-Works with Claude Code, Codex, OpenClaw, and any MCP-compatible agent. Cursor and other MCP clients connect through the [MCP proxy](#quick-start). It's open source, local first, and holds two guarantees: it fails closed (uncertainty denies) and is raise-only (it can tighten automatically, but never silently loosens).
+Works with Claude Code, Codex, OpenClaw, and any MCP-compatible agent. Cursor is guarded through its native hooks *(experimental)*; other MCP clients connect through the [MCP proxy](#quick-start). It's open source, local first, and holds two guarantees: it fails closed (uncertainty denies) and is raise-only (it can tighten automatically, but never silently loosens).
 
 <div align="center">
 
@@ -118,6 +118,7 @@ After installing, run `doberman --install-completion` to enable shell tab comple
 | **Codex CLI** | Native PreToolUse hook *(experimental)* | `doberman install-hooks --host codex` |
 | **Claude Desktop / Cursor** | MCP proxy: wraps your tool server | `doberman serve -- <your-server>` → [guide](docs/SETUP.md) |
 | **OpenClaw** | Native plugin adapter | [guide](docs/SETUP.md) · [adapter](adapters/openclaw/README.md) |
+| **Cursor** | Native hooks adapter *(experimental)* | [adapter](adapters/cursor/README.md) |
 | **Any MCP-compatible agent** | MCP proxy | [guide](docs/SETUP.md) |
 
 **Fastest path (Claude Code):**

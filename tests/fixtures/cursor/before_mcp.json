@@ -1,0 +1,14 @@
+{
+  "conversation_id": "conv-00000000-0000-0000-0000-000000000001",
+  "generation_id": "gen-00000000-0000-0000-0000-000000000001",
+  "model": "example-model",
+  "hook_event_name": "beforeMCPExecution",
+  "cursor_version": "2.4.0",
+  "workspace_roots": ["/placeholder/project"],
+  "user_email": null,
+  "transcript_path": null,
+  "tool_name": "write_file",
+  "tool_input": "{\"path\": \"notes.txt\", \"content\": \"hello\"}",
+  "mcp_server_name": "filesystem",
+  "command": "npx @modelcontextprotocol/server-filesystem"
+}
