@@ -1428,8 +1428,23 @@ def test_filesystem_resolution_budget_bounds_the_payload_scan(payload):
 
 @pytest.mark.parametrize(
     "target",
-    [".doberman/policies.yaml", "../x/../.doberman/policies.yaml", "./.doberman/policies.yaml"],
-    ids=["relative", "traversal", "dot-relative"],
+    [
+        ".doberman/policies.yaml",
+        "../x/../.doberman/policies.yaml",
+        "./.doberman/policies.yaml",
+        # N10: past the resolve budget only the TEXT can catch these, and the
+        # raw glob does not (trailing dot/space -- Windows drops it on open),
+        # so the lexical form must keep `..` and a leading `/` as navigation.
+        "../elsewhere/.doberman.",
+        "/opt/.claude/settings.json.",
+    ],
+    ids=[
+        "relative",
+        "traversal",
+        "dot-relative",
+        "traversal-trailing-dot",
+        "absolute-trailing-dot",
+    ],
 )
 def test_control_plane_path_behind_filesystem_filler_still_blocks(target):
     # The write is placed mid-payload (not last) so the shell-level whole-token

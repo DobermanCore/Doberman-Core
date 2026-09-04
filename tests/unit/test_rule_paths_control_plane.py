@@ -17,6 +17,8 @@ touching Doberman's own operation.
 
 from datetime import datetime, timezone
 
+import pytest
+
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.rules.paths import DEFAULT_BLOCKED_GLOBS, ProtectedPathRule
 from doberman.models import (
@@ -227,3 +229,16 @@ def test_every_control_plane_glob_contains_a_prefilter_stem():
         if not any(stem in glob.lower() for stem in _CONTROL_PLANE_STEMS)
     ]
     assert uncovered == []
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["../elsewhere/.doberman.", "/opt/.claude/settings.json.", "../../x/.codex/hooks.json."],
+)
+def test_text_only_match_keeps_navigation_components(token):
+    # N10: with resolve=False (a caller past its filesystem budget) the lexical
+    # form must still find a trailing-dot/space control-plane path behind
+    # `..` or a leading `/` -- those components are navigation, not names.
+    from doberman.engine.rules.paths import names_control_plane
+
+    assert names_control_plane(token, resolve=False)

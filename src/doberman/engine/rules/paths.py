@@ -327,7 +327,8 @@ def _is_delete_or_rename(action_type: ActionType, tool_name: str) -> bool:
 #: cost. It is a deliberate NARROWING of what this function caught before:
 #: an on-disk symlink at a relative, traversal-free path that resolves onto
 #: the control plane was found by canonicalize() following it and is not
-#: found now. Accepted alongside the "runtime semantics" gaps in the
+#: found now — nor is one behind an absolute/``..`` token once a caller's
+#: resolve budget is spent (``resolve=False``). Accepted alongside the "runtime semantics" gaps in the
 #: docstring below (a symlink is another form of indirection a command
 #: string doesn't show); the OS file owner/mode and the file-target path rule
 #: remain the backstops.
@@ -362,10 +363,16 @@ def _lexical_relposix(token: str) -> str:
 
     Mirrors canonicalize()'s lexical half only: normpath, then the per-component
     ``rstrip(" .")`` (Windows drops trailing dots/spaces on open); a component
-    that strips to nothing is unmatchable there and here.
+    that strips to nothing is unmatchable there and here. Navigation components
+    (the empty leading part of an absolute path, ``.``, a surviving ``..``) are
+    kept verbatim — N10: stripping them blanked every absolute and traversal
+    token, which left ``../x/.doberman.`` invisible to a text-only caller.
     """
     parts = []
     for part in posixpath.normpath(token).split("/"):
+        if part in ("", ".", ".."):
+            parts.append(part)
+            continue
         stripped = part.rstrip(" .")
         if not stripped:
             return ""
