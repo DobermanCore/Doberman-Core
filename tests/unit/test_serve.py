@@ -10,6 +10,8 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 
+import mcp.client.sse
+import mcp.client.streamable_http
 import pytest
 from mcp import StdioServerParameters
 from typer.testing import CliRunner
@@ -185,3 +187,288 @@ async def test_serve_stdio_sets_repo_root_and_elicitation_first_prompter(monkeyp
     assert ran["session_args"] == ("d_read", "d_write")  # downstream streams wired into the session
     assert ran["initialized"] is True
     assert ran["run"] == ("a_read", "a_write", "init-opts")
+
+
+# --- CLI parsing: --url ------------------------------------------------------------
+
+
+def test_url_calls_serve_http_with_defaults(monkeypatch, _no_logging_mutation):
+    """Bare `--url` fronts the remote server over Streamable HTTP with no extra headers."""
+    seen: dict = {}
+    stdio_called = False
+
+    async def _http_spy(url, *, repo_root, headers, transport):
+        seen.update(url=url, repo_root=repo_root, headers=headers, transport=transport)
+
+    async def _stdio_spy(*_a, **_k):
+        nonlocal stdio_called
+        stdio_called = True
+
+    monkeypatch.setattr(serve_mod, "serve_http", _http_spy)
+    monkeypatch.setattr(serve_mod, "serve_stdio", _stdio_spy)
+
+    result = runner.invoke(cli.app, ["serve", "--url", "https://h.example/mcp"])
+
+    assert result.exit_code == 0, result.output
+    assert not stdio_called
+    assert seen == {
+        "url": "https://h.example/mcp",
+        "repo_root": ".",
+        "headers": None,
+        "transport": "http",
+    }
+
+
+def test_url_with_sse_transport_and_headers(monkeypatch, _no_logging_mutation):
+    seen: dict = {}
+
+    async def _http_spy(url, *, repo_root, headers, transport):
+        seen.update(url=url, repo_root=repo_root, headers=headers, transport=transport)
+
+    monkeypatch.setattr(serve_mod, "serve_http", _http_spy)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "serve",
+            "--url",
+            "https://h.example/mcp",
+            "--transport",
+            "sse",
+            "-H",
+            "Authorization: Bearer x",
+            "-H",
+            "X-A: b",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["transport"] == "sse"
+    assert seen["headers"] == {"Authorization": "Bearer x", "X-A": "b"}
+
+
+def test_url_and_command_together_exit_2(monkeypatch, _no_logging_mutation):
+    called: list[str] = []
+    monkeypatch.setattr(serve_mod, "serve_http", lambda *a, **k: called.append("http"))
+    monkeypatch.setattr(serve_mod, "serve_stdio", lambda *a, **k: called.append("stdio"))
+
+    result = runner.invoke(cli.app, ["serve", "--url", "https://h/mcp", "--", "mytool"])
+
+    assert result.exit_code == 2
+    assert not called
+
+
+def test_bad_url_scheme_exits_2(monkeypatch, _no_logging_mutation):
+    called: list[str] = []
+    monkeypatch.setattr(serve_mod, "serve_http", lambda *a, **k: called.append("http"))
+
+    result = runner.invoke(cli.app, ["serve", "--url", "ftp://h/mcp"])
+
+    assert result.exit_code == 2
+    assert not called
+
+
+def test_bad_transport_exits_2(monkeypatch, _no_logging_mutation):
+    called: list[str] = []
+    monkeypatch.setattr(serve_mod, "serve_http", lambda *a, **k: called.append("http"))
+
+    result = runner.invoke(cli.app, ["serve", "--url", "https://h/mcp", "--transport", "bogus"])
+
+    assert result.exit_code == 2
+    assert not called
+
+
+def test_transport_without_url_exits_2(monkeypatch, _no_logging_mutation):
+    """`--transport` only means anything alongside `--url`."""
+    called: list[str] = []
+    monkeypatch.setattr(serve_mod, "serve_stdio", lambda *a, **k: called.append("stdio"))
+
+    result = runner.invoke(cli.app, ["serve", "--transport", "sse", "--", "mytool"])
+
+    assert result.exit_code == 2
+    assert not called
+
+
+def test_header_without_url_exits_2(monkeypatch, _no_logging_mutation):
+    called: list[str] = []
+    monkeypatch.setattr(serve_mod, "serve_stdio", lambda *a, **k: called.append("stdio"))
+
+    result = runner.invoke(cli.app, ["serve", "-H", "Authorization: Bearer x", "--", "mytool"])
+
+    assert result.exit_code == 2
+    assert not called
+
+
+def test_malformed_header_exits_2(monkeypatch, _no_logging_mutation):
+    called: list[str] = []
+    monkeypatch.setattr(serve_mod, "serve_http", lambda *a, **k: called.append("http"))
+
+    result = runner.invoke(cli.app, ["serve", "--url", "https://h/mcp", "-H", "NoColonHere"])
+
+    assert result.exit_code == 2
+    assert not called
+
+
+def test_url_failure_reports_cleanly(monkeypatch, _no_logging_mutation):
+    """A failure to connect/serve the remote server becomes a clean stderr error + exit 1."""
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("downstream boom")
+
+    monkeypatch.setattr(serve_mod, "serve_http", _boom)
+
+    result = runner.invoke(cli.app, ["serve", "--url", "https://h/mcp"])
+
+    assert result.exit_code == 1
+    assert "doberman serve failed" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_url_failure_never_prints_the_query_or_header_values(monkeypatch, _no_logging_mutation):
+    # A transport error quoting the request URL and a header must not leak either.
+    async def _boom(*_a, **_k):
+        raise RuntimeError(
+            "connect failed: https://mcp.example.com/mcp?token=SECRETQUERY "
+            "(authorization: Bearer SECRETHEADER)"
+        )
+
+    monkeypatch.setattr(serve_mod, "serve_http", _boom)
+    result = runner.invoke(
+        cli.app,
+        [
+            "serve",
+            "--url",
+            "https://mcp.example.com/mcp?token=SECRETQUERY",
+            "-H",
+            "Authorization: Bearer SECRETHEADER",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "SECRETQUERY" not in result.output
+    assert "SECRETHEADER" not in result.output
+    assert "https://mcp.example.com/mcp" in result.output
+    assert "RuntimeError" in result.output
+
+
+# --- serve_http wiring -------------------------------------------------------------
+
+
+async def test_serve_http_wires_streamable_http_client(monkeypatch):
+    """`transport="http"` opens `streamablehttp_client` with the url + headers and wires the
+    same repo-root / prompter-chain / stdio-to-the-agent behaviour as `serve_stdio`."""
+    ran: dict = {}
+
+    @asynccontextmanager
+    async def _fake_streamablehttp_client(url, headers=None):
+        ran["opened_with"] = (url, headers)
+        yield ("d_read", "d_write", lambda: "session-id")  # 3-tuple, per the real client
+
+    class _FakeSession:
+        def __init__(self, read, write):
+            ran["session_args"] = (read, write)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def initialize(self):
+            ran["initialized"] = True
+
+    @asynccontextmanager
+    async def _fake_stdio_server():
+        yield ("a_read", "a_write")
+
+    class _FakeProxy:
+        def create_initialization_options(self):
+            return "init-opts"
+
+        async def run(self, read, write, opts):
+            ran["run"] = (read, write, opts)
+
+    monkeypatch.setattr(
+        mcp.client.streamable_http, "streamablehttp_client", _fake_streamablehttp_client
+    )
+    monkeypatch.setattr(serve_mod, "ClientSession", _FakeSession)
+    monkeypatch.setattr(serve_mod, "stdio_server", _fake_stdio_server)
+    monkeypatch.setattr(serve_mod, "build_proxy_server", lambda _session: _FakeProxy())
+
+    await serve_mod.serve_http(
+        "https://h.example/mcp?token=x",
+        repo_root="/some/repo",
+        headers={"Authorization": "Bearer y"},
+        transport="http",
+    )
+
+    assert ran["opened_with"] == (
+        "https://h.example/mcp?token=x",
+        {"Authorization": "Bearer y"},
+    )
+    assert executor.REPO_ROOT == "/some/repo"
+    assert isinstance(executor.AUTH_PROMPTER, FallbackPrompter)
+    assert [type(p) for p in executor.AUTH_PROMPTER.prompters] == [
+        DashboardPrompter,
+        ElicitationPrompter,
+        GuiPrompter,
+        TtyPrompter,
+    ]
+    assert ran["session_args"] == ("d_read", "d_write")
+    assert ran["initialized"] is True
+    assert ran["run"] == ("a_read", "a_write", "init-opts")
+
+
+async def test_serve_http_wires_sse_client(monkeypatch):
+    """`transport="sse"` opens the legacy `sse_client` (a 2-tuple) instead."""
+    ran: dict = {}
+
+    @asynccontextmanager
+    async def _fake_sse_client(url, headers=None):
+        ran["opened_with"] = (url, headers)
+        yield ("d_read", "d_write")  # 2-tuple, per the real client
+
+    class _FakeSession:
+        def __init__(self, read, write):
+            ran["session_args"] = (read, write)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def initialize(self):
+            ran["initialized"] = True
+
+    @asynccontextmanager
+    async def _fake_stdio_server():
+        yield ("a_read", "a_write")
+
+    class _FakeProxy:
+        def create_initialization_options(self):
+            return "init-opts"
+
+        async def run(self, read, write, opts):
+            ran["run"] = (read, write, opts)
+
+    monkeypatch.setattr(mcp.client.sse, "sse_client", _fake_sse_client)
+    monkeypatch.setattr(serve_mod, "ClientSession", _FakeSession)
+    monkeypatch.setattr(serve_mod, "stdio_server", _fake_stdio_server)
+    monkeypatch.setattr(serve_mod, "build_proxy_server", lambda _session: _FakeProxy())
+
+    await serve_mod.serve_http(
+        "https://h.example/mcp", repo_root="/some/repo", headers=None, transport="sse"
+    )
+
+    assert ran["opened_with"] == ("https://h.example/mcp", None)
+    assert ran["run"] == ("a_read", "a_write", "init-opts")
+
+
+async def test_serve_http_rejects_unknown_transport():
+    with pytest.raises(ValueError, match="unknown transport"):
+        await serve_mod.serve_http("https://h/mcp", transport="bogus")
+
+
+def test_redacted_url_drops_query():
+    assert serve_mod._redacted("https://h/mcp?token=abc#f") == "https://h/mcp"

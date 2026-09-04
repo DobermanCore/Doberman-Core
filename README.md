@@ -169,7 +169,8 @@ stays empty. That last assertion is the chokepoint property the whole project ha
 > The rest of the integration suite deliberately uses an in-process fake downstream
 > ([`tests/fixtures/fake_tool_server.py`](tests/fixtures/fake_tool_server.py)) that records every call
 > it executes, so the tests can prove a blocked action reached nothing. It's a test fixture, not the
-> runtime. `doberman serve` always spawns and talks to the real server you give it after `--`.
+> runtime. `doberman serve` always talks to the real server: the one it spawns from the command after
+> `--`, or the remote one you point it at with `--url`.
 
 Doberman's proxy speaks MCP as pinned in `pyproject.toml` (`mcp>=1.27,<2`). Its cross-call protections
 (taint ledger, read-vs-send fingerprints, decision log) key off repo-local identity, never the
