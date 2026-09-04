@@ -2121,6 +2121,29 @@ def _finalize_dialog(root: Any) -> None:
     root.destroy()
 
 
+def _run_then_collect(run: Any) -> Any:
+    """Call ``run()`` and ``gc.collect()`` on THIS thread afterwards.
+
+    A propagating exception has its traceback dropped first: the traceback pins
+    every frame below it (and the Tk widgets those frames hold), so without
+    this the collection could not free the dialog's reference cycle here and
+    Python would finalize it later on whichever thread allocates next -- the
+    main thread at interpreter exit, which aborts the process
+    (``Tcl_AsyncDelete``) and corrupts the hook's exit code. The exception
+    itself still propagates unchanged; only its traceback is lost.
+    """
+    try:
+        return run()
+    except BaseException as exc:
+        logger.debug(
+            "auth dialog raised %s (traceback dropped before Tk cleanup)", type(exc).__name__
+        )
+        exc.__traceback__ = None
+        raise
+    finally:
+        gc.collect()
+
+
 def _show_outcome_window(
     text: str, outcome: str = "denied", *, max_wait_ms: int | None = None
 ) -> None:
@@ -2198,10 +2221,7 @@ def _show_outcome_window(
         finally:
             _finalize_dialog(root)
 
-    try:
-        _run()
-    finally:
-        gc.collect()
+    _run_then_collect(_run)
 
 
 def _run_dialog(
@@ -2260,10 +2280,7 @@ def _run_dialog(
         finally:
             _finalize_dialog(root)
 
-    try:
-        return _run()
-    finally:
-        gc.collect()
+    return _run_then_collect(_run)
 
 
 def _confirm_dialog(

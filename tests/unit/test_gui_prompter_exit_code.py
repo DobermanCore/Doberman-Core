@@ -69,7 +69,44 @@ _SUBPROCESS_CODE = textwrap.dedent(
 )
 
 
-def test_a_worker_thread_dialog_leaves_the_hooks_exit_code_intact():
+# The exception path: ``populate`` builds real widgets and then raises. The
+# worker stores the exception (traceback and all) and re-raises it on the main
+# thread, where the caller fails closed. Without the traceback being dropped
+# before the worker-thread collection, those traceback frames carry the Tk
+# widgets across to the main thread and the abort comes back.
+_SUBPROCESS_CODE_RAISING = textwrap.dedent(
+    """
+    import sys
+
+    from doberman.auth import challenge, gui_prompter
+
+
+    def _populate(root, answer, timeout_s):
+        gui_prompter._populate_confirm(root, "regression test dialog", answer, timeout_s)
+        raise RuntimeError("populate failed after building widgets")
+
+
+    def _run_challenge():
+        return gui_prompter._run_dialog(
+            _populate, want_code=False, timeout_s=5.0, action_id="test-exit-code"
+        )
+
+
+    try:
+        challenge._run_with_deadline(
+            _run_challenge, timeout_s=10.0, on_timeout=lambda: None, label="test-exit-code"
+        )
+    except RuntimeError:
+        pass  # the caller fails closed; the process must still exit with ITS code
+    sys.exit(2)
+    """
+)
+
+
+@pytest.mark.parametrize(
+    "code", [_SUBPROCESS_CODE, _SUBPROCESS_CODE_RAISING], ids=["decided", "populate-raises"]
+)
+def test_a_worker_thread_dialog_leaves_the_hooks_exit_code_intact(code):
     try:
         probe = gui_prompter._open_root()
     except gui_prompter.PrompterUnavailableError:
@@ -78,7 +115,7 @@ def test_a_worker_thread_dialog_leaves_the_hooks_exit_code_intact():
     gc.collect()
 
     proc = subprocess.run(  # noqa: S603 - fixed args, no shell, this is the test
-        [sys.executable, "-c", _SUBPROCESS_CODE],
+        [sys.executable, "-c", code],
         capture_output=True,
         timeout=60,
     )
