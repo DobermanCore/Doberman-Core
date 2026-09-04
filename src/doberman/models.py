@@ -599,6 +599,87 @@ class CostEvent(BaseModel):
     entity_id: str | None = None
 
 
+# --- Feature FM — ambient activity bus (FM.1) models -------------------------
+
+
+class ActivityEvent(BaseModel):
+    """One ambient observation emitted by a collector, persisted to the local bus.
+
+    This is the data plane for the ambient monitor — a background channel that
+    other agent surfaces (UI, dashboards, SIEM sinks) can read without ever
+    touching the decision path.  The bus is **purely observational**: nothing on
+    it can suppress, lower, or alter an inline PASS / AUTH / BLOCK decision, and
+    there is no code path from it into ``combine()``.
+
+    **Redaction by projection** — stores the same redacted fields that
+    ``storage.log.build_record`` writes to the decision log, never a full
+    :class:`SecurityObject`.  A collector that skips ``normalize()`` cannot
+    write a raw path or command into the bus because no field accepts one:
+
+    * ``action_id`` is an opaque correlation id (UUID-like), not a command.
+    * ``agent_role`` is a coarse role label, not a credential.
+    * ``action_type`` is the :class:`ActionType` enum *value* as a plain string.
+    * ``target_path_class`` is ``dir/*.ext`` (redacted path class, as produced
+      by ``storage.log.path_class``), never a raw filename or absolute path.
+    * ``collector_id`` is a short human-readable tag, never a raw path or secret.
+    * ``entity_fingerprint`` and ``session_fingerprint`` must start with
+      ``"hmac:"`` — validated at construction time — so raw role or session
+      names are always rejected.
+    * ``ts`` is an ISO-8601 timestamp with timezone, never free-form text.
+
+    ``extra="forbid"`` ensures an unknown field (e.g. a ``raw_command`` kwarg
+    from a future collector) is rejected at construction time, not silently stored.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Opaque correlation id matching the action's ``SecurityObject.id``
+    #: (typically a UUID).  Not a command, path, or secret.
+    action_id: str = Field(min_length=1)
+
+    #: ISO-8601 timestamp (tz-aware) of when the action was observed.
+    ts: AwareDatetime
+
+    #: Coarse role label (e.g. ``"backend"``).  Matches ``agent_role`` in the
+    #: decision log so consumers can correlate without re-normalizing.
+    agent_role: str = Field(min_length=1)
+
+    #: :class:`ActionType` enum value as a plain string.  Stored as a string
+    #: (not an enum) so an unknown future value does not break an older reader.
+    action_type: str = Field(min_length=1)
+
+    #: Redacted path class from ``storage.log.path_class``:
+    #: ``"backend/auth/*.ts"``, ``".env"``, or ``None`` for non-file actions.
+    #: Never a raw filename or absolute path.
+    target_path_class: str | None = None
+
+    #: Short stable identifier for the collector that produced this event
+    #: (e.g. ``"builtin.tool_scan"``).  Never a raw credential or path.
+    collector_id: str = Field(min_length=1)
+
+    #: Keyed HMAC fingerprint of the (agent + workspace) entity.  Must start
+    #: with ``"hmac:"`` — validated at construction time.
+    entity_fingerprint: str = Field(min_length=1)
+
+    #: Keyed HMAC fingerprint of the current agent session.  Must start with
+    #: ``"hmac:"`` — validated at construction time.
+    session_fingerprint: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _fingerprints_must_start_with_hmac(self) -> "ActivityEvent":
+        """Enforce the hmac: prefix so raw role/session names are always rejected."""
+        for field_name, value in (
+            ("entity_fingerprint", self.entity_fingerprint),
+            ("session_fingerprint", self.session_fingerprint),
+        ):
+            if not value.startswith("hmac:"):
+                raise ValueError(
+                    f"{field_name!r} must start with 'hmac:' (got {value!r}); "
+                    "store the keyed HMAC fingerprint, never the raw name"
+                )
+        return self
+
+
 # --- Feature 11 — turn gate (pre-inference) models -------------------------
 
 

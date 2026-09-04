@@ -65,7 +65,11 @@ DB_FILE = "doberman.db"
 #: Version 14 adds the untrusted-value echo tripwire's fingerprint store (C1:
 #: session_untrusted_value_fingerprints -- additive CREATE TABLE; keyed HMAC
 #: fingerprints of hostnames/URLs/emails only, never the raw value).
-SCHEMA_VERSION = 14
+#: Version 15 adds the ambient activity bus (FM.1): ``activity_events`` (the bus
+#: log, append-only, bounded by retention purge) and ``monitor_state`` (a per-reader
+#: cursor so each consumer can resume without replaying). Both are additive
+#: CREATE TABLE IF NOT EXISTS — no legacy migration needed.
+SCHEMA_VERSION = 15
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -312,6 +316,38 @@ CREATE TABLE IF NOT EXISTS approval_memory (
     method       TEXT,
     approved_at  TEXT,
     expires_at   TEXT
+);
+
+-- Ambient activity bus (FM.1): append-only log of one ActivityEvent per row.
+-- Stores the same redacted projection as storage.log.build_record so no raw
+-- path, command, or secret can enter the bus even from a collector that skips
+-- normalize().  ``entity_fingerprint`` and ``session_fingerprint`` are
+-- ``"hmac:<hex>"`` strings (validated at write time by the model).
+-- ``purge_activity_events`` respects the lowest monitor_state cursor so a slow
+-- reader never loses rows it has not yet consumed.
+CREATE TABLE IF NOT EXISTS activity_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                  TEXT NOT NULL,
+    action_id           TEXT NOT NULL,
+    agent_role          TEXT NOT NULL,
+    action_type         TEXT NOT NULL,
+    target_path_class   TEXT,
+    collector_id        TEXT NOT NULL,
+    entity_fingerprint  TEXT NOT NULL,
+    session_fingerprint TEXT NOT NULL,
+    payload_json        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activity_events ON activity_events (entity_fingerprint, id);
+
+-- Cursor store for the ambient activity bus (FM.1): each named reader (e.g. the
+-- dashboard, a SIEM bridge) records the highest ``activity_events.id`` it has
+-- already consumed so it can resume after a restart without replaying or losing
+-- events.  ``reader_id`` is a short human-readable tag chosen by the caller
+-- (e.g. ``"dashboard"``, ``"siem_bridge"``).
+CREATE TABLE IF NOT EXISTS monitor_state (
+    reader_id   TEXT PRIMARY KEY,
+    last_id     INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL
 );
 """
 

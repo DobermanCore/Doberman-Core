@@ -181,3 +181,13 @@ name = "Objective-rules hot path must not depend on the subjective ML import cha
 type = "forbidden"
 source_modules = ["doberman.engine.rules", "doberman.engine.trifecta", "doberman.engine.objective"]
 forbidden_modules = ["doberman.engine.subjective", "doberman.engine.detectors", "numpy", "scipy", "river"]
+
+# FM.1 — the ambient monitor is an adapter surface, not part of the policy core.
+# The policy core (engine, roles, policy, storage, auth, subjective, egress) must
+# not import doberman.monitor, keeping the bus off the decision path at the
+# import level as well as at the runtime level.
+[[tool.importlinter.contracts]]
+name = "Policy core must not depend on the ambient monitor"
+type = "forbidden"
+source_modules = ["doberman.engine", "doberman.roles", "doberman.policy", "doberman.storage", "doberman.auth", "doberman.subjective", "doberman.egress"]
+forbidden_modules = ["doberman.monitor"]
