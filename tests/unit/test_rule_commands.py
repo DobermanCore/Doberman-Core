@@ -7,6 +7,7 @@ PASS; adversarial parsing (``;`` ``&&`` ``|`` ``$()`` backticks, env prefixes,
 ``sudo``); unparseable → AUTH; explanation never echoes the command.
 """
 
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -364,6 +365,16 @@ def test_fork_bomb_still_blocked_after_paren_split(command):
     result = _cmd(command)
     assert result.verdict is Verdict.BLOCK
     assert ReasonCode.destructive_command in result.reason_codes
+
+
+def test_quoted_fork_bomb_looking_substring_stays_pass():
+    # M1: the raw-command pre-check used a bare `":(){" in command.replace(" ", "")`
+    # substring test, which fires on ANY occurrence of that 4-char shape even
+    # inside an unrelated quoted string — not just the fork-bomb's own head.
+    # _FORK_BOMB_RE (which also requires the trailing `|:`-style body) is the
+    # only check that should gate the raw-command BLOCK.
+    result = _cmd('echo "a: () {b}"')
+    assert result.verdict is Verdict.PASS
 
 
 def test_substitution_argument_keeps_its_verdict():
@@ -1033,6 +1044,17 @@ def test_git_config_unrelated_key_is_not_a_bypass():
         "xargs sudo kill -9",
         "pgrep node | xargs -r kill -9",
         "pgrep node | xargs -n1 -P4 kill -9",
+        # I1: `_strip_substitutions` replaces `$(...)`/backticks with a space
+        # before tokenization, so these reach `_kill_is_benign` as `["kill"]`
+        # — args == [] — and used to take the bare-`kill` usage-error carve-
+        # out. A stripped substitution must never look like "no operands".
+        "kill $(pgrep sshd)",
+        "kill `pgrep sshd`",
+        "kill $(cat /var/run/x.pid)",
+        "sudo kill $(pgrep sshd)",
+        # A stripped `$(…)` operand must never look like "no operands" — bare
+        # `kill` (a real shell usage error nobody types) is AUTH too now.
+        "kill",
     ],
 )
 def test_process_kill_requires_auth(command):
@@ -1053,7 +1075,6 @@ def test_process_kill_requires_auth(command):
         "kill -9 $!",
         'kill "$!"',
         "kill $$",
-        "kill",
         "pkill --help",
         "ls | grep kill",
         'echo "kill -9 1"',
@@ -1252,15 +1273,89 @@ def test_interpreter_spawn_literals_join_groups():
     candidate — including a nested group's literals bubbling up into its
     enclosing group's candidate (T3-fix: the old join covered `[...]` list
     literals only, missing Node's two-arg `execFile(cmd, [args])` shape and
-    Python tuple argv)."""
+    Python tuple argv). I5: `cwd=('c')` is a keyword-argument value, exactly
+    like `cwd='/'` — its literal ('c') is still its own candidate, but no
+    longer bubbles into the outer `subprocess.run(...)` call's group (it
+    used to join as "a b c", manufacturing a synthetic joined argv out of an
+    unrelated kwarg; see test_keyword_argument_literal_does_not_join_open_group)."""
     command = "python -c \"import subprocess; subprocess.run(['a', 'b'], cwd=('c'))\""
     tokens = commands_module._argv(command)
-    literals = commands_module._interpreter_spawn_literals(tokens)
-    assert literals is not None
+    result = commands_module._interpreter_spawn_literals(tokens)
+    assert result is not None
+    literals, truncated = result
+    assert truncated is False
     assert "a b" in literals
-    assert "a b c" in literals
+    assert "a b c" not in literals
     assert "c" in literals
     assert all(literal for literal in literals)
+
+
+# --- I5: a keyword-argument literal never joins an unrelated open group -----
+# The T3-fix outer-parens join bubbled EVERY quoted literal into every
+# currently-open group, including a `cwd='/'` keyword-argument value that is
+# never part of the argv — manufacturing a synthetic `rm -rf /` out of
+# `rm -rf <var>` plus an unrelated `cwd` kwarg. A `=`-preceded (whitespace
+# skipped) literal is now its own candidate but never appended to a group. A
+# BLOCK is unappealable, so a false BLOCK here is strictly worse than the
+# AUTH floor `saw_interpreter_spawn` already guarantees for any spawn call.
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"import subprocess; subprocess.run(['rm','-rf',target], cwd='/')\"",
+        "python -c \"import subprocess, os; subprocess.run(['rm','-rf',d], "
+        "cwd=os.path.expanduser('~'))\"",
+        "python -c \"import subprocess; subprocess.run(['git','push'], "
+        "cwd='--force origin main')\"",
+    ],
+)
+def test_keyword_argument_literal_does_not_join_open_group(command):
+    result = _cmd(command)
+    assert result.verdict is not Verdict.BLOCK
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
+
+
+def test_keyword_argument_literal_fix_does_not_weaken_real_join():
+    # The legitimate case I5 must not regress: no literal here is
+    # `=`-preceded, so the join still manufactures "rm -rf /" and BLOCKs.
+    result = _cmd("node -e \"require('child_process').execFile('rm', ['-rf', '/'])\"")
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+# --- I6 + M4: bound the WORK of _spawn_literal_candidates, not just its -----
+# output. The `for group in stack: group.append(literal)` join runs once per
+# open group per literal — with no depth cap, `("x"(` repeated thousands of
+# times drove `stack` thousands deep, making that inner loop quadratic in
+# payload size (measured: 0.9s for a 20KB payload, 4x per doubling). The
+# module's own posture is explicitly bounded ("Exhaustion is ambiguity,
+# never silent success"); this rule runs synchronously on every shell action.
+def test_spawn_literal_candidates_adversarial_payload_is_bounded():
+    payload = "subprocess.run" + '("x"(' * 4000
+    command = f'python -c "{payload}"'
+    start = time.perf_counter()
+    result = _cmd(command)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"took {elapsed:.3f}s — the spawn-literal scan is not work-bounded"
+    assert result.verdict is Verdict.AUTH
+
+
+# I6 (discovered during the timing fix): _interpreter_payload_verdict's own
+# control-plane scan re.split()s the WHOLE payload into candidates and
+# canonicalize()s (filesystem resolve) every one of them — independent of,
+# and just as unbounded as, _spawn_literal_candidates. A fragmented payload
+# with no subprocess/exec/socket/kill/privilege-change call at all (so no
+# other check would ever raise a verdict) must still fail toward AUTH, never
+# a silent PASS, once the candidate count is too large to fully vet.
+def test_fragmented_interpreter_payload_without_spawn_still_authenticates():
+    payload = "print(1)" + ",x" * 4000
+    command = f'python -c "{payload}"'
+    start = time.perf_counter()
+    result = _cmd(command)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"took {elapsed:.3f}s — the control-plane scan is not work-bounded"
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
 
 
 @pytest.mark.parametrize(
@@ -1353,12 +1448,46 @@ def test_interpreter_spawn_explanation_is_redacted():
         "su - root -c 'rm -rf /'",
         "su root --command='rm -rf /'",
         "sudo -n bash -c 'rm -rf /'",
+        # I2: `runuser -c`/`--command`/`--command=` is `su -c` with a
+        # different name — a root shell running an arbitrary payload — not a
+        # transparent wrapper whose options get consumed and dropped.
+        "runuser -c 'rm -rf /'",
+        "runuser -u root -c 'rm -rf /'",
+        "runuser --command='rm -rf /'",
+        "sudo -u root runuser -c 'rm -rf /'",
     ],
 )
 def test_wrapper_options_are_seen_through_to_block(command):
     result = _cmd(command)
     assert result.verdict is Verdict.BLOCK
     assert ReasonCode.destructive_command in result.reason_codes
+
+
+# --- I4 + M5: the opaque-shell/env-dump checks match by basename, not the ---
+# raw token. `_opaque_shell_payload`/`_is_environment_dump_segment` used to
+# key off `tokens[0].lower()` directly, so a path-qualified `/bin/su`,
+# `/usr/bin/sh`, or `/usr/bin/env` defeated code this branch itself added
+# (`su -c`) or intends to catch (`env`) — `_wrapper_name` (added in the same
+# commit, already used for wrapper recognition) fixes both at once.
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/bin/su -c 'rm -rf /'",
+        "/usr/bin/su -c 'rm -rf /'",
+        "/bin/sh -c 'rm -rf /'",
+        "/bin/bash -c 'rm -rf /'",
+    ],
+)
+def test_path_qualified_opaque_shell_never_passes(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+def test_path_qualified_env_reaches_environment_dump_auth():
+    result = _cmd("/usr/bin/env")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.environment_dump_command in result.reason_codes
 
 
 @pytest.mark.parametrize(
@@ -1373,6 +1502,7 @@ def test_wrapper_options_are_seen_through_to_block(command):
         ("sudo -u www-data env", ReasonCode.environment_dump_command),
         ("sudo -n printenv", ReasonCode.environment_dump_command),
         ("su -c 'ls -la'", ReasonCode.opaque_command),
+        ("runuser -c 'ls -la'", ReasonCode.opaque_command),
     ],
 )
 def test_wrapper_options_are_seen_through_to_auth(command, reason):
@@ -1401,6 +1531,49 @@ def test_wrapper_options_are_seen_through_to_auth(command, reason):
 )
 def test_wrapper_benign_forms_stay_pass(command):
     assert _cmd(command).verdict is Verdict.PASS
+
+
+# --- I2 root-cause: a value-option consumption that empties the segment -----
+# entirely fails upward instead of being read as "no command" -> benign. A
+# BARE-flag emptying (`sudo -l`, `sudo -h`, pinned above in
+# test_wrapper_benign_forms_stay_pass) must stay PASS — only a value option
+# (one that ate a SEPARATE token as its value) earns the AUTH.
+@pytest.mark.parametrize("command", ["sudo -u root", "nice -n 10"])
+def test_wrapper_value_option_emptying_segment_is_auth(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
+
+
+@pytest.mark.parametrize("command", ["sudo -l", "sudo -h", "sudo -n", "sudo --user=root"])
+def test_wrapper_bare_flag_emptying_segment_stays_pass(command):
+    assert _cmd(command).verdict is Verdict.PASS
+
+
+# --- I3: env's attached/`=` `-S`/`--split-string` spellings splice too ------
+# `env -S <value>` (bare, space-separated) already routed into the splice
+# branch; the attached (`env -S'...'`) and `=`-joined (`env --split-string=
+# '...'`) spellings of the SAME option fell through to the generic "value
+# written attached is self-contained, drop it as a bare flag" rule — which is
+# true for `-u`/`--user` but false for `-S`, whose value IS the command to
+# run. coreutils accepts all three forms.
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env -S'rm -rf /'",
+        "env --split-string='rm -rf /'",
+    ],
+)
+def test_env_split_string_attached_forms_still_walked(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+def test_env_split_string_attached_unparseable_value_fails_upward():
+    result = _cmd("env --split-string='unbalanced\" rm -rf /")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.opaque_command in result.reason_codes
 
 
 # --- T6: nested `$(...)` regions track their own quotes -----------------

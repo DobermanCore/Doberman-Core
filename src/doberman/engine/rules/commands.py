@@ -185,9 +185,10 @@ _WRAPPER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
         }
     ),
     "doas": frozenset({"-u", "-C"}),
-    "runuser": frozenset(
-        {"-u", "-g", "-G", "-c", "--user", "--group", "--supp-group", "--command"}
-    ),
+    # I2: `-c`/`--command` are deliberately absent — runuser's own payload
+    # option is opaque like `su -c`, never a transparent value option (see
+    # `_WRAPPER_OPAQUE_OPTIONS`/`_wrapper_opaque_option_ahead` below).
+    "runuser": frozenset({"-u", "-g", "-G", "--user", "--group", "--supp-group"}),
     "env": frozenset({"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}),
     "nice": frozenset({"-n", "--adjustment"}),
     "ionice": frozenset(
@@ -207,6 +208,15 @@ _TRANSPARENT_WRAPPERS = frozenset(_WRAPPER_VALUE_OPTIONS)
 #: Wrappers that take a fixed number of positional arguments BEFORE the
 #: wrapped command (``timeout DURATION cmd``, ``chroot NEWROOT cmd``).
 _WRAPPER_POSITIONALS = {"timeout": 1, "chroot": 1}
+
+#: I2 — a wrapper key here is otherwise transparent (its OTHER options are in
+#: `_WRAPPER_VALUE_OPTIONS`), but one of these markers turns the whole
+#: invocation opaque, exactly like ``su -c``: ``runuser -c``/``--command`` is
+#: a root shell running an arbitrary payload, not a value option whose arity
+#: is "one following token". See ``_wrapper_opaque_option_ahead``.
+_WRAPPER_OPAQUE_OPTIONS: dict[str, frozenset[str]] = {
+    "runuser": frozenset({"-c", "--command"}),
+}
 
 # `env`'s own no-op flags (no operand) and its unset flags (take one operand),
 # recognised so `env -i -0 -u FOO` with no trailing command still resolves to
@@ -641,7 +651,38 @@ def _wrapper_name(token: str) -> str:
     return name.removesuffix(".exe")
 
 
-def _argv_from_tokens(tokens: list[str], *, keep: frozenset[str] = frozenset()) -> list[str]:
+def _wrapper_opaque_option_ahead(tokens: list[str], name: str) -> bool:
+    """True when scanning ``name``'s own option run (the same run
+    :func:`_argv_from_tokens` is about to strip) reaches one of its opaque-
+    payload markers (bare or ``=``-attached — see ``_WRAPPER_OPAQUE_OPTIONS``)
+    before the wrapped command starts. I2: ``runuser -c``/``--command`` must
+    stay visible whole for :func:`_opaque_shell_payload` to inspect, exactly
+    the way ``su -c`` does (``su`` is simply never a recognized wrapper at
+    all) — so :func:`_argv_from_tokens` breaks BEFORE popping anything for
+    this wrapper rather than dropping ``-c`` as a bare unknown-arity flag and
+    losing the payload."""
+    markers = _WRAPPER_OPAQUE_OPTIONS.get(name)
+    if not markers:
+        return False
+    value_opts = _WRAPPER_VALUE_OPTIONS.get(name, frozenset())
+    i = 1
+    while i < len(tokens) and tokens[i].startswith("-"):
+        opt = tokens[i]
+        if opt == "--":  # noqa: S105 — option-parsing terminator, not a secret
+            return False
+        if opt in markers or any(opt.startswith(f"{marker}=") for marker in markers):
+            return True
+        i += 2 if opt in value_opts else 1
+    return False
+
+
+def _argv_from_tokens(
+    tokens: list[str],
+    *,
+    keep: frozenset[str] = frozenset(),
+    consumed_value_option: list[bool] | None = None,
+    consumed_any_option: list[bool] | None = None,
+) -> list[str]:
     """Strip prefixes (env assignments + transparent-wrapper name/options) from
     an already-parsed segment for command classification.
 
@@ -651,14 +692,22 @@ def _argv_from_tokens(tokens: list[str], *, keep: frozenset[str] = frozenset()) 
     following ``-``/``--``-prefixed token — a bare spelling in
     ``_WRAPPER_VALUE_OPTIONS[name]`` also pops its value token (``env -S``'s
     value is a command string: ``shlex.split`` it and splice the tokens back
-    at the front; on ``ValueError`` leave the ``-S``/value tokens untouched —
-    the caller then fails upward as today), everything else is a bare flag
-    with unknown arity, dropped but not otherwise consumed. A bare ``--``
-    itself is popped and ends option parsing. Then pop the wrapper's fixed
-    positionals (``_WRAPPER_POSITIONALS``). Repeats, so wrapper chains
-    (``sudo -n nice -n 5 rm -rf /``) unwind. ``keep`` names a wrapper whose
-    own token must NOT be stripped (``_is_environment_dump_segment`` keeps
-    ``env`` so it can still see it after unwrapping everything ahead of it).
+    at the front; a ``-S<value>``/``--split-string=<value>`` attached form
+    (I3) is spliced the same way; on ``ValueError`` leave the option/value
+    tokens untouched — the caller then fails upward as today), everything
+    else is a bare flag with unknown arity, dropped but not otherwise
+    consumed. A bare ``--`` itself is popped and ends option parsing. Then
+    pop the wrapper's fixed positionals (``_WRAPPER_POSITIONALS``). Repeats,
+    so wrapper chains (``sudo -n nice -n 5 rm -rf /``) unwind. ``keep`` names
+    a wrapper whose own token must NOT be stripped (``_is_environment_dump_
+    segment`` keeps ``env`` so it can still see it after unwrapping
+    everything ahead of it). I2: a wrapper carrying one of its own
+    ``_WRAPPER_OPAQUE_OPTIONS`` markers ahead is never stripped at all — see
+    ``_wrapper_opaque_option_ahead``. ``consumed_value_option`` (I2) records
+    whether a bare value-option pop happened (never a bare-flag drop —
+    ``sudo -l``/``-h`` must not trip it); ``consumed_any_option`` (C1)
+    records whether ANY wrapper option — value or bare-flag — was consumed,
+    beyond the bare wrapper name/env-assignment prefixes.
     """
     tokens = list(tokens)
     while tokens:
@@ -669,11 +718,15 @@ def _argv_from_tokens(tokens: list[str], *, keep: frozenset[str] = frozenset()) 
         name = _wrapper_name(tokens[0])
         if name not in _WRAPPER_VALUE_OPTIONS or name in keep:
             break
+        if _wrapper_opaque_option_ahead(tokens, name):
+            break
         value_opts = _WRAPPER_VALUE_OPTIONS[name]
         tokens.pop(0)  # the wrapper name itself
         while tokens and tokens[0].startswith("-"):
             opt = tokens[0]
             if opt == "--":  # noqa: S105 — option-parsing terminator, not a secret
+                if consumed_any_option is not None:
+                    consumed_any_option.append(True)
                 tokens.pop(0)
                 break
             if opt in value_opts:
@@ -685,12 +738,36 @@ def _argv_from_tokens(tokens: list[str], *, keep: frozenset[str] = frozenset()) 
                         spliced = shlex.split(tokens[1], posix=True)
                     except ValueError:
                         break  # unparseable value: leave -S + its value untouched
+                    if consumed_any_option is not None:
+                        consumed_any_option.append(True)
                     tokens = spliced + tokens[2:]
                     continue
+                if consumed_value_option is not None:
+                    consumed_value_option.append(True)
+                if consumed_any_option is not None:
+                    consumed_any_option.append(True)
                 tokens.pop(0)
                 if tokens:
                     tokens.pop(0)
                 continue
+            # I3: env's `-S`/`--split-string` value IS a command line, unlike
+            # every other option here — its attached forms must splice the
+            # same way the bare-space form above does, not fall through to
+            # the generic bare-flag drop and vanish untouched.
+            if name == "env" and (
+                (opt.startswith("-S") and len(opt) > 2) or opt.startswith("--split-string=")
+            ):
+                value = opt[2:] if opt.startswith("-S") else opt.split("=", 1)[1]
+                try:
+                    spliced = shlex.split(value, posix=True)
+                except ValueError:
+                    break  # unparseable attached value: leave the token untouched
+                if consumed_any_option is not None:
+                    consumed_any_option.append(True)
+                tokens[0:1] = spliced
+                continue
+            if consumed_any_option is not None:
+                consumed_any_option.append(True)
             tokens.pop(0)
         for _ in range(_WRAPPER_POSITIONALS.get(name, 0)):
             if tokens:
@@ -1031,6 +1108,24 @@ def _inline_payloads(tokens: list[str]) -> list[str]:
 #: posture as _MAX_COMMAND_SEGMENTS, scoped to a single payload.
 _MAX_SPAWN_LITERAL_CANDIDATES = 32
 
+#: I6 — work bounds for _spawn_literal_candidates' own scan, independent of
+#: (and cheaper to check than) the output cap above: the join loop
+#: (`for group in stack: group.append(literal)`) runs once per open group
+#: per literal, so an unbounded `stack` made it quadratic in payload size
+#: (measured: 0.9s for a 20KB adversarial payload, 4x per doubling). Both
+#: caps trade candidate completeness for bounded work, never a silent PASS —
+#: see the AUTH-floor note on `_MAX_SPAWN_LITERAL_WORK_CANDIDATES`.
+_MAX_SPAWN_LITERAL_STACK_DEPTH = 32
+#: Stop the scan itself once this many raw candidates have been collected —
+#: a larger, separate bound from the final output cap above (4x it) so a
+#: payload that is merely long (many literals, not deeply nested) still
+#: fills the output cap before the scan gives up early. Safe to truncate
+#: because `saw_interpreter_spawn` (set by the caller whenever this function
+#: runs at all — see `_interpreter_spawn_literals`) already guarantees an
+#: AUTH floor for the segment: truncation can only ever miss a candidate,
+#: never manufacture a silent PASS.
+_MAX_SPAWN_LITERAL_WORK_CANDIDATES = 4 * _MAX_SPAWN_LITERAL_CANDIDATES
+
 
 def _spawn_literal_candidates(text: str) -> list[str]:
     """One pass over an interpreter payload: track ``(``/``[`` group depth
@@ -1041,12 +1136,23 @@ def _spawn_literal_candidates(text: str) -> list[str]:
     currently-open group when it's seen, so nested groups bubble up into
     their enclosing group's candidate too (T3-fix: replaces a ``[...]``-only
     regex join, which missed Node's two-arg ``execFile(cmd, [args])`` and a
-    Python tuple argv). An unbalanced group is flushed at the payload end
-    rather than dropped — no regex needed for the nesting."""
+    Python tuple argv) — UNLESS it sits inside a keyword-argument value
+    (I5): a bare ``=`` at the CURRENT group depth (``cwd=``) opens a kwarg
+    region that runs until the next comma back at that same depth, or the
+    group itself closes; a literal seen anywhere in that region — whether
+    right after the ``=`` (``cwd='/'``) or nested inside a call
+    (``cwd=os.path.expanduser('~')``) — is still emitted as its own
+    candidate but never joined into the group the kwarg sits in, or any
+    group further out. Never part of the argv the group represents, so the
+    old unconditional join manufactured a synthetic ``rm -rf /``/``rm -rf ~``
+    out of ``rm -rf <var>`` plus an unrelated ``cwd`` kwarg. An unbalanced
+    group is flushed at the payload end rather than dropped — no regex
+    needed for the nesting."""
     candidates: list[str] = []
     stack: list[list[str]] = []
+    kwarg_depth: int | None = None
     i, n = 0, len(text)
-    while i < n:
+    while i < n and len(candidates) < _MAX_SPAWN_LITERAL_WORK_CANDIDATES:
         char = text[i]
         if char in "'\"":
             quote = char
@@ -1056,41 +1162,57 @@ def _spawn_literal_candidates(text: str) -> list[str]:
                 j += 2 if text[j] == "\\" and j + 1 < n else 1
             literal = text[start:j]
             candidates.append(literal)
-            for group in stack:
+            floor = kwarg_depth if kwarg_depth is not None else 0
+            for group in stack[floor:]:
                 group.append(literal)
             i = j + 1
             continue
         if char in "([":
-            stack.append([])
+            if len(stack) < _MAX_SPAWN_LITERAL_STACK_DEPTH:
+                stack.append([])
         elif char in ")]" and stack:
             candidates.append(" ".join(stack.pop()))
+            if kwarg_depth is not None and len(stack) < kwarg_depth:
+                kwarg_depth = None  # the group the kwarg lived in just closed
+        elif char == "=" and kwarg_depth is None:
+            kwarg_depth = len(stack)
+        elif char == "," and kwarg_depth is not None and len(stack) == kwarg_depth:
+            kwarg_depth = None  # next positional/kwarg at the same depth
         i += 1
     while stack:
         candidates.append(" ".join(stack.pop()))
     return candidates
 
 
-def _interpreter_spawn_literals(tokens: list[str]) -> list[str] | None:
+def _interpreter_spawn_literals(tokens: list[str]) -> tuple[list[str], bool] | None:
     """Command-line candidates an interpreter payload hands to a subprocess spawn.
 
     ``None`` unless ``tokens[0]`` is an interpreter AND some inline payload
     matches :data:`_INLINE_PROCESS_SPAWN` (a subprocess/exec/spawn call is
     actually present) — the caller uses ``is not None`` to distinguish "not a
     spawn call at all" from "a spawn call with nothing vettable in it" (an
-    empty list). When it *is* a spawn call, returns every quoted string
-    literal in the payload individually, plus every ``(``/``[`` group's
-    literals space-joined into one candidate (see
+    empty list). When it *is* a spawn call, returns ``(literals, truncated)``:
+    every quoted string literal in the payload individually, plus every
+    ``(``/``[`` group's literals space-joined into one candidate (see
     :func:`_spawn_literal_candidates`) — so ``execFile('rm', ['-rf', '/'])``
     yields ``"rm -rf /"`` from its outer call parens, and a tuple argv
     ``('rm', '-rf', '/')`` is covered the same way as a list. Stripped,
-    empties dropped, deduped preserving order, capped at 32.
+    empties dropped, deduped preserving order, capped at 32. ``truncated``
+    (M4) is True when :func:`_spawn_literal_candidates`' own work cap
+    (:data:`_MAX_SPAWN_LITERAL_WORK_CANDIDATES`) cut the scan short for any
+    payload — the caller ORs it into ``saw_unparseable`` so a future refactor
+    that decouples the ``saw_interpreter_spawn`` AUTH floor from this path
+    does not turn a silent truncation into a silent miss.
     """
     payloads = _inline_payloads(tokens)
     if not any(_INLINE_PROCESS_SPAWN.search(payload) for payload in payloads):
         return None
     candidates: list[str] = []
+    truncated = False
     for payload in payloads:
-        candidates.extend(_spawn_literal_candidates(payload))
+        payload_candidates = _spawn_literal_candidates(payload)
+        truncated = truncated or len(payload_candidates) >= _MAX_SPAWN_LITERAL_WORK_CANDIDATES
+        candidates.extend(payload_candidates)
     cleaned: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -1098,7 +1220,7 @@ def _interpreter_spawn_literals(tokens: list[str]) -> list[str] | None:
         if candidate and candidate not in seen:
             seen.add(candidate)
             cleaned.append(candidate)
-    return cleaned[:_MAX_SPAWN_LITERAL_CANDIDATES]
+    return cleaned[:_MAX_SPAWN_LITERAL_CANDIDATES], truncated
 
 
 def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResult | None:
@@ -1111,6 +1233,18 @@ def _interpreter_payload_verdict(tokens: list[str], root: str) -> GuardrailResul
         candidates = [
             candidate for candidate in re.split(r"[\s'\"`(){}\[\],;]+", payload) if candidate
         ]
+        if len(candidates) > _MAX_SPAWN_LITERAL_WORK_CANDIDATES:
+            # I6: each candidate below is resolved against the filesystem
+            # (names_control_plane -> canonicalize), so an interpreter
+            # payload fragmented into hundreds of candidates makes THIS
+            # scan the DoS vector, independent of _spawn_literal_candidates.
+            # Exhaustion is ambiguity, never silent success — skip the scan
+            # and fail upward instead of paying (or skipping) it silently.
+            return _auth(
+                ReasonCode.opaque_command,
+                "Interpreter inline payload is too fragmented to fully vet; "
+                "authentication required.",
+            )
         if _segment_targets_control_plane(candidates, root):
             return _block_control_plane(
                 "Interpreter inline payload references Doberman's own control plane."
@@ -1171,7 +1305,10 @@ def _is_environment_dump_segment(raw_tokens: list[str]) -> bool:
     rest = _argv_from_tokens(raw_tokens, keep=frozenset({"env"}))
     if not rest:
         return False
-    cmd, tail = rest[0], rest[1:]
+    # M5: `keep={"env"}` stops the strip at env's own token so it stays
+    # visible here, but a path-qualified `/usr/bin/env` or `ENV.EXE` is left
+    # exactly as typed — _wrapper_name (I4's same fix) resolves it to "env".
+    cmd, tail = _wrapper_name(rest[0]), rest[1:]
 
     if cmd == "printenv":
         return True  # every form reads the process environment
@@ -1307,18 +1444,15 @@ def _kill_sole_option_is_carveout(options: list[_KillOption]) -> bool:
 
 
 def _kill_is_benign(args: list[str]) -> bool:
-    """PASS carve-outs for ``kill`` (never ``pkill``/``killall``/...): no args
-    at all (usage error: bare ``kill``), a list/help/probe flag as the SOLE
-    option (see ``_kill_sole_option_is_carveout``), or every operand names
-    the caller's own job — never someone else's process. A `kill` whose
-    operand can't be seen (a stripped `$(...)` leaves no residual token, e.g.
-    ``kill -SIGKILL $(pgrep sshd)``) has options but no operands here either;
-    that is deliberately NOT the bare-``kill`` usage-error case (ponytail:
-    keeps the pre-T2-fix fail-closed reading for this shape — args, not just
-    operands, must be empty — since a carve-out flag alone can't prove the
-    stripped operand was benign; widen only with a test proving it safe)."""
-    if not args:
-        return True
+    """PASS carve-outs for ``kill`` (never ``pkill``/``killall``/...): a
+    list/help/probe flag as the SOLE option (see
+    ``_kill_sole_option_is_carveout``), or every operand names the caller's
+    own job — never someone else's process. I1: deliberately no "no args at
+    all" carve-out — ``_strip_substitutions`` replaces `$(...)`/backticks
+    with a space before tokenization, so ``kill $(pgrep sshd)`` reaches here
+    as ``args == []`` too, indistinguishable from a bare usage-error `kill`;
+    a stripped substitution must never masquerade as "no operands", so a
+    truly-empty `args` fails closed like any other kill target."""
     options, operands = _kill_parse_options(args)
     if _kill_sole_option_is_carveout(options):
         return True
@@ -1337,11 +1471,9 @@ def _xargs_command_start(tokens: list[str]) -> int:
             break
         if token in _XARGS_SHORT_VALUE_OPTS or token in _XARGS_LONG_VALUE_OPTS:
             i += 2 if i + 1 < n else 1
-        elif any(token.startswith(f"{opt}=") for opt in _XARGS_LONG_VALUE_OPTS) or any(
-            len(token) > len(opt) and token.startswith(opt) for opt in _XARGS_SHORT_VALUE_OPTS
-        ):
-            i += 1
         else:
+            # Either an attached value (`-I{}`/`--max-args=1`) or a bare
+            # flag — both advance past just this one token.
             i += 1
     return i
 
@@ -1487,12 +1619,12 @@ def _segment_verdict(
 #: string, before the paren-splitting walk — see the call site in
 #: ``DestructiveCommandRule._classify_line`` for why the per-segment check
 #: below can no longer see it alone once ``(``/``)`` are segment separators.
-_FORK_BOMB_RE = re.compile(r":\s*\(\s*\)\s*\{.*\|\s*:")
+_FORK_BOMB_RE = re.compile(r":\s*[(]\s*[)]\s*[{].*[|]\s*:")
 
 
 def _looks_like_fork_bomb(tokens: list[str]) -> bool:
     joined = " ".join(tokens)
-    return bool(re.search(r":\s*\(\s*\)\s*\{.*\|\s*:", joined))
+    return bool(_FORK_BOMB_RE.search(joined))
 
 
 def _git_is_history_rewrite(tokens: list[str]) -> bool:
@@ -1697,16 +1829,20 @@ def _is_powershell_encoded_flag(token: str) -> bool:
 
 def _opaque_shell_payload(tokens: list[str]) -> bool:
     """True for ``bash -c <payload>``, PowerShell ``-Command``/``-EncodedCommand``,
-    ``cmd /c <payload>``, or ``su -c``/``su --command=`` — a payload we cannot
-    (or must not) statically vet. T5: ``su`` is a shell host like ``bash``,
-    never a transparent wrapper — its own ``-c``/``--command`` payload is
-    walked exactly the way ``bash -c``'s is (see ``_payload_command``)."""
+    ``cmd /c <payload>``, or ``su -c``/``su --command=``/``runuser -c``/
+    ``runuser --command=`` — a payload we cannot (or must not) statically
+    vet. T5: ``su`` is a shell host like ``bash``, never a transparent
+    wrapper — its own ``-c``/``--command`` payload is walked exactly the way
+    ``bash -c``'s is (see ``_payload_command``). I2: ``runuser -c`` is
+    ``su -c`` with a different name (a root shell running an arbitrary
+    payload) — its own `_WRAPPER_OPAQUE_OPTIONS` entry keeps it, and its
+    ``-c``/``--command`` marker, intact in ``tokens`` for this same check."""
     if not tokens:
         return False
-    head = tokens[0].lower()
+    head = _wrapper_name(tokens[0])
     if head in _SHELLS:
         return "-c" in tokens or "--command" in tokens
-    if head == "su":
+    if head in ("su", "runuser"):
         return (
             "-c" in tokens
             or "--command" in tokens
@@ -1955,7 +2091,7 @@ class DestructiveCommandRule:
         # shreds ":(){ :|:& };:" into benign no-op ":" segments before the
         # per-segment fork-bomb check (_segment_verdict) ever sees the whole
         # shape. Catch it here first, on the untouched command string.
-        if ":(){" in command.replace(" ", "") or _FORK_BOMB_RE.search(command):
+        if _FORK_BOMB_RE.search(command):
             return _block("Fork-bomb-style command.")
 
         pending, saw_unparseable, _ = walk_command(_normalize_windows_backslashes(command))
@@ -1981,8 +2117,25 @@ class DestructiveCommandRule:
             if _is_environment_dump_segment(raw_segment):
                 worst = _max_result(worst, _environment_dump_auth())
                 continue
-            tokens = _argv_from_tokens(raw_segment)
+            consumed_value_opt: list[bool] = []
+            tokens = _argv_from_tokens(raw_segment, consumed_value_option=consumed_value_opt)
             if not tokens:
+                if consumed_value_opt:
+                    # I2 root-cause: a wrapper VALUE option (one that ate a
+                    # separate token as its value, e.g. `sudo -u root` with
+                    # nothing after) emptied the segment entirely — the value
+                    # it ate could have been an opaque payload, so this is
+                    # never the same "no command at all" shape a bare-flag
+                    # emptying (`sudo -l`, `sudo -h`) is. Fail upward rather
+                    # than silently reading "nothing left" as benign.
+                    worst = _max_result(
+                        worst,
+                        _auth(
+                            ReasonCode.opaque_command,
+                            "A wrapper option consumed the rest of the command; "
+                            "authentication required.",
+                        ),
+                    )
                 continue
             if _leading_option(raw_segment, tokens):
                 # T5-fix: a wrapper's own option-value splice failed (e.g.
@@ -2028,9 +2181,11 @@ class DestructiveCommandRule:
             # still raises this AUTH to BLOCK. Falls through (no continue) so
             # the rmtree/socket/control-plane checks in _segment_verdict still
             # run on THIS segment too.
-            spawn_literals = _interpreter_spawn_literals(tokens)
-            if spawn_literals is not None:
+            spawn_result = _interpreter_spawn_literals(tokens)
+            if spawn_result is not None:
+                spawn_literals, spawn_truncated = spawn_result
                 saw_interpreter_spawn = True
+                saw_unparseable = saw_unparseable or spawn_truncated
                 for literal in spawn_literals:
                     literal_segments, literal_ambiguous, _ = walk_command(
                         _normalize_windows_backslashes(literal)
