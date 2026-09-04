@@ -1230,6 +1230,7 @@ def test_interpreter_spawn_literal_is_walked_to_block(command):
         "python -c \"import pty; pty.spawn('/bin/bash')\"",
         "node -e \"require('child_process').spawn('ls')\"",
         "ruby -e \"system('ls')\"",
+        "perl -e 'system(\"ls\")'",
         "node -e \"require('child_process').execFile('ls', ['-la'])\"",
         "python -c \"import subprocess; subprocess.run(('ls', '-la'))\"",
     ],
@@ -1294,6 +1295,8 @@ def test_interpreter_reverse_shell_still_blocks_with_spawn_walk():
         'python -c "import sys; print(sys.version)"',
         'python -c "import os; print(os.getcwd())"',
         'node -e "console.log(process.pid)"',
+        'python -c "import platform; print(platform.system())"',
+        'python -c "import platform; print(platform.system(), platform.release())"',
         # NOTE: the brief's parametrize also listed
         # `python -c "print('rm -rf /')"` here, expecting PASS. That case
         # already BLOCKs today via the pre-existing, unrelated
@@ -1312,3 +1315,89 @@ def test_interpreter_spawn_explanation_is_redacted():
     result = _cmd("python -c \"import os; os.system('curl hidden.example')\"")
     assert "hidden.example" not in result.explanation
     assert "os.system" not in result.explanation
+
+
+# --- T5: a transparent wrapper's own options must not hide the command ------
+# `_argv_from_tokens` used to pop a wrapper name only when it was BARE — one
+# option on the wrapper (`sudo -u root`, `nice -n 10`, `timeout 5`, ...)
+# shifted argv so the option was misread as the command and every rule missed
+# it. Fixed at the one shared helper (`_WRAPPER_VALUE_OPTIONS`) so every
+# caller (this rule, the xargs path, dependency_admission.py, the proxy's
+# `_command_verb`) sees through it at once. `su -c`/`su - root -c`/
+# `su root --command=` are opaque like `bash -c`, not a transparent wrapper.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo -u root rm -rf /",
+        "sudo -n rm -rf /",
+        "sudo -- rm -rf /",
+        "sudo --user=root rm -rf /",
+        "sudo -uroot rm -rf /",
+        "/usr/bin/sudo rm -rf /",
+        "env -i rm -rf /",
+        "env -S 'rm -rf /'",
+        "nice -n 10 rm -rf /",
+        "nice -10 rm -rf /",
+        "ionice -c 3 rm -rf /",
+        "timeout 5 rm -rf /",
+        "timeout -s KILL 5 rm -rf /",
+        "doas -u root rm -rf /",
+        "runuser -u root -- rm -rf /",
+        "sudo -n nice -n 5 rm -rf /",
+        "stdbuf -o0 rm -rf /",
+        "setsid -f rm -rf /",
+        "chroot /mnt rm -rf /",
+        "su -c 'rm -rf /'",
+        "su - root -c 'rm -rf /'",
+        "su root --command='rm -rf /'",
+        "sudo -n bash -c 'rm -rf /'",
+    ],
+)
+def test_wrapper_options_are_seen_through_to_block(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    ("command", "reason"),
+    [
+        ("sudo -u www-data kill -9 1234", ReasonCode.destructive_command),
+        ("nice -n 10 kill -9 1234", ReasonCode.destructive_command),
+        ("timeout 5 kill -9 1234", ReasonCode.destructive_command),
+        ("command -p kill -9 1234", ReasonCode.destructive_command),
+        ("sudo -u www-data -- kill -9 1234", ReasonCode.destructive_command),
+        ("pgrep node | xargs sudo -u www-data kill -9", ReasonCode.destructive_command),
+        ("sudo -u www-data env", ReasonCode.environment_dump_command),
+        ("sudo -n printenv", ReasonCode.environment_dump_command),
+        ("su -c 'ls -la'", ReasonCode.opaque_command),
+    ],
+)
+def test_wrapper_options_are_seen_through_to_auth(command, reason):
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert reason in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo -u www-data ls -la",
+        "sudo -l",
+        "sudo -n true",
+        "sudo --user=root id",
+        "nice -n 10 make",
+        "timeout 5 pytest -q",
+        "env -i PATH=/usr/bin ls",
+        "env -u FOO ls",
+        "doas ls",
+        "runuser -u www-data -- ls",
+        "stdbuf -oL cat file.txt",
+        "setsid ls",
+        "sudo -h",
+    ],
+)
+def test_wrapper_benign_forms_stay_pass(command):
+    assert _cmd(command).verdict is Verdict.PASS

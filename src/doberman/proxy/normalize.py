@@ -23,7 +23,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from doberman.canonical import canonicalize
-from doberman.engine.rules.commands import command_line_from_arguments, walk_command
+from doberman.engine.rules.commands import (
+    _argv_from_tokens,
+    command_line_from_arguments,
+    walk_command,
+)
 from doberman.engine.rules.destinations import _parse_host
 from doberman.engine.rules.secrets import candidate_secret_fingerprints, contains_strong_secret
 from doberman.models import ActionType, ReasonCode, Risk, SecurityObject, SourceContext
@@ -176,9 +180,6 @@ _REQUIREMENT_FILE_FLAGS = frozenset({"-r", "--requirement", "-c", "--constraint"
 _PM_REGISTRY_ENV_NAMES = frozenset(
     {"PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_INDEX_URL", "NPM_CONFIG_REGISTRY", "GOPROXY"}
 )
-_TRANSPARENT_COMMAND_WRAPPERS = frozenset(
-    {"command", "env", "exec", "ionice", "nice", "nohup", "sudo", "time"}
-)
 _PROXY_ENV_NAMES = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"})
 _ROUTE_OVERRIDE_FLAGS = frozenset({"--connect-to", "--proxy", "--resolve", "-x"})
 _ENV_ASSIGNMENT = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
@@ -253,19 +254,18 @@ def _command_name(token: str) -> str:
 
 
 def _command_verb(tokens: list[str]) -> tuple[str | None, list[str]]:
-    """Return the visible executable + arguments without losing the input tokens."""
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if _ENV_ASSIGNMENT.match(token):
-            index += 1
-            continue
-        name = _command_name(token)
-        if name in _TRANSPARENT_COMMAND_WRAPPERS:
-            index += 1
-            continue
-        return name, tokens[index + 1 :]
-    return None, []
+    """Return the visible executable + arguments without losing the input tokens.
+
+    T5: shares ``_argv_from_tokens`` with the destructive-command rule (the
+    allowed proxy -> engine import direction) so a flag-taking wrapper's own
+    option (``sudo -u root``, ``timeout 5``, ...) is consumed instead of
+    misread as the command — the wrapped command's egress verb/host is then
+    recovered the same way a bare invocation's is.
+    """
+    rest = _argv_from_tokens(tokens)
+    if not rest:
+        return None, []
+    return _command_name(rest[0]), rest[1:]
 
 
 def _is_egress_verb(verb: str | None, arguments: list[str]) -> bool:
@@ -476,9 +476,11 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
 
     for tokens in segments:
         verb, arguments = _command_verb(tokens)
-        # A flag-taking transparent wrapper (`sudo -u X`, `nice -n N`, `ionice -c N`)
-        # shifts argv so the wrapper's own option is misread as the command verb; the
-        # real command is then unidentified -> fail upward, never treat it as local.
+        # T5: `_command_verb` now sees through a wrapper's own options, so a
+        # leading `-` token only survives here in the one narrow case
+        # `_argv_from_tokens` deliberately leaves unresolved (`env -S` whose
+        # value can't be shlex-split) -- the real command is unidentified,
+        # so fail upward rather than treat it as local.
         if verb is not None and verb.startswith("-"):
             unresolved_wrapper = True
             continue

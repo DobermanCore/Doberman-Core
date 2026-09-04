@@ -152,7 +152,61 @@ _SUBSTITUTION = re.compile(r"\$\((?P<paren>[^()]*)\)|`(?P<backtick>[^`]*)`")
 
 # Env-assignment prefixes (FOO=bar) and benign wrappers we look through.
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_TRANSPARENT_WRAPPERS = {"sudo", "nice", "ionice", "nohup", "time", "env", "command", "exec"}
+
+# T5 — wrapper name -> the options that consume the NEXT token as a value. A
+# value written attached (``-uroot``) or with ``=`` (``--user=root``) is
+# self-contained and is just a flag; only a BARE spelling from this set pops
+# an extra token. Every other leading ``-``/``--`` token on a wrapper is
+# popped as a bare flag (its arity is unknown, so it's dropped, never treated
+# as the command) -- see ``_argv_from_tokens``. ``sudo``'s ``-h`` is
+# deliberately absent: ``sudo -h`` is help, a bare flag, not a value option.
+_WRAPPER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
+    "sudo": frozenset(
+        {
+            "-u",
+            "-g",
+            "-C",
+            "-D",
+            "-p",
+            "-r",
+            "-t",
+            "-T",
+            "-U",
+            "-R",
+            "--user",
+            "--group",
+            "--chdir",
+            "--prompt",
+            "--role",
+            "--type",
+            "--close-from",
+            "--other-user",
+            "--timeout",
+        }
+    ),
+    "doas": frozenset({"-u", "-C"}),
+    "runuser": frozenset(
+        {"-u", "-g", "-G", "-c", "--user", "--group", "--supp-group", "--command"}
+    ),
+    "env": frozenset({"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset(
+        {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"}
+    ),
+    "timeout": frozenset({"-k", "-s", "--kill-after", "--signal"}),
+    "chroot": frozenset({"--userspec", "--groups"}),
+    "time": frozenset({"-f", "-o", "--format", "--output"}),
+    "exec": frozenset({"-a"}),
+    "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+    "nohup": frozenset(),
+    "command": frozenset(),
+    "setsid": frozenset(),
+}
+#: Existing readers of the bare-name set keep working.
+_TRANSPARENT_WRAPPERS = frozenset(_WRAPPER_VALUE_OPTIONS)
+#: Wrappers that take a fixed number of positional arguments BEFORE the
+#: wrapped command (``timeout DURATION cmd``, ``chroot NEWROOT cmd``).
+_WRAPPER_POSITIONALS = {"timeout": 1, "chroot": 1}
 
 # `env`'s own no-op flags (no operand) and its unset flags (take one operand),
 # recognised so `env -i -0 -u FOO` with no trailing command still resolves to
@@ -258,10 +312,17 @@ _INLINE_PRIVILEGE_OP = re.compile(r"os[.]set(?:e|re|res)?[ug]id[(]", re.IGNORECA
 # _interpreter_spawn_literals, which walks the command-line string/list
 # literals the call passes so the shared destructive-command walk can see
 # what the spawned subprocess would actually run.
+#: T5 extra item 7: a bare ``system(`` (perl/ruby's unqualified spawn call)
+#: false-fired on a METHOD call sharing the name (``platform.system()``,
+#: ``foo.system(``) — the lookbehind excludes any identifier/dot character
+#: immediately before ``system(`` so a bare call still matches while a call
+#: on some object never does. Not ``\b`` (a word boundary alone still allows
+#: a preceding ``.``) and deliberately not `` \.`` either (that would only
+#: exclude a directly-preceding dot, missing ``foo.system(``).
 _INLINE_PROCESS_SPAWN = re.compile(
     r"subprocess[.]|os[.]system[(]|os[.]popen[(]|os[.]exec[lv]p?e?[(]|os[.]spawn[lv]p?e?[(]|"
     r"pty[.]spawn[(]|pexpect[.]|child_process|execSync[(]|spawnSync[(]|execFile(?:Sync)?[(]|"
-    r"system[(]",
+    r"(?<![A-Za-z0-9_.])system[(]",
     re.IGNORECASE,
 )
 
@@ -490,11 +551,68 @@ def _normalize_windows_backslashes(command: str) -> str:
     return command
 
 
-def _argv_from_tokens(tokens: list[str]) -> list[str]:
-    """Strip prefixes from an already parsed segment for command classification."""
+def _wrapper_name(token: str) -> str:
+    """Wrapper-recognition basename: strip a ``/`` or ``\\`` directory prefix
+    and a trailing ``.exe``, lower-cased — so ``/usr/bin/sudo`` and
+    ``SUDO.EXE`` are both recognized as ``sudo``."""
+    name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name.removesuffix(".exe")
+
+
+def _argv_from_tokens(tokens: list[str], *, keep: frozenset[str] = frozenset()) -> list[str]:
+    """Strip prefixes (env assignments + transparent-wrapper name/options) from
+    an already-parsed segment for command classification.
+
+    T5: a wrapper's own option used to shift argv so the option was misread
+    as the command (``sudo -u root rm -rf /`` saw ``-u`` as argv[0]). Now:
+    pop the wrapper's name (by basename, see ``_wrapper_name``), then every
+    following ``-``/``--``-prefixed token — a bare spelling in
+    ``_WRAPPER_VALUE_OPTIONS[name]`` also pops its value token (``env -S``'s
+    value is a command string: ``shlex.split`` it and splice the tokens back
+    at the front; on ``ValueError`` leave the ``-S``/value tokens untouched —
+    the caller then fails upward as today), everything else is a bare flag
+    with unknown arity, dropped but not otherwise consumed. A bare ``--``
+    itself is popped and ends option parsing. Then pop the wrapper's fixed
+    positionals (``_WRAPPER_POSITIONALS``). Repeats, so wrapper chains
+    (``sudo -n nice -n 5 rm -rf /``) unwind. ``keep`` names a wrapper whose
+    own token must NOT be stripped (``_is_environment_dump_segment`` keeps
+    ``env`` so it can still see it after unwrapping everything ahead of it).
+    """
     tokens = list(tokens)
-    while tokens and (_ENV_ASSIGNMENT.match(tokens[0]) or tokens[0] in _TRANSPARENT_WRAPPERS):
-        tokens.pop(0)
+    while tokens:
+        while tokens and _ENV_ASSIGNMENT.match(tokens[0]):
+            tokens.pop(0)
+        if not tokens:
+            break
+        name = _wrapper_name(tokens[0])
+        if name not in _WRAPPER_VALUE_OPTIONS or name in keep:
+            break
+        value_opts = _WRAPPER_VALUE_OPTIONS[name]
+        tokens.pop(0)  # the wrapper name itself
+        while tokens and tokens[0].startswith("-"):
+            opt = tokens[0]
+            if opt == "--":  # noqa: S105 — option-parsing terminator, not a secret
+                tokens.pop(0)
+                break
+            if opt in value_opts:
+                if name == "env" and opt in ("-S", "--split-string"):
+                    if len(tokens) < 2:
+                        tokens.pop(0)
+                        break
+                    try:
+                        spliced = shlex.split(tokens[1], posix=True)
+                    except ValueError:
+                        break  # unparseable value: leave -S + its value untouched
+                    tokens = spliced + tokens[2:]
+                    continue
+                tokens.pop(0)
+                if tokens:
+                    tokens.pop(0)
+                continue
+            tokens.pop(0)
+        for _ in range(_WRAPPER_POSITIONALS.get(name, 0)):
+            if tokens:
+                tokens.pop(0)
     return tokens
 
 
@@ -939,13 +1057,7 @@ def _is_environment_dump_segment(raw_tokens: list[str]) -> bool:
     still fails upward, just under a different reason code. The no-backslash
     form (``dir env:``) is unaffected.
     """
-    idx = 0
-    look_through = _TRANSPARENT_WRAPPERS - {"env"}
-    while idx < len(raw_tokens) and (
-        _ENV_ASSIGNMENT.match(raw_tokens[idx]) or raw_tokens[idx] in look_through
-    ):
-        idx += 1
-    rest = raw_tokens[idx:]
+    rest = _argv_from_tokens(raw_tokens, keep=frozenset({"env"}))
     if not rest:
         return False
     cmd, tail = rest[0], rest[1:]
@@ -1474,12 +1586,21 @@ def _is_powershell_encoded_flag(token: str) -> bool:
 
 def _opaque_shell_payload(tokens: list[str]) -> bool:
     """True for ``bash -c <payload>``, PowerShell ``-Command``/``-EncodedCommand``,
-    or ``cmd /c <payload>`` — a payload we cannot (or must not) statically vet."""
+    ``cmd /c <payload>``, or ``su -c``/``su --command=`` — a payload we cannot
+    (or must not) statically vet. T5: ``su`` is a shell host like ``bash``,
+    never a transparent wrapper — its own ``-c``/``--command`` payload is
+    walked exactly the way ``bash -c``'s is (see ``_payload_command``)."""
     if not tokens:
         return False
     head = tokens[0].lower()
     if head in _SHELLS:
         return "-c" in tokens or "--command" in tokens
+    if head == "su":
+        return (
+            "-c" in tokens
+            or "--command" in tokens
+            or any(t.startswith("--command=") for t in tokens[1:])
+        )
     if head in _WINDOWS_SHELLS:
         return any(
             _is_powershell_command_flag(t) or _is_powershell_encoded_flag(t) for t in tokens[1:]
@@ -1820,14 +1941,18 @@ class DestructiveCommandRule:
 
 
 def _payload_command(tokens: list[str]) -> str | None:
-    """Pull the argument after ``-c``/``-Command``/``cmd /c`` for a bounded
-    shared-command walk. ``None`` for ``-EncodedCommand`` (base64 — cannot
-    decode/vet) so the caller skips body scanning and keeps the opaque AUTH."""
+    """Pull the argument after ``-c``/``-Command``/``cmd /c``/``su --command=``
+    for a bounded shared-command walk. ``None`` for ``-EncodedCommand``
+    (base64 — cannot decode/vet) so the caller skips body scanning and keeps
+    the opaque AUTH."""
     for flag in ("-c", "--command"):
         if flag in tokens:
             idx = tokens.index(flag)
             if idx + 1 < len(tokens):
                 return tokens[idx + 1]
+    for token in tokens[1:]:
+        if token.startswith("--command="):
+            return token.split("=", 1)[1]
     for idx, token in enumerate(tokens):
         if _is_powershell_encoded_flag(token):
             return None

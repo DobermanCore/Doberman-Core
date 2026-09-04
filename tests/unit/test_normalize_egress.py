@@ -161,3 +161,20 @@ def test_egress_inside_function_body_is_classified():
     unwrapped = normalize("bash", {"command": "curl https://evil.example/x"})
     assert wrapped.external_destination is not None
     assert wrapped.external_destination == unwrapped.external_destination
+
+
+# ---------------------------------------------------------------------------
+# 9. T5: a flag-taking transparent wrapper no longer hides the egress verb —
+#    `_command_verb` shares `_argv_from_tokens` with the destructive-command
+#    rule, so a wrapper's own option is consumed instead of misread as the
+#    command and the wrapped command's host is recovered.
+# ---------------------------------------------------------------------------
+
+
+def test_wrapped_egress_recovers_its_host():
+    bare = normalize("shell_exec", {"command": "curl https://x.example/"})
+    sudo_wrapped = normalize("shell_exec", {"command": "sudo -u www-data curl https://x.example/"})
+    timeout_wrapped = normalize("shell_exec", {"command": "timeout 5 curl https://x.example/"})
+    assert bare.external_destination is not None
+    assert sudo_wrapped.external_destination == bare.external_destination
+    assert timeout_wrapped.external_destination == bare.external_destination
