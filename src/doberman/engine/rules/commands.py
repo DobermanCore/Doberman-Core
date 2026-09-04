@@ -275,7 +275,19 @@ def _strip_substitutions(segment: str) -> tuple[str, list[str]]:
 
 
 def _split_segments(command: str) -> list[str]:
-    """Split a command line into top-level segments on shell operators."""
+    """Split a command line into top-level segments on shell operators.
+
+    An unescaped, unquoted ``(`` or ``)`` is a segment separator too (exactly
+    like ``;``) — a subshell, a ``{ ...; }`` brace-group trailer, or a
+    function body must not hide a nested command from the walk. The one
+    exception is a ``$(...)``/``$((...))`` command-substitution region: it is
+    copied through intact (depth-counting nested parens; quotes inside are
+    copied verbatim, not tracked against the outer quote state) so
+    :func:`_strip_substitutions` still sees it exactly as before. Parens
+    inside quotes and backslash-escaped parens keep today's handling — both
+    are already consumed by the quote/escape branches below, before either
+    kind of paren handling is reached. Backticks are unchanged.
+    """
     segments: list[str] = []
     current: list[str] = []
     quote: str | None = None
@@ -304,11 +316,36 @@ def _split_segments(command: str) -> list[str]:
             current.append(char)
             index += 1
             continue
+        if char == "$" and command[index + 1 : index + 2] == "(":
+            current.append(char)
+            current.append("(")
+            index += 2
+            depth = 1
+            region_quote: str | None = None
+            region_escaped = False
+            while index < len(command) and depth > 0:
+                inner = command[index]
+                current.append(inner)
+                if region_escaped:
+                    region_escaped = False
+                elif inner == "\\" and region_quote != "'":
+                    region_escaped = True
+                elif region_quote is not None:
+                    if inner == region_quote:
+                        region_quote = None
+                elif inner in {"'", '"'}:
+                    region_quote = inner
+                elif inner == "(":
+                    depth += 1
+                elif inner == ")":
+                    depth -= 1
+                index += 1
+            continue
 
         operator_width = 2 if command[index : index + 2] in {"&&", "||"} else 0
         # A single ``&`` separates commands too: cmd.exe runs both sides
         # unconditionally and POSIX shells background the left and run the right.
-        if operator_width or char in {"|", ";", "&", "\n"}:
+        if operator_width or char in {"|", ";", "&", "\n", "(", ")"}:
             segment = "".join(current).strip()
             if segment:
                 segments.append(segment)
@@ -324,14 +361,46 @@ def _split_segments(command: str) -> list[str]:
     return segments
 
 
+#: Shell syntax words/tokens that carry no security meaning of their own —
+#: they only ever introduce or close a nested command. Left in argv[0] they
+#: hide that command from every consumer of :func:`walk_command` (this rule,
+#: the proxy's egress classifier, dependency_admission.py), so they are
+#: stripped when leading a segment. ``function`` is handled separately below
+#: (it also swallows the following name token).
+_SHELL_SYNTAX_TOKENS = {
+    "if",
+    "then",
+    "else",
+    "elif",
+    "fi",
+    "do",
+    "done",
+    "while",
+    "until",
+    "for",
+    "select",
+    "case",
+    "esac",
+    "in",
+    "{",
+    "}",
+    "!",
+    "coproc",
+}
+
+
 def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
     """Tokenize every shell segment/substitution without stripping prefixes.
 
     Returns ``(segments, ambiguous, dynamic)``. Each segment is the raw
     :func:`shlex.split` token list *before* env assignments or transparent
     wrappers are removed, so security consumers can still see proxy/route
-    overrides. Unbalanced input and the shared work-cap surface through
-    ``ambiguous``. No command is executed.
+    overrides. Leading shell-syntax tokens (``if``/``then``/``fi``, brace-group
+    ``{``/``}``, ``function <name>``, ...) ARE dropped here, though — they
+    carry no security meaning of their own, and left in argv[0] they would
+    hide the nested command (see ``_SHELL_SYNTAX_TOKENS``) from every
+    consumer of this walk. Unbalanced input and the shared work-cap surface
+    through ``ambiguous``. No command is executed.
     """
     pending = _split_segments(command)
     segments: list[list[str]] = []
@@ -349,6 +418,14 @@ def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
         except ValueError:
             ambiguous = True
             continue
+        while tokens:
+            if tokens[0] in _SHELL_SYNTAX_TOKENS:
+                tokens = tokens[1:]
+                continue
+            if tokens[0] == "function":
+                tokens = tokens[2:]
+                continue
+            break
         if tokens:
             segments.append(tokens)
 
@@ -872,6 +949,13 @@ def _segment_verdict(
     return None
 
 
+#: The fork-bomb shape (``:(){ :|:& };:``) checked against the RAW command
+#: string, before the paren-splitting walk — see the call site in
+#: ``DestructiveCommandRule._classify_line`` for why the per-segment check
+#: below can no longer see it alone once ``(``/``)`` are segment separators.
+_FORK_BOMB_RE = re.compile(r":\s*\(\s*\)\s*\{.*\|\s*:")
+
+
 def _looks_like_fork_bomb(tokens: list[str]) -> bool:
     joined = " ".join(tokens)
     return bool(re.search(r":\s*\(\s*\)\s*\{.*\|\s*:", joined))
@@ -1319,6 +1403,14 @@ class DestructiveCommandRule:
                 "Shell command targets Doberman's own control plane "
                 "(.doberman/ state or the .claude/ host-hook config)."
             )
+
+        # Checked against the RAW command, before the paren-splitting walk:
+        # `(`/`)` are now segment separators (command-walk hardening), which
+        # shreds ":(){ :|:& };:" into benign no-op ":" segments before the
+        # per-segment fork-bomb check (_segment_verdict) ever sees the whole
+        # shape. Catch it here first, on the untouched command string.
+        if ":(){" in command.replace(" ", "") or _FORK_BOMB_RE.search(command):
+            return _block("Fork-bomb-style command.")
 
         pending, saw_unparseable, _ = walk_command(_normalize_windows_backslashes(command))
         processed = 0
