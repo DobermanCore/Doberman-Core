@@ -179,3 +179,40 @@ def test_git_pull_and_fetch_stay_gated():
         result = RULE.evaluate(action, EvalContext(mode="balanced"))
         assert result.verdict is Verdict.AUTH
         assert ReasonCode.egress_requires_auth in result.reason_codes
+
+
+# ---------------------------------------------------------------------------
+# N7: an inline env-assignment prefix that relocates the registry config file
+# achieves what C1's own rationale (sudo -H changes HOME, and therefore which
+# ~/.npmrc / ~/.pip/pip.conf / ~/.config/uv applies) disqualifies -- an
+# explicit HOME=/PIP_CONFIG_FILE=/NPM_CONFIG_USERCONFIG= prefix does the same
+# thing more directly. Added to _PM_REGISTRY_ENV_NAMES so _pm_route_redirect
+# (already wired for PIP_INDEX_URL etc.) disqualifies these too. Raise-only.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "HOME=/tmp pip install requests",
+        "PIP_CONFIG_FILE=/tmp/x pip install requests",
+        "NPM_CONFIG_USERCONFIG=/tmp/n npm install",
+    ],
+)
+def test_registry_config_env_prefix_disqualifies_implied_pass(command):
+    action = normalize("shell_exec", {"command": command})
+    result = RULE.evaluate(action, EvalContext(mode="balanced"))
+    assert result.verdict is Verdict.AUTH, (
+        f"{command!r} must not qualify for the implied-registry PASS but got {result.verdict}"
+    )
+    assert ReasonCode.egress_requires_auth in result.reason_codes
+    assert action.metadata.get("egress_implied_registry") is not True
+
+
+def test_unrelated_env_prefix_keeps_current_verdict():
+    # Pin (not a regression): an env var this module doesn't recognize as
+    # registry-config-relevant does not disqualify the implied-registry PASS.
+    action = normalize("shell_exec", {"command": "FOO=1 pip install requests"})
+    result = RULE.evaluate(action, EvalContext(mode="balanced"))
+    assert result.verdict is Verdict.PASS
+    assert action.metadata.get("egress_implied_registry") is True

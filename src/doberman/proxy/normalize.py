@@ -180,6 +180,25 @@ _REQUIREMENT_FILE_FLAGS = frozenset({"-r", "--requirement", "-c", "--constraint"
 _PM_REGISTRY_ENV_NAMES = frozenset(
     {"PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_INDEX_URL", "NPM_CONFIG_REGISTRY", "GOPROXY"}
 )
+#: N7 — HOME/XDG_CONFIG_HOME and the *_CONFIG_FILE/*_USERCONFIG vars relocate
+#: which config file a package manager reads its registry from just as
+#: directly as `sudo -H` does (C1), so an INLINE prefix (`HOME=/tmp pip
+#: install ...`) must disqualify the implied-registry PASS the same way.
+#: Deliberately a SEPARATE set from _PM_REGISTRY_ENV_NAMES above, used only by
+#: _pm_route_redirect's inline-assignment scan: HOME (unlike PIP_INDEX_URL) is
+#: ambiently set in essentially every real process, so folding it into
+#: _ambient_registry_override's os.environ scan would AUTH every package
+#: fetch everywhere, not just a command that explicitly overrides it.
+_PM_INLINE_REGISTRY_ENV_NAMES = _PM_REGISTRY_ENV_NAMES | frozenset(
+    {
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "PIP_CONFIG_FILE",
+        "NPM_CONFIG_USERCONFIG",
+        "NPM_CONFIG_GLOBALCONFIG",
+        "UV_CONFIG_FILE",
+    }
+)
 _PROXY_ENV_NAMES = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"})
 _ROUTE_OVERRIDE_FLAGS = frozenset({"--connect-to", "--proxy", "--resolve", "-x"})
 _ENV_ASSIGNMENT = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
@@ -359,9 +378,9 @@ def _pm_route_redirect(tokens: list[str]) -> bool:
     for token in tokens:
         assignment = _ENV_ASSIGNMENT.match(token)
         if assignment:
-            if assignment.group("name").upper() in _PM_REGISTRY_ENV_NAMES and assignment.group(
-                "value"
-            ):
+            if assignment.group(
+                "name"
+            ).upper() in _PM_INLINE_REGISTRY_ENV_NAMES and assignment.group("value"):
                 return True
             continue
         if not token.startswith("-") or "=" not in token:
