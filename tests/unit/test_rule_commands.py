@@ -1208,6 +1208,11 @@ def test_delete_class_operands_and_dynamic_matches_the_two_separate_calls():
         "python -c \"import subprocess; subprocess.run(['sudo', 'rm', '-rf', '/'])\"",
         "python -c \"import os; os.popen('rm -rf ~')\"",
         "node -e \"require('child_process').execSync('rm -rf /')\"",
+        "node -e \"require('child_process').execFile('rm', ['-rf', '/'])\"",
+        "node -e \"require('child_process').spawnSync('rm', ['-rf', '/'])\"",
+        "python -c \"import subprocess; subprocess.run(('rm', '-rf', '/'))\"",
+        "python -c \"import os; os.spawnvp(os.P_WAIT, 'rm', ['rm', '-rf', '/'])\"",
+        "python -c \"import subprocess; subprocess.run(['rm', '-rf', '/'], shell=False)\"",
     ],
 )
 def test_interpreter_spawn_literal_is_walked_to_block(command):
@@ -1225,6 +1230,8 @@ def test_interpreter_spawn_literal_is_walked_to_block(command):
         "python -c \"import pty; pty.spawn('/bin/bash')\"",
         "node -e \"require('child_process').spawn('ls')\"",
         "ruby -e \"system('ls')\"",
+        "node -e \"require('child_process').execFile('ls', ['-la'])\"",
+        "python -c \"import subprocess; subprocess.run(('ls', '-la'))\"",
     ],
 )
 def test_interpreter_spawn_without_a_vettable_literal_is_auth_opaque(command):
@@ -1237,6 +1244,22 @@ def test_interpreter_spawn_literal_raises_env_dump():
     result = _cmd("python -c \"import subprocess; subprocess.run(['env'])\"")
     assert result.verdict is Verdict.AUTH
     assert ReasonCode.environment_dump_command in result.reason_codes
+
+
+def test_interpreter_spawn_literals_join_groups():
+    """Every bracket/paren group's string literals are space-joined into a
+    candidate — including a nested group's literals bubbling up into its
+    enclosing group's candidate (T3-fix: the old join covered `[...]` list
+    literals only, missing Node's two-arg `execFile(cmd, [args])` shape and
+    Python tuple argv)."""
+    command = "python -c \"import subprocess; subprocess.run(['a', 'b'], cwd=('c'))\""
+    tokens = commands_module._argv(command)
+    literals = commands_module._interpreter_spawn_literals(tokens)
+    assert literals is not None
+    assert "a b" in literals
+    assert "a b c" in literals
+    assert "c" in literals
+    assert all(literal for literal in literals)
 
 
 @pytest.mark.parametrize(

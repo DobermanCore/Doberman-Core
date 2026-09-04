@@ -797,24 +797,48 @@ def _inline_payloads(tokens: list[str]) -> list[str]:
     return payloads
 
 
-#: Every single- or double-quoted string literal's *contents* (quotes stripped).
-_QUOTED_LITERAL_RE = re.compile(r"'([^'\\]*(?:\\.[^'\\]*)*)'|\"([^\"\\]*(?:\\.[^\"\\]*)*)\"")
-#: A ``[ ... ]`` list literal's contents (no nested-bracket support needed —
-#: the shapes T3 targets are flat argv lists like ``['rm', '-rf', '/']``).
-_BRACKET_LIST_RE = re.compile(r"\[([^\[\]]*)\]")
-
 #: Cap on how many command-line candidates one interpreter payload can push
 #: back onto the walk — same "exhaustion is ambiguity, never silent success"
 #: posture as _MAX_COMMAND_SEGMENTS, scoped to a single payload.
 _MAX_SPAWN_LITERAL_CANDIDATES = 32
 
 
-def _quoted_literals(text: str) -> list[str]:
-    """Every single-/double-quoted string literal in ``text``, contents only, in order."""
-    return [
-        single if single is not None else double
-        for single, double in _QUOTED_LITERAL_RE.findall(text)
-    ]
+def _spawn_literal_candidates(text: str) -> list[str]:
+    """One pass over an interpreter payload: track ``(``/``[`` group depth
+    (skipping over quoted string contents — a backslash escapes the next
+    char so it never ends a string early), emitting every quoted string
+    literal on its own, in source order, PLUS — for every group closed — the
+    space-joined literals it contains. A literal is appended to every
+    currently-open group when it's seen, so nested groups bubble up into
+    their enclosing group's candidate too (T3-fix: replaces a ``[...]``-only
+    regex join, which missed Node's two-arg ``execFile(cmd, [args])`` and a
+    Python tuple argv). An unbalanced group is flushed at the payload end
+    rather than dropped — no regex needed for the nesting."""
+    candidates: list[str] = []
+    stack: list[list[str]] = []
+    i, n = 0, len(text)
+    while i < n:
+        char = text[i]
+        if char in "'\"":
+            quote = char
+            start = i + 1
+            j = start
+            while j < n and text[j] != quote:
+                j += 2 if text[j] == "\\" and j + 1 < n else 1
+            literal = text[start:j]
+            candidates.append(literal)
+            for group in stack:
+                group.append(literal)
+            i = j + 1
+            continue
+        if char in "([":
+            stack.append([])
+        elif char in ")]" and stack:
+            candidates.append(" ".join(stack.pop()))
+        i += 1
+    while stack:
+        candidates.append(" ".join(stack.pop()))
+    return candidates
 
 
 def _interpreter_spawn_literals(tokens: list[str]) -> list[str] | None:
@@ -825,22 +849,26 @@ def _interpreter_spawn_literals(tokens: list[str]) -> list[str] | None:
     actually present) — the caller uses ``is not None`` to distinguish "not a
     spawn call at all" from "a spawn call with nothing vettable in it" (an
     empty list). When it *is* a spawn call, returns every quoted string
-    literal in the payload individually, plus — for each ``[ ... ]`` list
-    literal — its string literals space-joined into one command line (so
-    ``['rm', '-rf', '/']`` also yields the single candidate ``"rm -rf /"``).
-    Stripped, empties dropped, capped at 32.
+    literal in the payload individually, plus every ``(``/``[`` group's
+    literals space-joined into one candidate (see
+    :func:`_spawn_literal_candidates`) — so ``execFile('rm', ['-rf', '/'])``
+    yields ``"rm -rf /"`` from its outer call parens, and a tuple argv
+    ``('rm', '-rf', '/')`` is covered the same way as a list. Stripped,
+    empties dropped, deduped preserving order, capped at 32.
     """
     payloads = _inline_payloads(tokens)
     if not any(_INLINE_PROCESS_SPAWN.search(payload) for payload in payloads):
         return None
     candidates: list[str] = []
     for payload in payloads:
-        candidates.extend(_quoted_literals(payload))
-        for bracket_match in _BRACKET_LIST_RE.finditer(payload):
-            list_literals = _quoted_literals(bracket_match.group(1))
-            if list_literals:
-                candidates.append(" ".join(list_literals))
-    cleaned = [c.strip() for c in candidates if c.strip()]
+        candidates.extend(_spawn_literal_candidates(payload))
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            cleaned.append(candidate)
     return cleaned[:_MAX_SPAWN_LITERAL_CANDIDATES]
 
 
