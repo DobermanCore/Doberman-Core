@@ -1,8 +1,9 @@
 # Tutorial: custom Guardrail plugin
 
 Doberman discovers third-party rules through the **`doberman.rules`** Python
-entry-point group (`RULE_GROUP` in `src/doberman/engine/registry.py`). Core never
-imports your package by name — install the package, and
+entry-point group (an entry point is a name a package lists in its `pyproject.toml`
+so other code can find and load it; `RULE_GROUP` in `src/doberman/engine/registry.py`).
+Core never imports your package by name. Install the package, and
 `discover_rules()` / `ObjectiveGuardrail()` pick it up automatically.
 
 This mini-package is a five-minute copy template.
@@ -71,7 +72,7 @@ pip uninstall -y doberman-example-plugin-guardrail
 ```
 
 > **Important:** while this package is installed, core's "no plugins installed"
-> standalone checks (`discover_rules() == []`) will fail — that is expected.
+> standalone checks (`discover_rules() == []`) will fail. That is expected.
 > Uninstall before re-running the full core suite. Default CI does **not**
 > install this package; it only path-imports the rule class for evaluate/raise-only
 > checks.
@@ -110,12 +111,12 @@ examples/plugin-guardrail/
 2. Implement `evaluate(self, action, ctx) -> GuardrailResult` (same contract as built-ins).
 3. Register under `[project.entry-points."doberman.rules"]`.
 4. Prefer `ReasonCode` values from `doberman.models` (do not invent free-form codes).
-5. Canonicalize paths with `doberman.canonical.canonicalize` before matching; normalize `\\` → `/` if you accept agent-supplied path strings.
+5. Canonicalize paths (reduce a path to one standard, absolute form, so `./a/../b` and `b` are recognized as the same path) with `doberman.canonical.canonicalize` before matching; normalize `\\` → `/` if you accept agent-supplied path strings.
 6. Prefer `ctx.metadata["raw_arguments"]` for path matching when present (redacted `action.target` can hide the real path).
 7. Never put secrets, full paths, or request payloads into `explanation` or logs.
 8. Only return PASS / AUTH / BLOCK results that *raise* risk for your signal; abstain otherwise.
-9. Do **not** re-implement repo-root confinement unless you mean to — escapes should stay the built-in path rule's job so a solo plugin does not invent a weaker story.
+9. Do **not** re-implement repo-root confinement unless you mean to: escapes should stay the built-in path rule's job, so a solo plugin does not invent a weaker story.
 
 Use `src/doberman/engine/rules/paths.py` as the reference built-in template.
 
-This tutorial only steps up **writes** (not deletes/reads) of the marker file — keep demo scope minimal.
+This tutorial only steps up **writes** (not deletes/reads) of the marker file. Keep demo scope minimal.
