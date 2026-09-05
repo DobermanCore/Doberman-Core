@@ -164,7 +164,12 @@ def challenge_parts(
     AUTH's ``decision.effects`` — every prompter renders this exact string,
     so the channels cannot drift. ``None`` for every non-delete-class AUTH.
     """
-    target = action.target or "(no target)"
+    # The challenge copy of the action carries a prompt-only rendering of the
+    # raw arguments when the caller could build one (proxy.normalize
+    # .display_target), so the human reads the command rather than the log's
+    # wholesale "<redacted>" target.
+    shown = action.metadata.get("display_target")
+    target = shown if isinstance(shown, str) and shown else (action.target or "(no target)")
     notice = action.metadata.get("approval_memory_notice")
     notice = notice if isinstance(notice, str) and notice else None
     risk_word = decision.final_risk.value

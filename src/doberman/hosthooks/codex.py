@@ -164,7 +164,7 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
         if result.acted is Verdict.AUTH:
             hook_result, auth_method = hookio.resolve_auth_result(
                 result.decision,
-                result.action,
+                result.challenge_action,
                 event=_EVENT,
                 prompter=AUTH_PROMPTER,
                 message_tone=load_message_tone(result.repo_root),

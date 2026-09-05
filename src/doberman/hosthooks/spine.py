@@ -31,7 +31,7 @@ from doberman.models import Decision, EvalContext, SecurityObject, Verdict
 from doberman.policy.drift import acted_verdict
 from doberman.policy.modes import DEFAULT_MODE
 from doberman.policy.sources import effective_policy
-from doberman.proxy.normalize import normalize
+from doberman.proxy.normalize import challenge_copy, normalize
 
 
 @dataclass(frozen=True)
@@ -44,6 +44,10 @@ class SpineResult:
     enforcement: str
     repo_root: str
     session_id: str | None
+    #: The action to hand to an AUTH challenge: ``action`` plus the prompt-only
+    #: rendering of the raw arguments (``proxy.normalize.challenge_copy``).
+    #: Never recorded — history and the dashboard row derive from ``action``.
+    challenge_action: SecurityObject
 
 
 def resolve_root_and_mode(cwd: object) -> tuple[str, str]:
@@ -133,7 +137,15 @@ def evaluate_action(
         # `off` softens the same way but is the silent, non-recording state; a
         # genuine PASS is never recorded (hot path — a DB write per pass floods).
         record_history(decision, action, repo_root, session_id, auth_result="executed")
-    return SpineResult(decision, action, acted, enforcement, repo_root, session_id)
+    return SpineResult(
+        decision,
+        action,
+        acted,
+        enforcement,
+        repo_root,
+        session_id,
+        challenge_copy(action, args),
+    )
 
 
 def record_history(

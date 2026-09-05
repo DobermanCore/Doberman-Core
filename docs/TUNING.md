@@ -140,6 +140,8 @@ engineering view? `doberman message-tone technical` switches to the terse `[RISK
 …` block, and `doberman message-tone human` switches back. It changes wording only: cosmetic, not
 possession-factor gated, and it never touches the decision, the reason codes, or what lands in the
 decision log.
+The command line shown is rendered from the raw arguments with credential-shaped tokens masked and
+cut at 300 characters; the decision log keeps only its redacted copy.
 
 ## Recovery actions
 

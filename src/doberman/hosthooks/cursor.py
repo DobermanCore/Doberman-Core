@@ -317,7 +317,7 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any]:
             if result.acted is Verdict.AUTH:
                 host_out, auth_method = hookio.resolve_auth_result(
                     result.decision,
-                    result.action,
+                    result.challenge_action,
                     event=_EVENT_LABEL,
                     prompter=AUTH_PROMPTER,
                     message_tone=load_message_tone(result.repo_root),
