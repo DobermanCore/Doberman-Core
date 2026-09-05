@@ -25,6 +25,7 @@ import doberman
 from doberman import __version__
 from doberman.auth import password, totp
 from doberman.auth.challenge import TIMEOUT_METHOD
+from doberman.auth.ntfy import DEFAULT_SERVER as NTFY_DEFAULT_SERVER
 from doberman.auth.provider import CliPrompter
 from doberman.cli import telemetry_cmd
 from doberman.config import (
@@ -149,6 +150,12 @@ methods_app = typer.Typer(
     no_args_is_help=True,
 )
 twofa_app.add_typer(methods_app, name="methods")
+
+phone_app = typer.Typer(
+    help="Phone approvals via ntfy push notifications (tap Approve/Deny from your phone).",
+    no_args_is_help=True,
+)
+app.add_typer(phone_app, name="phone", rich_help_panel="Auth")
 
 password_app = typer.Typer(
     help="Local password possession factor (the minimum lowering-gate auth).",
@@ -1546,6 +1553,7 @@ def doctor(
         "Enforcement": "Policy",
         "Policy version": "Policy",
         "2FA": "Auth",
+        "Phone approvals": "Auth",
         "Password": "Auth",
         "Fingerprint key": "Auth",
     }
@@ -1846,6 +1854,95 @@ def twofa_methods_status() -> None:
         typer.echo(
             f"Active 2FA proof: {active.name} — a tap replaces the code; TOTP is the fallback."
         )
+
+
+def _phone_send_test_notification(cfg) -> str | None:
+    """Send phone approvals' connectivity test notification (no Approve/Deny
+    buttons). ``None`` on success, else the one-line failure reason."""
+    from doberman.auth.ntfy import NtfyChannel, NtfyUnavailable
+
+    try:
+        NtfyChannel(cfg).publish(title="Doberman", message="Doberman is connected to this phone")
+    except NtfyUnavailable as exc:
+        return str(exc)
+    return None
+
+
+@phone_app.command("setup")
+def phone_setup(
+    server: str = typer.Option(NTFY_DEFAULT_SERVER, "--server", help="ntfy server URL."),
+    token: str = typer.Option(
+        "", "--token", help="Bearer token, for a self-hosted/auth-protected server."
+    ),
+    wait: int = typer.Option(
+        60, "--wait", help="Seconds to wait for a tap before falling back (clamped 10-300)."
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing config."),
+) -> None:
+    """Set up phone approvals: generate the topics, opt in, send a test notification."""
+    from doberman.auth import approval_config, ntfy
+
+    if ntfy.load_config() is not None and not force:
+        typer.echo(
+            "error: phone approvals are already configured; use --force to overwrite", err=True
+        )
+        raise typer.Exit(code=1)
+    cfg = ntfy.new_config(server=server, token=token, wait_s=wait)
+    ntfy.save_config(cfg)
+    approval_config.enable(ntfy.METHOD_NAME)
+    typer.echo(
+        f"Subscribe on your phone: install the ntfy app, add topic {cfg.topic} on {cfg.server}"
+    )
+    typer.echo(f"Waiting {cfg.wait_s}s for a tap before falling back to the local prompt.")
+    reason = _phone_send_test_notification(cfg)
+    if reason is not None:
+        typer.echo(
+            f"warning: test notification failed ({reason}); config kept, run doberman phone "
+            "test after subscribing"
+        )
+
+
+@phone_app.command("test")
+def phone_test() -> None:
+    """Send the phone approvals connectivity test notification (no Approve/Deny buttons)."""
+    from doberman.auth import ntfy
+
+    cfg = ntfy.load_config()
+    if cfg is None:
+        typer.echo("error: phone approvals are not configured; run doberman phone setup", err=True)
+        raise typer.Exit(code=1)
+    reason = _phone_send_test_notification(cfg)
+    if reason is not None:
+        typer.echo(f"error: test notification failed ({reason})", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("Test notification sent — check your phone.")
+
+
+@phone_app.command("status")
+def phone_status() -> None:
+    """Show whether phone approvals are on, and where they publish (never the full topics)."""
+    from urllib.parse import urlparse
+
+    from doberman.auth import approval_config, ntfy
+
+    cfg = ntfy.load_config()
+    if cfg is None or not approval_config.is_enabled(ntfy.METHOD_NAME):
+        typer.echo("phone approvals: off (doberman phone setup)")
+        return
+    host = urlparse(cfg.server).hostname or cfg.server
+    typer.echo(f"phone approvals: on — {host}, topic {cfg.topic[:4]}…, wait {cfg.wait_s} s")
+
+
+@phone_app.command("off")
+def phone_off() -> None:
+    """Turn phone approvals off: disable the method and delete the local config."""
+    from doberman.auth import approval_config, ntfy
+
+    approval_config.disable(ntfy.METHOD_NAME)
+    if ntfy.delete_config():
+        typer.echo("Phone approvals disabled; config removed.")
+    else:
+        typer.echo("Phone approvals disabled; no config was present.")
 
 
 @plugins_app.command("list")

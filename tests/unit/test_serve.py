@@ -20,6 +20,7 @@ import doberman.cli.main as cli
 from doberman.auth.dashboard_prompter import DashboardPrompter
 from doberman.auth.elicitation_prompter import ElicitationPrompter
 from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
+from doberman.auth.ntfy import NtfyPrompter
 from doberman.auth.tty_prompter import TtyPrompter
 from doberman.proxy import executor
 from doberman.proxy import serve as serve_mod
@@ -180,6 +181,7 @@ async def test_serve_stdio_sets_repo_root_and_elicitation_first_prompter(monkeyp
     assert isinstance(executor.AUTH_PROMPTER, FallbackPrompter)
     assert [type(p) for p in executor.AUTH_PROMPTER.prompters] == [
         DashboardPrompter,
+        NtfyPrompter,
         ElicitationPrompter,
         GuiPrompter,
         TtyPrompter,
@@ -410,6 +412,7 @@ async def test_serve_http_wires_streamable_http_client(monkeypatch):
     assert isinstance(executor.AUTH_PROMPTER, FallbackPrompter)
     assert [type(p) for p in executor.AUTH_PROMPTER.prompters] == [
         DashboardPrompter,
+        NtfyPrompter,
         ElicitationPrompter,
         GuiPrompter,
         TtyPrompter,

@@ -4,7 +4,7 @@ Doberman can forward its redacted decision records to any **OTLP/HTTP-compatible
 
 ## How it works
 
-Each time Doberman reaches a `PASS` / `AUTH` / `BLOCK` verdict, it calls every registered `AuditSink`. The OTel sink enqueues the record (non-blocking, O(1)) and a background daemon thread serializes and POSTs it as an OTLP `LogRecord` to your collector.
+Each time Doberman reaches a `PASS` / `AUTH` / `BLOCK` verdict, it calls every registered `AuditSink`. The OTel (OpenTelemetry) sink enqueues the record (non-blocking, O(1)) and a background daemon thread serializes and POSTs it as an OTLP `LogRecord` to your collector.
 
 The sink is **best-effort**. Records still queued at process exit, or dropped on queue overflow, are lost. This is a bridge to your own log pipeline, not a delivery guarantee.
 
@@ -43,10 +43,10 @@ queue_max: 1000
 > Doberman refuses `localhost`, `127.x.x.x`, and `::1` as endpoints, because
 > audit records contain reason codes and decision metadata that are
 > redaction-sensitive. An accidental loopback configuration would silently
-> discard every export; a non-loopback host makes the misconfiguration
-> visible. For local testing, use a collector reachable by hostname (e.g.
-> `otel-collector.internal`) or run the collector in Docker and reference it
-> by container name.
+> discard every export. A non-loopback host makes the misconfiguration
+> visible. For local testing, use a collector reachable by hostname (for
+> example, `otel-collector.internal`) or run the collector in Docker and
+> reference it by container name.
 
 ### 2. Set the auth token (if required)
 
