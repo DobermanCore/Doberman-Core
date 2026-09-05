@@ -2,11 +2,13 @@
 
 import asyncio
 import os
+import sqlite3
 import stat
 
 import aiosqlite
+import pytest
 
-from doberman.storage.db import SCHEMA_VERSION, db_path, open_db
+from doberman.storage.db import SCHEMA_VERSION, _add_column_if_missing, db_path, open_db
 
 _EXPECTED_TABLES = {
     "schema_version",
@@ -303,17 +305,49 @@ async def test_migration_tolerates_a_racing_process_adding_a_column_first(tmp_pa
     assert versions == [SCHEMA_VERSION]
 
 
+# --- _add_column_if_missing itself (direct unit test, review fix for #619) -
+
+
+async def test_add_column_if_missing_returns_true_then_false_then_reraises(tmp_path):
+    # For a single-column ALTER (unlike the v14->v15 six-column loop),
+    # _migrate_legacy's own "is this column already there" guard short-circuits
+    # before _add_column_if_missing ever runs once the column is present, so
+    # no _migrate_legacy-shaped test can reach the helper's except-branch.
+    # Exercise the helper directly instead: first call adds the column and
+    # returns True; a second call with the same column_def hits sqlite's
+    # "duplicate column name" and returns False without raising; a genuinely
+    # different OperationalError (ALTER against a table that doesn't exist)
+    # still re-raises.
+    path = db_path(str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = await aiosqlite.connect(str(path))
+    await conn.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY)")
+    await conn.commit()
+
+    assert await _add_column_if_missing(conn, "widgets", "name TEXT") is True
+    assert "name" in await _columns(conn, "widgets")
+
+    assert await _add_column_if_missing(conn, "widgets", "name TEXT") is False
+
+    with pytest.raises(sqlite3.OperationalError):
+        await _add_column_if_missing(conn, "no_such_table", "name TEXT")
+
+    await conn.close()
+
+
 # --- v2 -> v3: decisions gain `entity_id` (oldest guarded ALTER) -----------
 
 
 async def test_migration_tolerates_entity_id_already_present(tmp_path):
-    # Mirrors test_migration_tolerates_a_racing_process_adding_a_column_first
-    # for the oldest additive ALTER in _migrate_legacy: two processes racing
-    # the v2->v3 decisions.entity_id ALTER on the same pre-migration DB. Build
-    # a v2-shaped decisions table where entity_id is already present (the
-    # loser's view after the winner committed first) plus one existing row,
-    # and confirm opening doesn't raise "duplicate column name" and still
-    # reaches SCHEMA_VERSION with the row intact.
+    # NOT a race-branch test (that would require reaching _add_column_if_missing
+    # with the column already present, but _migrate_legacy's own presence-check
+    # short-circuits first for this single-column ALTER — see
+    # test_add_column_if_missing_returns_true_then_false_then_reraises above for
+    # direct coverage of the helper's guard). This test instead confirms the
+    # ordinary migration path: a v2-shaped decisions table (entity_id already
+    # in the CREATE, as a hand-built fixture would look after any prior
+    # migration) plus one existing row still opens cleanly, migrates to
+    # SCHEMA_VERSION, and keeps its data.
     path = db_path(str(tmp_path))
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = await aiosqlite.connect(str(path))
