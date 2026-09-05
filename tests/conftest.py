@@ -403,7 +403,8 @@ def pytest_runtest_teardown(item: pytest.Item) -> None:
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Auto-mark every test that uses the GUI prompter tests' ``real_root``
-    fixture ``real_display`` (item 12 of the round-4 GUI dialog critique).
+    fixture ``real_display`` (item 12 of the round-4 GUI dialog critique) and
+    ``xdist_group("tk")`` (issue #551).
 
     A fixture can't add its own marker in time for ``-m``/``-k`` selection --
     by the time a fixture runs, mark-based deselection has already happened at
@@ -413,10 +414,20 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     approximate the headless Linux CI runner (which skips every real-Tk test)
     via ``-m "not real_display"`` without a real display test actually
     needing one to be deselected.
+
+    # ponytail: every real-Tk window this file opens can steal OS/WM focus
+    # from every other one -- confirmed as the cause of both the local
+    # `pytest -n 4` flake and the windows-latest CI flake in #551 (a real,
+    # asynchronous focus change racing a test's own focus assertion). CI runs
+    # `--dist loadgroup`, so one shared xdist group serializes every real-Tk
+    # test onto the same worker instead of pinning each test individually;
+    # upgrade path is a real per-OS focus arbiter if serializing ever stops
+    # being enough.
     """
     for item in items:
         if "real_root" in getattr(item, "fixturenames", ()):
             item.add_marker(pytest.mark.real_display)
+            item.add_marker(pytest.mark.xdist_group("tk"))
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
