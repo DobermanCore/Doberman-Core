@@ -1,15 +1,16 @@
 # Tutorial: custom Detector plugin
 
 Doberman discovers third-party **behavioral detectors** through the
-**`doberman.detectors`** Python entry-point group (`DETECTOR_GROUP` in
-`src/doberman/engine/registry.py`). Structurally this seam is identical to
-`doberman.rules` (both contribute `Guardrail`-shaped objects), but detectors run
-in the **subjective** guardrail (Feature 9 — the UEBA-style behavioral layer),
-not the objective one. Core never imports your package by name — install the
-package, enable it by name, and `discover_detectors()` /
+**`doberman.detectors`** Python entry-point group (an entry point is a name a
+package lists in its `pyproject.toml` so other code can find and load it;
+`DETECTOR_GROUP` in `src/doberman/engine/registry.py`). Structurally this seam
+is identical to `doberman.rules` (both contribute `Guardrail`-shaped objects),
+but detectors run in the **subjective** guardrail (the UEBA-style behavioral
+layer), not the objective one. Core never imports your package by name.
+Install the package, enable it by name, and `discover_detectors()` /
 `SubjectiveGuardrail()` pick it up automatically.
 
-This mini-package is a five-minute copy template — a sibling to
+This mini-package is a five-minute copy template, a sibling to
 [`examples/plugin-guardrail/`](../plugin-guardrail/) for the `doberman.detectors`
 seam.
 
@@ -28,7 +29,7 @@ Invariants this example preserves:
 | **Fail-closed core unchanged** | A broken plugin is isolated by core; this package does not catch-and-swallow errors to PASS. |
 | **No core patch** | Registration is entirely via this package's `pyproject.toml`. |
 
-## Opt-in by name (required — every seam, not just this one)
+## Opt-in by name (required for every seam, not just this one)
 
 Installing this package is **not enough on its own**. Every entry-point seam is
 gated by an opt-in allowlist (`doberman.engine.plugin_config`): an entry point
@@ -87,7 +88,7 @@ assert g.evaluate(action, ctx).verdict is Verdict.AUTH
 ```
 
 (Run this only after `doberman plugins enable example_detector`, same as the CLI
-round trip above — the manual smoke goes through real discovery too.)
+round trip above; the manual smoke goes through real discovery too.)
 
 Uninstall when finished so other local experiments are not affected:
 
@@ -96,7 +97,7 @@ pip uninstall -y doberman-example-plugin-detector
 ```
 
 > **Important:** while this package is installed AND enabled, core's "no plugins
-> registered" standalone checks will see it — that is expected. Disable/uninstall
+> registered" standalone checks will see it. That is expected. Disable/uninstall
 > before re-running the full core suite. Default CI does **not** install this
 > package; it only path-imports the detector class for evaluate/raise-only checks.
 
@@ -137,10 +138,10 @@ examples/plugin-detector/
 4. Prefer `ReasonCode` values from `doberman.models` (do not invent free-form codes).
 5. Prefer `ctx.metadata["raw_arguments"]` for matching when present (a redacted `action.target` can hide the real signal).
 6. Never put secrets, full commands/paths, or request payloads into `explanation` or logs.
-7. Only return PASS / AUTH results that *raise* risk for your signal; abstain otherwise — a detector plugin may never return `BLOCK`.
+7. Only return PASS / AUTH results that *raise* risk for your signal; abstain otherwise. A detector plugin may never return `BLOCK`.
 8. Remember your plugin runs against its **own copy** of `ctx` (see `doberman.engine.decision_engine.plugin_ctx`): it can never mutate what a later built-in, another plugin, or the caller sees.
-9. Document (in your own README) that a user must `doberman plugins enable <name>` — installing the package is never enough on its own.
+9. Document (in your own README) that a user must `doberman plugins enable <name>`: installing the package is never enough on its own.
 
 Use `src/doberman/engine/detectors/` (the built-in behavioral detectors, e.g. `TokenChannelDetector`) as the reference template.
 
-This tutorial only steps up **shell execs** with a long pipeline — keep demo scope minimal.
+This tutorial only steps up **shell execs** with a long pipeline. Keep demo scope minimal.
