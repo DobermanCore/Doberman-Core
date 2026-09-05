@@ -18,7 +18,7 @@ Your AI coding agent can `rm -rf` your repo, leak your API keys, or get prompt-i
 </div>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DobermanCore/Doberman-Core/main/docs/assets/dash-demo.gif" alt="The doberman demo attack reel against the live dashboard: a secret exfiltration, a destructive rm -rf, a protected-branch force push, a smuggled-token egress and a .env read are blocked in the live feed, then a human denies a high-risk SSH-trust-file write from the pending-approvals queue" width="820">
+  <img src="https://raw.githubusercontent.com/DobermanCore/Doberman-Core/main/docs/assets/dash-demo.gif" alt="The doberman demo attack reel against the live dashboard: a secret exfiltration, a destructive rm -rf, a protected-branch force push, a smuggled-token egress and a .env read are blocked in the live feed, then a human denies a high-risk shell egress to an unknown host from the pending-approvals queue" width="820">
   <br>
   <em><code>doberman demo</code> against the live dashboard (<code>doberman dash</code>): five attacks blocked as they happen, then a human denies a high-risk approval.</em>
 </p>
