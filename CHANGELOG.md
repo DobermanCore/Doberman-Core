@@ -60,6 +60,7 @@ Closes detection bypasses and rebuilds setup, the dashboard, and the TUI.
 - Deny is now the dashboard's primary action and needs the same two-step confirm as Approve; lowering the security mode needs the same confirm gesture (#533)
 - `doberman setup` now ends honestly: `-- Setup complete/pending/incomplete --` with exit codes 0/1/3, and its output wraps and colors like `doberman status`/`doctor` (#535)
 - The subjective-layer benchmark diagnostic reports a held-out-benign false-positive rate next to the AUC and gains a seeded `--suite devsession` corpus that engages the full ensemble (#542)
+- Tk auth dialogs show one decision per screen: subtitle, reassurance, and keyboard note fold into "What is this?"; the severity word prints once (#590)
 
 ### Fixed
 - The auth dialog now shows a keyboard hint (`Tab/Arrows: switch - Enter: confirm - Esc: deny`) and grows to fit it instead of clipping (#507, thanks @thesageak)
@@ -71,6 +72,7 @@ Closes detection bypasses and rebuilds setup, the dashboard, and the TUI.
 - `doberman hook cursor` now reads stdin as raw UTF-8 bytes, so the BOM Windows `cursor-agent` emits no longer turns every hook into a deny (#571)
 - `doberman hook pre` now answers Cursor-shaped payloads instead of failing closed, which had denied every Cursor shell command on machines with global hooks installed (#576)
 - The test suite no longer touches your real Claude settings: every test gets a throwaway home and a guard fails the run if it changes (#577)
+- The store skips its schema migration when already current, about 11 fewer fsyncs per decided action (#591)
 
 ### Docs
 - Added `docs/AUTHORITY_TIERS.md`, documenting which layer of a decision may `BLOCK` versus only step up to `AUTH` (#544)
