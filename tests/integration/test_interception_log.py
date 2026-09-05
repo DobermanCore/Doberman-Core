@@ -3,13 +3,15 @@
 import json
 import logging
 import re
+from datetime import datetime, timezone
 
 import pytest
 
-from doberman.models import Verdict
+from doberman.models import ActionType, SecurityObject, Verdict
 from doberman.proxy import executor, interception_log
 from doberman.proxy.interception_log import LOGGER_NAME
 from doberman.proxy.normalize import normalize
+from doberman.storage.log import path_class
 
 from .test_proxy_passthrough import DeadSession, proxied_session
 
@@ -146,3 +148,49 @@ def test_secret_shaped_value_never_logged(caplog):
     interception_log.log_action(action, Verdict.PASS)
 
     assert secret_value not in caplog.text
+
+
+def _file_action(target: str) -> SecurityObject:
+    return SecurityObject(
+        id="act-path-class",
+        ts=datetime(2026, 6, 8, tzinfo=timezone.utc),
+        agent_role="r",
+        action_type=ActionType.file_read,
+        tool_name="fs_read",
+        target=target,
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        # Relative path, directory + extensionless filename: the raw filename
+        # used to be returned verbatim instead of being classed like any
+        # other filename. See BUILD-LOG / path-class-report for the finding.
+        (".ssh/id_rsa", ".ssh/*"),
+        ("config/credentials", "config/*"),
+        ("secrets/prod", "secrets/*"),
+        # Absolute POSIX path, same extensionless-under-a-directory shape.
+        ("/etc/passwd", "/etc/*"),
+        # Windows drive path, same shape.
+        ("C:/Users/x/.aws/credentials", "C:/Users/x/.aws/*"),
+    ],
+)
+def test_extensionless_name_under_a_directory_is_wildcarded_not_verbatim(target, expected):
+    result = path_class(_file_action(target))
+    assert result == expected
+    # The raw filename component must never survive verbatim in the class.
+    raw_name = target.rsplit("/", 1)[-1]
+    assert raw_name not in result
+
+
+def test_bare_dotfile_with_no_directory_is_still_its_own_class():
+    """The documented legitimate shape is preserved: a top-level dotfile
+    (no directory component) is itself the class — see path_class()'s
+    docstring (`.env` -> `.env`)."""
+    assert path_class(_file_action(".env")) == ".env"
+
+
+def test_extensioned_name_under_a_directory_is_still_wildcarded():
+    """Pinned baseline, unaffected by the extensionless fix."""
+    assert path_class(_file_action("backend/auth/session.ts")) == "backend/auth/*.ts"

@@ -6,6 +6,8 @@ whole-tree dropped); empty `allowed` means nothing is implicitly in scope; and
 fail-toward-restriction rule.
 """
 
+import os
+
 import pytest
 
 from doberman import config
@@ -95,3 +97,73 @@ def test_malformed_role_file_fails_closed_to_restrictive(tmp_path):
     cfg.mkdir()
     (cfg / "role.yaml").write_text("- just\n- a\n- list\n", encoding="utf-8")
     assert config.load_active_role(str(tmp_path)) is MOST_RESTRICTIVE_ROLE
+
+
+def test_load_builtin_roles_is_cached_across_many_calls():
+    # Finding (#552): load_builtin_roles() re-read and re-parsed the packaged
+    # builtin_roles.yaml on every call -- and it is called from
+    # config.load_active_role() on every decided action (both the host-hook
+    # and proxy hot paths). Now lru_cache(maxsize=1), the same mechanism as
+    # #547's fingerprint-key cache: the real (disk-touching) loader must run
+    # exactly once no matter how many load_builtin_roles() calls follow.
+    load_builtin_roles.cache_clear()
+
+    for _ in range(50):
+        load_builtin_roles()
+
+    info = load_builtin_roles.cache_info()
+    assert info.misses == 1
+    assert info.hits == 49
+
+
+def test_load_active_role_named_role_parses_once_for_unchanged_content(tmp_path):
+    # Finding (#552): load_active_role() re-read and re-parsed role.yaml from
+    # disk on EVERY call with zero caching, and it is called once per decided
+    # action on both hot paths (hosthooks/spine.py, proxy/executor.py).
+    # Instrumented count (test-logs/issue-552-count-role-reads.py, BEFORE this
+    # fix): 20 decided actions through spine.evaluate_action -> 20 role.yaml
+    # reads. Now content-keyed: the read still happens every call (the file is
+    # tiny), but the expensive parse+validate must run exactly once for N
+    # calls against unchanged content.
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text("role: backend\n", encoding="utf-8")
+    config._parse_role_yaml_data.cache_clear()
+
+    for _ in range(20):
+        role = config.load_active_role(str(tmp_path))
+        assert role is not None
+        assert role.name == "backend"
+
+    info = config._parse_role_yaml_data.cache_info()
+    assert info.misses == 1  # the real (disk-touching) parse ran exactly once
+    assert info.hits == 19
+
+
+def test_load_active_role_picks_up_a_mid_process_role_yaml_edit(tmp_path):
+    # The cache must NOT go stale the way a naive full-process cache would: a
+    # human (or `doberman role enable-default`) can edit role.yaml while a
+    # long-lived process (the RB proxy) keeps deciding actions, so the very
+    # next decision must see the new role. This reproduces the real race a
+    # (path, mtime_ns) key missed (#552 review): force the rewrite to land at
+    # the EXACT SAME mtime as the first write (coarse filesystem clock
+    # resolution can do this for real) rather than dodging it with a +5s
+    # bump -- content-based keying must not depend on the clock at all.
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    role_path = cfg / "role.yaml"
+    role_path.write_text("role: backend\n", encoding="utf-8")
+    config._parse_role_yaml_data.cache_clear()
+
+    first = config.load_active_role(str(tmp_path))
+    assert first is not None
+    assert first.name == "backend"
+
+    stat_before = role_path.stat()
+    role_path.write_text("role: frontend\n", encoding="utf-8")
+    os.utime(role_path, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+    assert role_path.stat().st_mtime_ns == stat_before.st_mtime_ns  # same-tick, by construction
+
+    second = config.load_active_role(str(tmp_path))
+    assert second is not None
+    assert second.name == "frontend"

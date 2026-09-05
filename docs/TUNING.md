@@ -156,3 +156,37 @@ live in the [recovery guide](RECOVERY.md).
 Every gated change above is also recorded as a **policy version** (`pv1:` + a content hash) in
 `.doberman/policies.db`. `doberman policy-versions` lists them, and `--verify` confirms the policy on
 disk is the last recorded one. See [POLICY_VERSIONS.md](POLICY_VERSIONS.md).
+
+## Phone approvals (ntfy), `doberman phone`
+
+When a `two_factor` or `role_elevation` challenge needs a human, Doberman can push it to your phone
+through [ntfy](https://ntfy.sh) (a free, open push notification service; self-hosting is also
+possible) instead of only waiting on a local dialog. The notification carries Approve and Deny
+buttons, so a tap answers the challenge from wherever you are.
+
+Four commands:
+
+- `doberman phone setup [--server URL] [--token TOKEN] [--wait SECONDS] [--force]` turns it on. It
+  generates two secret topic names, prints the one to subscribe to in the ntfy app (the second,
+  reply topic, is never shown), and sends a test notification.
+- `doberman phone test` sends another test notification once you're subscribed.
+- `doberman phone status` shows whether it's on, the server host, and the wait time, never the full
+  topic or token.
+- `doberman phone off` turns it off and deletes the local config.
+
+The config file lives at `%LOCALAPPDATA%\doberman\ntfy.json` on Windows, or
+`$XDG_CONFIG_HOME/doberman/ntfy.json` (falling back to `~/.config/doberman/ntfy.json` when that
+variable is unset) on Linux/macOS. `DOBERMAN_NTFY_FILE` overrides the path.
+
+`--wait` sets how many seconds Doberman waits for a tap, clamped to 10-300 (default 60). If nobody
+taps in time, Doberman falls back to the terminal TOTP (one-time code app) prompt. Silence never
+approves or denies anything on its own.
+
+`--server` points setup at a self-hosted ntfy instance instead of the public `ntfy.sh`. `--token` is
+a bearer token for that server, when it needs one.
+
+Both topic names and the token are secrets, not just the reply topic. The push notification itself
+carries the reply URL, the exact Approve/Deny reply text, and the bearer header, so anyone who can
+read the topic can approve or deny without ever learning the reply topic. If self-hosting, scope the
+token narrowly to those two topics. Prefer letting `phone setup` prompt for `--token` rather than
+typing it on the command line, since a typed argument lands in shell history.

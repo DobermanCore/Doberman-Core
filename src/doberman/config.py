@@ -30,6 +30,7 @@ This module is policy core: it must never import ``doberman.proxy``.
 import asyncio
 import logging
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -62,6 +63,24 @@ def _policy_file_path(repo_root: str) -> Path:
     return Path(repo_root) / CONFIG_DIR / POLICY_FILE
 
 
+@lru_cache(maxsize=8)
+def _parse_role_yaml_data(raw: bytes) -> dict:
+    """Parse+validate ``role.yaml``, cached on its raw content (#552).
+
+    Same mechanism as #547's key cache (``functools.lru_cache``), keyed on
+    the file's ``bytes`` rather than ``(path, mtime_ns)``: a same-mtime-tick
+    rewrite (coarse filesystem clock resolution, or two fast writes) could
+    hash to the same mtime key and serve stale data -- a raise-only
+    violation. Content is the only key that can never be stale. The read
+    itself stays outside this helper (see ``load_active_role``) so this
+    function is pure parse+validate; ``maxsize=8`` bounds memory across a
+    handful of repo roots/edits without unbounded growth. Raises straight
+    through on parse failure -- never cached (``lru_cache`` only memoizes
+    success).
+    """
+    return yaml.safe_load(raw.decode("utf-8")) or {}
+
+
 def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
     """Resolve the repo's active role, or ``None`` if none is configured.
 
@@ -78,7 +97,10 @@ def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
         return load_builtin_roles().get(DEFAULT_ROLE_NAME, MOST_RESTRICTIVE_ROLE)
 
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        # ponytail: one small read per decision; the parse+validate work below
+        # is cached on the bytes themselves, so no staleness ceiling remains.
+        raw = path.read_bytes()
+        data = _parse_role_yaml_data(raw)
     except (OSError, yaml.YAMLError):
         logger.warning("could not read %s; falling back to the most-restrictive role", path)
         return MOST_RESTRICTIVE_ROLE

@@ -9,11 +9,13 @@ the deployable counterpart to :func:`doberman.proxy.mcp_proxy.build_proxy_server
 builds the proxy object; this module gives it a transport.
 
 SECURITY: nothing here writes this process's stdout (that is the agent's MCP channel). AUTH
-challenges try four channels in order: the **dashboard** first
+challenges try five channels in order: the **dashboard** first
 (:class:`~doberman.auth.dashboard_prompter.DashboardPrompter` — engages only when a dash
 server's heartbeat is fresh, D3; falls back with zero added latency if no dashboard is running,
 and falls back on its own poll timeout too — a live-but-unwatched dashboard must not deny a
-human who can still answer elsewhere), then MCP **elicitation**
+human who can still answer elsewhere), then the **phone**
+(:class:`~doberman.auth.ntfy.NtfyPrompter` — a push notification with Approve/Deny buttons;
+a no-op when unconfigured), then MCP **elicitation**
 (:class:`~doberman.auth.elicitation_prompter.ElicitationPrompter` — rendered natively inside
 the agent client, for clients that support it; never used for 2FA codes), then a topmost GUI
 dialog (:class:`~doberman.auth.gui_prompter.GuiPrompter` — when an agent's TUI owns the
@@ -35,6 +37,7 @@ from mcp.server.stdio import stdio_server
 from doberman.auth.dashboard_prompter import DashboardPrompter
 from doberman.auth.elicitation_prompter import ElicitationPrompter
 from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
+from doberman.auth.ntfy import NtfyPrompter
 from doberman.auth.tty_prompter import TtyPrompter
 from doberman.config import load_policy
 from doberman.engine.objective import ObjectiveGuardrail
@@ -48,6 +51,26 @@ def _redacted(url: str) -> str:
     """Strip the query string and fragment before a URL is ever logged — the query string
     may carry a bearer token or similar credential."""
     return urlsplit(url)._replace(query="", fragment="").geturl()
+
+
+def build_auth_prompter(proxy, loop: asyncio.AbstractEventLoop, repo_root: str) -> FallbackPrompter:
+    """The dashboard→phone→elicitation→GUI→terminal chain (see module docstring).
+
+    Factored out of :func:`_serve` so the chain order is a plain, synchronous unit
+    test instead of one only reachable by driving the whole async proxy loop.
+    """
+    # ponytail: the phone waits its own `wait_s` before the local dialog opens — a
+    # fixed step in the chain, not a fan-out race. Upgrade path: first-answer-wins
+    # concurrent notify, if a sequential wait proves too slow in practice.
+    return FallbackPrompter(
+        [
+            DashboardPrompter(repo_root),
+            NtfyPrompter(),
+            ElicitationPrompter(proxy, loop),
+            GuiPrompter(),
+            TtyPrompter(),
+        ]
+    )
 
 
 async def _serve(
@@ -89,13 +112,8 @@ async def _serve(
             proxy = build_proxy_server(session)
             # The elicitation channel needs the proxy (to resolve the per-request agent
             # session) and this loop (challenges run in a worker thread and bridge back).
-            executor.AUTH_PROMPTER = FallbackPrompter(
-                [
-                    DashboardPrompter(executor.REPO_ROOT),
-                    ElicitationPrompter(proxy, asyncio.get_running_loop()),
-                    GuiPrompter(),
-                    TtyPrompter(),
-                ]
+            executor.AUTH_PROMPTER = build_auth_prompter(
+                proxy, asyncio.get_running_loop(), executor.REPO_ROOT
             )
             async with stdio_server() as (agent_read, agent_write):
                 # ASCII only: this line lands in whatever stderr the client gave us, and a
