@@ -43,16 +43,26 @@ MAX_VALUE_LENGTH = 256
 # Obvious secret shapes (original stopgap; kept as a floor — see
 # `contains_strong_secret` below for the canonical, more complete detector):
 # long unbroken token-ish strings, common key prefixes, key=value secrets.
-_SECRET_SHAPES = re.compile(
-    r"""
+_KEY_SHAPES_SRC = r"""
     (?:AKIA[0-9A-Z]{16})                              # AWS access key id
     | (?:sk-[A-Za-z0-9_\-]{16,})                      # api secret key prefix
     | (?:gh[pousr]_[A-Za-z0-9]{20,})                  # github tokens
     | (?:-----BEGIN[ A-Z]*PRIVATE\ KEY-----)          # PEM private key
+"""
+_SECRET_SHAPES = re.compile(
+    _KEY_SHAPES_SRC
+    + r"""
     | (?:\b[A-Za-z0-9+/_\-]{40,}\b)                   # long unbroken token
     """,
     re.VERBOSE,
 )
+# The known shapes alone, for the prompt-only `display_target`: the long-run
+# floor above is exactly what a human must read at an auth prompt (a path, a
+# URL, a git ref), so the display keeps those and masks only what looks like a key.
+_KNOWN_SECRET_SHAPES = re.compile(_KEY_SHAPES_SRC, re.VERBOSE)
+
+# `display_target` length bound: enough to read a real command, never a payload.
+DISPLAY_MAX_LENGTH = 300
 
 # Argument keys whose values are secret-ish regardless of shape.
 _SENSITIVE_KEYS = re.compile(
@@ -662,6 +672,67 @@ def _extract_target(action_type: ActionType, arguments: dict[str, Any]) -> tuple
                 metadata["target_count"] = len(value)
                 return first, metadata
     return None, metadata
+
+
+def _mask_secret_tokens(text: str) -> str:
+    """Mask the whitespace-delimited tokens that look like a credential."""
+
+    def _mask(match: re.Match[str]) -> str:
+        token = match.group(0)
+        name, sep, _value = token.partition("=")
+        if sep and _SENSITIVE_KEYS.search(name):
+            return f"{name}={REDACTED}"
+        if len(token) >= _MIN_SECRET_LENGTH and (
+            _KNOWN_SECRET_SHAPES.search(token) or contains_strong_secret(token)
+        ):
+            return REDACTED
+        return token
+
+    return re.sub(r"\S+", _mask, text)
+
+
+def display_target(action_type: ActionType, arguments: dict[str, Any]) -> str | None:
+    """What the agent asked for, rendered for the HUMAN at an auth prompt.
+
+    The logged ``target`` comes from the redacted arguments, where any value
+    over :data:`MAX_VALUE_LENGTH` or holding a 40+ char unbroken run (a long
+    path, a hash, a URL) is replaced wholesale — so for most real shell
+    commands it is the literal ``<redacted>``, and a prompt built from it gave
+    the human nothing to judge. This renders the RAW arguments instead, masks
+    only the tokens that look like a credential, and bounds the length.
+
+    Prompt-only by contract: it rides on the challenge copy of the action
+    (``metadata["display_target"]``, see :func:`challenge_copy`), is never
+    persisted, and the dashboard's pending row never carries it (that channel
+    withholds the command by design). ``None`` when there is nothing to show;
+    never raises.
+    """
+    try:
+        text = command_line_from_arguments(arguments)
+        if not text:
+            text, _ = _extract_target(action_type, arguments)
+        if not text:
+            return None
+        shown = _mask_secret_tokens(text)
+        if len(shown) > DISPLAY_MAX_LENGTH:
+            extra = len(shown) - DISPLAY_MAX_LENGTH
+            shown = f"{shown[:DISPLAY_MAX_LENGTH]}... ({extra} more chars)"
+        return shown
+    except Exception:  # noqa: BLE001 — a display failure must never break a challenge
+        return None
+
+
+def challenge_copy(action: SecurityObject, arguments: dict[str, Any]) -> SecurityObject:
+    """``action`` with the prompt-only display attached, for the AUTH challenge alone.
+
+    The copy is what the prompters render (``auth.provider.challenge_parts``
+    reads ``metadata["display_target"]``); the original stays what is logged.
+    Returns ``action`` itself when there is nothing to show.
+    """
+    shown = display_target(action.action_type, arguments)
+    if not shown:
+        return action
+    return action.model_copy(update={"metadata": {**action.metadata, "display_target": shown}})
 
 
 def _action_fingerprint(
