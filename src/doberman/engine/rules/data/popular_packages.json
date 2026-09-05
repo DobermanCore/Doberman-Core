@@ -1,20 +1,35 @@
 {
-  "generated_at": "2026-09-02",
+  "generated_at": "2026-09-05",
   "pypi": [
-    "requests", "numpy", "flask", "django", "pytest", "boto3", "pyyaml",
-    "click", "urllib3", "setuptools", "pip", "wheel", "six", "certifi",
-    "idna", "charset-normalizer", "cryptography", "pandas", "scipy", "pillow",
-    "boto", "request"
+    "aiobotocore", "annotated-types", "anyio", "attrs", "boto", "boto3",
+    "botocore", "certifi", "cffi", "charset-normalizer", "click",
+    "cryptography", "django", "filelock", "flask", "fsspec",
+    "grpcio-status", "h11", "httpcore", "httpx", "idna", "iniconfig",
+    "jinja2", "markupsafe", "numpy", "packaging", "pandas", "pathspec",
+    "pillow", "pip", "platformdirs", "pluggy", "protobuf", "pycparser",
+    "pydantic", "pydantic-core", "pygments", "pyjwt", "pytest",
+    "python-dateutil", "python-dotenv", "pyyaml", "request", "requests",
+    "s3transfer", "scipy", "setuptools", "six", "typing-extensions",
+    "typing-inspection", "urllib3", "wheel"
   ],
   "npm": [
-    "react", "lodash", "express", "axios", "chalk", "commander", "webpack",
-    "typescript", "eslint", "prettier", "react-dom", "vue", "next", "jest",
-    "moment", "dotenv", "uuid", "semver", "request", "left-pad",
-    "vuex", "nest"
+    "ajv", "ansi-styles", "axios", "chalk", "chokidar", "commander",
+    "cross-env", "d3", "debug", "dotenv", "esbuild", "eslint", "express",
+    "fs-extra", "glob", "https-proxy-agent", "jest", "jquery", "left-pad",
+    "lodash", "lru-cache", "minimatch", "moment", "mongoose", "nanoid",
+    "nest", "next", "p-limit", "postcss", "prettier", "react", "react-dom",
+    "request", "resolve", "semver", "source-map", "string-width",
+    "strip-ansi", "supports-color", "tslib", "typescript", "uuid", "vue",
+    "vuex", "webpack", "which", "wrap-ansi", "ws", "yaml", "yargs", "zod"
   ],
   "cargo": [
-    "serde", "tokio", "clap", "rand", "regex", "anyhow", "thiserror", "log",
-    "futures", "syn"
+    "aho-corasick", "anyhow", "autocfg", "base64", "bitflags", "cc",
+    "cfg-if", "clap", "futures", "getrandom", "hashbrown", "heck",
+    "indexmap", "itertools", "itoa", "libc", "log", "memchr", "once_cell",
+    "proc-macro2", "quote", "rand", "rand_chacha", "rand_core", "regex",
+    "regex-automata", "regex-syntax", "rustix", "ryu", "serde",
+    "serde_derive", "serde_json", "smallvec", "socket2", "syn", "thiserror",
+    "thiserror-impl", "tokio", "unicode-ident", "windows-sys"
   ],
   "rubygems": [
     "rails", "rspec", "rake", "bundler", "nokogiri", "devise", "sidekiq",
