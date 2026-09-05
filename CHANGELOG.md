@@ -6,6 +6,77 @@ gets its own [notes on GitHub](https://github.com/DobermanCore/Doberman-Core/rel
 
 Not yet released: [`changelog.d/`](changelog.d/), compiled into the next version.
 
+## v0.18.6 — 2026-09-04
+Closes detection bypasses and rebuilds setup, the dashboard, and the TUI.
+
+### Security
+- The destructive-command rule now scans a command-shaped argument whatever the tool is called, closing a gap where renaming the tool avoided detection (#519)
+- Every rule/detector/auth-provider plugin is opt-in by name (`doberman plugins enable <name>`); role elevation now always also asks the local provider (#520)
+- A password lockout now persists to disk across restarts, with the same 15-minute cooldown TOTP already had, instead of resetting on every new CLI process (#521)
+- A single-use elevation grant is now claimed atomically; a losing concurrent call is blocked instead of both being allowed through (#522)
+- The destructive-command rule and the egress walker now scan both sides of a single `&`, since both `cmd.exe` and POSIX shells run both commands (#524)
+- A host-namespaced MCP tool (`mcp__<server>__write_file`) now classifies by its real tool name, so path and role rules apply instead of treating it as unknown (#525)
+- Password guesses are counted before the hash runs, so parallel guesses can't dodge the lockout; an unrecordable attempt is refused (#526)
+- A tool call's command line is rebuilt from `command` and `args` with boundaries kept, so a list-form payload can't dodge the scanner (#527)
+- `doberman setup --yes` can no longer lower the security mode or preference weights past the possession-factor gate (#530)
+- The GUI auth dialog no longer lets a keypress during closing flip an expired denial into an approval (#536)
+- An unanswered approval now expires within 10 minutes instead of 20, so a `two_factor` challenge nobody answered can't stay approvable past its real deadline (#545)
+- Reverse shells (`nc -e`, socat `EXEC:`, an inline socket that spawns a shell) now hard-block instead of prompting; probes and plain sockets are unchanged (#570)
+- A Tk auth dialog no longer changes the hook's exit code on teardown, where a denied or expired action could execute if the hook crashed (#575)
+- Mail addresses obfuscated as `[at]`/`(dot)`, spaced `@`, or bare `at`/`dot` words in untrusted input now trip the echo tripwire like literal ones (#578)
+- The destructive-command rule now sees through shell syntax, `sudo`/`env`/`nice`/`timeout`-style wrappers, and nested command substitutions instead of stopping at them (#580)
+- Process kills (`kill`, `pkill`, `taskkill`, `Stop-Process`, `os.kill`) and interpreter one-liners that spawn a subprocess now require authentication (#580)
+- Every command-scan bound now fails upward to authentication instead of skipping, and a package-manager verb hidden behind wrapper options no longer gets the implied-registry pass (#580)
+
+### Added
+- Every saved policy now gets a content-hash version in `.doberman/policies.db`; `doberman policy-versions` lists them, `--show` prints one, `--verify` checks the catalogue (#513)
+- `doberman setup` now asks which hosts to guard, with detected hosts preselected, `--host` repeatable, and a doctor pass at the end (#528)
+- The dashboard gets verdict/text filters, keyboard shortcuts (`/`, arrows, `a`/`d`, `?` for help), a live countdown on pending cards, and a light/dark toggle (#533)
+- `doberman tui` is now a full decision browser: verdict/risk chips, a full-screen `why` view, filtering, and jump/copy keys; `doberman log --why` prints the same explanation (#534)
+- `doberman setup --dry-run` now previews the mode, preferences, and every file it would write, with nothing persisted (#535)
+- The GUI auth dialog is rebuilt: a bounded, expandable command panel, a severity chip for risk, and a live countdown extendable up to 10 times (#536)
+- The destructive-command rule now recognizes raw-socket egress shapes (`/dev/tcp`, netcat/socat exec, `openssl s_client`, an inline socket payload) and steps them up to `AUTH` (#538)
+- Added an experimental, offline-only BYO-model judge behind the `[judge]` extra; it is not wired into any live decision yet (#539)
+- A new verification-integrity rule pack requires authentication for `git commit --no-verify`-style bypasses and for deleting or renaming a test file (#541)
+- A new offline dependency admission gate blocks a known-malicious package name and authenticates a likely typosquat (one character off a popular name) (#543)
+- A host, URL, or email seen in a `WebFetch`/`WebSearch` result now raises a later egress to that exact value from allowed to authentication-required (#547)
+- A delete-class command (`rm`, `del`, `Remove-Item`, ...) reaching an AUTH challenge now shows a bounded file/directory count, and re-blocks if the filesystem changed since approval (#548)
+- `install-hooks` now fingerprints its own hook registration and warns if a hook is later stripped or changed; `doberman doctor` reports intact, diverged, or untracked (#561)
+- Benchmark harness gains RedCode-Exec, MSB, and LLMail-Inject suite adapters (`DOBERMAN_BENCH_*_DIR`, no data vendored); measured numbers and documented gaps live in `docs/BENCHMARKS.md` (#562)
+- Opt-in `--replay-session` harness mode replays each case in an isolated session with the real post-decide floors; every report is labeled `session_replay: true/false` (#562)
+- Command-shaped benchmark actions classify egress through the proxy's own destination extractor, so the harness measures shipped behavior instead of under-reporting it (#562)
+- The auth dialog window now carries the Doberman mark as its icon instead of Tk's default feather (#565, thanks @thesageak)
+- Experimental Cursor native-hooks adapter: `doberman hook cursor` gates Cursor's tool-use events on the same decision engine as Claude Code and Codex (#568)
+- `doberman install-hooks --host cursor` wires Cursor's hooks and a session heartbeat; `doberman doctor` gets a new "Cursor hooks" check (#571)
+- `doberman serve --url` now fronts a remote MCP server (Streamable HTTP or `--transport sse`) through the same policy chokepoint as a local command (#574)
+- A repo-committed `doberman.policy.yaml` is now resolved on every action, so teams can review policy changes in pull requests; dropping a glob needs `doberman policy-file --accept` (#579)
+- `doberman memory seed --from traces.jsonl` warms a fresh install's behavioral baseline from operator-supplied allowed-action traces (#579)
+- `whole_script_confusable` flags a token written entirely in Latin-lookalike Cyrillic or Greek letters (an all-Cyrillic "paypal") and steps it up to `AUTH` (#579)
+- A `doberman.cost_observers` plugin can now receive loop anomalies via an optional `on_loop_anomaly` hook (#579)
+- A worked example detector plugin ships at `examples/plugin-detector/`, alongside `docs/EXTENDING.md` documenting every entry-point group (#579)
+
+### Changed
+- `doberman setup` now shows the mode in force, scopes its doctor pass to your wired hosts, and offers `doberman demo` before you leave (#530)
+- Deny is now the dashboard's primary action and needs the same two-step confirm as Approve; lowering the security mode needs the same confirm gesture (#533)
+- `doberman setup` now ends honestly: `-- Setup complete/pending/incomplete --` with exit codes 0/1/3, and its output wraps and colors like `doberman status`/`doctor` (#535)
+- The subjective-layer benchmark diagnostic reports a held-out-benign false-positive rate next to the AUC and gains a seeded `--suite devsession` corpus that engages the full ensemble (#542)
+
+### Fixed
+- The auth dialog now shows a keyboard hint (`Tab/Arrows: switch - Enter: confirm - Esc: deny`) and grows to fit it instead of clipping (#507, thanks @thesageak)
+- The dashboard's mode-change form now actually closes, and approve/deny, live-feed, and refresh failures show in the UI instead of failing silently (#533)
+- An unanswered approval-memory lookup no longer hangs the hook, falling back to a prompt after 5 seconds; an aborted `setup` run reports what was written (#535)
+- The GUI auth dialog now scales correctly under DPI scaling and works with screen readers (#536)
+- Fixed a `doberman tui` crash on startup caused by a mount-timing race in the first row's highlight (#546)
+- A mailbox destination (`local@domain`, `mailto:`) no longer triggers a false "embeds credentials" prompt on every mail send in Light/Balanced (#564)
+- `doberman hook cursor` now reads stdin as raw UTF-8 bytes, so the BOM Windows `cursor-agent` emits no longer turns every hook into a deny (#571)
+- `doberman hook pre` now answers Cursor-shaped payloads instead of failing closed, which had denied every Cursor shell command on machines with global hooks installed (#576)
+- The test suite no longer touches your real Claude settings: every test gets a throwaway home and a guard fails the run if it changes (#577)
+
+### Docs
+- Added `docs/AUTHORITY_TIERS.md`, documenting which layer of a decision may `BLOCK` versus only step up to `AUTH` (#544)
+- Added `docs/CONTROL_COVERAGE.md`, mapping Doberman's controls to the OWASP Top 10 for LLM Applications and the NIST AI RMF (#579)
+- `docs/BENCHMARKS.md`: RedCode rows re-measured on `main` after the reverse-shell and command-walk hardening; in-scope ASR 0.104 → 0.010, only 7 print-only variants remain (#584)
+
 ## v0.18.5 — 2026-08-30
 Decision-log retention, update nudges, and dashboard polish.
 
