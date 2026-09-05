@@ -358,6 +358,54 @@ def test_wait_times_out_when_urlopen_itself_raises():
     assert channel.wait("NONCE123", since=1000.0, deadline_s=30) == "timeout"
 
 
+def test_wait_ignores_near_miss_lines_and_times_out():
+    """Regression pin for review finding (a): a stream of ONLY near-miss lines —
+    a suffixed approve, a case-different approve, and an approve for a different
+    nonce — must never resolve to "approved". Catches a substring-match
+    regression (exact `==` weakened to `in`) that a trailing exact line in the
+    older test could mask."""
+    cfg = _cfg()
+    lines = [
+        _msg_line("approve NONCE123 extra"),
+        _msg_line("APPROVE NONCE123"),
+        _msg_line("approve OTHERNONCE"),
+        b"",
+    ]
+    fake = FakeUrlopen([_FakeResponse(lines=lines)])
+    channel = ntfy.NtfyChannel(cfg, urlopen=fake, clock=lambda: 1000.0)
+
+    assert channel.wait("NONCE123", since=1000.0, deadline_s=30) == "timeout"
+
+
+def test_wait_returns_timeout_without_opening_the_stream_when_deadline_already_passed():
+    """Review finding (b): a deadline already in the past must fail fast, never
+    fall back to the full stream timeout (the old `... or _STREAM_TIMEOUT_S`
+    treated a computed remaining of exactly 0 as falsy)."""
+    cfg = _cfg()
+    fake = FakeUrlopen([])  # any call raises AssertionError -- the stream must never open
+    channel = ntfy.NtfyChannel(cfg, urlopen=fake, clock=lambda: 1000.0)
+
+    assert channel.wait("NONCE123", since=900.0, deadline_s=50) == "timeout"
+    assert fake.requests == []
+
+
+def test_wait_sends_bearer_token_when_configured_and_omits_it_otherwise():
+    """Review finding (c): the reply-topic stream GET carries the bearer token
+    when one is configured (needed to read a self-hosted `deny-all` server) and
+    carries no Authorization header at all when it isn't."""
+    cfg = _cfg(token="tk_secret_ABC")  # noqa: S106 - fake test token, not a secret
+    fake = FakeUrlopen([_FakeResponse(lines=[b""])])
+    channel = ntfy.NtfyChannel(cfg, urlopen=fake, clock=lambda: 1000.0)
+    channel.wait("NONCE123", since=1000.0, deadline_s=30)
+    assert fake.requests[0].get_header("Authorization") == "Bearer tk_secret_ABC"
+
+    cfg_no_token = _cfg(token="")
+    fake2 = FakeUrlopen([_FakeResponse(lines=[b""])])
+    channel2 = ntfy.NtfyChannel(cfg_no_token, urlopen=fake2, clock=lambda: 1000.0)
+    channel2.wait("NONCE123", since=1000.0, deadline_s=30)
+    assert fake2.requests[0].get_header("Authorization") is None
+
+
 # --------------------------------------------------------------------------- #
 # 5. ask — unavailable on publish failure, stream never opened                #
 # --------------------------------------------------------------------------- #

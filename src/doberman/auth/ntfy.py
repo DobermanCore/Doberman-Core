@@ -126,7 +126,7 @@ def load_config() -> NtfyConfig | None:
             wait_s=int(data.get("wait_s", 60)),
         )
     except (KeyError, ValueError, TypeError):
-        logger.warning("ntfy config at %s is malformed; treating as absent", path)
+        logger.debug("ntfy config at %s is malformed; treating as absent", path)
         return None
 
 
@@ -301,7 +301,10 @@ class NtfyChannel:
         # remaining) at open time; a real per-line-recomputed timeout would
         # need direct socket manipulation urllib doesn't expose. Upgrade path
         # only if a slow/idle stream is observed to overrun in practice.
-        timeout = min(_STREAM_TIMEOUT_S, max(deadline_at - self._clock(), 0.0)) or _STREAM_TIMEOUT_S
+        remaining = deadline_at - self._clock()
+        if remaining <= 0:
+            return "timeout"
+        timeout = min(_STREAM_TIMEOUT_S, remaining)
         try:
             with self._urlopen(req, timeout=timeout) as resp:
                 while self._clock() < deadline_at:
