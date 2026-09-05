@@ -175,6 +175,89 @@ async def test_reopening_a_v9_migrated_db_is_idempotent(tmp_path):
     assert cols.count("last_touched") == 1
 
 
+# --- v14 -> v15: EffectSet audit-row fields (#556) --------------------------
+
+_V15_EFFECTS_COLUMNS = (
+    "effects_file_count",
+    "effects_dir_count",
+    "effects_capped",
+    "effects_hits_git",
+    "effects_hits_outside_repo",
+    "effects_digest_fp",
+)
+
+
+async def test_migration_adds_effects_columns_without_losing_rows(tmp_path):
+    # Hand-build a v14-shaped decisions table (pre-#556): no effects_* columns,
+    # one existing row with real data.
+    path = db_path(str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = await aiosqlite.connect(str(path))
+    await conn.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version (version) VALUES (14);
+        CREATE TABLE decisions (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                TEXT NOT NULL,
+            action_id         TEXT NOT NULL,
+            agent_role        TEXT,
+            action_type       TEXT,
+            target_path_class TEXT,
+            risk              TEXT,
+            source_context    TEXT,
+            final_verdict     TEXT NOT NULL,
+            decided_layer     TEXT,
+            reason_codes_json TEXT,
+            auth_required     INTEGER NOT NULL DEFAULT 0,
+            auth_result       TEXT,
+            elevation_id      TEXT,
+            entity_id         TEXT,
+            session_id        TEXT
+        );
+        INSERT INTO decisions (ts, action_id, final_verdict)
+            VALUES ('2026-01-01T00:00:00+00:00', 'legacy-action', 'PASS');
+        """
+    )
+    await conn.commit()
+    await conn.close()
+
+    # Opening through Doberman triggers the additive migration.
+    async with open_db(str(tmp_path)) as conn:
+        cols = await _columns(conn, "decisions")
+        for column in _V15_EFFECTS_COLUMNS:
+            assert column in cols
+        # Existing row survived, and the new columns read back NULL (no
+        # preview existed pre-migration) rather than a fabricated 0/False.
+        async with conn.execute(
+            "SELECT action_id, effects_file_count, effects_capped, effects_digest_fp "
+            "FROM decisions WHERE action_id = 'legacy-action'"
+        ) as cur:
+            row = await cur.fetchone()
+    assert row[0] == "legacy-action"
+    assert row[1] is None
+    assert row[2] is None
+    assert row[3] is None
+
+
+async def test_fresh_db_has_effects_columns_on_decisions(tmp_path):
+    async with open_db(str(tmp_path)) as conn:
+        cols = await _columns(conn, "decisions")
+    for column in _V15_EFFECTS_COLUMNS:
+        assert column in cols
+
+
+async def test_reopening_a_v15_migrated_db_is_idempotent(tmp_path):
+    # Re-running the v14->v15 ALTER guard on an already-v15 DB must not error
+    # or double-add a column.
+    root = str(tmp_path)
+    async with open_db(root):  # first open -> fresh v15 DB
+        pass
+    async with open_db(root) as conn:  # second open re-runs the migration guard
+        cols = await _columns(conn, "decisions")
+    assert cols.count("effects_file_count") == 1
+
+
 def test_db_file_is_owner_only(tmp_path):
     async def _create():
         async with open_db(str(tmp_path)):
@@ -228,5 +311,5 @@ def test_schema_text_change_requires_a_version_bump():
 
     from doberman.storage.db import _SCHEMA
 
-    assert SCHEMA_VERSION == 14
-    assert hashlib.sha256(_SCHEMA.encode()).hexdigest()[:16] == "8168371109d84a8b"
+    assert SCHEMA_VERSION == 15
+    assert hashlib.sha256(_SCHEMA.encode()).hexdigest()[:16] == "2ce5a459629272bd"
