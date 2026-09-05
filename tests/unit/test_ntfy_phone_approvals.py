@@ -492,16 +492,26 @@ def test_prompter_read_code_always_raises_unavailable(ntfy_cfg):
 
 
 def test_prompter_steps_aside_for_2fa_tiers_with_no_request(ntfy_cfg, monkeypatch):
+    # Updated for Task 2: builtin_methods() now registers NtfyApprovalMethod, so a
+    # two_factor tier tries the PHONE METHOD first (single notification, exactly
+    # once) — this test scripts it "unavailable" so the tier falls through to
+    # confirm() + TOTP, same as before Task 2. What's still pinned here is the
+    # PROMPTER's own step-aside: confirm() must NOT construct a second NtfyChannel
+    # for a 2FA tier (that would double-notify the phone for one challenge) — only
+    # the method's one channel construction is allowed.
     ntfy.save_config(ntfy.new_config())
     approval_config.enable(ntfy.METHOD_NAME)
 
-    def _never(cfg, **kw):  # noqa: ARG001
-        raise AssertionError("NtfyChannel must not be constructed for a 2FA tier")
+    channel_constructions = []
 
-    monkeypatch.setattr(ntfy, "NtfyChannel", _never)
-    # No approval method is registered yet (that's Task 2), so a two_factor
-    # tier falls all the way to confirm + TOTP once the phone steps aside —
-    # stub TOTP verification so the chain can resolve without touching ntfy.
+    class _UnavailableChannel:
+        def __init__(self, cfg, **kw):  # noqa: ARG002
+            channel_constructions.append(cfg)
+
+        def ask(self, *a, **kw):  # noqa: ARG002
+            return "unavailable"
+
+    monkeypatch.setattr(ntfy, "NtfyChannel", _UnavailableChannel)
     monkeypatch.setattr("doberman.auth.provider.totp.verify", lambda *a, **k: True)
     recorder = _Recorder(confirm=True)
     prompter = FallbackPrompter([ntfy.NtfyPrompter(), recorder])
@@ -511,7 +521,8 @@ def test_prompter_steps_aside_for_2fa_tiers_with_no_request(ntfy_cfg, monkeypatc
     )
 
     assert result.approved is True
-    assert recorder.confirm_calls == 1  # fell straight through, phone never touched
+    assert len(channel_constructions) == 1  # the method asked once; the prompter never asked again
+    assert recorder.confirm_calls == 1  # phone method unavailable -> fell through to the recorder
     assert recorder.read_code_calls == 1  # confirm-only step-aside still needs the TOTP code
 
 
@@ -615,3 +626,242 @@ def test_published_message_never_carries_the_raw_secret(ntfy_cfg, monkeypatch):
     published = json.loads(published_body)
     assert token_secret not in published["message"]
     assert REDACTED in published["message"]
+
+
+# =============================================================================#
+# Task 2: wiring — built-in method, chains, CLI, doctor                        #
+# =============================================================================#
+_REAL_NTFY_CHANNEL = ntfy.NtfyChannel  # captured once, before any test monkeypatches it
+
+
+def _patch_real_channel_with_urlopen(monkeypatch, fake):
+    """Route ``ntfy.NtfyChannel(cfg)`` (the CLI's construction, with no explicit
+    ``urlopen``) to the REAL :class:`NtfyChannel` wired to ``fake`` — so a CLI
+    command's actual publish payload can be inspected, not just its outcome.
+    Always builds on :data:`_REAL_NTFY_CHANNEL`, never on whatever ``ntfy.NtfyChannel``
+    currently is -- a test that calls this twice must not chain through its own
+    prior patch (and its now-exhausted fake)."""
+
+    def _real_channel(cfg, **kw):  # noqa: ARG001
+        return _REAL_NTFY_CHANNEL(cfg, urlopen=fake)
+
+    monkeypatch.setattr(ntfy, "NtfyChannel", _real_channel)
+
+
+# --------------------------------------------------------------------------- #
+# Built-in catalogue                                                           #
+# --------------------------------------------------------------------------- #
+def test_builtin_methods_includes_ntfy():
+    from doberman.auth.methods import builtin_methods
+
+    names = {getattr(m, "name", None) for m in builtin_methods()}
+    assert ntfy.METHOD_NAME in names
+
+
+def test_cli_2fa_methods_enable_ntfy(ntfy_cfg):
+    from typer.testing import CliRunner
+
+    from doberman.cli.main import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["2fa", "methods", "enable", ntfy.METHOD_NAME])
+    assert result.exit_code == 0
+    assert approval_config.is_enabled(ntfy.METHOD_NAME) is True
+
+
+# --------------------------------------------------------------------------- #
+# CLI — doberman phone setup|test|status|off                                  #
+# --------------------------------------------------------------------------- #
+def test_cli_phone_setup_writes_config_sends_test_notification_no_actions(ntfy_cfg, monkeypatch):
+    fake = FakeUrlopen([_FakeResponse(status=200)])
+    _patch_real_channel_with_urlopen(monkeypatch, fake)
+    from typer.testing import CliRunner
+
+    from doberman.cli.main import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["phone", "setup", "--token", "tk_secret_ABC"])
+
+    assert result.exit_code == 0
+    cfg = ntfy.load_config()
+    assert cfg is not None
+    assert approval_config.is_enabled(ntfy.METHOD_NAME) is True
+    # the public topic IS shown (the user must enter it into the ntfy app) --
+    # the secret reply topic and the token never are.
+    assert cfg.topic in result.output
+    assert cfg.reply_topic not in result.output
+    assert "tk_secret_ABC" not in result.output
+    # exactly one publish, with no Approve/Deny actions (a plain connectivity test)
+    assert len(fake.requests) == 1
+    payload = json.loads(fake.requests[0].data)
+    assert "actions" not in payload
+
+
+def test_cli_phone_setup_twice_without_force_exits_1_and_leaves_file_untouched(
+    ntfy_cfg, monkeypatch
+):
+    _patch_real_channel_with_urlopen(monkeypatch, FakeUrlopen([_FakeResponse(status=200)]))
+    from typer.testing import CliRunner
+
+    from doberman.cli.main import app
+
+    runner = CliRunner()
+    assert runner.invoke(app, ["phone", "setup"]).exit_code == 0
+    original = ntfy.load_config()
+
+    result = runner.invoke(app, ["phone", "setup"])
+
+    assert result.exit_code == 1
+    assert ntfy.load_config() == original
+
+
+def test_cli_phone_setup_force_overwrites(ntfy_cfg, monkeypatch):
+    _patch_real_channel_with_urlopen(
+        monkeypatch, FakeUrlopen([_FakeResponse(status=200), _FakeResponse(status=200)])
+    )
+    from typer.testing import CliRunner
+
+    from doberman.cli.main import app
+
+    runner = CliRunner()
+    assert runner.invoke(app, ["phone", "setup"]).exit_code == 0
+    original = ntfy.load_config()
+
+    result = runner.invoke(app, ["phone", "setup", "--force"])
+
+    assert result.exit_code == 0
+    assert ntfy.load_config() != original  # fresh topics
+
+
+def test_cli_phone_setup_publish_failure_warns_and_exits_0_config_kept(ntfy_cfg, monkeypatch):
+    _patch_real_channel_with_urlopen(monkeypatch, FakeUrlopen([_FakeResponse(status=500)]))
+    from typer.testing import CliRunner
+
+    from doberman.cli.main import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["phone", "setup"])
+
+    assert result.exit_code == 0
+    assert "warning: test notification failed" in result.output
+    assert "run doberman phone test after subscribing" in result.output
+    assert ntfy.load_config() is not None  # config kept despite the failed test
+
+
+def test_cli_phone_status_off_then_on(ntfy_cfg, monkeypatch):
+    from typer.testing import CliRunner
+
+    from doberman.cli.main import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["phone", "status"])
+    assert result.exit_code == 0
+    assert "off" in result.output
+
+    _patch_real_channel_with_urlopen(monkeypatch, FakeUrlopen([_FakeResponse(status=200)]))
+    assert runner.invoke(app, ["phone", "setup"]).exit_code == 0
+
+    result = runner.invoke(app, ["phone", "status"])
+    cfg = ntfy.load_config()
+    assert result.exit_code == 0
+    assert "on" in result.output
+    assert cfg.topic[:4] in result.output
+    assert cfg.topic not in result.output  # never the full topic
+    assert cfg.reply_topic not in result.output
+
+
+def test_cli_phone_off_disables_and_deletes_idempotently(ntfy_cfg, monkeypatch):
+    _patch_real_channel_with_urlopen(monkeypatch, FakeUrlopen([_FakeResponse(status=200)]))
+    from typer.testing import CliRunner
+
+    from doberman.cli.main import app
+
+    runner = CliRunner()
+    assert runner.invoke(app, ["phone", "setup"]).exit_code == 0
+    assert approval_config.is_enabled(ntfy.METHOD_NAME) is True
+
+    result = runner.invoke(app, ["phone", "off"])
+    assert result.exit_code == 0
+    assert ntfy.load_config() is None
+    assert approval_config.is_enabled(ntfy.METHOD_NAME) is False
+
+    # idempotent -- a second "off" is not an error
+    result2 = runner.invoke(app, ["phone", "off"])
+    assert result2.exit_code == 0
+
+
+def test_cli_phone_test_not_configured_exits_1(ntfy_cfg):
+    from typer.testing import CliRunner
+
+    from doberman.cli.main import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["phone", "test"])
+    assert result.exit_code == 1
+
+
+def test_cli_phone_test_success_and_failure_exit_codes(ntfy_cfg, monkeypatch):
+    ntfy.save_config(ntfy.new_config())
+    approval_config.enable(ntfy.METHOD_NAME)
+    from typer.testing import CliRunner
+
+    from doberman.cli.main import app
+
+    runner = CliRunner()
+
+    _patch_real_channel_with_urlopen(monkeypatch, FakeUrlopen([_FakeResponse(status=200)]))
+    ok = runner.invoke(app, ["phone", "test"])
+    assert ok.exit_code == 0
+
+    _patch_real_channel_with_urlopen(monkeypatch, FakeUrlopen([_FakeResponse(status=500)]))
+    fail = runner.invoke(app, ["phone", "test"])
+    assert fail.exit_code == 1
+
+
+# --------------------------------------------------------------------------- #
+# Doctor check                                                                 #
+# --------------------------------------------------------------------------- #
+def test_check_phone_approvals_ok_and_warn_and_never_critical(ntfy_cfg):
+    from doberman.cli.doctor import CheckStatus, _check_phone_approvals
+
+    off = _check_phone_approvals()
+    assert off.status == CheckStatus.WARN
+    assert off.critical is False
+
+    ntfy.save_config(ntfy.new_config())
+    approval_config.enable(ntfy.METHOD_NAME)
+    on = _check_phone_approvals()
+    assert on.status == CheckStatus.OK
+    assert on.critical is False
+
+
+# --------------------------------------------------------------------------- #
+# Prompter chains -- serve and hookio                                         #
+# --------------------------------------------------------------------------- #
+def test_build_auth_prompter_chain_order():
+    from doberman.proxy.serve import build_auth_prompter
+
+    prompter = build_auth_prompter(proxy=object(), loop=None, repo_root=".")
+
+    kinds = [type(p).__name__ for p in prompter.prompters]
+    assert kinds == [
+        "DashboardPrompter",
+        "NtfyPrompter",
+        "ElicitationPrompter",
+        "GuiPrompter",
+        "TtyPrompter",
+    ]
+
+
+def test_default_auth_prompter_starts_with_ntfy_and_is_a_no_op_unconfigured(ntfy_cfg):
+    from doberman.hosthooks.hookio import _default_auth_prompter
+
+    prompter = _default_auth_prompter()
+
+    kinds = [type(p).__name__ for p in prompter.prompters]
+    assert kinds == ["NtfyPrompter", "GuiPrompter", "TtyPrompter"]
+    # With no phone config, behaviour is byte-identical to the old [Gui, Tty]
+    # chain: the phone step raises PrompterUnavailableError immediately -- no
+    # network call, no popup -- so it never changes what the human sees.
+    with pytest.raises(PrompterUnavailableError):
+        prompter.prompters[0].confirm("msg")

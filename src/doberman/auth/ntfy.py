@@ -242,26 +242,33 @@ class NtfyChannel:
         self._urlopen = urlopen
         self._clock = clock
 
-    def publish(self, *, title: str, message: str, nonce: str) -> float:
+    def publish(self, *, title: str, message: str, nonce: str | None = None) -> float:
         """POST the notification. Returns the publish time; raises
         :class:`NtfyUnavailable` on any HTTP or transport failure — never lets
-        a broken backend become a silent approval."""
+        a broken backend become a silent approval.
+
+        ``nonce=None`` (the CLI's connectivity test) publishes plain, with no
+        Approve/Deny actions — # ponytail: a keyword on the existing method
+        rather than a second publish path, since the payload only differs by
+        the ``actions`` key.
+        """
         cfg = self._cfg
-        reply_url = f"{cfg.server}/{cfg.reply_topic}"
         headers = {"Content-Type": "application/json"}
         if cfg.token:
             headers["Authorization"] = f"Bearer {cfg.token}"
-        payload = {
+        payload: dict[str, Any] = {
             "topic": cfg.topic,
             "title": title,
             "message": _truncate_message(message),
             "priority": 4,
             "tags": ["dog"],
-            "actions": [
+        }
+        if nonce is not None:
+            reply_url = f"{cfg.server}/{cfg.reply_topic}"
+            payload["actions"] = [
                 _http_action("Approve", reply_url, f"approve {nonce}", cfg.token),
                 _http_action("Deny", reply_url, f"deny {nonce}", cfg.token),
-            ],
-        }
+            ]
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(  # noqa: S310 — server is user-configured http(s), never file:
             cfg.server, data=body, headers=headers, method="POST"

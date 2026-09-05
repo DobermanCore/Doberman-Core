@@ -4,13 +4,13 @@ Extracted from :mod:`doberman.hosthooks.claude_code` (W1.0b) so a second host
 adapter (Codex, whose hook protocol mirrors Claude Code's — same
 ``hookSpecificOutput`` deny shape) can reuse this logic instead of copying it
 (issues #65/#67: a host's own yes/no prompt cannot satisfy a 2FA-tier action,
-so Doberman runs its own action-bound challenge over a GUI→TTY fallback).
+so Doberman runs its own action-bound challenge over a phone→GUI→TTY fallback).
 
 Every function takes the host's hook event name explicitly (``event: str``)
 instead of reading a module constant, and :func:`resolve_auth` takes its
 ``Prompter`` explicitly — each adapter keeps its own module-level
 ``AUTH_PROMPTER`` injection seam (so tests can still inject a headless fake
-there) and passes it in; ``None`` builds the default GUI→TTY fallback lazily.
+there) and passes it in; ``None`` builds the default phone→GUI→TTY fallback lazily.
 
 **Speed.** A host hook runs before or after *every* tool call, so this module
 must NEVER import :mod:`doberman.proxy.executor` or the subjective baseline —
@@ -199,13 +199,18 @@ def resolve_auth_result(
 
 
 def _default_auth_prompter() -> "Prompter":
-    """The host-hook challenge channel: a topmost GUI dialog, then the controlling
-    terminal (no MCP elicitation — a hook has no agent session). Built lazily so the
-    common PASS/BLOCK hot path never imports the auth stack."""
+    """The host-hook challenge channel: the phone first, then a topmost GUI dialog,
+    then the controlling terminal (no MCP elicitation — a hook has no agent session).
+    Built lazily so the common PASS/BLOCK hot path never imports the auth stack.
+    """
     from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
+    from doberman.auth.ntfy import NtfyPrompter
     from doberman.auth.tty_prompter import TtyPrompter
 
-    return FallbackPrompter([GuiPrompter(), TtyPrompter()])
+    # ponytail: the phone waits its own `wait_s` before the local dialog opens — a
+    # fixed step, not a fan-out race. Upgrade path: first-answer-wins concurrent
+    # notify, if a sequential wait proves too slow in practice.
+    return FallbackPrompter([NtfyPrompter(), GuiPrompter(), TtyPrompter()])
 
 
 def _auth_denied_reason(decision: Decision, *, channel_error: bool, timed_out: bool = False) -> str:
