@@ -55,10 +55,36 @@ absent from this seed can be gated once (stepped up to `AUTH`) if it happens to
 land one edit from an entry that IS present (e.g. `vuex` vs. `vue`, `boto` vs.
 `boto3`, both fixed by adding the omitted name).
 
-This is a STARTER seed (5-22 names per ecosystem: pypi 22, npm 22, cargo 10,
-rubygems 10, go 5, 69 names total). Expand toward the
-≤2000-per-ecosystem ceiling from a real ranked snapshot before relying on
-this in production, e.g. PyPI's own download-stats BigQuery dataset
-(`hugovk.github.io/top-pypi-packages`), npm's registry download-count API,
-or crates.io's `/api/v1/crates?sort=downloads` endpoint. Every name added
-must be real and independently checkable; never invent one.
+This is a STARTER seed, expanded once from real ranked-download snapshots
+(#554): pypi 52, npm 51, cargo 40, rubygems 10, go 5, 158 names total.
+Still far below the ≤2000-per-ecosystem ceiling; expand further the same
+way before relying on this in production.
+
+Provenance of the #554 expansion (top-N by real download count, names only,
+no invented entries):
+- **pypi** (+30): `hugovk.github.io/top-pypi-packages`
+  (`top-pypi-packages-30-days.min.json`), snapshot dated 2026-09-01
+  ("ClickHouse"-sourced download counts). Top packages by 30-day download
+  count not already in the seed.
+- **npm** (+29): `api.npmjs.org/downloads/point/last-month/<names>` (npm's
+  own registry download-count API), queried 2026-09-05, window
+  2026-07-31..2026-08-29. Top 25 by real download count from a candidate
+  pool of well-known ecosystem packages (npm has no single bulk "top-N"
+  endpoint, unlike pypi/cargo, so ranking is candidate-pool-limited, not a
+  full-registry sort), plus 4 explicitly-justified FP-gap-closers
+  (`cross-env`, `d3`, `jquery`, `mongoose`, each >20M downloads/month):
+  the legitimate target of an existing `known_malicious_packages.json`
+  npm entry that was missing from this list, same rationale as the
+  pre-existing `boto`/`vuex`/`nest`/`request` entries above.
+- **cargo** (+30): `crates.io/api/v1/crates?sort=downloads` (live query),
+  fetched 2026-09-05. Top packages by all-time download count not already
+  in the seed.
+- **rubygems / go**: not expanded in #554. The README did not (and still
+  does not) cite a reproducible ranked-download source for either
+  ecosystem; add one here before expanding them the same way.
+
+Every new name was checked for (a) no collision with
+`known_malicious_packages.json`, (b) no Levenshtein-1 neighbour among the
+combined existing+new list for its ecosystem (a same-list near-duplicate
+would blur the false-positive guard), both via a throwaway script, zero
+flags on either check.
