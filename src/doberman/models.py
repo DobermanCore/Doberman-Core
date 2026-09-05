@@ -7,6 +7,7 @@ silently mutate risk or a verdict downward — changes happen by producing a
 *new* object, never by editing in place (raise-only principle).
 """
 
+import re as _re
 from enum import StrEnum
 from typing import Any
 
@@ -600,6 +601,149 @@ class CostEvent(BaseModel):
     model: str | None = None
     #: Keyed HMAC fingerprint of the entity, never a raw role/path string.
     entity_id: str | None = None
+
+
+# --- Feature FM — ambient activity bus (FM.1) models -------------------------
+
+# Matches strings that look like raw filesystem paths rather than path classes.
+# A valid path class always contains a ``*`` wildcard (e.g. ``backend/auth/*.ts``)
+# or is a dotfile/extensionless name that is itself the class (e.g. ``.env``).
+# Raw paths that are rejected:
+#   - absolute POSIX paths  (``/home/user/.ssh/id_rsa``)
+#   - Windows drive paths   (``C:\Users\...``)
+#   - relative paths with a real filename component (``backend/auth/session.ts``)
+#     i.e. a ``/`` followed by a segment that has an extension but no ``*``.
+_RAW_PATH_RE = _re.compile(
+    r"""
+    (?:
+        ^/              # absolute POSIX path
+      | ^[A-Za-z]:\\   # Windows drive path (C:\...)
+      | /[^*/]+\.[^/]+$  # relative dir/filename.ext — no wildcard
+    )
+    """,
+    _re.VERBOSE,
+)
+
+
+class ActivityEvent(BaseModel):
+    """One ambient observation emitted by a collector, persisted to the local bus.
+
+    This is the data plane for the ambient monitor — a background channel that
+    other agent surfaces (UI, dashboards, SIEM sinks) can read without ever
+    touching the decision path.  The bus is **purely observational**: nothing on
+    it can suppress, lower, or alter an inline PASS / AUTH / BLOCK decision, and
+    there is no code path from it into ``combine()``.
+
+    **Redaction by projection** — stores the same redacted fields that
+    ``storage.log.build_record`` writes to the decision log.  Redaction is
+    enforced at two levels so the docstring's promise is kept by the code:
+
+    1. :meth:`from_decision_record` — the blessed constructor — calls
+       ``storage.log.path_class()`` itself, so a raw path can never enter
+       through the intended collector API.
+    2. The ``_validate_redaction`` validator rejects raw-path-shaped strings
+       in ``target_path_class`` even when the model is constructed directly,
+       closing the gap the previous round left open.
+
+    ``extra="forbid"`` ensures an unknown field (e.g. a ``raw_command`` kwarg)
+    is rejected at construction time.  ``entity_fingerprint`` and
+    ``session_fingerprint`` must start with ``"hmac:"`` — also validated.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: Opaque correlation id matching the action's ``SecurityObject.id``
+    #: (typically a UUID).  Not a command, path, or secret.
+    action_id: str = Field(min_length=1)
+
+    #: ISO-8601 timestamp (tz-aware) of when the action was observed.
+    ts: AwareDatetime
+
+    #: Coarse role label (e.g. ``"backend"``).  Matches ``agent_role`` in the
+    #: decision log so consumers can correlate without re-normalizing.
+    agent_role: str = Field(min_length=1)
+
+    #: :class:`ActionType` enum value as a plain string.  Stored as a string
+    #: (not an enum) so an unknown future value does not break an older reader.
+    action_type: str = Field(min_length=1)
+
+    #: Redacted path class from ``storage.log.path_class``:
+    #: ``"backend/auth/*.ts"``, ``".env"``, or ``None`` for non-file actions.
+    #: Raw-path-shaped strings are rejected by ``_validate_redaction``.
+    #: Use :meth:`from_decision_record` to derive this automatically.
+    target_path_class: str | None = None
+
+    #: Short stable identifier for the collector (e.g. ``"builtin.tool_scan"``).
+    collector_id: str = Field(min_length=1)
+
+    #: Keyed HMAC fingerprint of the (agent + workspace) entity.
+    #: Must start with ``"hmac:"`` — validated at construction time.
+    entity_fingerprint: str = Field(min_length=1)
+
+    #: Keyed HMAC fingerprint of the current agent session.
+    #: Must start with ``"hmac:"`` — validated at construction time.
+    session_fingerprint: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_redaction(self) -> "ActivityEvent":
+        """Enforce hmac: prefix on fingerprints and reject raw paths."""
+        for field_name, value in (
+            ("entity_fingerprint", self.entity_fingerprint),
+            ("session_fingerprint", self.session_fingerprint),
+        ):
+            if not value.startswith("hmac:"):
+                raise ValueError(
+                    f"{field_name!r} must start with 'hmac:' (got {value!r}); "
+                    "store the keyed HMAC fingerprint, never the raw name"
+                )
+        if self.target_path_class is not None and _RAW_PATH_RE.search(self.target_path_class):
+            raise ValueError(
+                f"target_path_class looks like a raw path ({self.target_path_class!r}); "
+                "use storage.log.path_class() to derive the redacted class "
+                "(e.g. 'backend/auth/*.ts'), or use ActivityEvent.from_decision_record()"
+            )
+        return self
+
+    @classmethod
+    def from_decision_record(
+        cls,
+        action: "SecurityObject",
+        *,
+        collector_id: str,
+        entity_fingerprint: str,
+        session_fingerprint: str,
+    ) -> "ActivityEvent":
+        """Blessed constructor: derives ``target_path_class`` via ``storage.log.path_class``.
+
+        This is the intended way for a collector to build an ``ActivityEvent``
+        from a :class:`SecurityObject` it received from ``normalize()``.  It
+        calls ``storage.log.path_class()`` directly so a raw path can never
+        enter the bus through this API — the redaction step happens here, not
+        in the collector.
+
+        Example::
+
+            event = ActivityEvent.from_decision_record(
+                action,
+                collector_id="builtin.tool_scan",
+                entity_fingerprint=entity_hmac,
+                session_fingerprint=session_hmac,
+            )
+        """
+        # Local import keeps models.py off the storage import chain —
+        # storage.log imports models, not the reverse.
+        from doberman.storage.log import path_class
+
+        return cls(
+            action_id=action.id,
+            ts=action.ts,
+            agent_role=action.agent_role,
+            action_type=action.action_type.value,
+            target_path_class=path_class(action),
+            collector_id=collector_id,
+            entity_fingerprint=entity_fingerprint,
+            session_fingerprint=session_fingerprint,
+        )
 
 
 # --- Feature 11 — turn gate (pre-inference) models -------------------------
