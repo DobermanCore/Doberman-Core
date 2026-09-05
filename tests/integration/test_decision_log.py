@@ -198,6 +198,36 @@ async def test_effect_set_from_real_walk_never_leaks_secret_or_raw_path(tmp_path
     assert str(tmp_path) not in blob
 
 
+async def test_fingerprint_failure_loses_only_the_digest_column_not_the_row(tmp_path, monkeypatch):
+    # Review fix (Important): fingerprint() fails closed (raises) when the
+    # local HMAC key can't be read. Before this fix, that exception propagated
+    # out of _effects_fields() -> build_record() -> record_decision()'s outer
+    # except, which dropped the WHOLE row (verdict, reason codes, everything),
+    # not just the effects_digest_fp column.
+    import doberman.storage.log as log_module
+
+    def boom(value):
+        raise PermissionError("key file unreadable")  # noqa: EM101 — test-only message
+
+    monkeypatch.setattr(log_module, "fingerprint", boom)
+    root = str(tmp_path)
+    decision, action = _decision_and_action(Verdict.AUTH, "fp-fail", effects=_EFFECTS)
+
+    await record_decision(decision, action, repo_root=root)
+
+    rows = await read_decisions(root)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["final_verdict"] == "AUTH"
+    assert row["reason_codes_json"] is not None
+    assert row["effects_file_count"] == 5
+    assert row["effects_dir_count"] == 2
+    assert bool(row["effects_capped"]) is False
+    assert bool(row["effects_hits_git"]) is True
+    assert bool(row["effects_hits_outside_repo"]) is False
+    assert row["effects_digest_fp"] is None
+
+
 async def test_recent_session_decisions_reads_last_n_newest_first():
     # C3.1: the session correlator's history read. Three rows across two
     # sessions; only "s1"'s rows come back, newest first, capped at n.

@@ -420,7 +420,14 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
             "effects_hits_outside_repo INTEGER",
             "effects_digest_fp TEXT",
         ):
-            await conn.execute(f"ALTER TABLE decisions ADD COLUMN {column}")  # noqa: S608 — fixed literals above
+            try:
+                await conn.execute(f"ALTER TABLE decisions ADD COLUMN {column}")  # noqa: S608 — fixed literals above
+            except sqlite3.OperationalError as e:
+                # Two processes racing this migration on the same pre-v15 DB
+                # (review fix for #556) — the loser tolerates "already added
+                # by the winner" and re-raises anything else.
+                if "duplicate column" not in str(e).lower():
+                    raise
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

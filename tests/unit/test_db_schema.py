@@ -258,6 +258,51 @@ async def test_reopening_a_v15_migrated_db_is_idempotent(tmp_path):
     assert cols.count("effects_file_count") == 1
 
 
+async def test_migration_tolerates_a_racing_process_adding_a_column_first(tmp_path):
+    # Review fix (Minor): two processes opening the same v14 DB can race the
+    # v14->v15 ALTER block. Simulate the loser's view by hand-adding one of the
+    # six new columns (not the sentinel `effects_file_count`, so the guard
+    # still enters the loop) before this process's own migration runs.
+    path = db_path(str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = await aiosqlite.connect(str(path))
+    await conn.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version (version) VALUES (14);
+        CREATE TABLE decisions (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                TEXT NOT NULL,
+            action_id         TEXT NOT NULL,
+            agent_role        TEXT,
+            action_type       TEXT,
+            target_path_class TEXT,
+            risk              TEXT,
+            source_context    TEXT,
+            final_verdict     TEXT NOT NULL,
+            decided_layer     TEXT,
+            reason_codes_json TEXT,
+            auth_required     INTEGER NOT NULL DEFAULT 0,
+            auth_result       TEXT,
+            elevation_id      TEXT,
+            entity_id         TEXT,
+            session_id        TEXT
+        );
+        """
+    )
+    await conn.execute("ALTER TABLE decisions ADD COLUMN effects_capped INTEGER")
+    await conn.commit()
+    await conn.close()
+
+    async with open_db(str(tmp_path)) as conn:  # must not raise OperationalError
+        cols = await _columns(conn, "decisions")
+        for column in _V15_EFFECTS_COLUMNS:
+            assert column in cols
+        async with conn.execute("SELECT version FROM schema_version") as cur:
+            versions = [row[0] for row in await cur.fetchall()]
+    assert versions == [SCHEMA_VERSION]
+
+
 def test_db_file_is_owner_only(tmp_path):
     async def _create():
         async with open_db(str(tmp_path)):

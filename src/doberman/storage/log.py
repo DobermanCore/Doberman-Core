@@ -160,13 +160,19 @@ def _effects_fields(effects: EffectSet | None) -> dict:
             "effects_hits_outside_repo": None,
             "effects_digest_fp": None,
         }
+    try:
+        digest_fp = fingerprint(effects.digest)
+    except Exception:  # noqa: BLE001 — a fingerprint()-key failure must lose only
+        # this column, never the whole audit row (review fix for #556).
+        logger.debug("decision log: could not fingerprint effects digest")
+        digest_fp = None
     return {
         "effects_file_count": effects.file_count,
         "effects_dir_count": effects.dir_count,
         "effects_capped": effects.capped,
         "effects_hits_git": effects.hits_git,
         "effects_hits_outside_repo": effects.hits_outside_repo,
-        "effects_digest_fp": fingerprint(effects.digest),
+        "effects_digest_fp": digest_fp,
     }
 
 
