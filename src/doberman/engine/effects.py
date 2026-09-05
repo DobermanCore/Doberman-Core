@@ -160,7 +160,9 @@ def compute_delete_effects(
     hits_outside_repo = False
 
     def _relposix(abs_path: str) -> str:
-        return os.path.relpath(abs_path, _resolved_root).replace(os.sep, "/")
+        # C2 cleanup (#558): fold case to match canon.relposix, so walked
+        # descendants produce consistent digest entries across all platforms.
+        return os.path.relpath(abs_path, _resolved_root).replace(os.sep, "/").lower()
 
     for operand in operands:
         # C1 (C2 final review): the bounds above only ever fired inside
