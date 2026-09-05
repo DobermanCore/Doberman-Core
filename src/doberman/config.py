@@ -155,6 +155,22 @@ def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
     return role
 
 
+def _normalize_protected_branch(name: str) -> str:
+    """Strip whitespace, drop a leading 'refs/heads/', lower-case.
+
+    Mirrors ``doberman.engine.rules.commands._normalize_branch_name``, which
+    normalizes the ACTUAL pushed ref the same way before matching -- without
+    this, a copy-pasted 'refs/heads/staging' or ' staging' would pass schema
+    validation here but silently never match a real force-push (#199 review).
+    Kept as a separate copy (not an import) so config.py -- the policy core's
+    role.yaml loader -- doesn't take a dependency on a specific objective rule.
+    """
+    stripped = name.strip().lower()
+    if stripped.startswith("refs/heads/"):
+        stripped = stripped[len("refs/heads/") :]
+    return stripped
+
+
 def _extra_protected_branches(data: dict, path: Path) -> tuple[str, ...] | None:
     """Parse+validate the optional 'protected_branches' role.yaml key (#199).
 
@@ -162,10 +178,13 @@ def _extra_protected_branches(data: dict, path: Path) -> tuple[str, ...] | None:
     protected set (see RoleDefinition.protected_branches) -- raise-only by
     construction, since a union can only ever add names, never drop the
     built-in DEFAULT_PROTECTED_BRANCHES. Absent/``None`` is valid (``()`` --
-    byte-identical to before this key existed). A non-list value, or any
-    non-string entry, is a schema error: ``None`` is the fail-closed sentinel
-    the caller uses to fall back to MOST_RESTRICTIVE_ROLE, same as every other
-    malformed role.yaml value in this module.
+    byte-identical to before this key existed). A non-list value, any
+    non-string entry, or an entry that normalizes to blank (whitespace-only,
+    or just a 'refs/heads/' prefix with nothing after it) is a schema error:
+    ``None`` is the fail-closed sentinel the caller uses to fall back to
+    MOST_RESTRICTIVE_ROLE, same as every other malformed role.yaml value in
+    this module -- a blank entry is as unusable as a non-string one, so it
+    fails the same way rather than being silently dropped.
 
     ponytail: exact string match only, no glob patterns -- YAGNI until a real
     need for wildcard branch names shows up (would also need
@@ -181,7 +200,15 @@ def _extra_protected_branches(data: dict, path: Path) -> tuple[str, ...] | None:
             path,
         )
         return None
-    return tuple(raw)
+    normalized = tuple(_normalize_protected_branch(b) for b in raw)
+    if any(not b for b in normalized):
+        logger.warning(
+            "%s has a blank 'protected_branches' entry (empty, or whitespace-only, "
+            "after normalization); using the most-restrictive role",
+            path,
+        )
+        return None
+    return normalized
 
 
 def load_policy(repo_root: str = ".") -> PolicyDoc | None:

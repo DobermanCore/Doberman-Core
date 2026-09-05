@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from doberman import config
 from doberman.engine.rules import commands as commands_module
 from doberman.engine.rules.commands import (
     DestructiveCommandRule,
@@ -199,6 +200,61 @@ def test_constructor_override_unions_with_a_configured_role():
         role=role, metadata={"raw_arguments": {"command": "git push --force origin staging"}}
     )
     assert rule.evaluate(action, ctx).verdict is Verdict.BLOCK
+
+
+# --- #199 review: configured entries are normalized like the pushed ref is
+# (strip whitespace, drop a leading refs/heads/, lower-case) before matching.
+
+
+@pytest.mark.parametrize(
+    "configured",
+    ["refs/heads/staging", "  Staging "],
+)
+def test_configured_extra_branch_is_normalized_before_matching(tmp_path, configured):
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text(
+        f"role: backend\nprotected_branches: ['{configured}']\n", encoding="utf-8"
+    )
+    role = config.load_active_role(str(tmp_path))
+    result = _cmd("git push --force origin staging", action_type=ActionType.git_op, role=role)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+def test_configured_branch_whitespace_only_entry_fails_closed(tmp_path):
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text("role: backend\nprotected_branches: ['   ']\n", encoding="utf-8")
+    role = config.load_active_role(str(tmp_path))
+    # Fails the whole role closed (most-restrictive), not just the branch key.
+    assert role.name == "restricted"
+    assert role.allowed == ()
+
+
+def test_constructor_override_entry_is_normalized_before_matching():
+    rule = DestructiveCommandRule(protected_branches=["refs/heads/Custom", "  padded  "])
+    action_a = SecurityObject(
+        id="a",
+        ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
+        agent_role="unknown",
+        action_type=ActionType.git_op,
+        tool_name="shell_exec",
+        target="git push --force origin custom",
+    )
+    ctx_a = EvalContext(metadata={"raw_arguments": {"command": "git push --force origin custom"}})
+    assert rule.evaluate(action_a, ctx_a).verdict is Verdict.BLOCK
+
+    action_b = SecurityObject(
+        id="b",
+        ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
+        agent_role="unknown",
+        action_type=ActionType.git_op,
+        tool_name="shell_exec",
+        target="git push --force origin padded",
+    )
+    ctx_b = EvalContext(metadata={"raw_arguments": {"command": "git push --force origin padded"}})
+    assert rule.evaluate(action_b, ctx_b).verdict is Verdict.BLOCK
 
 
 @pytest.mark.parametrize(

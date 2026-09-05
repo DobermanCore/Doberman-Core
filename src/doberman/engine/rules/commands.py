@@ -94,6 +94,24 @@ _COMMAND_ACTION_TYPES = frozenset(
 #: Branch names whose history is protected — a force-push here is catastrophic.
 DEFAULT_PROTECTED_BRANCHES: tuple[str, ...] = ("main", "master", "release", "develop")
 
+
+def _normalize_branch_name(name: str) -> str:
+    """Normalize a protected-branch name to match how the actual pushed ref
+    gets normalized (see ``_git_force_push_to_protected`` below): strip
+    surrounding whitespace, lower-case, then drop a leading ``refs/heads/``
+    (lower-cased first so a differently-cased prefix still strips). Without
+    this, a copy-pasted ``"refs/heads/staging"`` or ``" staging"`` would pass
+    schema validation but silently never match a real push (#199 review).
+
+    Mirrored in ``doberman.config._extra_protected_branches`` for role.yaml
+    entries -- keep both in sync if this logic changes.
+    """
+    stripped = name.strip().lower()
+    if stripped.startswith("refs/heads/"):
+        stripped = stripped[len("refs/heads/") :]
+    return stripped
+
+
 #: git commit flags that skip hooks or signing (C4). Pre-commit/pre-push hooks
 #: often run tests/lint, and a commit signature vouches for authorship — an
 #: agent quietly disabling either is stepping around a safety net it is
@@ -2209,7 +2227,13 @@ class DestructiveCommandRule:
         protected_branches: Iterable[str] = DEFAULT_PROTECTED_BRANCHES,
         bulk_threshold: int | None = None,
     ) -> None:
-        self._protected = tuple(protected_branches)
+        # Normalized the same way as the config path (#199 review) so a
+        # caller-supplied name with stray whitespace/casing/a refs/heads/
+        # prefix matches like any other entry; a no-op for the defaults
+        # (already normalized) and for any already-normalized override.
+        self._protected = tuple(
+            b for b in (_normalize_branch_name(raw) for raw in protected_branches) if b
+        )
         # None → derive the bulk threshold from the active security mode (F6);
         # an explicit value overrides the mode (used by tests).
         self._bulk_threshold_override = bulk_threshold

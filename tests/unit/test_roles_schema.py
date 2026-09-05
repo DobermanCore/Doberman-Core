@@ -127,6 +127,38 @@ def test_protected_branches_key_parses_for_an_inline_role(tmp_path):
     assert role.protected_branches == ("staging",)
 
 
+def test_protected_branches_entries_are_normalized(tmp_path):
+    # #199 review: the pushed ref is stripped of a 'refs/heads/' prefix and
+    # lower-cased before matching (commands.py), so a configured entry must
+    # be normalized the same way at parse time or it silently never matches.
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text(
+        "role: backend\nprotected_branches: ['refs/heads/Staging', '  Prod ']\n",
+        encoding="utf-8",
+    )
+    role = config.load_active_role(str(tmp_path))
+    assert role is not None
+    assert role.protected_branches == ("staging", "prod")
+
+
+def test_protected_branches_blank_after_normalization_fails_closed(tmp_path):
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text("role: backend\nprotected_branches: ['   ']\n", encoding="utf-8")
+    assert config.load_active_role(str(tmp_path)) is MOST_RESTRICTIVE_ROLE
+
+
+def test_protected_branches_refs_heads_only_fails_closed(tmp_path):
+    # 'refs/heads/' with nothing after it normalizes to blank too.
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text(
+        "role: backend\nprotected_branches: ['refs/heads/']\n", encoding="utf-8"
+    )
+    assert config.load_active_role(str(tmp_path)) is MOST_RESTRICTIVE_ROLE
+
+
 def test_protected_branches_empty_list_is_fine(tmp_path):
     cfg = tmp_path / ".doberman"
     cfg.mkdir()
