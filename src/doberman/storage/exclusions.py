@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from doberman.storage.device_metrics import HOME_ENV
@@ -40,6 +41,25 @@ def excluded_projects_path(home: Path | None = None) -> Path:
     return base / ".doberman" / _EXCLUSIONS_FILE
 
 
+@lru_cache(maxsize=8)
+def _parse_excluded_projects_data(raw: bytes) -> dict:
+    """Parse+validate ``excluded_projects.json``, cached on its raw content (#552).
+
+    Same mechanism as :func:`doberman.config._parse_role_yaml_data` and
+    :func:`doberman.egress.artifact._parse_pins_yaml_data`: keyed on the
+    file's ``bytes`` rather than ``(path, mtime_ns)``, because a
+    same-mtime-tick rewrite (coarse filesystem clock resolution, or two fast
+    writes) could hash to the same mtime key and serve a stale list -- e.g. a
+    hook reading right after ``add_exclusion`` still seeing the project as
+    protected. The read itself stays outside this helper (see
+    ``load_excluded_projects``) so this function is pure parse+validate;
+    ``maxsize=8`` bounds memory across a handful of repo roots/edits without
+    unbounded growth. Raises straight through on parse failure -- never
+    cached (``lru_cache`` only memoizes success).
+    """
+    return json.loads(raw.decode("utf-8"))
+
+
 def load_excluded_projects(*, home: Path | None = None) -> list[str]:
     """The raw stored (already-canonical) excluded paths, or ``[]``.
 
@@ -50,7 +70,10 @@ def load_excluded_projects(*, home: Path | None = None) -> list[str]:
     try:
         if not path.exists():
             return []
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # ponytail: one small read per decision; the parse+validate work below
+        # is cached on the bytes themselves, so no staleness ceiling remains.
+        raw = path.read_bytes()
+        data = _parse_excluded_projects_data(raw)
         if not isinstance(data, dict):
             return []
         entries = data.get("excluded")
