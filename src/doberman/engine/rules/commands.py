@@ -118,12 +118,29 @@ _GIT_GPGSIGN_CONFIG_KEY = "commit.gpgsign"
 _GIT_FALSY_CONFIG_VALUES = {"false", "no", "off", "0"}
 
 #: git global options that take their value as a SEPARATE following token
-#: (``-C <path>``, ``-c <k=v>``) — both the option and its value token must be
-#: skipped when hunting for the actual subcommand. Every other global option
-#: (``--git-dir=...``, ``--work-tree=...``, ``--no-pager``, ``-p``,
-#: ``--paginate``, ...) either carries its value in the same token (``=``) or
-#: takes none, so a generic "any other leading -/-- token" skip covers it.
-_GIT_GLOBAL_OPTIONS_WITH_VALUE = {"-C", "-c"}
+#: (``-C <path>``, ``-c <k=v>``, and every long option below in its bare —
+#: i.e. no ``=`` — form) — both the option and its value token must be
+#: skipped when hunting for the actual subcommand. Verified against installed
+#: ``git 2.54.0.windows.1``: each of these accepts BOTH ``--opt <value>`` and
+#: ``--opt=<value>`` identically (issue #550 review — the space-separated
+#: form previously desynced the verb walk: ``/repo`` in
+#: ``git --git-dir /repo push --force`` was read as the verb, so a real
+#: force-push silently PASSed). Every other long global option
+#: (``--no-pager``, ``--bare``, ...) either carries its value in the same
+#: token (``=``) or takes none at all (``--html-path``/``--man-path``/
+#: ``--info-path`` — confirmed these ignore any following token, ``=``-joined
+#: or not, rather than consuming it, so they're correctly left OUT of this
+#: set), so a generic "any other leading -/-- token" skip covers them.
+_GIT_GLOBAL_OPTIONS_WITH_VALUE = {
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--exec-path",
+    "--super-prefix",
+    "--config-env",
+}
 
 #: git commit short options that take a MANDATORY value — either as the rest
 #: of their own cluster (``-mFixBug``) or, when the cluster ends exactly at
@@ -1654,6 +1671,14 @@ def _segment_verdict(
             "Git commit bypasses its pre-commit hooks or signature verification; "
             "authentication required.",
         )
+    if cmd == "git":
+        _, assignments = _git_leading_globals(tokens)
+        if _git_assignment_sets_alias(assignments):
+            return _auth(
+                ReasonCode.opaque_command,
+                "Git command defines an alias (-c/--config-env= alias.*); the verb it "
+                "actually runs cannot be determined statically, authentication required.",
+            )
     if _is_pipe_to_shell(tokens):
         return _auth(
             ReasonCode.destructive_command,
@@ -1705,14 +1730,16 @@ def _git_leading_globals(tokens: list[str]) -> tuple[list[str], list[str]]:
     """``(subcommand_argv, config_assignments)`` — walk git's leading global
     options ONCE so the subcommand locator and the config-level
     verification-bypass check share one skip-loop. Skips ``-C <path>``/
-    ``-c <k=v>`` (and their value token), ``--git-dir=...``/``--work-tree=...``,
-    ``--no-pager``, ``-p``/``--paginate``, and any other leading ``-``/``--``
-    token — so ``git -C repo commit ...`` still locates ``commit``, and a
-    non-commit verb (``log``, ``tag``, ``shortlog``) that merely mentions
-    "commit" among its own arguments is never mistaken for it. Along the way,
-    every ``-c <k=v>`` value token and every ``--config-env=k=v`` token's
-    ``k=v`` is collected into ``config_assignments`` — these never appear as a
-    flag ON the subcommand, so nothing downstream would otherwise see them."""
+    ``-c <k=v>`` and every option in ``_GIT_GLOBAL_OPTIONS_WITH_VALUE``
+    (and each one's value token, space- or ``=``-separated), ``--no-pager``,
+    ``-p``/``--paginate``, and any other leading ``-``/``--`` token — so
+    ``git -C repo commit ...`` and ``git --git-dir /repo commit ...`` both
+    still locate ``commit``, and a non-commit verb (``log``, ``tag``,
+    ``shortlog``) that merely mentions "commit" among its own arguments is
+    never mistaken for it. Along the way, every ``-c <k=v>`` value token and
+    every ``--config-env`` value (space- or ``=``-separated) ``k=v`` is
+    collected into ``config_assignments`` — these never appear as a flag ON
+    the subcommand, so nothing downstream would otherwise see them."""
     if not tokens or tokens[0] != "git":
         return [], []
     rest = tokens[1:]
@@ -1728,6 +1755,11 @@ def _git_leading_globals(tokens: list[str]) -> tuple[list[str], list[str]]:
         if token.startswith("--config-env="):
             assignments.append(token[len("--config-env=") :])
             i += 1
+            continue
+        if token == "--config-env":  # noqa: S105 — git's --config-env <k=v> flag, not a secret
+            if i + 1 < len(rest):
+                assignments.append(rest[i + 1])
+            i += 2
             continue
         i += 2 if token in _GIT_GLOBAL_OPTIONS_WITH_VALUE else 1
     return rest[i:], assignments
@@ -1746,6 +1778,26 @@ def _git_config_bypasses_verification(assignments: Iterable[str]) -> bool:
         if key == _GIT_HOOKS_PATH_CONFIG_KEY:
             return True
         if key == _GIT_GPGSIGN_CONFIG_KEY and value.strip().lower() in _GIT_FALSY_CONFIG_VALUES:
+            return True
+    return False
+
+
+def _git_assignment_sets_alias(assignments: Iterable[str]) -> bool:
+    """True if a leading ``-c``/``--config-env=`` assignment (see
+    :func:`_git_leading_globals`) defines a git alias (``alias.<name>=...``).
+
+    Unlike :func:`_git_config_bypasses_verification`, which checks for a
+    SPECIFIC known-dangerous key, this fires on the mere PRESENCE of any
+    ``alias.*`` key, regardless of what it's set to: an alias lets the
+    literal verb token (``p``, ``l``, ...) run ANY command git resolves it
+    to, so once one is set, the actual verb this invocation runs can't be
+    determined statically at all — the verb-keyed detectors
+    (:func:`_git_force_push_to_protected`, :func:`_git_is_history_rewrite`)
+    inspect only the literal token and would silently miss e.g.
+    ``git -c alias.p="push --force" p origin main``."""
+    for assignment in assignments:
+        key, sep, _value = assignment.partition("=")
+        if sep and key.strip().lower().startswith("alias."):
             return True
     return False
 
