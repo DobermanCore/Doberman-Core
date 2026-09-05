@@ -20,7 +20,7 @@ import json
 from datetime import datetime, timezone
 
 from doberman.auth import dashboard_prompter
-from doberman.auth.challenge import AuthTier, run_auth_challenge
+from doberman.auth.challenge import AuthTier, current_challenge, run_auth_challenge, select_tier
 from doberman.auth.dashboard_prompter import DashboardPrompter
 from doberman.auth.provider import challenge_parts
 from doberman.hosthooks import hookio, spine
@@ -209,3 +209,40 @@ def test_spine_result_carries_a_challenge_copy_and_a_clean_action(tmp_path):
     assert result.challenge_action.id == result.action.id
     assert result.action.target == REDACTED
     assert "display_target" not in result.action.metadata
+
+
+# --- current_challenge() coverage (C2 cleanup, #558) -------------------------
+#
+# The issue: no integration test exercised current_challenge() itself — only
+# the Decision handed to the mocked run_auth_challenge was captured. Assert
+# the real (decision, action, tier) contextvar directly, using the same
+# fake-prompter pattern as the tests above.
+
+
+def test_current_challenge_is_set_during_and_none_outside():
+    assert current_challenge() is None  # no challenge running yet
+
+    seen: list[tuple[Decision, SecurityObject, AuthTier] | None] = []
+
+    class ObservingPrompter:
+        def confirm(self, message: str) -> bool:  # noqa: ARG002
+            seen.append(current_challenge())
+            return True
+
+        def read_code(self, message: str) -> str:  # noqa: ARG002
+            seen.append(current_challenge())
+            return ""
+
+    decision = _auth_decision()
+    action = _action()
+    result = run_auth_challenge(decision, action, prompter=ObservingPrompter())
+
+    assert result.approved is True
+    assert current_challenge() is None  # reset once the challenge finishes
+    assert seen  # the prompter callback ran inside the challenge
+    for entry in seen:
+        assert entry is not None
+        seen_decision, seen_action, seen_tier = entry
+        assert seen_decision == decision
+        assert seen_action.id == action.id
+        assert seen_tier == select_tier(decision)

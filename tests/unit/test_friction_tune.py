@@ -512,8 +512,18 @@ def test_redaction_never_leaks_the_raw_filename(tmp_path):
 # --- 9. Reader extension -----------------------------------------------------
 
 
-def test_decision_columns_end_with_entity_and_session_id():
-    assert _DECISION_COLUMNS[-2:] == ["entity_id", "session_id"]
+def test_decision_columns_end_with_entity_session_and_effects_fields():
+    # entity_id/session_id then the #556 EffectSet fields, in insert/select order.
+    assert _DECISION_COLUMNS[-8:] == [
+        "entity_id",
+        "session_id",
+        "effects_file_count",
+        "effects_dir_count",
+        "effects_capped",
+        "effects_hits_git",
+        "effects_hits_outside_repo",
+        "effects_digest_fp",
+    ]
 
 
 async def test_read_decisions_carries_session_and_entity_id(tmp_path):

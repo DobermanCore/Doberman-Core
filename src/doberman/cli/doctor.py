@@ -450,6 +450,19 @@ def _check_2fa() -> CheckResult:
     )
 
 
+def _check_phone_approvals() -> CheckResult:
+    from doberman.auth import approval_config, ntfy
+
+    cfg = ntfy.load_config()
+    if cfg is None or not approval_config.is_enabled(ntfy.METHOD_NAME):
+        return CheckResult(
+            "Phone approvals",
+            CheckStatus.WARN,
+            "not configured (optional) - run `doberman phone setup`",
+        )
+    return CheckResult("Phone approvals", CheckStatus.OK, "configured")
+
+
 def _check_password() -> CheckResult:
     from doberman.auth import password
 
@@ -503,6 +516,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("Enforcement", False, lambda: _check_enforcement(path)),
         _safe_check("Policy version", False, lambda: _check_policy_versions(path)),
         _safe_check("2FA", False, _check_2fa),
+        _safe_check("Phone approvals", False, _check_phone_approvals),
         _safe_check("Password", False, _check_password),
         _safe_check("Fingerprint key", False, _check_fingerprint_key),
         _safe_check("Codex CLI", False, _check_codex_version),
