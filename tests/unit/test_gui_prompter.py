@@ -732,7 +732,7 @@ def test_palette_is_dark_tan_and_amber():
 
 
 def test_brand_block_stays_under_48px_tall(real_root):
-    """The brand block (mark + wordmark + subtitle) yields most of its
+    """The brand block (mark + wordmark + requester) yields most of its
     footprint to the decision below it -- measured in isolation (nothing else
     packed into the frame afterward) at a forced 1:1 scale, since the "48px"
     budget is a logical-pixel design target, not a DPI-scaled one (an earlier
@@ -741,7 +741,7 @@ def test_brand_block_stays_under_48px_tall(real_root):
     root = real_root
     root.tk.call("tk", "scaling", 1.0)
     frame = gui_prompter._content_frame(root)
-    gui_prompter._build_brand(frame)
+    gui_prompter._build_brand(frame, "Agent: coder - via Bash")
     root.update()
     assert frame.winfo_reqheight() <= 48
 
@@ -1525,7 +1525,8 @@ def test_code_entry_width_is_eight(real_root):
 
 def test_code_dialog_explains_as_much_as_the_confirm_dialog(real_root):
     """The second (code-entry) dialog of a two_factor flow must not explain
-    LESS than the first: the reason (``why``), the reassurance line, and a
+    LESS than the first: the reason (``why``), the reassurance (inside the
+    "What is this?" panel, like the confirm dialog), and a
     "Step 2 of 2" marker so a human landing here cold still knows what's
     being decided and why -- not just the target and the code prompt.
     """
@@ -1539,7 +1540,7 @@ def test_code_dialog_explains_as_much_as_the_confirm_dialog(real_root):
 
     labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
     assert parts["why"] in labels
-    assert gui_prompter._REASSURANCE in labels
+    assert any(gui_prompter._REASSURANCE in text for text in labels)
     assert any("Step 2 of 2" in text for text in labels)
 
 
@@ -1552,7 +1553,7 @@ def test_code_dialog_shows_the_severity_chip_too(real_root):
     import tkinter
 
     labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
-    assert any(text.strip() == "HIGH" for text in labels)
+    assert any(text.strip() == "HIGH RISK" for text in labels)
 
 
 def test_control_return_in_entry_submits_a_valid_code(real_root, monkeypatch):
@@ -1753,7 +1754,7 @@ def test_effects_line_is_none_when_absent():
     assert gui_prompter._effects_line({}) is None
 
 
-def test_agent_identity_line_appears_under_the_headline(real_root):
+def test_agent_identity_sits_on_the_brand_row_ahead_of_the_headline(real_root):
     root = real_root
     answer: dict = {}
     parts = dict(_SAMPLE_PARTS, role="builder", tool="shell")
@@ -1762,51 +1763,19 @@ def test_agent_identity_line_appears_under_the_headline(real_root):
 
     import tkinter
 
-    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
-    assert "Agent: builder - via shell" in labels
-
-
-def test_effects_line_appears_in_the_confirm_dialog(real_root):
-    """ADR 0094: the blast-radius line actually renders in the live confirm
-    dialog, not just in the pure ``_effects_line`` builder."""
-    root = real_root
-    answer: dict = {}
-    parts = dict(_SAMPLE_PARTS, effects="3 files in 1 directory")
-    gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
-    root.update()
-
-    import tkinter
-
-    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
-    assert "Blast radius: 3 files in 1 directory" in labels
-
-
-def test_effects_line_appears_in_the_code_dialog(real_root):
-    root = real_root
-    answer: dict = {}
-    parts = dict(_SAMPLE_PARTS, effects="3 files in 1 directory")
-    gui_prompter._populate_code_parts(root, parts, answer, 120.0)
-    root.update()
-
-    import tkinter
-
-    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
-    assert "Blast radius: 3 files in 1 directory" in labels
-
-
-def test_no_effects_line_in_the_confirm_dialog_when_absent(real_root):
-    root = real_root
-    answer: dict = {}
-    gui_prompter._populate_confirm_parts(root, dict(_SAMPLE_PARTS), answer, 120.0)
-    root.update()
-
-    import tkinter
-
-    labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
-    assert not any("Blast radius" in label for label in labels)
-
-
-# --- Risk severity ramp + chip --------------------------------------------------------
+    all_widgets = list(_walk_widgets(root))
+    identity_idx = next(
+        i
+        for i, w in enumerate(all_widgets)
+        if isinstance(w, tkinter.Label) and w.cget("text") == "Agent: builder - via shell"
+    )
+    headline_idx = next(
+        i
+        for i, w in enumerate(all_widgets)
+        if isinstance(w, tkinter.Label) and w.cget("text") == parts["headline"]
+    )
+    assert identity_idx < headline_idx
+    assert all_widgets[identity_idx].cget("fg") == gui_prompter._MUTED
 
 
 def test_severity_from_risk_text_extracts_the_risk_word():
@@ -1817,24 +1786,10 @@ def test_severity_from_risk_text_extracts_the_risk_word():
     assert gui_prompter._severity_from_risk_text("no risk word here") is None
 
 
-def test_severity_ramp_critical_and_high_are_bold_block_red():
-    color, bold = gui_prompter._severity_ramp("critical")
-    assert (color, bold) == (gui_prompter._SEV_CRITICAL, True)
-    assert gui_prompter._severity_ramp("high") == (gui_prompter._SEV_CRITICAL, True)
-
-
-def test_severity_ramp_medium_is_amber_not_bold():
-    assert gui_prompter._severity_ramp("medium") == (gui_prompter._APPROVE, False)
-
-
-def test_severity_ramp_low_and_unknown_are_body_colour():
-    assert gui_prompter._severity_ramp("low") == (gui_prompter._FG, False)
-    assert gui_prompter._severity_ramp(None) == (gui_prompter._FG, False)
-
-
 def test_risk_chip_and_text_never_rest_on_colour_alone(real_root):
-    """Both the chip AND the risk sentence show the actual word -- someone who
-    can't perceive colour still sees "HIGH"."""
+    """The chip's TEXT carries the severity word -- someone who can't perceive
+    colour still reads "HIGH RISK" -- and the tier hint beside it is plain
+    muted text, so the word prints exactly once."""
     import tkinter
 
     root = real_root
@@ -1843,8 +1798,14 @@ def test_risk_chip_and_text_never_rest_on_colour_alone(real_root):
     root.update()
 
     labels = [w.cget("text") for w in _walk_widgets(frame) if isinstance(w, tkinter.Label)]
-    assert any("HIGH" in text for text in labels)  # the chip
-    assert any("Risk: high" in text for text in labels)  # the sentence
+    assert any(text.strip() == "HIGH RISK" for text in labels)  # the chip
+    assert "this needs your code" in labels  # the hint, without repeating the word
+    assert sum("high" in text.lower() for text in labels) == 1
+
+
+def test_risk_hint_pure_formatting():
+    assert gui_prompter._risk_hint("Risk: high - confirm to continue") == "confirm to continue"
+    assert gui_prompter._risk_hint("RISK: HIGH") == ""
 
 
 def test_high_risk_confirm_dialog_shows_a_red_bold_chip(real_root):
@@ -1877,7 +1838,7 @@ def test_severity_chip_font_meets_the_files_own_9pt_floor(real_root):
     chip = next(
         w
         for w in _walk_widgets(frame)
-        if isinstance(w, tkinter.Label) and w.cget("text").strip() == "HIGH"
+        if isinstance(w, tkinter.Label) and w.cget("text").strip() == "HIGH RISK"
     )
     size = tkfont.Font(root=root, font=chip.cget("font")).actual()["size"]
     assert abs(size) >= 9
@@ -1938,7 +1899,7 @@ def test_human_tone_still_shows_the_severity_chip(real_root):
     import tkinter
 
     labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
-    assert any(text.strip() == "HIGH" for text in labels)
+    assert any(text.strip() == "HIGH RISK" for text in labels)
 
 
 # --- Attention on open ----------------------------------------------------------------
@@ -2468,7 +2429,7 @@ def test_low_risk_chip_is_an_outline_not_the_brightest_element(real_root):
     chip = next(
         w
         for w in _walk_widgets(frame)
-        if isinstance(w, tkinter.Label) and w.cget("text").strip() == "LOW"
+        if isinstance(w, tkinter.Label) and w.cget("text").strip() == "LOW RISK"
     )
     assert chip.cget("bg") == gui_prompter._BG  # no fill
     assert chip.cget("fg") == gui_prompter._MUTED
@@ -2531,16 +2492,14 @@ def test_high_severity_headline_stays_fg_bold_too(real_root):
     assert tkfont.Font(root=root, font=headline.cget("font")).actual()["weight"] == "bold"
 
 
-def test_critical_under_10s_shows_at_most_two_red_elements(real_root):
-    """Round 7, P1 item 1's actual point: at CRITICAL severity with the
-    countdown under 10s, only the chip and the risk sentence may be
-    BLOCK-red -- the headline (now _FG/bold) and the countdown (now
-    amber-bold with a "!" prefix) must never add a third/fourth red element.
+def test_critical_under_10s_shows_exactly_one_red_element(real_root):
+    """At CRITICAL severity with the countdown under 10s, only the chip may be
+    BLOCK-red -- the headline (_FG/bold), the tier hint (muted), and the
+    countdown (amber-bold with a "!" prefix) never add a second red element.
 
-    The chip itself is a FILLED red box (bg=_SEV_CRITICAL, dark text) rather
-    than red text on a dark background, so a widget counts as "red" here if
-    EITHER its fill or its text uses the severity color -- either one reads
-    as a red element to a human looking at the dialog.
+    The chip is a FILLED red box (bg=_SEV_CRITICAL, dark text), so a widget
+    counts as "red" here if EITHER its fill or its text uses the severity
+    colour.
     """
     root = real_root
     answer: dict = {}
@@ -2556,11 +2515,7 @@ def test_critical_under_10s_shows_at_most_two_red_elements(real_root):
         if isinstance(w, tkinter.Label)
         and gui_prompter._SEV_CRITICAL in (w.cget("fg"), w.cget("bg"))
     ]
-    # The chip ("CRITICAL", a filled red box) and the risk sentence -- nothing else.
-    assert len(red_labels) == 2
-    texts = {label.cget("text").strip() for label in red_labels}
-    assert "CRITICAL" in texts
-    assert any("critical" in text.lower() for text in texts if text != "CRITICAL")
+    assert [label.cget("text").strip() for label in red_labels] == ["CRITICAL RISK"]
 
 
 def test_critical_approve_button_starts_disabled_and_ticks_down(real_root):
@@ -2780,7 +2735,10 @@ def test_approval_memory_notice_appears_after_the_target_panel(real_root):
     assert all_widgets[notice_idx].cget("fg") == gui_prompter._MUTED
 
 
-def test_hairline_precedes_the_risk_row(real_root):
+def test_hairline_separates_the_risk_row_from_the_question(real_root):
+    """The dialog has exactly one hairline, and it divides the "what" group
+    (ending in the risk row) from the "decide" group (opening with the
+    question)."""
     root = real_root
     answer: dict = {}
     gui_prompter._populate_confirm_parts(root, _SAMPLE_PARTS, answer, 120.0)
@@ -2792,12 +2750,12 @@ def test_hairline_precedes_the_risk_row(real_root):
     chip_idx = next(
         i
         for i, w in enumerate(all_widgets)
-        if isinstance(w, tkinter.Label) and w.cget("text").strip() == "HIGH"
+        if isinstance(w, tkinter.Label) and w.cget("text").strip() == "HIGH RISK"
     )
-    why_idx = next(
+    question_idx = next(
         i
         for i, w in enumerate(all_widgets)
-        if isinstance(w, tkinter.Label) and w.cget("text") == _SAMPLE_PARTS["why"]
+        if isinstance(w, tkinter.Label) and w.cget("text") == gui_prompter._QUESTION
     )
     hairlines = [
         i
@@ -2806,7 +2764,8 @@ def test_hairline_precedes_the_risk_row(real_root):
         and str(w.cget("height")) == "1"
         and w.cget("bg") == gui_prompter._RULE
     ]
-    assert any(why_idx < i < chip_idx for i in hairlines)
+    assert len(hairlines) == 1
+    assert chip_idx < hairlines[0] < question_idx
 
 
 # --- item 7: errors in the error colour ----------------------------------------------
@@ -3233,7 +3192,7 @@ def test_code_dialog_hint_differs_from_the_confirm_dialogs(real_root):
     labels = [w.cget("text") for w in _walk_widgets(root) if isinstance(w, tkinter.Label)]
     assert gui_prompter._HINT_CODE in labels
     assert gui_prompter._HINT not in labels
-    assert "submit code" in gui_prompter._HINT_CODE
+    assert "submits the code" in gui_prompter._HINT_CODE
 
 
 def test_confirm_dialog_keeps_the_original_hint(real_root):
