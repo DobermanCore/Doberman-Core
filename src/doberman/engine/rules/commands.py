@@ -219,6 +219,11 @@ _WRAPPER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
     "nohup": frozenset(),
     "command": frozenset(),
     "setsid": frozenset(),
+    # #555: `builtin <name> [args]` forces builtin resolution over any
+    # same-named function, exactly like `command` forces external resolution
+    # — transparent, no options of its own, so it hides a destructive segment
+    # (`builtin rm -rf /`) the same way an unstripped `command`/`exec` would.
+    "builtin": frozenset(),
 }
 #: Existing readers of the bare-name set keep working.
 _TRANSPARENT_WRAPPERS = frozenset(_WRAPPER_VALUE_OPTIONS)
@@ -1995,17 +2000,26 @@ def _is_powershell_encoded_flag(token: str) -> bool:
 
 def _opaque_shell_payload(tokens: list[str]) -> bool:
     """True for ``bash -c <payload>``, PowerShell ``-Command``/``-EncodedCommand``,
-    ``cmd /c <payload>``, or ``su -c``/``su --command=``/``runuser -c``/
-    ``runuser --command=`` — a payload we cannot (or must not) statically
-    vet. T5: ``su`` is a shell host like ``bash``, never a transparent
-    wrapper — its own ``-c``/``--command`` payload is walked exactly the way
-    ``bash -c``'s is (see ``_payload_command``). I2: ``runuser -c`` is
-    ``su -c`` with a different name (a root shell running an arbitrary
-    payload) — its own `_WRAPPER_OPAQUE_OPTIONS` entry keeps it, and its
-    ``-c``/``--command`` marker, intact in ``tokens`` for this same check."""
+    ``cmd /c <payload>``, ``su -c``/``su --command=``/``runuser -c``/
+    ``runuser --command=``, or ``eval <words...>`` — a payload we cannot (or
+    must not) statically vet. T5: ``su`` is a shell host like ``bash``, never a
+    transparent wrapper — its own ``-c``/``--command`` payload is walked
+    exactly the way ``bash -c``'s is (see ``_payload_command``). I2:
+    ``runuser -c`` is ``su -c`` with a different name (a root shell running an
+    arbitrary payload) — its own `_WRAPPER_OPAQUE_OPTIONS` entry keeps it, and
+    its ``-c``/``--command`` marker, intact in ``tokens`` for this same check.
+    #555: ``eval`` is never a transparent wrapper either (absent from
+    ``_WRAPPER_VALUE_OPTIONS``, so ``argv_from_tokens`` leaves it and its
+    arguments untouched) — bash concatenates its arguments with a single
+    space and re-parses the result as a shell command line, the same
+    string-payload shape as ``bash -c``, so it gets the same opaque-AUTH
+    floor with a body scan (see ``_payload_command``) rather than a silent
+    PASS with the destructive segment hidden in one shlex token."""
     if not tokens:
         return False
     head = _wrapper_name(tokens[0])
+    if head == "eval":
+        return len(tokens) > 1
     if head in _SHELLS:
         return "-c" in tokens or "--command" in tokens
     if head in ("su", "runuser"):
@@ -2393,9 +2407,12 @@ class DestructiveCommandRule:
 
 def _payload_command(tokens: list[str]) -> str | None:
     """Pull the argument after ``-c``/``-Command``/``cmd /c``/``su --command=``
-    for a bounded shared-command walk. ``None`` for ``-EncodedCommand``
-    (base64 — cannot decode/vet) so the caller skips body scanning and keeps
-    the opaque AUTH."""
+    (or, #555, every word after ``eval``, bash-joined with a single space —
+    ``eval``'s own concatenation rule) for a bounded shared-command walk.
+    ``None`` for ``-EncodedCommand`` (base64 — cannot decode/vet) so the
+    caller skips body scanning and keeps the opaque AUTH."""
+    if tokens and _wrapper_name(tokens[0]) == "eval":
+        return " ".join(tokens[1:]) if len(tokens) > 1 else None
     for flag in ("-c", "--command"):
         if flag in tokens:
             idx = tokens.index(flag)
