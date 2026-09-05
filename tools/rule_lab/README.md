@@ -1,10 +1,12 @@
-# rule_lab — raise-only experiment loop over the benchmark harness
+# rule_lab: raise-only experiment loop over the benchmark harness
 
 An autonomous-research pattern (propose → run fixed evaluator → score → memory),
 scoped to the one place it fits Doberman: **tuning rules/detectors against the
-benchmark harness**. It is deliberately *not* a model-training pipeline.
+benchmark harness**. Raise-only means every change this loop proposes can
+tighten a rule, never loosen one. It is deliberately *not* a model-training
+pipeline.
 
-Everything here is orchestration only — it imports the public benchmark CLI and
+Everything here is orchestration only. It imports the public benchmark CLI and
 **never touches `src/doberman`**. Candidates are shipped as external plugins, so
 the safety-critical core stays out of the autonomous loop.
 
@@ -67,8 +69,9 @@ branch on it.
 - **Overfit guard**: tune on one suite (e.g. `agentdojo`), validate on a held-out
   suite (e.g. `synthetic`) via the non-regression predicate. Improvement must
   survive the held-out suite. A candidate tuned and measured on the *same* suite
-  is train-on-test — the held-out check, not the tune ΔASR, is the real signal.
+  is train-on-test. The held-out check, not the tune ΔASR, is the real signal.
   The worker rejects overlapping tune/holdout lists before spending benchmark
   budget.
-- **Human in the loop**: the worker stops at `ACCEPT -> human review`. Merging —
-  and any 2FA-gated loosening — is never autonomous.
+- **Human in the loop**: the worker stops at `ACCEPT -> human review`. Merging is
+  never autonomous, and neither is any loosening gated by 2FA (two-factor
+  authentication).
