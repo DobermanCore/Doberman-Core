@@ -346,6 +346,20 @@ def format_effect_set(effects: EffectSet | None) -> str | None:
     if effects.capped:
         if effects.file_count is None:
             return "unknown - count unavailable" + flags
+        if effects.dir_count:
+            # C2 cleanup (#558): the cap-hit shade now carries the real
+            # files/dirs split (see effects.py::_cap_hit) instead of dumping
+            # everything under file_count — show the total lower bound (what
+            # used to be the whole "N+ files" number) with the split as
+            # context, so a mostly-directory delete never renders as an
+            # understated "1+ files".
+            total = effects.file_count + effects.dir_count
+            file_word = "file" if effects.file_count == 1 else "files"
+            dir_word = "directory" if effects.dir_count == 1 else "directories"
+            return (
+                f"{total:,}+ ({effects.file_count:,} {file_word}, "
+                f"{effects.dir_count:,} {dir_word})" + flags
+            )
         return f"{effects.file_count:,}+ files" + flags
     file_word = "file" if effects.file_count == 1 else "files"
     files = f"{effects.file_count:,} {file_word}"
