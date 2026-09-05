@@ -85,6 +85,33 @@ root are always a hard block, for every role. An explicit `.doberman/role.yaml` 
 precedence over the opt-in default. Turning the opt-in off (`doberman role disable-default`) is a
 weaken, gated behind the same possession-factor confirmation as lowering mode or enforcement.
 
+## Protecting extra branches from force-push, `protected_branches`
+
+Force-pushing to `main`, `master`, `release`, or `develop` always blocks, no configuration needed.
+To protect additional branches for a repo, such as `staging` or a release train branch, add a
+`protected_branches` list to `.doberman/role.yaml`:
+
+```yaml
+role: backend
+protected_branches:
+  - staging
+  - release-2026.9
+```
+
+This only adds names. The four built-in branches always block and this key can never remove them.
+Names are matched exactly, case-insensitively, with no wildcards or glob patterns. Surrounding
+whitespace and a leading `refs/heads/` are stripped before matching, so `refs/heads/staging` and
+`" staging"` both work the same as `staging`. The key sits alongside the `role` (or inline
+`allowed`/`suspicious`/`blocked`) definition in the same file, so a `.doberman/role.yaml` that sets
+only `protected_branches` and no role still falls back to the most-restrictive role, the same as any
+other role.yaml with no usable `role`.
+
+A malformed `protected_branches` value, such as a plain string instead of a list, a list with a
+non-string entry, or an entry that is blank once whitespace is stripped, fails the whole role closed
+to the most restrictive role. This is not limited to branch protection: a bracket typo here also
+drops the operator's custom `allowed`/`suspicious`/`blocked` path scope, because the whole
+role.yaml file is rejected together, not just this one key.
+
 ## Subjective preference weights, `doberman prefs`
 
 The adaptive layer's four "care" weights, `confidentiality`, `reversibility`,

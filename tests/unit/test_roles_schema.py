@@ -99,6 +99,107 @@ def test_malformed_role_file_fails_closed_to_restrictive(tmp_path):
     assert config.load_active_role(str(tmp_path)) is MOST_RESTRICTIVE_ROLE
 
 
+# --- #199: protected_branches role.yaml key ---
+
+
+def test_protected_branches_key_parses_for_a_named_builtin_role(tmp_path):
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text(
+        "role: backend\nprotected_branches: [staging, prod]\n", encoding="utf-8"
+    )
+    role = config.load_active_role(str(tmp_path))
+    assert role is not None
+    assert role.name == "backend"
+    assert role.protected_branches == ("staging", "prod")
+    # The named builtin's own path scope is untouched by the addition.
+    assert "backend/**" in role.allowed
+
+
+def test_protected_branches_key_parses_for_an_inline_role(tmp_path):
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text(
+        "role: custom\nallowed: ['app/**']\nprotected_branches: ['staging']\n", encoding="utf-8"
+    )
+    role = config.load_active_role(str(tmp_path))
+    assert role is not None
+    assert role.protected_branches == ("staging",)
+
+
+def test_protected_branches_entries_are_normalized(tmp_path):
+    # #199 review: the pushed ref is stripped of a 'refs/heads/' prefix and
+    # lower-cased before matching (commands.py), so a configured entry must
+    # be normalized the same way at parse time or it silently never matches.
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text(
+        "role: backend\nprotected_branches: ['refs/heads/Staging', '  Prod ']\n",
+        encoding="utf-8",
+    )
+    role = config.load_active_role(str(tmp_path))
+    assert role is not None
+    assert role.protected_branches == ("staging", "prod")
+
+
+def test_protected_branches_blank_after_normalization_fails_closed(tmp_path):
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text("role: backend\nprotected_branches: ['   ']\n", encoding="utf-8")
+    assert config.load_active_role(str(tmp_path)) is MOST_RESTRICTIVE_ROLE
+
+
+def test_protected_branches_refs_heads_only_fails_closed(tmp_path):
+    # 'refs/heads/' with nothing after it normalizes to blank too.
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text(
+        "role: backend\nprotected_branches: ['refs/heads/']\n", encoding="utf-8"
+    )
+    assert config.load_active_role(str(tmp_path)) is MOST_RESTRICTIVE_ROLE
+
+
+def test_protected_branches_empty_list_is_fine(tmp_path):
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text("role: backend\nprotected_branches: []\n", encoding="utf-8")
+    role = config.load_active_role(str(tmp_path))
+    assert role is not None
+    assert role.protected_branches == ()
+
+
+def test_protected_branches_key_absent_defaults_to_empty(tmp_path):
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text("role: backend\n", encoding="utf-8")
+    role = config.load_active_role(str(tmp_path))
+    assert role is not None
+    assert role.protected_branches == ()
+
+
+def test_protected_branches_non_list_value_fails_closed_to_restrictive(tmp_path):
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text(
+        'role: backend\nprotected_branches: "staging"\n', encoding="utf-8"
+    )
+    assert config.load_active_role(str(tmp_path)) is MOST_RESTRICTIVE_ROLE
+
+
+def test_protected_branches_non_string_entry_fails_closed_to_restrictive(tmp_path):
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "role.yaml").write_text(
+        "role: backend\nprotected_branches: [staging, 1]\n", encoding="utf-8"
+    )
+    assert config.load_active_role(str(tmp_path)) is MOST_RESTRICTIVE_ROLE
+
+
+def test_protected_branches_defaults_to_empty_tuple_on_role_definition():
+    role = RoleDefinition(name="x")
+    assert role.protected_branches == ()
+
+
 def test_load_builtin_roles_is_cached_across_many_calls():
     # Finding (#552): load_builtin_roles() re-read and re-parsed the packaged
     # builtin_roles.yaml on every call -- and it is called from
