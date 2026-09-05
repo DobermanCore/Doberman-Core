@@ -542,3 +542,156 @@ def test_target_path_class_may_be_none():
     """target_path_class is Optional — non-file actions have no path class."""
     event = _make_event(target_path_class=None)
     assert event.target_path_class is None
+
+
+# ---------------------------------------------------------------------------
+# 11. target_path_class raw-path validator (new in round 3)
+# ---------------------------------------------------------------------------
+
+
+def test_raw_absolute_path_is_rejected():
+    """A raw absolute POSIX path in target_path_class must raise ValidationError."""
+    with pytest.raises(ValidationError):
+        _make_event(target_path_class="/home/user/.ssh/id_rsa")
+
+
+def test_raw_windows_path_is_rejected():
+    """A Windows drive path in target_path_class must raise ValidationError."""
+    with pytest.raises(ValidationError):
+        _make_event(target_path_class=r"C:\Users\user\secret.txt")
+
+
+def test_raw_relative_path_with_extension_is_rejected():
+    """A relative dir/filename.ext (no wildcard) must raise ValidationError."""
+    with pytest.raises(ValidationError):
+        _make_event(target_path_class="backend/auth/session.ts")
+
+
+def test_valid_path_class_with_wildcard_is_accepted():
+    """A proper path class (dir/*.ext) must be accepted."""
+    event = _make_event(target_path_class="backend/auth/*.ts")
+    assert event.target_path_class == "backend/auth/*.ts"
+
+
+def test_dotfile_path_class_is_accepted():
+    """A dotfile name like '.env' is itself the path class and must be accepted."""
+    event = _make_event(target_path_class=".env")
+    assert event.target_path_class == ".env"
+
+
+def test_none_target_path_class_is_accepted():
+    """None is valid for non-file actions."""
+    event = _make_event(target_path_class=None)
+    assert event.target_path_class is None
+
+
+# ---------------------------------------------------------------------------
+# 12. from_decision_record constructor
+# ---------------------------------------------------------------------------
+
+
+def test_from_decision_record_derives_path_class(tmp_path):
+    """from_decision_record calls path_class() and produces a valid ActivityEvent."""
+    from doberman.models import (
+        ActionType,
+        Algebra,
+        Reversibility,
+        Risk,
+        SecurityObject,
+        SourceContext,
+    )
+
+    action = SecurityObject(
+        id="act-fdr-001",
+        ts=_NOW,
+        agent_role="backend",
+        action_type=ActionType.file_read,
+        tool_name="read_file",
+        risk=Risk.low,
+        source_context=SourceContext.unknown,
+        reversibility=Reversibility.low,
+        algebra=Algebra(),
+        target="backend/auth/session.ts",
+    )
+
+    event = ActivityEvent.from_decision_record(
+        action,
+        collector_id="builtin.test",
+        entity_fingerprint="hmac:aabbccdd",
+        session_fingerprint="hmac:eeff0011",
+    )
+
+    # path_class() should have converted the raw target to a path class.
+    assert event.target_path_class is not None
+    assert "*" in event.target_path_class, "Expected a wildcard path class"
+    assert "session.ts" not in event.target_path_class, "Raw filename must not appear"
+    assert event.action_id == "act-fdr-001"
+    assert event.agent_role == "backend"
+    assert event.action_type == "file_read"
+
+
+async def test_from_decision_record_raw_path_never_stored(tmp_path):
+    """from_decision_record: the raw filename must never appear in a stored row.
+
+    path_class() converts a relative path like ``backend/auth/session.ts``
+    into ``backend/auth/*.ts``.  We verify the raw filename is absent from
+    the stored payload_json — proving the constructor's redaction step works
+    end-to-end through the DB.
+    """
+    import sqlite3
+
+    from doberman.models import (
+        ActionType,
+        Algebra,
+        Reversibility,
+        Risk,
+        SecurityObject,
+        SourceContext,
+    )
+
+    # Use a relative path so path_class() can redact it to dir/*.ext form.
+    raw_filename = "session.ts"
+    raw_target = f"backend/auth/{raw_filename}"
+
+    action = SecurityObject(
+        id="act-fdr-002",
+        ts=_NOW,
+        agent_role="backend",
+        action_type=ActionType.file_read,
+        tool_name="read_file",
+        risk=Risk.low,
+        source_context=SourceContext.unknown,
+        reversibility=Reversibility.low,
+        algebra=Algebra(),
+        target=raw_target,
+    )
+
+    event = ActivityEvent.from_decision_record(
+        action,
+        collector_id="builtin.test",
+        entity_fingerprint="hmac:aabbccdd",
+        session_fingerprint="hmac:eeff0011",
+    )
+
+    # path_class() must have replaced the filename with a wildcard.
+    assert event.target_path_class is not None
+    assert raw_filename not in event.target_path_class, (
+        f"Raw filename {raw_filename!r} leaked into target_path_class"
+    )
+    assert "*" in event.target_path_class
+
+    await emit_activity_event(event, repo_root=str(tmp_path))
+
+    db_file = tmp_path / ".doberman" / "doberman.db"
+    assert db_file.exists()
+    con = sqlite3.connect(str(db_file))
+    rows = con.execute("SELECT payload_json FROM activity_events").fetchall()
+    con.close()
+
+    for (payload_json,) in rows:
+        assert raw_filename not in payload_json, (
+            f"Raw filename {raw_filename!r} found in stored payload_json"
+        )
+        assert raw_target not in payload_json, (
+            f"Raw path {raw_target!r} found in stored payload_json"
+        )
