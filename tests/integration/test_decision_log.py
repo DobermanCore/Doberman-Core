@@ -4,9 +4,11 @@ import inspect
 from datetime import datetime, timedelta, timezone
 
 from doberman.auth.challenge import AuthResult, AuthTier
+from doberman.engine.effects import compute_delete_effects
 from doberman.models import (
     ActionType,
     Decision,
+    EffectSet,
     GuardrailResult,
     ReasonCode,
     Risk,
@@ -91,7 +93,9 @@ def test_writer_has_no_update_or_delete_path_for_decisions():
         assert "DELETE FROM decisions" not in source
 
 
-def _decision_and_action(verdict: Verdict, action_id: str) -> tuple[Decision, SecurityObject]:
+def _decision_and_action(
+    verdict: Verdict, action_id: str, *, effects: EffectSet | None = None
+) -> tuple[Decision, SecurityObject]:
     reasons = [] if verdict is Verdict.PASS else [ReasonCode.sensitive_secret_access]
     now = datetime.now(timezone.utc)
     objective = GuardrailResult(
@@ -105,6 +109,7 @@ def _decision_and_action(verdict: Verdict, action_id: str) -> tuple[Decision, Se
         reason_codes=reasons,
         explanation="x",
         decided_at=now,
+        effects=effects,
     )
     action = SecurityObject(
         id=action_id,
@@ -114,6 +119,113 @@ def _decision_and_action(verdict: Verdict, action_id: str) -> tuple[Decision, Se
         tool_name="fs_read",
     )
     return decision, action
+
+
+# --- EffectSet audit-row fields (#556) --------------------------------------
+
+_EFFECTS = EffectSet(
+    file_count=5,
+    dir_count=2,
+    capped=False,
+    hits_git=True,
+    hits_outside_repo=False,
+    digest="deadbeef" * 8,
+)
+
+
+async def test_decision_with_effect_set_persists_exact_counts_and_booleans(tmp_path):
+    root = str(tmp_path)
+    decision, action = _decision_and_action(Verdict.PASS, "with-effects", effects=_EFFECTS)
+
+    await record_decision(decision, action, repo_root=root)
+
+    rows = await read_decisions(root)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["effects_file_count"] == 5
+    assert row["effects_dir_count"] == 2
+    assert bool(row["effects_capped"]) is False
+    assert bool(row["effects_hits_git"]) is True
+    assert bool(row["effects_hits_outside_repo"]) is False
+    # The digest constraint (#556): the plain sha256 digest never reaches the
+    # row as-is — only a keyed HMAC fingerprint of it does.
+    assert row["effects_digest_fp"] is not None
+    assert row["effects_digest_fp"] != _EFFECTS.digest
+    assert row["effects_digest_fp"].startswith("hmac:")
+
+
+async def test_decision_without_effect_set_persists_null_not_zero(tmp_path):
+    root = str(tmp_path)
+    decision, action = _decision_and_action(Verdict.PASS, "no-effects")
+
+    await record_decision(decision, action, repo_root=root)
+
+    rows = await read_decisions(root)
+    assert len(rows) == 1
+    row = rows[0]
+    for column in (
+        "effects_file_count",
+        "effects_dir_count",
+        "effects_capped",
+        "effects_hits_git",
+        "effects_hits_outside_repo",
+        "effects_digest_fp",
+    ):
+        assert row[column] is None  # "unknown/no preview", never a fabricated 0/False
+
+
+async def test_effect_set_from_real_walk_never_leaks_secret_or_raw_path(tmp_path):
+    # A synthetic secret AND a raw absolute path both live in the delete-class
+    # operand this EffectSet was computed from. Neither may reach any column.
+    secret = "AKIA-FAKE-EFFECTSET-SECRET-9999"  # noqa: S105 — synthetic test value
+    target_dir = tmp_path / f"{secret}-dir"
+    target_dir.mkdir()
+    (target_dir / "file.txt").write_text("x")
+    absolute_operand = str(target_dir)
+
+    effects = compute_delete_effects([absolute_operand], repo_root=str(tmp_path))
+    root = str(tmp_path)
+    decision, action = _decision_and_action(Verdict.PASS, "real-walk-effects", effects=effects)
+
+    await record_decision(decision, action, repo_root=root)
+
+    async with open_db(root) as conn:
+        async with conn.execute("SELECT * FROM decisions") as cur:
+            rows = await cur.fetchall()
+    blob = " ".join(str(v) for row in rows for v in row)
+    assert secret not in blob
+    assert absolute_operand not in blob
+    assert str(tmp_path) not in blob
+
+
+async def test_fingerprint_failure_loses_only_the_digest_column_not_the_row(tmp_path, monkeypatch):
+    # Review fix (Important): fingerprint() fails closed (raises) when the
+    # local HMAC key can't be read. Before this fix, that exception propagated
+    # out of _effects_fields() -> build_record() -> record_decision()'s outer
+    # except, which dropped the WHOLE row (verdict, reason codes, everything),
+    # not just the effects_digest_fp column.
+    import doberman.storage.log as log_module
+
+    def boom(value):
+        raise PermissionError("key file unreadable")  # noqa: EM101 — test-only message
+
+    monkeypatch.setattr(log_module, "fingerprint", boom)
+    root = str(tmp_path)
+    decision, action = _decision_and_action(Verdict.AUTH, "fp-fail", effects=_EFFECTS)
+
+    await record_decision(decision, action, repo_root=root)
+
+    rows = await read_decisions(root)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["final_verdict"] == "AUTH"
+    assert row["reason_codes_json"] is not None
+    assert row["effects_file_count"] == 5
+    assert row["effects_dir_count"] == 2
+    assert bool(row["effects_capped"]) is False
+    assert bool(row["effects_hits_git"]) is True
+    assert bool(row["effects_hits_outside_repo"]) is False
+    assert row["effects_digest_fp"] is None
 
 
 async def test_recent_session_decisions_reads_last_n_newest_first():

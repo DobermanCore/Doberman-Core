@@ -165,7 +165,7 @@ def test_egress_inside_function_body_is_classified():
 
 # ---------------------------------------------------------------------------
 # 9. T5: a flag-taking transparent wrapper no longer hides the egress verb —
-#    `_command_verb` shares `_argv_from_tokens` with the destructive-command
+#    `_command_verb` shares `argv_from_tokens` with the destructive-command
 #    rule, so a wrapper's own option is consumed instead of misread as the
 #    command and the wrapped command's host is recovered.
 # ---------------------------------------------------------------------------

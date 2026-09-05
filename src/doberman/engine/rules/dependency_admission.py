@@ -48,9 +48,9 @@ from importlib.resources import files
 
 from doberman.engine.rules.commands import (
     _COMMAND_ACTION_TYPES,
-    _argv_from_tokens,
     _command_text,
     _raw_command_payload,
+    argv_from_tokens,
     walk_command,
 )
 from doberman.models import (
@@ -120,7 +120,7 @@ _ECOSYSTEM_VERBS: dict[str, tuple[str, frozenset[str], frozenset[str]]] = {
 }
 
 #: `python -m pip install X` / `python3 -m pip install X`:
-#: `_argv_from_tokens` strips env assignments and shell wrappers
+#: `argv_from_tokens` strips env assignments and shell wrappers
 #: (sudo/env/...) but not this interpreter-module-runner shape, so it is
 #: peeled here.
 _MODULE_RUNNERS = frozenset({"python", "python3", "py"})
@@ -205,7 +205,7 @@ def _extract_names(tokens: list[str], value_flags: frozenset[str]) -> list[str]:
 def _ecosystem_and_names(raw_tokens: list[str]) -> tuple[str, list[str]] | None:
     """One segment's ``(ecosystem, [package names])``, or ``None`` if it is
     not a recognized package-manager install/add invocation."""
-    tokens = _peel_uv_pip(_peel_module_runner(_argv_from_tokens(raw_tokens)))
+    tokens = _peel_uv_pip(_peel_module_runner(argv_from_tokens(raw_tokens)))
     if not tokens:
         return None
     entry = _ECOSYSTEM_VERBS.get(tokens[0].lower())

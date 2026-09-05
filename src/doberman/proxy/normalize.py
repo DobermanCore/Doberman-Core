@@ -24,7 +24,7 @@ from typing import Any
 
 from doberman.canonical import canonicalize
 from doberman.engine.rules.commands import (
-    _argv_from_tokens,
+    argv_from_tokens,
     command_line_from_arguments,
     walk_command,
 )
@@ -285,13 +285,13 @@ def _command_name(token: str) -> str:
 def _command_verb(tokens: list[str]) -> tuple[str | None, list[str], bool]:
     """Return the visible executable + arguments without losing the input tokens.
 
-    T5: shares ``_argv_from_tokens`` with the destructive-command rule (the
+    T5: shares ``argv_from_tokens`` with the destructive-command rule (the
     allowed proxy -> engine import direction) so a flag-taking wrapper's own
     option (``sudo -u root``, ``timeout 5``, ...) is consumed instead of
     misread as the command — the wrapped command's egress verb/host is then
     recovered the same way a bare invocation's is.
 
-    The third element (C1) is True when ``_argv_from_tokens`` consumed at
+    The third element (C1) is True when ``argv_from_tokens`` consumed at
     least one wrapper OPTION (not just a bare wrapper name) to reach that
     verb — ``sudo -H``/``sudo -u <user>``/``nice -n 10`` change exactly the
     thing (HOME, acting uid) that decides which config file a package
@@ -299,7 +299,7 @@ def _command_verb(tokens: list[str]) -> tuple[str | None, list[str], bool]:
     must not treat this segment as if the bare command had been typed.
     """
     consumed_option: list[bool] = []
-    rest = _argv_from_tokens(tokens, consumed_any_option=consumed_option)
+    rest = argv_from_tokens(tokens, consumed_any_option=consumed_option)
     wrapper_resolved = bool(consumed_option)
     if not rest:
         return None, [], wrapper_resolved
@@ -518,7 +518,7 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
         wrapper_resolved = wrapper_resolved or resolved
         # T5: `_command_verb` now sees through a wrapper's own options, so a
         # leading `-` token only survives here in the one narrow case
-        # `_argv_from_tokens` deliberately leaves unresolved (`env -S` whose
+        # `argv_from_tokens` deliberately leaves unresolved (`env -S` whose
         # value can't be shlex-split) -- the real command is unidentified,
         # so fail upward rather than treat it as local.
         if verb is not None and verb.startswith("-"):

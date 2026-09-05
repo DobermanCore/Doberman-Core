@@ -278,10 +278,13 @@ def test_doctor_reports_missing_optional_password(tmp_path, monkeypatch):
 
 
 def test_doctor_lists_password_next_to_2fa(tmp_path):
+    # "Phone approvals" (added alongside 2FA — both are 2FA/possession-factor
+    # checks) now sits between them; the Auth cluster stays contiguous.
     results = run_checks(str(tmp_path))
     names = [result.name for result in results]
 
-    assert names.index("Password") == names.index("2FA") + 1
+    assert names.index("Phone approvals") == names.index("2FA") + 1
+    assert names.index("Password") == names.index("Phone approvals") + 1
 
 
 @pytest.mark.skipif(
