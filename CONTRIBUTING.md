@@ -36,15 +36,18 @@ pytest -n auto --cov=doberman --cov-report=term-missing --cov-fail-under=90
 python -m tools.parity.generate_parity --check
 ```
 
-CI runs exactly these: the lint, boundary, link, and parity checks once on Linux; the
-test suite on Linux 3.11–3.13 and Windows 3.12 (coverage is measured on the Linux 3.12 leg;
-every test has a 5-minute timeout; the Windows leg runs the benchmark/gate modules with the fast
-test-size half-space trees, the Linux legs and the nightly at production size); a wheel smoke test on Linux and Windows; and a
-full-history secret scan. A nightly deep run adds Windows 3.11/3.13, macOS, Python 3.14,
-random test order, warnings-as-errors, production-size half-space trees, and a dependency
-vulnerability audit — a red nightly is a bug in the suite or a dependency, not a rerun. The optional extras `explain` (Anthropic SDK) and `winhello`
-(Windows Hello) are not installed in CI; their tests use fakes, so exercise the real thing
-locally when you touch them.
+CI runs exactly these checks: lint, import-boundary, link, and parity checks once on Linux; the
+test suite on Linux 3.11 through 3.13 and Windows 3.12; a wheel smoke test on Linux and Windows;
+and a full-history secret scan. Coverage is measured on the Linux 3.12 leg. Every test has a
+5-minute timeout. The Windows leg runs the benchmark and gate modules with the faster test-size
+half-space trees; the Linux legs and the nightly run them at production size.
+
+A nightly deep run adds Windows 3.11 and 3.13, macOS, Python 3.14, random test order, warnings
+treated as errors, production-size half-space trees, and a dependency vulnerability audit. A red
+nightly means a bug in the suite or a dependency, not something to just rerun.
+
+The optional extras `explain` (the Anthropic SDK) and `winhello` (Windows Hello) are not installed
+in CI. Their tests use fakes there, so exercise the real thing locally when you touch them.
 
 `-n auto` runs the suite in parallel (pytest-xdist ships in the `dev` extra), the
 same way CI runs it.
@@ -108,11 +111,14 @@ heading anchors, skips external URLs and fenced code blocks, and never makes net
 
 ## Architecture in five lines
 
-1. A tool call enters Doberman through the MCP proxy or host-hook path.
+1. A tool call enters Doberman through the MCP (Model Context Protocol, the standard interface
+   between an agent and its tools) proxy, or through a host hook (code the host runs automatically
+   around a tool call).
 2. The call is normalized into a `SecurityObject`.
 3. The decision engine runs objective and adaptive guardrails.
-4. Guardrail verdicts merge through raise-only `combine()`.
-5. The execution gate returns `PASS` / `AUTH` / `BLOCK`: allow, authenticate, or block.
+4. Guardrail verdicts merge through raise-only `combine()`: a merge can only tighten the result,
+   never loosen it.
+5. The execution gate returns `PASS`, `AUTH`, or `BLOCK`: allow, authenticate, or block.
 
 ## Where the docs live
 
@@ -135,8 +141,9 @@ Every change must preserve these two safety properties:
 - **Raise-only**: guardrails may auto-tighten, but may never silently loosen.
   Any permanent weakening goes through the human-gated policy path.
 
-Also keep secrets out of commits, logs, fixtures, and PR examples. Redacted
-metadata, classifications, and fingerprints are fine; raw secrets are not.
+Also keep secrets out of commits, logs, fixtures, and PR examples. Redacted metadata,
+classifications, and fingerprints (short tags derived from a secret key, so the original value
+can't be worked out from them) are fine; raw secrets are not.
 
 ## Workflow
 

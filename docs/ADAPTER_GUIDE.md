@@ -1,10 +1,11 @@
 # Host adapter guide
 
-This page documents how Doberman plugs into a coding-agent host: the pattern shared by its two
-stable integrations, so a third adapter does not have to reverse-engineer both from scratch. A
-third, experimental Codex CLI adapter (`src/doberman/hosthooks/codex.py`) follows the same
-pre-call pattern through the same spine and is a useful extra reference, though not documented
-here.
+This page documents how Doberman plugs into a coding-agent host through the host's own hook (a
+callback the host runs at a fixed point in a tool call, such as just before it runs). It describes
+the pattern shared by its two stable integrations, so a third adapter does not have to
+reverse-engineer both from scratch. A third, experimental Codex CLI adapter
+(`src/doberman/hosthooks/codex.py`) follows the same pre-call pattern through the same spine and is
+a useful extra reference, though not documented here.
 
 | Integration | Host surface | Doberman entry | Language |
 |-------------|--------------|----------------|----------|
@@ -18,7 +19,7 @@ Both integrations:
 3. Run the shared decision spine.
 4. Map the verdict back into whatever the host uses to allow, prompt, or deny.
 
-Nothing here changes either adapter; it only documents them.
+Nothing here changes either adapter. It only documents them.
 
 ---
 
@@ -51,12 +52,12 @@ host event  →  adapter stdin/payload
 Python side is `run_before_tool_call_hook` → `evaluate_before_tool_call` in `openclaw.py`.
 
 - Input (built in `index.js`): `{ tool_name, params, derived_paths, cwd, session_id }`.
-- Gate-by-default: only tools in `_ABSTAIN_TOOLS` skip evaluation; everything else is normalized
+- Gate-by-default: only tools in `_ABSTAIN_TOOLS` skip evaluation. Everything else is normalized
   and decided, including `read`, so sensitive paths are gated up front (this adapter has no
   post-hook).
 - Fail-closed: spawn failure, timeout (`DOBERMAN_TIMEOUT_MS = 10_000`), non-zero exit, or
   unparseable stdout all resolve to `{ block: true, blockReason }` from `failClosed` in
-  `index.js`. The Python side never returns silence; it always emits one JSON verdict document.
+  `index.js`. The Python side never returns silence. It always emits one JSON verdict document.
 
 ### Post-call (Claude Code only)
 
@@ -86,7 +87,7 @@ acted_verdict(decision, enforcement) → Verdict actually enforced
 ```
 
 On the pre-call gating path, the spine is the only place that builds a `SecurityObject` and runs
-the engine; adapters must not reimplement `decide` or invent a parallel model. The one exception
+the engine. Adapters must not reimplement `decide` or invent a parallel model. The one exception
 today is Claude Code's post-call output scan (`evaluate_post`), which builds its own synthetic
 `SecurityObject` via `normalize()` and runs the objective guardrail directly, outside
 `spine.evaluate_action`. If your host supports a post-call scan, that lighter pattern is the
@@ -117,8 +118,8 @@ Key fields an adapter author cares about:
 | `metadata` | Free-form; spine puts unredacted args under `EvalContext.metadata["raw_arguments"]` for the objective rules (in-memory only, never logged as part of the object) |
 
 `normalize()` in `src/doberman/proxy/normalize.py` is the single constructor path. Adapters
-translate the host call into `(canonical_name, args_dict)` and call `normalize` (via the spine);
-they do not instantiate `SecurityObject` directly for the decision path.
+translate the host call into `(canonical_name, args_dict)` and call `normalize` (via the spine).
+They do not instantiate `SecurityObject` directly for the decision path.
 
 ### Host → canonical translation
 
@@ -129,8 +130,8 @@ understands.
 
 - Looks up `_BUILTIN_TOOL` (for example `Bash` → shell, `Write`/`Edit` → file write with
   `file_path` renamed to the key `normalize` expects, `WebFetch` → `http_request`, and so on).
-- Unknown / `mcp__*` tools pass through with their original name and args so generic MCP handling
-  applies.
+- Unknown / `mcp__*` tools pass through with their original name and args so generic MCP (Model
+  Context Protocol, the standard tools use to expose themselves to an agent) handling applies.
 - Required fields (`_REQUIRED_FIELD`) are checked before normalize: a gated built-in with a
   missing target fails closed rather than abstaining.
 
