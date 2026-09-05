@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.registry import RULE_GROUP, discover_rules
 from doberman.models import (
@@ -41,8 +42,30 @@ def _ctx(path: str, *, root: str = ".") -> EvalContext:
     return EvalContext(metadata={"repo_root": root, "raw_arguments": {"path": path}})
 
 
-def test_entry_point_is_discoverable_after_install():
-    """``pip install -e`` registers the entry point; discover_rules finds it."""
+@pytest.fixture
+def enable_plugin(tmp_path, monkeypatch):
+    """Enable the example in a test-local, process-snapshotted allowlist."""
+    from doberman.engine import plugin_config
+
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(tmp_path / "plugins.json"))
+    plugin_config.enable("example_rule")
+    plugin_config.reset_snapshot()
+    yield
+    plugin_config.reset_snapshot()
+
+
+def test_entry_point_is_not_discoverable_without_enable(tmp_path, monkeypatch):
+    """Installing an example alone must not load it without explicit opt-in."""
+    from doberman.engine import plugin_config
+
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(tmp_path / "plugins.json"))
+    plugin_config.reset_snapshot()
+    assert not any(isinstance(rule, ExampleRule) for rule in discover_rules())
+    plugin_config.reset_snapshot()
+
+
+def test_entry_point_is_discoverable_after_install(enable_plugin):
+    """``pip install -e`` plus explicit opt-in makes discover_rules find the example."""
     rules = discover_rules()
     assert any(isinstance(rule, ExampleRule) for rule in rules), (
         f"ExampleRule not discovered via {RULE_GROUP!r}; "
@@ -109,7 +132,7 @@ def test_explanation_never_echoes_path_or_payload():
     assert "private" not in result.explanation
 
 
-def test_plugin_fires_inside_objective_guardrail():
+def test_plugin_fires_inside_objective_guardrail(enable_plugin):
     """With the package installed, ObjectiveGuardrail discovers and runs it."""
     guardrail = ObjectiveGuardrail()  # load_plugins=True (default)
     # Benign-looking path for built-ins; only the tutorial plugin steps up.
