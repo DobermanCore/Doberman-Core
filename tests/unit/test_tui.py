@@ -94,8 +94,16 @@ async def _wait_for_footer_text(pilot, app, predicate, *, timeout: float = _WAIT
     gating) via `refresh_bindings()` -> a signal -> `call_after_refresh` -
     genuinely eventually-consistent, so a single `pilot.pause()` can
     legitimately race it under load. Returns the last-seen text either way,
-    so a real failure still shows a useful diff."""
-    return await _wait_for(pilot, lambda: _visible_footer_text(app), predicate, timeout=timeout)
+    so a real failure still shows a useful diff. An empty footer is the
+    not-yet-composed state, never a match: a negative-only predicate
+    (`"copy id" not in t`) would otherwise return on the first tick with `''`
+    (Windows CI, 2026-09-04, `assert 'reload' in ''` after #591)."""
+    return await _wait_for(
+        pilot,
+        lambda: _visible_footer_text(app),
+        lambda t: bool(t) and predicate(t),
+        timeout=timeout,
+    )
 
 
 async def _wait_for(pilot, get_value, predicate, *, timeout: float = _WAIT_TIMEOUT):
@@ -2006,8 +2014,9 @@ async def test_footer_at_80_columns_fits_and_esc_clear_shows_while_filter_focuse
 
         def _all_keys_fit() -> bool:
             footer = app.query_one("Footer")
-            return all(
-                key.region.x + key.region.width <= footer.size.width for key in app.query(FooterKey)
+            keys = list(app.query(FooterKey))  # no keys yet = not composed, not "fits"
+            return bool(keys) and all(
+                key.region.x + key.region.width <= footer.size.width for key in keys
             )
 
         assert await _wait_for(pilot, _all_keys_fit, lambda ok: ok)
