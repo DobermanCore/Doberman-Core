@@ -1,1 +1,0 @@
-- The decision log classes extensionless paths under a directory (`.ssh/id_rsa`) like any other filename instead of storing them verbatim
