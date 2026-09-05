@@ -17,9 +17,12 @@ from typing import Any
 import pytest
 from typer.testing import Result
 
+from doberman import config as _config_module
 from doberman.auth.password import PASSWORD_FILE_ENV
 from doberman.auth.totp import TOTP_FILE_ENV
+from doberman.egress import artifact as _artifact_module
 from doberman.hosthooks.integrity import MANIFEST_ENV
+from doberman.roles.roles import load_builtin_roles as _load_builtin_roles
 from doberman.storage import fingerprint as _fingerprint_module
 from doberman.storage.device_metrics import HOME_ENV
 from doberman.storage.fingerprint import KEY_FILE_ENV
@@ -84,6 +87,20 @@ def isolated_fingerprint_key(tmp_path, monkeypatch):
     monkeypatch.setenv(KEY_FILE_ENV, str(key_path))
     _fingerprint_module._load_or_create_key.cache_clear()
     return key_path
+
+
+@pytest.fixture(autouse=True)
+def isolated_role_and_pin_caches():
+    """Clear the #552 content-keyed role/pin parse caches (and the #547-style
+    ``load_builtin_roles`` cache) between tests, same shape as
+    ``isolated_fingerprint_key`` above: each is an ``lru_cache`` that is
+    process-wide unless cleared here, and one test's cached content (or a
+    ``tmp_path`` role/pins file that happens to share bytes with another
+    test's) must never leak into the next.
+    """
+    _load_builtin_roles.cache_clear()
+    _config_module._parse_role_yaml_data.cache_clear()
+    _artifact_module._parse_pins_yaml_data.cache_clear()
 
 
 @pytest.fixture(autouse=True)

@@ -1,9 +1,10 @@
 # Tutorial: custom AuditSink plugin
 
 Doberman discovers third-party audit sinks through the **`doberman.audit_sinks`**
-Python entry-point group (`AUDIT_SINK_GROUP` in `src/doberman/engine/registry.py`).
-Core never imports your package by name — install the package, and
-`discover_audit_sinks()` picks it up automatically.
+Python entry-point group (an entry point is a name a package lists in its
+`pyproject.toml` so other code can find and load it; `AUDIT_SINK_GROUP` in
+`src/doberman/engine/registry.py`). Core never imports your package by name.
+Install the package, and `discover_audit_sinks()` picks it up automatically.
 
 This mini-package is a five-minute copy template.
 
@@ -38,7 +39,7 @@ The sink must not add back anything the redaction layer removed:
 | Raw file paths or target strings | Redacted to a path-class label (`general`, `sensitive`, …) before reaching the sink. |
 | Agent inputs, tool arguments, or request payloads | Stripped entirely during redaction. |
 | File contents or environment variables | Never present in the record. |
-| HMAC entity IDs decoded or reversed | `entity_id` is a keyed HMAC; log it as-is, never attempt to reverse it. |
+| HMAC entity IDs decoded or reversed | `entity_id` is a keyed HMAC (a hash mixed with a secret key, so it can't be reversed back to the original value); log it as-is, never attempt to reverse it. |
 | Additional telemetry derived from the record | The sink is a dumb forwarder; enrichment belongs in a separate pipeline stage. |
 
 ## Round trip (from a Doberman-Core checkout)
@@ -85,7 +86,7 @@ pip uninstall -y doberman-example-plugin-audit-sink
 ```
 
 > **Important:** while this package is installed, core's "no sinks installed"
-> standalone checks (`discover_audit_sinks() == []`) will fail — that is
+> standalone checks (`discover_audit_sinks() == []`) will fail. That is
 > expected.  Uninstall before re-running the full core suite.  Default CI does
 > **not** install this package; `tests/unit/test_examples_plugin_audit_sink.py`
 > covers it instead by importing the sink class straight from this checkout
@@ -126,13 +127,13 @@ examples/plugin-audit-sink/
 1. New package with `requires-python = ">=3.11"` and `dependencies = ["doberman-core"]`
    (install against a local editable core checkout, not a stale PyPI wheel, while
    developing).
-2. Implement `emit(self, record: dict) -> None` — one method, no return value.
-3. **`emit` must never raise** — wrap all I/O in a broad `except Exception` and
+2. Implement `emit(self, record: dict) -> None`: one method, no return value.
+3. **`emit` must never raise**: wrap all I/O in a broad `except Exception` and
    log at WARNING.  A sink that throws can break the decision path.
-4. **Treat the record as read-only** — do not mutate, copy-and-enrich, or
+4. **Treat the record as read-only**: do not mutate, copy-and-enrich, or
    re-log fields beyond what the record already contains.
 5. Register under `[project.entry-points."doberman.audit_sinks"]`.
-6. Never add payload back — the record is already redacted; the sink is a
+6. Never add payload back: the record is already redacted; the sink is a
    forwarder, not an enrichment stage.
 7. If your sink is stateful (e.g. holds a queue or a network connection),
    implement `close() -> None` so callers can drain cleanly on shutdown.

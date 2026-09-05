@@ -118,12 +118,29 @@ _GIT_GPGSIGN_CONFIG_KEY = "commit.gpgsign"
 _GIT_FALSY_CONFIG_VALUES = {"false", "no", "off", "0"}
 
 #: git global options that take their value as a SEPARATE following token
-#: (``-C <path>``, ``-c <k=v>``) — both the option and its value token must be
-#: skipped when hunting for the actual subcommand. Every other global option
-#: (``--git-dir=...``, ``--work-tree=...``, ``--no-pager``, ``-p``,
-#: ``--paginate``, ...) either carries its value in the same token (``=``) or
-#: takes none, so a generic "any other leading -/-- token" skip covers it.
-_GIT_GLOBAL_OPTIONS_WITH_VALUE = {"-C", "-c"}
+#: (``-C <path>``, ``-c <k=v>``, and every long option below in its bare —
+#: i.e. no ``=`` — form) — both the option and its value token must be
+#: skipped when hunting for the actual subcommand. Verified against installed
+#: ``git 2.54.0.windows.1``: each of these accepts BOTH ``--opt <value>`` and
+#: ``--opt=<value>`` identically (issue #550 review — the space-separated
+#: form previously desynced the verb walk: ``/repo`` in
+#: ``git --git-dir /repo push --force`` was read as the verb, so a real
+#: force-push silently PASSed). Every other long global option
+#: (``--no-pager``, ``--bare``, ...) either carries its value in the same
+#: token (``=``) or takes none at all (``--html-path``/``--man-path``/
+#: ``--info-path`` — confirmed these ignore any following token, ``=``-joined
+#: or not, rather than consuming it, so they're correctly left OUT of this
+#: set), so a generic "any other leading -/-- token" skip covers them.
+_GIT_GLOBAL_OPTIONS_WITH_VALUE = {
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--exec-path",
+    "--super-prefix",
+    "--config-env",
+}
 
 #: git commit short options that take a MANDATORY value — either as the rest
 #: of their own cluster (``-mFixBug``) or, when the cluster ends exactly at
@@ -158,7 +175,7 @@ _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # self-contained and is just a flag; only a BARE spelling from this set pops
 # an extra token. Every other leading ``-``/``--`` token on a wrapper is
 # popped as a bare flag (its arity is unknown, so it's dropped, never treated
-# as the command) -- see ``_argv_from_tokens``. ``sudo``'s ``-h`` is
+# as the command) -- see ``argv_from_tokens``. ``sudo``'s ``-h`` is
 # deliberately absent: ``sudo -h`` is help, a bare flag, not a value option.
 _WRAPPER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
     "sudo": frozenset(
@@ -339,6 +356,28 @@ _INLINE_PROCESS_SPAWN = re.compile(
 # Shared work bound for every static command walk. Exhaustion is ambiguity,
 # never silent success.
 _MAX_COMMAND_SEGMENTS = 256
+
+#: #549 — bound on the number of characters of one (already substitution-
+#: stripped) segment that get handed to `shlex.split`. `_MAX_COMMAND_SEGMENTS`
+#: only bounds segment *count*; a single oversized segment (a heredoc, a
+#: base64 blob passed as one bare/quoted token) still drove `shlex.split`
+#: into super-linear time on its own (~31.5s measured locally on a 1 MB
+#: payload, ~7.7 min reported on an 800 KB one elsewhere; root cause is
+#: CPython's `shlex.read_token`, not this module).
+#: ponytail: a hard truncation, not a smarter parser. 64 KiB clears every
+#: existing adversarial payload in this module's own test suite (the
+#: largest quotes a ~16 KB `-c` script with its dangerous call placed AFTER
+#: a filler blob, on purpose, to prove the scan isn't position-limited —
+#: see test_control_plane_path_behind_filesystem_filler_still_blocks) with
+#: >3x headroom, while still cutting the reported 800 KB-1 MB payload down
+#: to a bounded, fast parse. Any cut — whether shlex raises on it (an open
+#: quote) or not (a cut landing in plain unquoted text) — always marks the
+#: walk `ambiguous = True`, so a destructive shape truncated away past the
+#: cut fails upward (AUTH, never a silent ALLOW) instead of vanishing. The
+#: truncated prefix is still handed to `shlex.split`, so a destructive head
+#: within the first 64 KiB still hits BLOCK on its own. Raise this if a real
+#: command legitimately needs more than 64 KiB in one segment.
+_MAX_SEGMENT_SCAN_BYTES = 65536
 
 # Any shell expansion can construct a destination at runtime. The shared walk
 # reports the fact; consumers decide whether it matters for their rule.
@@ -594,7 +633,21 @@ def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
             pending.extend(body_segments)
             ambiguous = ambiguous or body_unterminated
         try:
-            tokens = shlex.split(stripped, comments=True, posix=True)
+            # #549: bound by BYTES, not just segment count — an oversized
+            # single segment (a heredoc, a base64 blob) drove shlex.split
+            # into super-linear time on its own. Truncation happens AFTER
+            # substitution-stripping above, so a $()/backtick body deep in
+            # an oversized segment is already queued for its own walk and
+            # is never hidden by this cut.
+            # #549 follow-up: a cut landing OUTSIDE a quote never raises —
+            # shlex happily parses the truncated prefix — so a destructive
+            # suffix past byte 65536 (`"rm " + "a" * 70000 + " -rf /"`) was
+            # silently dropped with no failure-upward signal at all. Any cut
+            # marks the walk ambiguous; the truncated prefix is still parsed
+            # below so a destructive head still reaches BLOCK.
+            if len(stripped) > _MAX_SEGMENT_SCAN_BYTES:
+                ambiguous = True
+            tokens = shlex.split(stripped[:_MAX_SEGMENT_SCAN_BYTES], comments=True, posix=True)
         except ValueError:
             ambiguous = True
             continue
@@ -653,12 +706,12 @@ def _wrapper_name(token: str) -> str:
 
 def _wrapper_opaque_option_ahead(tokens: list[str], name: str) -> bool:
     """True when scanning ``name``'s own option run (the same run
-    :func:`_argv_from_tokens` is about to strip) reaches one of its opaque-
+    :func:`argv_from_tokens` is about to strip) reaches one of its opaque-
     payload markers (bare or ``=``-attached — see ``_WRAPPER_OPAQUE_OPTIONS``)
     before the wrapped command starts. I2: ``runuser -c``/``--command`` must
     stay visible whole for :func:`_opaque_shell_payload` to inspect, exactly
     the way ``su -c`` does (``su`` is simply never a recognized wrapper at
-    all) — so :func:`_argv_from_tokens` breaks BEFORE popping anything for
+    all) — so :func:`argv_from_tokens` breaks BEFORE popping anything for
     this wrapper rather than dropping ``-c`` as a bare unknown-arity flag and
     losing the payload."""
     markers = _WRAPPER_OPAQUE_OPTIONS.get(name)
@@ -676,7 +729,7 @@ def _wrapper_opaque_option_ahead(tokens: list[str], name: str) -> bool:
     return False
 
 
-def _argv_from_tokens(
+def argv_from_tokens(
     tokens: list[str],
     *,
     keep: frozenset[str] = frozenset(),
@@ -685,6 +738,16 @@ def _argv_from_tokens(
 ) -> list[str]:
     """Strip prefixes (env assignments + transparent-wrapper name/options) from
     an already-parsed segment for command classification.
+
+    Shared contract: this is the one place that decides what a wrapped/
+    env-prefixed segment's "real" command is, and both the engine's own
+    rules (the destructive-command walk, dependency admission) and the
+    proxy's command-verb classifier (``doberman.proxy.normalize._command_verb``,
+    the allowed proxy -> engine import direction) call it so they always
+    agree on that answer — env-assignment skipping, the wrapper option
+    table, the ``env -S``/``--split-string`` splice, and leaving an
+    unresolved leading option in place (see ``consumed_value_option``/
+    ``consumed_any_option`` below) all behave identically for every caller.
 
     T5: a wrapper's own option used to shift argv so the option was misread
     as the command (``sudo -u root rm -rf /`` saw ``-u`` as argv[0]). Now:
@@ -775,9 +838,14 @@ def _argv_from_tokens(
     return tokens
 
 
+# #589: renamed from the private `_argv_from_tokens` to a public name since it's
+# a cross-module contract; kept as a one-release back-compat alias.
+_argv_from_tokens = argv_from_tokens
+
+
 def _leading_option(raw_tokens: list[str], tokens: list[str]) -> bool:
     """True when ``tokens[0]`` still looks like an option (``-``-prefixed)
-    after :func:`_argv_from_tokens` has stripped every env-assignment/wrapper
+    after :func:`argv_from_tokens` has stripped every env-assignment/wrapper
     prefix it can resolve, AND ``raw_tokens`` shows a wrapper actually sat in
     front of it (its first non-env-assignment token did not itself start
     with ``-``) — i.e. something was stripped and what's left is still an
@@ -785,7 +853,7 @@ def _leading_option(raw_tokens: list[str], tokens: list[str]) -> bool:
 
     T5-fix: this happens when a wrapper's value-option splice itself fails
     (e.g. ``env -S <value>`` where ``<value>`` doesn't ``shlex.split`` —
-    see ``_argv_from_tokens``'s own docstring) and the option/value tokens
+    see ``argv_from_tokens``'s own docstring) and the option/value tokens
     are left in place, unresolved, ahead of whatever command follows. A
     leading option can never be the command being run, so a caller that
     keys classification off ``tokens[0]`` (``_segment_verdict``,
@@ -814,7 +882,7 @@ def _argv(segment: str) -> list[str] | None:
         tokens = shlex.split(segment, posix=True)
     except ValueError:
         return None
-    return _argv_from_tokens(tokens)
+    return argv_from_tokens(tokens)
 
 
 #: A Windows drive root in any form a delete operand can arrive in: ``C:\``,
@@ -960,19 +1028,28 @@ def _windows_delete_verdict(tokens: list[str], bulk_threshold: int) -> Guardrail
 
 
 def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) -> bool:
-    """``git push`` with a force flag targeting a protected branch."""
-    if len(tokens) < 2 or tokens[0] != "git" or "push" not in tokens:
+    """``git push`` with a force flag targeting a protected branch.
+
+    Keys on the actual git verb (via :func:`_git_leading_globals`, which skips
+    leading global options like ``-C <path>``/``-c <k=v>``) and only inspects
+    that ``push`` invocation's OWN argv — never the full argv, so a force flag
+    or ``+ref``-shaped token that merely appears as another verb's *argument*
+    (``git log --grep push --force``) is never mistaken for an actual force-push.
+    """
+    argv, _ = _git_leading_globals(tokens)
+    if not argv or argv[0] != "push":
         return False
+    push_args = argv[1:]
     has_force = any(
-        t in ("-f", "--force") or t.startswith("--force-with-lease") or t == "+HEAD" for t in tokens
+        t in ("-f", "--force") or t.startswith("--force-with-lease") or t == "+HEAD"
+        for t in push_args
     )
     if not has_force:
         # A refspec like ``+main`` is also a force push of that ref.
-        if not any(t.startswith("+") for t in tokens[1:]):
+        if not any(t.startswith("+") for t in push_args):
             return False
         has_force = True
     protected_set = {b.lower() for b in protected}
-    push_args = tokens[tokens.index("push") + 1 :]
     positional = [t for t in push_args if not t.startswith("-")]
     explicit_refs = positional[1:]  # the first positional is the remote
     # Any token that names (or pushes to) a protected branch.
@@ -1324,7 +1401,7 @@ def _is_environment_dump_segment(raw_tokens: list[str]) -> bool:
     -p``, ``declare -x``/``typeset -x`` with no named variable, or a
     PowerShell ``Env:`` drive listing.
 
-    Runs on the RAW parsed segment, *before* :func:`_argv_from_tokens` strips
+    Runs on the RAW parsed segment, *before* :func:`argv_from_tokens` strips
     leading wrappers/assignments — that stripping is what makes bare ``env``
     invisible to :func:`_segment_verdict` (stripping ``env`` off ``["env"]``
     leaves an empty list, which the caller's ``if not tokens`` guard silently
@@ -1339,7 +1416,7 @@ def _is_environment_dump_segment(raw_tokens: list[str]) -> bool:
     still fails upward, just under a different reason code. The no-backslash
     form (``dir env:``) is unaffected.
     """
-    rest = _argv_from_tokens(raw_tokens, keep=frozenset({"env"}))
+    rest = argv_from_tokens(raw_tokens, keep=frozenset({"env"}))
     if not rest:
         return False
     # M5: `keep={"env"}` stops the strip at env's own token so it stays
@@ -1517,10 +1594,10 @@ def _xargs_command_start(tokens: list[str]) -> int:
 
 def _xargs_invoked_command(tokens: list[str]) -> tuple[str, list[str]] | None:
     """The command xargs will run, and the tokens after it — or ``None`` if
-    no command token follows xargs's own options. ``_argv_from_tokens``
+    no command token follows xargs's own options. ``argv_from_tokens``
     strips env assignments and transparent wrappers first, so
     ``xargs sudo kill -9`` still resolves to ``kill``."""
-    command_tokens = _argv_from_tokens(tokens[_xargs_command_start(tokens) :])
+    command_tokens = argv_from_tokens(tokens[_xargs_command_start(tokens) :])
     if not command_tokens:
         return None
     return command_tokens[0].lower(), command_tokens[1:]
@@ -1645,6 +1722,14 @@ def _segment_verdict(
             "Git commit bypasses its pre-commit hooks or signature verification; "
             "authentication required.",
         )
+    if cmd == "git":
+        _, assignments = _git_leading_globals(tokens)
+        if _git_assignment_sets_alias(assignments):
+            return _auth(
+                ReasonCode.opaque_command,
+                "Git command defines an alias (-c/--config-env= alias.*); the verb it "
+                "actually runs cannot be determined statically, authentication required.",
+            )
     if _is_pipe_to_shell(tokens):
         return _auth(
             ReasonCode.destructive_command,
@@ -1676,28 +1761,36 @@ def _looks_like_fork_bomb(tokens: list[str]) -> bool:
 
 
 def _git_is_history_rewrite(tokens: list[str]) -> bool:
-    if tokens[0] != "git" or len(tokens) < 2:
+    """Keys on the actual git verb (see :func:`_git_leading_globals`) and only
+    inspects that verb's OWN argv, so ``reset``/``filter-branch``/``clean``
+    appearing merely as another verb's *argument* (``git log filter-branch``)
+    is never mistaken for the real subcommand."""
+    argv, _ = _git_leading_globals(tokens)
+    if not argv:
         return False
-    if "reset" in tokens and "--hard" in tokens:
-        return True
-    if "filter-branch" in tokens:
+    verb, rest = argv[0], argv[1:]
+    if verb == "reset":
+        return "--hard" in rest
+    if verb == "filter-branch":
         return True
     # ``git clean -f`` permanently removes untracked files.
-    return "clean" in tokens and any(t.startswith("-") and "f" in t for t in tokens)
+    return verb == "clean" and any(t.startswith("-") and "f" in t for t in rest)
 
 
 def _git_leading_globals(tokens: list[str]) -> tuple[list[str], list[str]]:
     """``(subcommand_argv, config_assignments)`` — walk git's leading global
     options ONCE so the subcommand locator and the config-level
     verification-bypass check share one skip-loop. Skips ``-C <path>``/
-    ``-c <k=v>`` (and their value token), ``--git-dir=...``/``--work-tree=...``,
-    ``--no-pager``, ``-p``/``--paginate``, and any other leading ``-``/``--``
-    token — so ``git -C repo commit ...`` still locates ``commit``, and a
-    non-commit verb (``log``, ``tag``, ``shortlog``) that merely mentions
-    "commit" among its own arguments is never mistaken for it. Along the way,
-    every ``-c <k=v>`` value token and every ``--config-env=k=v`` token's
-    ``k=v`` is collected into ``config_assignments`` — these never appear as a
-    flag ON the subcommand, so nothing downstream would otherwise see them."""
+    ``-c <k=v>`` and every option in ``_GIT_GLOBAL_OPTIONS_WITH_VALUE``
+    (and each one's value token, space- or ``=``-separated), ``--no-pager``,
+    ``-p``/``--paginate``, and any other leading ``-``/``--`` token — so
+    ``git -C repo commit ...`` and ``git --git-dir /repo commit ...`` both
+    still locate ``commit``, and a non-commit verb (``log``, ``tag``,
+    ``shortlog``) that merely mentions "commit" among its own arguments is
+    never mistaken for it. Along the way, every ``-c <k=v>`` value token and
+    every ``--config-env`` value (space- or ``=``-separated) ``k=v`` is
+    collected into ``config_assignments`` — these never appear as a flag ON
+    the subcommand, so nothing downstream would otherwise see them."""
     if not tokens or tokens[0] != "git":
         return [], []
     rest = tokens[1:]
@@ -1713,6 +1806,11 @@ def _git_leading_globals(tokens: list[str]) -> tuple[list[str], list[str]]:
         if token.startswith("--config-env="):
             assignments.append(token[len("--config-env=") :])
             i += 1
+            continue
+        if token == "--config-env":  # noqa: S105 — git's --config-env <k=v> flag, not a secret
+            if i + 1 < len(rest):
+                assignments.append(rest[i + 1])
+            i += 2
             continue
         i += 2 if token in _GIT_GLOBAL_OPTIONS_WITH_VALUE else 1
     return rest[i:], assignments
@@ -1731,6 +1829,26 @@ def _git_config_bypasses_verification(assignments: Iterable[str]) -> bool:
         if key == _GIT_HOOKS_PATH_CONFIG_KEY:
             return True
         if key == _GIT_GPGSIGN_CONFIG_KEY and value.strip().lower() in _GIT_FALSY_CONFIG_VALUES:
+            return True
+    return False
+
+
+def _git_assignment_sets_alias(assignments: Iterable[str]) -> bool:
+    """True if a leading ``-c``/``--config-env=`` assignment (see
+    :func:`_git_leading_globals`) defines a git alias (``alias.<name>=...``).
+
+    Unlike :func:`_git_config_bypasses_verification`, which checks for a
+    SPECIFIC known-dangerous key, this fires on the mere PRESENCE of any
+    ``alias.*`` key, regardless of what it's set to: an alias lets the
+    literal verb token (``p``, ``l``, ...) run ANY command git resolves it
+    to, so once one is set, the actual verb this invocation runs can't be
+    determined statically at all — the verb-keyed detectors
+    (:func:`_git_force_push_to_protected`, :func:`_git_is_history_rewrite`)
+    inspect only the literal token and would silently miss e.g.
+    ``git -c alias.p="push --force" p origin main``."""
+    for assignment in assignments:
+        key, sep, _value = assignment.partition("=")
+        if sep and key.strip().lower().startswith("alias."):
             return True
     return False
 
@@ -2043,7 +2161,7 @@ def delete_class_operands_and_dynamic(command: str) -> tuple[list[str] | None, b
     operands: list[str] = []
     found = False
     for raw_segment in segments:
-        tokens = _argv_from_tokens(raw_segment)
+        tokens = argv_from_tokens(raw_segment)
         if not tokens or _leading_option(raw_segment, tokens):
             # T5-fix: an unresolved leading option (a failed wrapper-option
             # splice) is never a delete-class command — skip it rather than
@@ -2131,7 +2249,7 @@ class DestructiveCommandRule:
         while pending and processed < _MAX_COMMAND_SEGMENTS:
             processed += 1
             raw_segment = pending.pop()
-            # Checked on the RAW segment, before _argv_from_tokens strips
+            # Checked on the RAW segment, before argv_from_tokens strips
             # env-assignment/wrapper prefixes: `D=/dev/tcp/...; cat f > $D` or
             # `TARGET=/dev/tcp/... cat f` carry the /dev/tcp path only in the
             # env-assignment token, which the stripped argv below never sees.
@@ -2141,7 +2259,7 @@ class DestructiveCommandRule:
                 worst = _max_result(worst, _environment_dump_auth())
                 continue
             consumed_value_opt: list[bool] = []
-            tokens = _argv_from_tokens(raw_segment, consumed_value_option=consumed_value_opt)
+            tokens = argv_from_tokens(raw_segment, consumed_value_option=consumed_value_opt)
             if not tokens:
                 if consumed_value_opt:
                     # I2 root-cause: a wrapper VALUE option (one that ate a
@@ -2163,7 +2281,7 @@ class DestructiveCommandRule:
             if _leading_option(raw_segment, tokens):
                 # T5-fix: a wrapper's own option-value splice failed (e.g.
                 # `env -S <value>` where `<value>` doesn't shlex.split), so
-                # `_argv_from_tokens` left the option/value tokens in place —
+                # `argv_from_tokens` left the option/value tokens in place —
                 # tokens[0] is still an option, never the command. Every
                 # check below keys off tokens[0]; reading it as benign would
                 # hide whatever command actually follows. Fail upward.
