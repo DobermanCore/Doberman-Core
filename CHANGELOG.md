@@ -100,7 +100,7 @@ Decision-log retention, update nudges, and dashboard polish.
 ### Docs
 - `docs/README.md` indexes every doc page (#492, #500, thanks @navaneethsankar07)
 
-## v0.18.4 — 2026-08-27
+## v0.18.4 — 2026-08-26
 Friction reduction, part three: tap-to-approve 2FA, repeat-approval memory, safer uninstalls, and default telemetry.
 
 ### Added
