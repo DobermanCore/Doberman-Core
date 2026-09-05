@@ -217,3 +217,16 @@ async def test_reopen_at_current_version_skips_the_migration(tmp_path, monkeypat
     async with open_db(str(tmp_path)):
         pass
     assert calls == [1, 1]  # older DB: migrated again
+
+
+def test_schema_text_change_requires_a_version_bump():
+    # open_db() migrates only when the version row is stale, so a DB already
+    # at SCHEMA_VERSION never sees a new table added to _SCHEMA unless the
+    # version moves too. Editing _SCHEMA: bump SCHEMA_VERSION, then update both
+    # literals here.
+    import hashlib
+
+    from doberman.storage.db import _SCHEMA
+
+    assert SCHEMA_VERSION == 14
+    assert hashlib.sha256(_SCHEMA.encode()).hexdigest()[:16] == "8168371109d84a8b"
