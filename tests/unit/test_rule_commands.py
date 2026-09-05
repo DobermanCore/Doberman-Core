@@ -27,11 +27,12 @@ from doberman.models import (
     Verdict,
 )
 from doberman.proxy.normalize import normalize
+from doberman.roles.roles import RoleDefinition
 
 RULE = DestructiveCommandRule()
 
 
-def _cmd(command, *, action_type=ActionType.shell_exec):
+def _cmd(command, *, action_type=ActionType.shell_exec, role=None):
     action = SecurityObject(
         id="cmd-1",
         ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
@@ -40,7 +41,7 @@ def _cmd(command, *, action_type=ActionType.shell_exec):
         tool_name="shell_exec",
         target=command,
     )
-    ctx = EvalContext(metadata={"raw_arguments": {"command": command}})
+    ctx = EvalContext(role=role, metadata={"raw_arguments": {"command": command}})
     return RULE.evaluate(action, ctx)
 
 
@@ -131,6 +132,73 @@ def test_force_push_to_feature_branch_is_not_blocked():
 def test_non_force_push_to_feature_branch_is_not_blocked():
     result = _cmd("git push origin my-feature", action_type=ActionType.git_op)
     assert result.verdict is not Verdict.BLOCK
+
+
+# --- #199: protected_branches role.yaml key widens force-push protection ---
+# (config.py parses the key; DestructiveCommandRule.evaluate unions ctx.role's
+# protected_branches into its own set -- see _effective_protected).
+
+
+def test_force_push_to_configured_extra_branch_blocks():
+    role = RoleDefinition(name="x", protected_branches=("staging",))
+    result = _cmd("git push --force origin staging", action_type=ActionType.git_op, role=role)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+def test_force_push_to_unconfigured_branch_with_role_active_stays_unblocked():
+    role = RoleDefinition(name="x", protected_branches=("staging",))
+    result = _cmd("git push --force origin my-feature", action_type=ActionType.git_op, role=role)
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_default_protected_branches_still_block_with_extra_configured():
+    # Raise-only: configuring an extra branch must never soften the defaults.
+    role = RoleDefinition(name="x", protected_branches=("staging",))
+    result = _cmd("git push --force origin main", action_type=ActionType.git_op, role=role)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+def test_constructor_override_behaviour_is_unchanged_with_no_active_role():
+    # DestructiveCommandRule(protected_branches=...) keeps its exact current
+    # behaviour -- a ctx with no active role is a no-op union.
+    rule = DestructiveCommandRule(protected_branches=("custom",))
+
+    def _run(command):
+        action = SecurityObject(
+            id="cmd-1",
+            ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
+            agent_role="unknown",
+            action_type=ActionType.git_op,
+            tool_name="shell_exec",
+            target=command,
+        )
+        ctx = EvalContext(metadata={"raw_arguments": {"command": command}})
+        return rule.evaluate(action, ctx)
+
+    assert _run("git push --force origin custom").verdict is Verdict.BLOCK
+    # "main" is not in this instance's override list, and no role is active.
+    assert _run("git push --force origin main").verdict is not Verdict.BLOCK
+
+
+def test_constructor_override_unions_with_a_configured_role():
+    # An explicit constructor override still gets the config-path addition on
+    # top -- the config path unions with the parameter rather than replacing it.
+    rule = DestructiveCommandRule(protected_branches=("custom",))
+    role = RoleDefinition(name="x", protected_branches=("staging",))
+    action = SecurityObject(
+        id="cmd-1",
+        ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
+        agent_role="unknown",
+        action_type=ActionType.git_op,
+        tool_name="shell_exec",
+        target="git push --force origin staging",
+    )
+    ctx = EvalContext(
+        role=role, metadata={"raw_arguments": {"command": "git push --force origin staging"}}
+    )
+    assert rule.evaluate(action, ctx).verdict is Verdict.BLOCK
 
 
 @pytest.mark.parametrize(

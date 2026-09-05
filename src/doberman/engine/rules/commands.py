@@ -2193,7 +2193,16 @@ def delete_class_operands_and_dynamic(command: str) -> tuple[list[str] | None, b
 
 
 class DestructiveCommandRule:
-    """Detect catastrophic and risky shell/git commands; opaque → AUTH."""
+    """Detect catastrophic and risky shell/git commands; opaque → AUTH.
+
+    ``protected_branches`` (constructor) is this instance's own protected set
+    (``DEFAULT_PROTECTED_BRANCHES`` unless a caller overrides it — unchanged
+    behaviour). Per call, ``evaluate`` additionally unions in any names from
+    the active role's ``protected_branches`` (#199: the repo's
+    ``.doberman/role.yaml`` ``protected_branches`` key, see
+    ``doberman.config.load_active_role``) — a pure union, so it can only ever
+    widen force-push protection for that one call, never narrow it.
+    """
 
     def __init__(
         self,
@@ -2204,6 +2213,18 @@ class DestructiveCommandRule:
         # None → derive the bulk threshold from the active security mode (F6);
         # an explicit value overrides the mode (used by tests).
         self._bulk_threshold_override = bulk_threshold
+
+    def _effective_protected(self, ctx: EvalContext) -> tuple[str, ...]:
+        """``self._protected`` plus any role-configured extras (#199), unioned.
+
+        No active role, or a role that doesn't set ``protected_branches``, is
+        a no-op — byte-identical to before this existed.
+        """
+        role = getattr(ctx, "role", None)
+        extra = getattr(role, "protected_branches", ()) or ()
+        if not extra:
+            return self._protected
+        return self._protected + tuple(b for b in extra if b not in self._protected)
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         # Classify by payload shape, not by the tool's declared action type: a
@@ -2225,9 +2246,11 @@ class DestructiveCommandRule:
         threshold = self._bulk_threshold_override
         if threshold is None:
             threshold = thresholds_for(getattr(ctx, "mode", "balanced")).bulk_delete_threshold
-        return self._classify_line(command, threshold, root)
+        return self._classify_line(command, threshold, root, self._effective_protected(ctx))
 
-    def _classify_line(self, command: str, bulk_threshold: int, root: str) -> GuardrailResult:
+    def _classify_line(
+        self, command: str, bulk_threshold: int, root: str, protected: Iterable[str]
+    ) -> GuardrailResult:
         worst: GuardrailResult = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
         # Checked against the RAW command, before shlex: POSIX tokenization eats
@@ -2348,7 +2371,7 @@ class DestructiveCommandRule:
                     pending.extend(literal_segments)
                     saw_unparseable = saw_unparseable or literal_ambiguous
 
-            verdict = _segment_verdict(tokens, self._protected, bulk_threshold, root)
+            verdict = _segment_verdict(tokens, protected, bulk_threshold, root)
             if verdict is not None:
                 worst = _max_result(worst, verdict)
                 if worst.verdict is Verdict.BLOCK:

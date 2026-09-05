@@ -109,6 +109,15 @@ def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
         logger.warning("%s is not a mapping; using the most-restrictive role", path)
         return MOST_RESTRICTIVE_ROLE
 
+    # #199: optional 'protected_branches' key -- extra branch names for
+    # DestructiveCommandRule to union into its force-push protection. Parsed
+    # once here (independent of the role branch below) since it is a sibling
+    # of 'role'/the inline keys, not part of either. Invalid → fail closed to
+    # the most-restrictive role, same as every other malformed value here.
+    extra_protected = _extra_protected_branches(data, path)
+    if extra_protected is None:
+        return MOST_RESTRICTIVE_ROLE
+
     # Inline custom role definition takes precedence over a named built-in.
     if any(key in data for key in ("allowed", "suspicious", "blocked")):
         try:
@@ -118,6 +127,7 @@ def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
                 allowed=tuple(data.get("allowed") or ()),
                 suspicious=tuple(data.get("suspicious") or ()),
                 blocked=tuple(data.get("blocked") or ()),
+                protected_branches=extra_protected,
             )
         except (TypeError, ValueError):
             logger.warning("invalid inline role in %s; using the most-restrictive role", path)
@@ -138,7 +148,40 @@ def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
     if role is None:
         logger.warning("unknown role %r; using the most-restrictive role", name)
         return MOST_RESTRICTIVE_ROLE
+    if extra_protected:
+        role = role.model_copy(
+            update={"protected_branches": role.protected_branches + extra_protected}
+        )
     return role
+
+
+def _extra_protected_branches(data: dict, path: Path) -> tuple[str, ...] | None:
+    """Parse+validate the optional 'protected_branches' role.yaml key (#199).
+
+    A list of branch name strings, unioned into DestructiveCommandRule's
+    protected set (see RoleDefinition.protected_branches) -- raise-only by
+    construction, since a union can only ever add names, never drop the
+    built-in DEFAULT_PROTECTED_BRANCHES. Absent/``None`` is valid (``()`` --
+    byte-identical to before this key existed). A non-list value, or any
+    non-string entry, is a schema error: ``None`` is the fail-closed sentinel
+    the caller uses to fall back to MOST_RESTRICTIVE_ROLE, same as every other
+    malformed role.yaml value in this module.
+
+    ponytail: exact string match only, no glob patterns -- YAGNI until a real
+    need for wildcard branch names shows up (would also need
+    ``_git_force_push_to_protected``'s matching to grow glob support).
+    """
+    raw = data.get("protected_branches")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not all(isinstance(b, str) for b in raw):
+        logger.warning(
+            "%s has an invalid 'protected_branches' (must be a list of branch name "
+            "strings); using the most-restrictive role",
+            path,
+        )
+        return None
+    return tuple(raw)
 
 
 def load_policy(repo_root: str = ".") -> PolicyDoc | None:

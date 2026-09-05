@@ -72,6 +72,12 @@ class RoleDefinition(BaseModel):
     ``allowed``/``suspicious``/``blocked`` are path globs matched against the
     canonical, root-relative, lower-cased target. They are normalized on
     construction (lower-cased, whole-tree patterns dropped).
+
+    ``protected_branches`` (#199) is unrelated to path scope: extra branch
+    names ``engine/rules/commands.py::DestructiveCommandRule`` unions into its
+    own protected set for force-push detection. Exact names only, no glob
+    normalization -- ``_git_force_push_to_protected`` already matches
+    case-insensitively.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -81,6 +87,7 @@ class RoleDefinition(BaseModel):
     allowed: tuple[str, ...] = ()
     suspicious: tuple[str, ...] = ()
     blocked: tuple[str, ...] = ()
+    protected_branches: tuple[str, ...] = ()
 
     def model_post_init(self, _context: object) -> None:
         # Normalize globs once at construction. object.__setattr__ is required

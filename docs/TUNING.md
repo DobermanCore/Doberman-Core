@@ -85,6 +85,25 @@ root are always a hard block, for every role. An explicit `.doberman/role.yaml` 
 precedence over the opt-in default. Turning the opt-in off (`doberman role disable-default`) is a
 weaken, gated behind the same possession-factor confirmation as lowering mode or enforcement.
 
+## Protecting extra branches from force-push, `protected_branches`
+
+Force-pushing to `main`, `master`, `release`, or `develop` always blocks, no configuration needed.
+To protect additional branches for a repo, such as `staging` or a release train branch, add a
+`protected_branches` list to `.doberman/role.yaml`:
+
+```yaml
+role: backend
+protected_branches:
+  - staging
+  - release-2026.9
+```
+
+This only adds names. The four built-in branches always block and this key can never remove them.
+Names are matched exactly, case-insensitively, with no wildcards or glob patterns. The key sits
+alongside the `role` (or inline `allowed`/`suspicious`/`blocked`) definition in the same file, so a
+`.doberman/role.yaml` that sets only `protected_branches` and no role still falls back to the
+most-restrictive role, the same as any other role.yaml with no usable `role`.
+
 ## Subjective preference weights, `doberman prefs`
 
 The adaptive layer's four "care" weights, `confidentiality`, `reversibility`,
