@@ -1,1 +1,0 @@
-- Phone push approvals through ntfy: `doberman phone setup` sends Approve/Deny buttons to your phone for auth challenges
