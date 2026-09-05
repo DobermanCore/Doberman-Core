@@ -353,11 +353,13 @@ _MAX_COMMAND_SEGMENTS = 256
 #: a filler blob, on purpose, to prove the scan isn't position-limited —
 #: see test_control_plane_path_behind_filesystem_filler_still_blocks) with
 #: >3x headroom, while still cutting the reported 800 KB-1 MB payload down
-#: to a bounded, fast parse. A truncation landing inside an open quote
-#: still hits shlex's existing `ValueError` -> `ambiguous = True` path
-#: below, so a destructive shape hidden behind an unterminated quote still
-#: fails upward rather than silently passing. Raise this if a real command
-#: legitimately needs more than 64 KiB in one segment.
+#: to a bounded, fast parse. Any cut — whether shlex raises on it (an open
+#: quote) or not (a cut landing in plain unquoted text) — always marks the
+#: walk `ambiguous = True`, so a destructive shape truncated away past the
+#: cut fails upward (AUTH, never a silent ALLOW) instead of vanishing. The
+#: truncated prefix is still handed to `shlex.split`, so a destructive head
+#: within the first 64 KiB still hits BLOCK on its own. Raise this if a real
+#: command legitimately needs more than 64 KiB in one segment.
 _MAX_SEGMENT_SCAN_BYTES = 65536
 
 # Any shell expansion can construct a destination at runtime. The shared walk
@@ -620,6 +622,14 @@ def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
             # substitution-stripping above, so a $()/backtick body deep in
             # an oversized segment is already queued for its own walk and
             # is never hidden by this cut.
+            # #549 follow-up: a cut landing OUTSIDE a quote never raises —
+            # shlex happily parses the truncated prefix — so a destructive
+            # suffix past byte 65536 (`"rm " + "a" * 70000 + " -rf /"`) was
+            # silently dropped with no failure-upward signal at all. Any cut
+            # marks the walk ambiguous; the truncated prefix is still parsed
+            # below so a destructive head still reaches BLOCK.
+            if len(stripped) > _MAX_SEGMENT_SCAN_BYTES:
+                ambiguous = True
             tokens = shlex.split(stripped[:_MAX_SEGMENT_SCAN_BYTES], comments=True, posix=True)
         except ValueError:
             ambiguous = True

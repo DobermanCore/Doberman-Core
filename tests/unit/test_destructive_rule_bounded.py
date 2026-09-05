@@ -9,9 +9,18 @@ sibling bound tests in ``test_rule_commands.py``); the actual per-segment
 text handed to ``shlex.split`` is capped regardless of input size (a
 deterministic counter, not just a timing race); a destructive command is
 still caught when it sits at the head of an oversized payload (rm -rf /,
-git push --force to a protected branch); a benign oversized payload (echo of
-a long blob) stays PASS — the bound must not manufacture ambiguity out of
-ordinary truncation.
+git push --force to a protected branch); an oversized payload with nothing
+dangerous visible in the truncated prefix (echo of a long blob) still fails
+UPWARD to AUTH rather than ALLOW, because a cut can never prove there is
+nothing destructive past it (raise-only — #549 follow-up review finding).
+
+#549 follow-up: the original cut only failed upward when the truncation
+landed inside an open quote (shlex's own ``ValueError``); a cut in plain
+unquoted text silently dropped everything past byte 65536 with no signal at
+all, so ``"rm " + "a" * 70000 + " -rf /"`` returned PASS instead of BLOCK.
+Any truncation now marks the walk ambiguous, so it can only ever raise a
+verdict, never lower one — updated the two tests below (from PASS to AUTH)
+that encoded the old, now-closed gap.
 """
 
 import time
@@ -44,7 +53,10 @@ def test_evaluates_a_one_megabyte_command_quickly():
     elapsed = time.perf_counter() - start
     print(f"\n1 MB command evaluated in {elapsed:.3f}s")
     assert elapsed < 3.0, f"took {elapsed:.3f}s — the per-segment scan is not length-bounded"
-    assert result.verdict is Verdict.PASS
+    # #549 follow-up: truncation now always marks the walk ambiguous (raise-
+    # only — a cut can never prove nothing destructive follows it), so an
+    # oversized segment fails upward to AUTH rather than silently PASSing.
+    assert result.verdict is Verdict.AUTH
 
 
 def test_shlex_input_is_length_bounded_regardless_of_command_size(monkeypatch):
@@ -81,7 +93,38 @@ def test_git_force_push_to_protected_branch_still_caught_at_head_of_oversized_pa
     assert result.verdict is Verdict.BLOCK
 
 
-def test_benign_oversized_echo_payload_stays_allow():
+def test_benign_oversized_echo_payload_fails_upward_not_allow():
+    # #549 follow-up: renamed from ..._stays_allow — a truncated segment
+    # can never prove nothing destructive was cut away, so this must fail
+    # upward to AUTH rather than silently ALLOW, same as any other cut.
     huge_command = "echo " + ("A" * (1024 * 1024))
     result = _cmd(huge_command)
-    assert result.verdict is Verdict.PASS
+    assert result.verdict is Verdict.AUTH
+
+
+def test_destructive_suffix_hidden_past_the_truncation_cut_is_not_allow():
+    """#549 follow-up review finding: the byte cut is applied to the RAW
+    stripped segment, not just to whatever `shlex.split` happens to see. A
+    single oversized unquoted token (no embedded quote, so shlex never
+    raises) can carry its destructive flags/operand PAST byte 65536 -- the
+    truncated prefix alone (`rm <65533 a's>`) looks like an ordinary `rm`
+    with one operand, no `-rf`. Silently returning PASS here would be a
+    raise-only violation: the unbounded scan would have BLOCKed this same
+    command. Must fail upward (AUTH or BLOCK), never ALLOW.
+    """
+    huge_command = "rm " + ("a" * 70000) + " -rf /"
+    result = _cmd(huge_command)
+    assert result.verdict is not Verdict.PASS
+    assert result.verdict in (Verdict.AUTH, Verdict.BLOCK)
+
+
+def test_walk_command_marks_an_oversized_segment_ambiguous():
+    oversized = "echo " + ("a" * (commands_module._MAX_SEGMENT_SCAN_BYTES + 10))
+    _segments, ambiguous, _dynamic = commands_module.walk_command(oversized)
+    assert ambiguous is True
+
+
+def test_walk_command_leaves_a_short_plain_segment_unambiguous():
+    small = "echo hello world"
+    _segments, ambiguous, _dynamic = commands_module.walk_command(small)
+    assert ambiguous is False
