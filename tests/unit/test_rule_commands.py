@@ -1196,7 +1196,7 @@ def test_delete_class_operands_opaque_shell_payload_is_none():
 
 def test_delete_class_operands_reuses_the_rule_parse_not_a_reparse():
     # Same adversarial parsing the rule itself uses: an env-assignment prefix
-    # is stripped by _argv_from_tokens (found is still True). The substitution
+    # is stripped by argv_from_tokens (found is still True). The substitution
     # body is walk_command's OWN top-level segment (['echo', 'target']), not
     # inline operand text of the rm segment — walk_command returns a flat,
     # undifferentiated segment list with no parent/child link back to "rm", so
@@ -1552,7 +1552,7 @@ def test_interpreter_spawn_explanation_is_redacted():
 
 
 # --- T5: a transparent wrapper's own options must not hide the command ------
-# `_argv_from_tokens` used to pop a wrapper name only when it was BARE — one
+# `argv_from_tokens` used to pop a wrapper name only when it was BARE — one
 # option on the wrapper (`sudo -u root`, `nice -n 10`, `timeout 5`, ...)
 # shifted argv so the option was misread as the command and every rule missed
 # it. Fixed at the one shared helper (`_WRAPPER_VALUE_OPTIONS`) so every
@@ -1785,7 +1785,7 @@ def test_split_segments_reports_termination():
 # --- T5-fix: an unresolved wrapper option in argv[0] fails upward -----------
 # `env -S <value>`'s splice can fail (`shlex.split` raises on an unbalanced/
 # unparseable value) leaving `-S`/its value tokens in place ahead of the
-# wrapped command (see `_argv_from_tokens`'s own docstring). `_segment_verdict`
+# wrapped command (see `argv_from_tokens`'s own docstring). `_segment_verdict`
 # keys every check off `tokens[0]`, so a leading-dash argv[0] matched nothing
 # and the whole segment — with the destructive command sitting right behind
 # it — read as benign. Fail closed instead: a segment whose argv[0] is still
@@ -1807,7 +1807,7 @@ def test_unresolved_wrapper_option_fails_upward(command):
 
 def test_wrapper_unknown_option_still_reaches_destructive_command():
     # `sudo --bogus-option rm -rf /`: sudo's own unrecognized option is
-    # dropped as a bare flag (see `_argv_from_tokens`), never swallowing the
+    # dropped as a bare flag (see `argv_from_tokens`), never swallowing the
     # `rm -rf /` behind it — the walk reaches it directly, so the verdict
     # must never read as benign (BLOCK, reached via the destructive-command
     # check itself, is fine — this isn't pinning on the leading-option floor).
@@ -1817,14 +1817,14 @@ def test_wrapper_unknown_option_still_reaches_destructive_command():
 
 def test_unresolved_wrapper_option_leading_option_helper():
     raw_tokens = ["env", "-S", "it's", "rm"]
-    tokens = commands_module._argv_from_tokens(raw_tokens)
+    tokens = commands_module.argv_from_tokens(raw_tokens)
     assert tokens[0] == "-S"
     assert commands_module._leading_option(raw_tokens, tokens) is True
 
 
 # --- T7-fix: the leading-option floor fires only after a wrapper was --------
 # stripped. `_leading_option` used to be blanket: any segment whose argv[0]
-# starts with `-` after `_argv_from_tokens` was AUTH. A verbless line that
+# starts with `-` after `argv_from_tokens` was AUTH. A verbless line that
 # simply BEGINS with an option (`--grep it's`, `-rf / rm`) never had a
 # wrapper stripped — a real shell rejects it outright, and the tool-args
 # form (`{"args": ["--grep", "it's"]}`) is a common benign shape (Grep/
