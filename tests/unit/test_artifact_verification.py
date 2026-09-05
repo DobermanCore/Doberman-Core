@@ -10,6 +10,7 @@ the response path (covered separately by
 
 import hashlib
 import hmac
+import os
 
 from doberman.egress import artifact
 from doberman.egress.artifact import ArtifactPinStore, ArtifactVerdict, load_pins
@@ -102,3 +103,49 @@ def test_no_pins_configured_means_everything_unpinned(tmp_path):
     store = ArtifactPinStore.from_repo(str(tmp_path))
     assert store.verify(_IDENTITY, _CONTENT) is ArtifactVerdict.unpinned
     assert store.verify("https://anything.example.com/x", b"anything") is ArtifactVerdict.unpinned
+
+
+def test_load_pins_reads_file_once_per_mtime(tmp_path):
+    # Finding (#552): load_pins() re-read and re-parsed artifact_pins.yaml on
+    # EVERY call with zero caching -- and ArtifactPinStore.from_repo() is
+    # called once per decided network-fetch action from
+    # proxy/executor.py's _verify_artifact_digest(). Instrumented count
+    # (test-logs/issue-552-count-artifact-exclusions.py, BEFORE this fix): 20
+    # decided actions -> 20 reads. Now cached on (path, mtime): repeated calls
+    # against an unchanged file must hit the cache instead of re-reading.
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    (cfg / "artifact_pins.yaml").write_text(
+        f"pins:\n  {_IDENTITY}: {_CONTENT_DIGEST!r}\n", encoding="utf-8"
+    )
+    artifact._load_pins_yaml_data.cache_clear()
+
+    for _ in range(20):
+        assert load_pins(str(tmp_path)) == {_IDENTITY: _CONTENT_DIGEST}
+
+    info = artifact._load_pins_yaml_data.cache_info()
+    assert info.misses == 1  # the real (disk-touching) parse ran exactly once
+    assert info.hits == 19
+
+
+def test_load_pins_picks_up_a_mid_process_pins_edit(tmp_path):
+    # The cache must NOT go stale the way a naive full-process cache would: a
+    # human can add/edit a pin while a long-lived process (the RB proxy) keeps
+    # deciding actions, so the very next decision must see it -- the same
+    # "must still be re-read when the file changes" requirement #547 keeps
+    # for key rotation, met here via mtime (artifact_pins.yaml legitimately
+    # changes mid-process; the fingerprint key does not).
+    cfg = tmp_path / ".doberman"
+    cfg.mkdir()
+    pins_path = cfg / "artifact_pins.yaml"
+    pins_path.write_text(f"pins:\n  {_IDENTITY}: {_CONTENT_DIGEST!r}\n", encoding="utf-8")
+    artifact._load_pins_yaml_data.cache_clear()
+
+    assert load_pins(str(tmp_path)) == {_IDENTITY: _CONTENT_DIGEST}
+
+    other_identity = "https://other.example.com/tool.tar.gz"
+    new_mtime = pins_path.stat().st_mtime + 5
+    pins_path.write_text(f"pins:\n  {other_identity}: {_CONTENT_DIGEST!r}\n", encoding="utf-8")
+    os.utime(pins_path, (new_mtime, new_mtime))
+
+    assert load_pins(str(tmp_path)) == {other_identity: _CONTENT_DIGEST}

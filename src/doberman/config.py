@@ -30,6 +30,7 @@ This module is policy core: it must never import ``doberman.proxy``.
 import asyncio
 import logging
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -62,6 +63,23 @@ def _policy_file_path(repo_root: str) -> Path:
     return Path(repo_root) / CONFIG_DIR / POLICY_FILE
 
 
+@lru_cache(maxsize=8)
+def _load_role_yaml_data(path_str: str, mtime_ns: int) -> dict:
+    """Parse ``role.yaml``, cached on (path, mtime_ns) (#552).
+
+    Same mechanism as #547's key cache (``functools.lru_cache``), but keyed
+    on the file's mtime too: unlike the fingerprint key, ``role.yaml`` is a
+    live per-repo config a human can edit while a long-lived process (the RB
+    proxy) is running, so caching it for the whole process would silently
+    keep enforcing a stale role after an edit. A changed mtime is a new cache
+    key, so an edit is picked up on the next decision with no explicit
+    invalidation call needed; ``maxsize=8`` bounds memory across a handful of
+    repo roots without unbounded growth. Raises straight through on
+    read/parse failure — never cached (``lru_cache`` only memoizes success).
+    """
+    return yaml.safe_load(Path(path_str).read_text(encoding="utf-8")) or {}
+
+
 def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
     """Resolve the repo's active role, or ``None`` if none is configured.
 
@@ -78,7 +96,8 @@ def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
         return load_builtin_roles().get(DEFAULT_ROLE_NAME, MOST_RESTRICTIVE_ROLE)
 
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        mtime_ns = path.stat().st_mtime_ns
+        data = _load_role_yaml_data(str(path), mtime_ns)
     except (OSError, yaml.YAMLError):
         logger.warning("could not read %s; falling back to the most-restrictive role", path)
         return MOST_RESTRICTIVE_ROLE

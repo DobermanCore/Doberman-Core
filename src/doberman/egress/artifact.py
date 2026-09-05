@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import logging
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -54,6 +55,22 @@ def _pins_file_path(repo_root: str) -> Path:
     return Path(repo_root) / CONFIG_DIR / PINS_FILE
 
 
+@lru_cache(maxsize=8)
+def _load_pins_yaml_data(path_str: str, mtime_ns: int) -> dict:
+    """Parse ``artifact_pins.yaml``, cached on (path, mtime_ns) (#552).
+
+    Same mechanism as :func:`doberman.config._load_role_yaml_data` (itself
+    #547's ``functools.lru_cache`` shape, keyed on mtime too): this file is
+    called once per decided network-fetch action
+    (:func:`doberman.proxy.executor._verify_artifact_digest`) with zero
+    caching before this fix, and pins are a live per-repo config a human can
+    add/edit while the RB proxy keeps running -- a changed mtime is a new
+    cache key, so an edit is picked up on the next decision. Raises straight
+    through on read/parse failure -- never cached.
+    """
+    return yaml.safe_load(Path(path_str).read_text(encoding="utf-8")) or {}
+
+
 def load_pins(repo_root: str = ".") -> dict[str, str]:
     """Read pinned artifact digests from ``.doberman/artifact_pins.yaml``.
 
@@ -65,7 +82,8 @@ def load_pins(repo_root: str = ".") -> dict[str, str]:
     if not path.exists():
         return {}
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        mtime_ns = path.stat().st_mtime_ns
+        data = _load_pins_yaml_data(str(path), mtime_ns)
     except (OSError, yaml.YAMLError):
         logger.warning("could not read %s; no artifact pins loaded", path)
         return {}
