@@ -1,18 +1,20 @@
 # Turn gate
 
 The turn gate is Doberman's second chokepoint: it inspects the conversation turn (prompt plus
-attached, pasted, or tool-fetched content) at a host pre-inference hook, before a single inference
-token is spent. This page explains how it's built and what it guarantees, alongside the action
-gate described in the [README](../README.md) that inspects every tool call.
+attached, pasted, or tool-fetched content) at a host pre-inference hook (code the host runs before
+it calls the model), before a single inference token is spent. This page explains how it's built
+and what it guarantees, alongside the action gate described in the [README](../README.md) that
+inspects every tool call.
 
 ## How it fits together
 
 The tool-call path is the safety guarantee: an attacker who evades the turn gate still meets it.
 The turn gate is an efficiency and early-warning layer with a narrower promise: no Tier-0-signature
 turn reaches the model. One engine backs both invocation points. `decide_turn` reuses the same
-raise-only `combine`, the same `Decision` audit model, and the same tiered-auth challenge as the
-action path, adding zero new verdict authority. `turngate/` is a new adapter, a sibling to the MCP
-proxy; the engine itself stays unchanged.
+raise-only `combine` (it can only push a verdict stricter, never looser), the same `Decision` audit
+model, and the same tiered-auth challenge as the action path. It adds no new verdict authority.
+`turngate/` is a new adapter, a sibling to the MCP (Model Context Protocol) proxy. The engine itself
+stays unchanged.
 
 ```mermaid
 flowchart LR
@@ -41,17 +43,17 @@ flowchart LR
   punctuation and digit density; never raw text) and flags an extreme style outlier only when it
   co-occurs with sensitive apparent intent. It never escalates on style alone.
 - **`repeat.py`** holds `RepeatRecord`, the state for re-attempts of a just-blocked turn.
-  `register_block()` feeds a block into it, so a near-match resubmission is routed to a challenge
-  scaled to the original block instead of quietly resetting.
-- **`gate_turn()`** (in `hook.py`) is the single entry point: it builds the `TurnObject`, runs the
+  `register_block()` records a block, so a near-match resubmission gets a challenge scaled to the
+  original block instead of a quiet reset.
+- **`gate_turn()`** (in `hook.py`) is the single entry point. It builds the `TurnObject`, runs the
   guardrails above, combines their results with the same raise-only `combine` the action path uses,
   and enforces the outcome (release, challenge, or hold) before the turn reaches the model.
 - **`log.py`** records the redacted verdict into the same local `decisions` table the action path
   uses, marked `action_type='turn'`, so one `doberman log` view covers both invocation points. A
-  `TurnObject` carries no raw prompt text, so a logged row holds only fingerprints, classes, and the
-  verdict.
+  `TurnObject` carries no raw prompt text, so a logged row holds only fingerprints (irreversible
+  stand-ins for the raw values), classes, and the verdict.
 - **`handoff.py`** (`publish_turn_context`) passes a released turn's signals forward to the
-  action-path floors: a flagged turn's stylometric p-value and heuristic tags become a bounded,
+  action-path floors. A flagged turn's stylometric p-value and heuristic tags become a bounded,
   non-negative contribution to that entity's next actions, and content tracing to a flagged pasted
   segment inherits `provenance: untrusted_data`.
 
@@ -68,7 +70,7 @@ flowchart LR
 
 ## Known limits
 
-BLOCK is reserved for the Tier 0 signature set; everything merely suspicious asks the human instead.
-Stylometry needs a matured per-entity baseline before it contributes anything, and a shared account
-blends typists, which degrades that signal toward noise. None of this is a claim that the turn gate
-catches every injection; it narrows what reaches the model and hands the rest to the action gate.
+BLOCK is reserved for the Tier 0 signature set. Everything merely suspicious asks the human instead.
+Stylometry needs a matured per-entity baseline before it contributes anything. A shared account
+blends typists, which degrades that signal toward noise. The turn gate does not catch every
+injection: it narrows what reaches the model and hands the rest to the action gate.

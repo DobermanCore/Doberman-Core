@@ -13,7 +13,7 @@
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20pack-5865F2?logo=discord&logoColor=white)](https://discord.gg/Sfy5XGNqty)
 [![Product Hunt](https://img.shields.io/badge/Product%20Hunt-we're%20live-DA552F?logo=producthunt&logoColor=white)](https://www.producthunt.com/products/doberman?utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-doberman)
 
-Your AI coding agent can `rm -rf` your repo, leak your API keys, or get prompt-injected into exfiltrating data, autonomously, with no undo. Doberman is the guard dog on the execution path, and it stops the dangerous call before it runs.
+Your AI coding agent can run `rm -rf` on your repo, leak your API keys, or get tricked by hidden instructions into leaking data on its own, with no undo. Doberman is the guard dog on the execution path. It stops the dangerous call before it runs.
 
 </div>
 
@@ -25,7 +25,7 @@ Your AI coding agent can `rm -rf` your repo, leak your API keys, or get prompt-i
 
 > A guardrail that isn't on the execution path can only advise.
 
-Doberman sits between the agent and its tools (a transparent **MCP proxy** or **host hook**) and turns every action into an explicit, auditable decision. Every tool call gets exactly one verdict, decided before it executes:
+Doberman sits between the agent and its tools, through a transparent **MCP proxy** or **host hook** (MCP: Model Context Protocol, the standard interface between an agent and its tools; a hook is code the host runs automatically around a tool call), and turns every action into an explicit, auditable decision. Every tool call gets exactly one verdict, decided before it runs:
 
 | Verdict | What happens |
 |---|---|
@@ -38,7 +38,7 @@ AI agent ──▶ Doberman ──▶ real tools (files, shell, MCP servers, API
                  └─ normalize → risk engine → PASS / AUTH / BLOCK
 ```
 
-Works with Claude Code, Codex, OpenClaw, and any MCP-compatible agent. Cursor is guarded through its native hooks *(experimental)*; other MCP clients connect through the [MCP proxy](#quick-start). It's open source, local first, and holds two guarantees: it fails closed (uncertainty denies) and is raise-only (it can tighten automatically, but never silently loosens).
+Works with Claude Code, Codex, OpenClaw, and any MCP-compatible agent. Cursor is guarded through its native hooks *(experimental)*; other MCP clients connect through the [MCP proxy](#quick-start). It's open source and local first, and it holds two guarantees: it fails closed (uncertainty denies the action) and it's raise-only (it can tighten automatically, but never silently loosens).
 
 <div align="center">
 
@@ -52,11 +52,11 @@ Works with Claude Code, Codex, OpenClaw, and any MCP-compatible agent. Cursor is
 
 ## Contents
 
-- [Why Doberman](#why-doberman): what it does, and the two guarantees
+- [Why Doberman](#why-doberman): what it does, and its two guarantees
 - [Quick start](#quick-start): install and protect an agent in two commands
 - [Verify it end-to-end](#verify-it-end-to-end): watch it front a real MCP server
-- [Turn gate](#turn-gate): the optional pre-inference chokepoint
-- [Benchmark](#benchmark): attack-block rate vs. false-positive friction
+- [Turn gate](#turn-gate): the optional check that runs before the model even starts thinking
+- [Benchmark](#benchmark): attack-block rate vs. false positives (flagging something harmless)
 - [Write a guardrail plugin](#write-a-guardrail-plugin): register your own rule or audit sink
 - [Policy as code](#policy-as-code): a repo-committed `doberman.policy.yaml`, reviewed like code
 - [Tune to your risk tolerance](#tune-to-your-risk-tolerance): strictness modes and the enforcement dial
@@ -68,23 +68,24 @@ Works with Claude Code, Codex, OpenClaw, and any MCP-compatible agent. Cursor is
 
 ## Why Doberman
 
-Most "AI guardrails" inspect prompts and offer advice, after the model has already decided. Doberman
-sits on the tool-execution path instead, so a blocked action never runs, no matter how it talked its
-way past the model's own guardrails first. Two properties make that a guarantee:
+Most "AI guardrails" inspect prompts and offer advice after the model has already decided what to do.
+Doberman sits on the tool-execution path instead, so a blocked action never runs, no matter how it
+talked its way past the model's own guardrails first. Two properties make that a guarantee:
 
 - **Fail closed**: any error, uncertainty, or unhandled case denies the action. There's no path to a
-  tool around the decision engine. This includes silence: an approval prompt nobody answers is bounded
-  by a hard deadline (2 minutes for the desktop dialog, 10 minutes as the whole-challenge backstop)
-  and resolves to a denial, logged distinctly as `timeout` rather than `denied`. A hung prompt is not a
-  denial, and agents usually run unattended, so the deadline matters.
-- **Raise-only learning**: guardrails and adaptive learning can auto-tighten, never silently loosen.
-  Every permanent policy weakening requires explicit, possession-factor-gated, audited human approval
-  (TOTP if enrolled, otherwise the local Doberman password).
+  tool that goes around the decision engine. This includes silence: if nobody answers an approval
+  prompt, a hard deadline resolves it to a denial (2 minutes for the desktop dialog, 10 minutes as the
+  backstop for the whole approval flow), logged distinctly as `timeout` rather than `denied`. A hung
+  prompt is not a denial on its own, and agents usually run unattended, so that deadline matters.
+- **Raise-only learning**: guardrails and adaptive learning can tighten automatically, but never
+  silently loosen. Every permanent policy weakening needs explicit, audited human approval, gated
+  behind a possession factor: proof you hold something specific, such as TOTP (a time-based one-time
+  code from an authenticator app) if you've enrolled one, or otherwise the local Doberman password.
 
-The [parity matrix](docs/PARITY.md) maps each protection to each host Doberman fronts (Claude Code,
-Codex, MCP proxy, OpenClaw). Every checkmark links to the CI test that proves it; open cells are
-contributor-sized work, and the matrix regenerates from those tests on every build, so it cannot drift
-from what is proven.
+The [parity matrix](docs/PARITY.md) maps each protection to each host Doberman fronts: Claude Code,
+Codex, the MCP proxy, and OpenClaw. Every checkmark links to the CI test that proves it. Open cells
+are contributor-sized work, and the matrix regenerates from those tests on every build, so it can't
+drift from what's actually proven.
 
 ---
 
@@ -105,13 +106,14 @@ After installing, run `doberman --install-completion` to enable shell tab comple
 > writable Claude Code and Codex hooks, project and device state, and enrolled factors before it
 > removes the `doberman-core` package with pip or pipx. Uninstalling the package first leaves hooks
 > pointing at a missing binary. Already hit this? Reinstall `doberman-core`, then run the global
-> uninstall; `doberman doctor` flags any hook entry whose `doberman` is not on PATH. More recovery
+> uninstall. `doberman doctor` flags any hook entry whose `doberman` is not on PATH. More recovery
 > steps: [Recover](docs/RECOVERY.md).
 
-- Install integrity: install-hooks records a keyed fingerprint of Doberman's own hook entries in
-  your per-user Doberman config dir (never in the repo). If those entries are later stripped or
-  altered, the next surviving hook invocation warns and doberman doctor reports which scope
-  diverged. Detection only; it never blocks. (#239)
+- Install integrity: `install-hooks` records a keyed fingerprint (a short tag derived from a secret
+  key, so the original value can't be worked out from it) of Doberman's own hook entries, in your
+  per-user Doberman config directory, never in the repo. If those entries are later stripped or
+  altered, the next hook invocation that still runs warns about it, and `doberman doctor` reports
+  which scope diverged. This is detection only; it never blocks. (#239)
 
 | Your agent | How Doberman plugs in | Get started |
 |---|---|---|
@@ -128,21 +130,22 @@ After installing, run `doberman --install-completion` to enable shell tab comple
 doberman setup      # asks which agents to guard, then picks a strictness mode, tunes guardrails, wires them
 ```
 
-Anonymous usage counts are on by default (command names and daily totals, never paths, prompts, or
-secrets); the first command prints a notice, and `doberman telemetry off` or `DO_NOT_TRACK=1` turns
+Anonymous usage counts are on by default: command names and daily totals, never paths, prompts, or
+secrets. The first command prints a notice, and `doberman telemetry off` or `DO_NOT_TRACK=1` turns
 them off. See [Telemetry](docs/TELEMETRY.md).
 
 Doberman now reviews every tool call your agent makes. Confirm it with `doberman doctor`, or watch
-real verdicts with `doberman demo`. MCP-proxy wiring, the dashboard, the TUI, scan, and 2FA are in the
-[Setup guide](docs/SETUP.md). Pending-approval cards in the dashboard can copy their already-redacted
-decision details as JSON for review handoffs without exposing raw targets or paths.
+real verdicts with `doberman demo`. MCP-proxy wiring, the dashboard, the TUI, scan, and 2FA
+(two-factor authentication) are in the [Setup guide](docs/SETUP.md). Pending-approval cards in the
+dashboard can copy their already-redacted decision details as JSON for review handoffs without
+exposing raw targets or paths.
 
 ---
 
 ## Verify it end-to-end
 
-Two ways to watch Doberman front a real MCP server, with no in-process test doubles anywhere in the
-chain.
+Two ways to watch Doberman front a real MCP server, with no in-process test doubles (fakes standing
+in for real components) anywhere in the chain.
 
 **Interactive demo (MCP Inspector and a real filesystem server):**
 
@@ -159,12 +162,13 @@ to the real filesystem server; a destructive call comes back as a policy error a
 pytest tests/integration/test_serve_end_to_end.py -q
 ```
 
-This spawns `doberman serve` as a real subprocess fronting a real stdio tool server
-([`tests/fixtures/stdio_tool_server.py`](tests/fixtures/stdio_tool_server.py)), connects to it with a
-real MCP client playing the agent, and asserts the deployable chain over actual stdio: the
-downstream's tools are re-exposed through the proxy, a `PASS` verdict reaches the tool (the
-downstream's call log records it), and a `BLOCK` verdict (`rm -rf /`) never reaches it, the call log
-stays empty. That last assertion is the chokepoint property the whole project hangs on.
+This spawns `doberman serve` as a real subprocess in front of a real stdio (standard input/output)
+tool server ([`tests/fixtures/stdio_tool_server.py`](tests/fixtures/stdio_tool_server.py)). It
+connects to that subprocess with a real MCP client playing the agent, and checks the whole chain
+over actual stdio: the downstream server's tools are re-exposed through the proxy, a `PASS` verdict
+reaches the tool and the downstream's call log records it, and a `BLOCK` verdict (`rm -rf /`) never
+reaches it, so the call log stays empty. That last check is the core guarantee the whole project
+depends on: a blocked action never runs.
 
 > **Note**
 > The rest of the integration suite deliberately uses an in-process fake downstream
@@ -173,43 +177,53 @@ stays empty. That last assertion is the chokepoint property the whole project ha
 > runtime. `doberman serve` always talks to the real server: the one it spawns from the command after
 > `--`, or the remote one you point it at with `--url`.
 
-Doberman's proxy speaks MCP as pinned in `pyproject.toml` (`mcp>=1.27,<2`). Its cross-call protections
-(taint ledger, read-vs-send fingerprints, decision log) key off repo-local identity, never the
-protocol session, and are regression-tested stateless.
-Operators can bound retained decision rows with `doberman decision-log-prune`; it deletes only
-resolved decisions and never pending AUTH rows or the append-only policy-change ledger. See the
+Doberman's proxy speaks MCP at the version pinned in `pyproject.toml` (`mcp>=1.27,<2`). Its cross-call
+protections (the taint ledger, a record of values that came from an untrusted source; read-vs-send
+fingerprints; and the decision log) key off repo-local identity, never the protocol session, and are
+regression-tested to stay stateless.
+
+Operators can bound how many decision rows are kept with `doberman decision-log-prune`. It deletes
+only resolved decisions, never pending `AUTH` rows or the append-only policy-change ledger. See the
 [CLI reference](docs/CLI.md) for the age and row-budget options.
 
 ---
 
 ## Turn gate
 
-A second invocation point for the same decision engine, consulted at a host pre-inference hook on the
-user's turn (prompt plus attached, pasted, or tool-fetched content), so a flagrant turn is judged
-before a single inference token is spent. The turn gate is an efficiency and early-warning layer with
-a deliberately narrow guarantee: no Tier-0-signature turn reaches the model. The action gate above
-remains the safety guarantee: an attacker who evades the turn gate still meets it. Full mechanism,
-module map, and invariants: [Turn gate](docs/TURN_GATE.md).
+This is a second point where the same decision engine gets consulted: a host hook that runs on the
+user's turn (the prompt, plus anything attached, pasted, or fetched by a tool) before the model
+starts inferring, generating its response. That means a blatant attack in the turn gets judged
+before it costs a single token (a chunk of text the model processes) of inference.
+
+The turn gate is an efficiency and early-warning layer with a deliberately narrow guarantee: no turn
+matching a Tier-0 signature (a known, deterministic prompt-injection pattern) reaches the model. The
+action gate described above remains the real safety guarantee: an attacker who slips past the turn
+gate still has to get past it. Full mechanism, module map, and invariants:
+[Turn gate](docs/TURN_GATE.md).
 
 ---
 
 ## Benchmark
 
-A suite-agnostic harness scores Doberman as a filter over labeled actions and reports attack bypass
-rate and benign over-block rate, running the real decision engine over each labeled tool call so the
-gated path is deterministic and offline. A labeled detection corpus turns it into a per-category
-detection-quality measurement, and CI gates on any regression. Three more operator-supplied external
-suites — RedCode-Exec, MSB, and LLMail-Inject — are wired in the same way, alongside AgentDojo. Commands,
-methodology, and published results (failure cases before wins): [Benchmarks](docs/BENCHMARKS.md).
+A suite-agnostic harness (one that works with more than one benchmark suite) scores Doberman as a
+filter over labeled actions, and reports two numbers: the attack bypass rate and the benign
+over-block rate, how often something harmless gets flagged anyway. It runs the real decision engine
+over each labeled tool call, so the result is deterministic and needs no network access.
+
+A labeled detection corpus turns this into a per-category detection-quality measurement, and CI
+gates on any regression. Three more operator-supplied external suites (RedCode-Exec, MSB, and
+LLMail-Inject) are wired in the same way, alongside AgentDojo. Commands, methodology, and published
+results, including failure cases as well as wins, are in [Benchmarks](docs/BENCHMARKS.md).
 
 ---
 
 ## Write a guardrail plugin
 
-Third-party rules register through the `doberman.rules` entry-point group; core never imports your
-package by name, and nothing is loaded until you opt in with `doberman plugins enable <name>`. A
-five-minute worked example lives at
-[`examples/plugin-guardrail/`](examples/plugin-guardrail/), and the same entry-point pattern
+Third-party rules register through the `doberman.rules` entry point (a Python packaging mechanism
+that lets one package register a plugin for another to discover, without either importing the other
+by name). Core never imports your package by name, and nothing loads until you opt in with
+`doberman plugins enable <name>`. A five-minute worked example lives at
+[`examples/plugin-guardrail/`](examples/plugin-guardrail/). The same entry-point pattern
 (`doberman.audit_sinks`) forwards the redacted audit log to your own pipeline, for example a webhook.
 Full walkthrough: [Write a guardrail plugin](docs/PLUGINS.md).
 
@@ -217,9 +231,10 @@ Full walkthrough: [Write a guardrail plugin](docs/PLUGINS.md).
 
 ## Policy as code
 
-Commit a `doberman.policy.yaml` at the repo root and its `blocked`/`sensitive` globs resolve into
-every action decision alongside the local role — so a team reviews policy changes in the same PR as
-the code they govern, instead of a teammate's local `.doberman/` state:
+Commit a `doberman.policy.yaml` file at the repo root, and its `blocked`/`sensitive` globs (wildcard
+file patterns) fold into every action decision alongside the local role. That way, a team reviews
+policy changes in the same PR as the code they govern, instead of relying on a teammate's local
+`.doberman/` state:
 
 ```yaml
 version: 1            # optional; if present must be 1
@@ -227,12 +242,13 @@ blocked: ["secrets/**", "*.pem"]
 sensitive: ["infra/**"]
 ```
 
-Raise-only across file edits too: a file that *drops* a glob the last-approved version enforced
-never silently loosens what is blocked/sensitive — the stricter set stays pinned locally
-(`.doberman/policy_file_pin.json`) and in force until a human runs `doberman policy-file --accept`,
-gated behind the same possession factor (2FA if enrolled, else the local password) as every other
-weakening. `doberman policy-file` with no flag shows what's applied and what's pending. A file placed
-under `.doberman/` instead of the repo root is ignored — this is git-reviewed policy, not local state.
+This file is raise-only too. If a new version *drops* a glob the last-approved version enforced,
+that never silently loosens what's blocked or sensitive. The stricter set stays pinned locally
+(`.doberman/policy_file_pin.json`) and stays in force until a human runs `doberman policy-file
+--accept`, gated behind the same possession factor (2FA if enrolled, else the local password) as
+every other weakening. Running `doberman policy-file` with no flag shows what's currently applied
+and what's pending. A file placed under `.doberman/` instead of the repo root is ignored: this is
+git-reviewed policy, not local state.
 
 ---
 
@@ -241,12 +257,16 @@ under `.doberman/` instead of the repo root is ignored — this is git-reviewed 
 Doberman ships with sane defaults, but every dial is yours to move: the strictness `mode`
 (Light/Balanced/Strict/Paranoid), the `enforcement` dial (enforce/monitor/off), the opt-in default
 `role`, the subjective `prefs` weights, `tune`'s friction telemetry, and `message-tone`. Lowering any
-of them requires a possession factor (TOTP if enrolled, otherwise the local Doberman password) and is
-recorded in the append-only policy-change ledger; raising is always frictionless. Full reference:
-[Tune to your risk tolerance](docs/TUNING.md). Recovering from sticky taint, re-approving a changed
-tool, resetting learned memory, or fully removing a project: [Recover](docs/RECOVERY.md). Warming a
-fresh install's baseline from your own already-allowed traces instead of starting cold: `doberman
-memory seed --from traces.jsonl` ([format + invariants](docs/BASELINE_SEEDING.md)).
+of them requires a possession factor (TOTP if enrolled, otherwise the local Doberman password) and
+gets recorded in the append-only policy-change ledger. Raising one is always frictionless. Full
+reference: [Tune to your risk tolerance](docs/TUNING.md).
+
+Recovering from sticky taint, re-approving a changed tool, resetting learned memory, or fully
+removing a project: see [Recover](docs/RECOVERY.md).
+
+You can also warm a fresh install's baseline (its record of what counts as normal behavior) from
+your own already-allowed traces instead of starting cold: `doberman memory seed --from
+traces.jsonl` ([format and invariants](docs/BASELINE_SEEDING.md)).
 
 ---
 
@@ -262,106 +282,18 @@ memory seed --from traces.jsonl` ([format + invariants](docs/BASELINE_SEEDING.md
 
 ## Roadmap <a name="roadmap"></a>
 
-Planned and in-flight work now lives on GitHub: the
-**[Doberman Roadmap board](https://github.com/users/fu351/projects/5)** (current focus: host-harness
-containment, subjective-layer hardening, the ambient-monitoring daemon, and the enterprise platform).
-For everything already shipped, see the **[changelog](CHANGELOG.md)**.
+See [the roadmap](ROADMAP.md) for what's planned and in flight, the
+[GitHub board](https://github.com/users/fu351/projects/5) for day-to-day tracking, and
+[the changelog](CHANGELOG.md) for what has already shipped.
 
 ### Known limitations
 
-Doberman is **defense-in-depth, not airtight**: no single rule is a guarantee. The concrete, currently-known gaps:
-
-- **Whole-script homoglyph confusables — narrowed, not closed.** Alongside the *intra-token* `mixed_script_confusable` check (e.g. `раypal`, which mixes Cyrillic and Latin), the deterministic scanner now also carries a `whole_script_confusable` channel: a token rendered **entirely in one non-Latin script** that mimics a Latin word (e.g. an all-Cyrillic look-alike of `paypal`) is NFKC-stable and invisible to every other channel, so this one flags it directly — raise-only, like its sibling. It works off a small, curated set of Cyrillic/Greek letters with close Latin lookalikes (defense-in-depth, deliberately **not exhaustive**): a whole-script token using even one letter outside that set still evades both channels. A model-agnostic perplexity/confusable detector (its own issue, #234) is the planned path to closing the rest of this gap.
-- **Bare high-entropy hex and other structured ids.** To avoid flagging git SHAs, content/AST digests, MD5s, and UUIDs — the most common weak-path false positive, which also poisoned the multi-step taint ledger — the generic high-entropy heuristic ignores a token that is *entirely* hash-shaped hex (≥ 32 chars) or a dashed UUID. A real secret that is bare hex- or UUID-shaped with **no** surrounding credential name is therefore not stepped up by this heuristic alone; it is still caught when it carries a credential key-name (e.g. `API_KEY=…`), matches a known credential shape, or is later matched by the read-vs-send fingerprint. (Lowering the floor from 40 to 32 also lets a bare 128-bit hex value pass the weak path; the strong credential-shape path is unaffected.)
-
-- **Identifier, path, and `word+number` shapes are exempt from the weak path (a raise-only, measured cost).** Shannon entropy *per character* measures alphabet variety, not randomness, so an ordinary identifier, a relative path, or a build tag like `py311`/`x86` lands in the same 3.6–4.5 bits/char band as a short base64 token and used to trip a spurious `possible_high_entropy_secret` — roughly 6:1 in the field, the source of the alert fatigue that trains a human to approve without reading. A token is now exempt only when *every* separator-split segment is a word, a number, a short length-capped `word+number` atom, or a digest/UUID id; a long base64/JWT segment fails, so the token is judged whole and no secret is fragmented below the length floor. The measured cost: the fraction of a *bare* base64url secret (no key-name, no known prefix) whose every segment happens to pass rises from ~0.8% to ~3.6% at 24 chars, ~0.2% to ~0.9% at 32, and ~0.01% to ~0.1% at 43 — the strong credential-shape path is untouched. On an **egress** path the exemption is withheld for a word-joined token (a passphrase has the same shape) but kept for a `/`-bearing token, since a filesystem path, URL path, or git ref is not a passphrase — which is what stops every `gh api` call and branch ref from prompting on a push.
-- **Oversized encoded-blob detection is defense-in-depth, and evadable.** The `Base64BlobDetector` steps a *large* base64-looking argument up to `AUTH` (tolerating PEM/MIME newline wrapping), but it reasons about **shape and size only**: it never decodes the payload. It targets **bulk** file/secret dumps, not small credentials (those are the objective secrets rule's job), and an attacker can still evade it by splitting the payload across several sub-threshold arguments/calls, interleaving non-alphabet separators, or switching encodings. Raise-only `AUTH`, never a guarantee.
-- **Bare-token fixture/pattern-text suppression is WEAK-path only, and marker-gated on the residual.** A bare (non-assignment) token that is regex-pattern source text being quoted (e.g. `sk-ant-[A-Za-z0-9_-]{20,}`) or an obvious hand-written fixture is not stepped up by the high-entropy heuristic alone (#73). Because a fixture marker (`EXAMPLE`/`SAMPLE`/`FAKE`/`DUMMY`) and ordered `0-9`/`a-z` filler are attacker-controllable (and for a *shapeless* secret the high-entropy heuristic is the only signal), a marker on its own is **not** trusted: the token is suppressed only when, after stripping the markers and ascending runs, the residual is too short/low-entropy to be a secret. A real key padded with `EXAMPLE` keeps a high-entropy residual and still fires, and a variable merely *named* with a marker never suppresses its value (the check runs on the RHS after the `=` split). The suppression also never touches the STRONG credential-shape path, which can still drive `secret_exfiltration`. Regex-pattern source (`[]{}\`) is suppressed unconditionally: the tokenizer charset can't produce those characters in a real token. A full live-shaped example key quoted in prose with no marker is still indistinguishable from a real one and steps up.
-- **Static egress classification, not a runtime egress broker.** Doberman now reads the external destination out of **shell / package / git commands** too, not just `network_request` calls. The direct-egress verb set spans HTTP/copy tools (`curl`/`wget`/`scp`/`sftp`/`rsync`) **and** raw socket/shell channels (`nc`/`ncat`/`netcat`/`ssh`/`telnet`/`ftp`/`tftp`/`socat`), so a secret piped to `curl <host>` (or `nc host port`) is a hard **BLOCK**, and *any* such command egress (even to a trusted-looking host, or one it cannot resolve to a single route, e.g. a bare `nc host port` or `ssh -R` tunnel with no URL) steps up to **authentication**. This is **raise-only**: it never mints a new silent allow, and ambiguity fails *toward* the human. But it is a *static* parse of the command string: it can flag "this looks like egress" yet cannot prove the host it classified is the socket the process actually opens. A redirect file, `--resolve`/`--connect-to`, an `HTTP(S)_PROXY`/`ALL_PROXY` override, DNS rebinding, a URL built at runtime, `git push` to an already-configured origin, a package lifecycle script, a trusted tenant abused as a channel, or egress from a spawned child process can all still route around the static classifier. **Non-verb channels remain mostly uncovered by this destination-based classifier:** DNS-label exfil (`dig`/`host`/`nslookup` TXT lookups) still presents no recognizable egress verb or destination here — closing it needs an entropy/n-gram heuristic this classifier doesn't have. Bash's built-in `/dev/tcp`/`/dev/udp` and `openssl s_client` are now caught by a separate, narrower shape-based check (see the `raw_socket_channel` bullet below), but this destination classifier still cannot resolve or route-check them. Real containment needs a runtime egress broker (planned: the `EgressBroker` seam and its entry-point group, `doberman.egress_brokers`, now exist and are consulted on every egress-classified action. A registered broker's *retrospective* ground-truth signal, what an entity's connections actually showed a moment ago, can now **raise** a decision toward `AUTH` when it diverges from the static classification, but a broker verdict still cannot lower one or grant a `PASS` on its own). A concrete core reference broker's building blocks now exist too: a default-deny allowlist, a two-sided enforcement probe (a direct connection must fail *and* a broker-routed one must succeed), and now a real listener: a minimal, stdlib-only `asyncio` HTTP `CONNECT` forward proxy (`doberman.egress.proxy.ForwardProxy`) that enforces the allowlist at the socket, so a denied destination's upstream connection is never opened. It is **`CONNECT`-only (no SOCKS)** and has **no transparent/SNI-sniffing mode** (it can only mediate traffic explicitly routed to it), and it still ships unregistered as a `doberman.egress_brokers` entry point in core (opt-in wiring only). PASS-authority now exists (RB.4): a registered broker can let `ExternalDestinationRule` contribute `PASS` instead of its usual AUTH, but only when the broker is `PROVEN` to enforce egress **and** its verdict both allowlists **and** will itself enforce this exact destination at the socket: a bare allowlist claim from an unproven or non-enforcing broker still stays AUTH, and RB.3's route-divergence check always wins over a broker PASS. Paranoid mode (RB.5) can now escalate a non-allowlisted destination all the way to a hard BLOCK, but only under the mirror-image condition (a `PROVEN`, `will_enforce`-attesting broker), so the escalation is never a bare mode toggle pretending to be real enforcement; with no broker registered, Paranoid is unchanged from every other mode. A registered broker's retrospective connection history now also feeds a bounded, in-memory per-entity velocity check (RB.6): burst/volume/fan-out over the same recent window can **raise** a `PASS` to `AUTH` (winning even over a broker-backed `PASS`) or append a reason code onto an already-`AUTH`/`BLOCK` result, never lower one, and it is silent with no broker or no `connection_events()`.
-- **Raw-socket egress detection (`raw_socket_channel`) is shape-based and AUTH-only, not a destination classifier.** The destructive-command rule (`DestructiveCommandRule`) now recognizes four shapes — a `/dev/tcp`/`/dev/udp` redirection, netcat/ncat/socat used in exec-on-connect (reverse/bind-shell) form, `openssl s_client`, and an inline Python/Node payload that opens a socket directly — The exec-on-connect subset — a socket wired to command execution (`nc -e`/`--sh-exec`, socat `EXEC:`/`SYSTEM:`, or an inline payload that opens a socket **and** spawns a subprocess/shell) — is an unambiguous reverse/bind shell and now **BLOCKs** (ADR 0097); the other shapes (`/dev/tcp` redirect, `openssl s_client`, a bare inline socket) still only raise to `AUTH`. Detection is only for these specific, hand-picked flag/token shapes: any of these tools reached through a path-qualified binary (`/usr/bin/nc`) or a differently-named build, or a reverse shell assembled at runtime (string concatenation, `getattr`, a base64-decoded module name) is not caught. An inline `python -c`/`node -e` payload containing a bare `connect(` call is a step-up (`opaque_command`) even when the call opens no socket (e.g. `sqlite3.connect(...)`) — the spec-mandated shape check doesn't distinguish a DB handle from a network one, a deliberate false-positive over a silent miss. The segment splitter every static command rule in this module shares now sees through shell keywords (`if …; then …; fi`, `for …; do …; done`, `case …; esac`, ...), brace groups (`{ …; }`), subshells (`(…)`), and function bodies (`name() { …; }`, `function name { …; }`) to the command nested inside — a command assembled at runtime from variables is still not. DNS-label exfil (`dig`/`nslookup`/`host` with a data-bearing subdomain) is deliberately out of scope: distinguishing an encoded payload label from a legitimate long hostname needs an entropy/n-gram heuristic that has no calibration infrastructure here, and is the highest-false-positive-risk item this slice chose not to ship. `DestructiveCommandRule` also now recognizes process-kill/signal commands (`kill`/`pkill`/`killall`/`taskkill`/`Stop-Process`/`spps`, and `xargs` piping into one) plus an interpreter one-liner that calls `os.kill`/`os.killpg`/`process.kill`, or `psutil`'s `.kill()`/`.terminate()` — a coding agent that can only `rm -rf` under a prompt but can kill the operator's database, IDE, or CI runner with none had a gap that exists regardless of any benchmark. This steps up to `AUTH`, never `BLOCK`: the user's own job (`%1`, `%%`, `$!`, `$$`) and a probe/list/help flag (`-l`/`-L`/`-0`/`-n 0`/`-s 0`/`--signal=0`/`--help`) stay `PASS` — but only when it is the sole option present; a probe flag combined with any other option (e.g. `kill -0 -9 <pid>`, `kill -s 0 -s KILL <pid>`) is treated as a signal, since which `kill` implementation runs is unknown and some read the extra flag as a second signal designation. A command reached through `sudo`/a `for`-loop, or a signal aimed at any other PID, does not stay `PASS`. An inline interpreter payload (`python -c`/`node -e`) that spawns a subprocess (`subprocess`, `os.system`, `child_process`, …) is now stepped up too, and the command-line string/list literals it hands to that subprocess are walked by the same rule so a catastrophic one still raises the step-up to `BLOCK`; a command assembled at runtime inside the payload (string concatenation, a variable) is still opaque. An inline payload fragmented into more than 128 candidates (split on whitespace/quotes/brackets/punctuation) is stepped up to `AUTH` (`opaque_command`) because it cannot be fully vetted — a length proxy, not content analysis; ordinary one-liners measure 7–43 candidates, so this is a wide margin, but the cap is a floor applied after every stronger check, never a short-circuit: a control-plane, destructive, socket, kill, or privilege match on the same payload still wins and BLOCKs/AUTHs at its own tier regardless of fragmentation. A transparent wrapper's own options are now consumed rather than misread as the wrapped command (see below), and `su -c`/`su - <user> -c`/`su <user> --command=` is opaque exactly like `bash -c`, walking its payload the same way. A nested `$(…)` command substitution now carries its own quoting independent of any string it sits inside, so a stray quote in a deeply-nested substitution can no longer swallow a trailing command past its region boundary; an unterminated `$(` fails upward to `AUTH` instead of being silently accepted, and the swallowed text is still walked for an embedded destructive command.
-- **Artifact digest verification (RB.7) is post-fetch and opt-in: it does not, and cannot, verify content before the fetch decision.** A `PASS` on a `network_request` action is granted *before* the fetch happens, and the RB.2b `ForwardProxy` broker is an HTTP `CONNECT` proxy that relays TLS **opaquely**: it never sees plaintext response bytes, so it cannot inspect or verify a payload pre-decision (that would require TLS MITM interception, deliberately out of scope for this feature). What Doberman does instead: at the same point the existing output secret-scan runs (after the downstream tool call returns), it compares the fetched RESULT text's sha256 digest against any pin an operator configured in `.doberman/artifact_pins.yaml`. A mismatch withholds the content from the agent; a match passes it through. **Any artifact without a configured pin is not verified at all**: this is a narrow, explicit-allowlist integrity check, not a general supply-chain guarantee, and with no pins file present behavior is completely unchanged.
-- **A flag-taking transparent wrapper's own options are now consumed, not misread as the command.** A wrapper's own option used to shift argv (`sudo -u www-data curl …`, `nice -n 10 curl …`, `timeout 5 curl …`) so the option was read as the command and every static rule missed it. The shared command-walk helper now recognizes each wrapper's own value-taking options and consumes them before locating the wrapped command — `sudo`, `doas`, `runuser`, `env`, `nice`, `ionice`, `timeout`, `chroot`, `time`, `exec`, `stdbuf`, `nohup`, `command`, and `setsid` — chaining through nested wrappers (`sudo -n nice -n 5 rm -rf /`). `runuser -c`/`--command`/`--command=` is opaque exactly like `su -c` — never treated as a transparently-consumed option, walking its payload the same way. The wrapped command's **host is now recovered**, so a wrapped `rm -rf /` **BLOCKs** and a wrapped secret exfiltration gets the **same verdict as its bare form**, closing what was previously a hard bypass; this is raise-only, it never mints a new silent allow — with one deliberate exception in the other direction: a segment whose verb was only reached by *consuming a wrapper option* (not a bare wrapper name) never qualifies for the ADR-0075 implied-registry PASS a default-route package fetch can otherwise get, since `sudo -H`/`sudo -u <user>`/`nice -n 10` change exactly the thing (HOME, acting uid) that decides which config file the fetch's registry route actually resolves against — that shape stays at the `egress_requires_auth` `AUTH` it already had. When the consuming itself can't fully resolve — e.g. `env -S <value>` whose value doesn't `shlex.split` cleanly — the leftover option/value tokens are never read as the command either: a segment whose first word is still an unresolved option after wrapper stripping steps up to `AUTH` (`opaque_command`) instead of silently passing. The honest remaining limit: a wrapper **outside this table** (e.g. `strace`, `flock`, `unshare`, `taskset`) still shifts argv unrecognized, so its wrapped command is not seen — egress behind one of those still steps up via the existing ambiguous-egress AUTH, never a silent PASS.
-- **The adaptive layer runs on the MCP proxy path, not the host-hook path.** The Claude Code and OpenClaw hooks run the deterministic objective guardrail only: the per-entity behavioral baseline, surprise scoring, and drift detection (`doberman.subjective`) are not consulted there. That's deliberate: a `PreToolUse` hook runs before every tool call, and importing `numpy`/`scipy`/`river` at module scope costs ~2s per call. Both hooks now share a single evaluate/record spine, so verdicts cannot drift between hosts. The hook path gives you the deterministic floor (path confinement, destructive-command detection, secret patterns, egress classification, role boundaries, the enforcement dial); adaptive escalation currently needs the proxy. Wiring the adaptive layer onto the hook path via a warm process is planned.
-- **The untrusted-value echo tripwire matches EXACT values only, and only two source tools.** A host, URL, or email seen in a `WebFetch`/`WebSearch` result and later reused as an egress destination raises `PASS` to `AUTH` — but it is whole-value keyed-HMAC matching, not flow analysis: a value rephrased, partially reused, or introduced through any other untrusted channel (an issue/PR body read some other way, an MCP tool result) is not caught by this signal. It also has a residual false-positive class from the same whole-value design: any non-trusted, non-task-named host mentioned anywhere in an untrusted result and later contacted by *any* later call steps up once, even when that host is unrelated to the untrusted content's actual instructions — trusted-allowlist hosts (matched by registered-domain suffix, the same rule `ExternalDestinationRule` uses, so a subdomain of a trusted host is excluded too) and hosts the user named in their own turn are excluded, in both bare-host and full-URL forms. It is also AUTH-capped in every mode today — never a hard `BLOCK` on this signal alone — and bounded per session on the hook path (a real per-invocation session id), or per-repo entity scope for the TTL window on the proxy path (the proxy has no session id of its own) — 5,000 values per scope, 7-day TTL, unlike the sticky-forever secret ledger. One more interaction worth knowing: recording an untrusted read also taints that scope with `TAINT_UNTRUSTED_READ`, and the five-minute exact-repeat approval memory (`doberman.auth.challenge`) abstains for *any* tainted scope — so once a session has read anything untrusted, approval memory stops applying there for every later `AUTH`, not just an echoed one, and the same pair (or any other AUTH in that scope) re-prompts every time. This is fail-closed by design, and it is a change on the proxy path specifically: `record_output_taint` previously dropped the tool name entirely, so the proxy recorded zero `TAINT_UNTRUSTED_READ` taint no matter what it fetched and approval memory silently kept applying after an untrusted read; that pre-existing gap is now closed, so the proxy path taints correctly like the hook path always did. Mail addresses are matched after undoing common `[at]`/`(dot)`/spaced obfuscation, so `user [at] host [dot] com` fingerprints the same as `user@host.com`. This de-obfuscation is mechanical, not semantic: a preposition next to a stray spaced period (e.g. "ask Bob at example . com" fingerprints the same as `bob@example.com`) can occasionally be read as an address and fingerprinted even though the text never named one. The only consequence is an extra `AUTH` prompt if a later call happens to send to that exact synthesized address — never a silent allow.
-- **Environment-dump detection is verb-based, not exhaustive.** `env`, `printenv`, `export`/
-  `export -p`, `declare -x`/`typeset -x`, and the PowerShell `Env:` drive listing step up to
-  authentication before running. Deliberately out of scope for now: a bare POSIX `set` (lists
-  shell variables *and* functions, but is also extremely common as `set -e`/`set -euo pipefail`
-  in scripts — flagging it bare would be a high false-positive cost for a rarely-abused vector)
-  and a Windows `cmd.exe` bare `set` (same ambiguity). A literal trailing backslash (`dir
-  env:\`) is not in the rule's Windows-path trigger list, so POSIX shlex parsing fails on it
-  first and it falls back to the generic `opaque_command` AUTH instead — still fails upward,
-  just under a different reason code; the no-backslash form (`dir env:`) is unaffected. And, as
-  with every objective rule, this is static command-text classification: it cannot see what an
-  *output* later contains, so a program that reads `os.environ` internally and prints it (e.g. a
-  Python one-liner with no recognizable verb) is not caught here — only by the post-execution
-  output scan.
-- **The control plane is self-protected: a mediated agent cannot disable its own leash, but a human still can.** Wherever an action routes through the decision engine, a write, delete, or read of Doberman's own state (`.doberman/`) or a host's hook-and-trust config is hard-blocked, and the same check runs against a shell command that merely *names* one of those paths, so `rm -rf .doberman` or `echo > .claude/settings.json` is caught too. The protected set now also recognizes the Codex CLI control plane (`.codex/hooks.json`, `.codex/config.toml`, and the `.codex/` plugin dirs are hard-blocked; the rest of `.codex/**` steps up to authentication), mirroring the `.claude`/`.doberman` split, so it is enforced the moment a Codex action reaches the engine. Note the front door matters: today that path covers Claude Code (hooks) and any MCP-wrapped tool server. A **Codex CLI PreToolUse adapter now exists** (`doberman hook codex-pre`; Codex's hook layer is a Claude Code compatibility shim, so it shares the same decision spine and deny shape), and `doberman install-hooks --host codex` wires it into `~/.codex/hooks.json` (or a project-local one with `--local`) in one command. And the limit is honest even then: this stops the *agent*, not a *human*: someone at the keyboard can always disable a hook (e.g. Codex's own `--dangerously-bypass-hook-trust`), and a control-plane path built at runtime (from a shell variable, glob, or a `python -c` payload) is not caught by static command parsing.
-- **A constrained BYO-model judge exists, but only as an offline measurement, not a live guard.**
-  `pip install "doberman-core[judge]"` (plus `ANTHROPIC_API_KEY` and `DOBERMAN_JUDGE_ENABLED=1`)
-  enables `doberman.judge.HaikuJudgeAdjudicator`, a second-opinion classifier that sees only the
-  same class-only `redacted_features()` envelope the shadow-adjudicator seam allows (no path,
-  command, argument, or secret). Nothing in core registers or calls it: the only place it runs
-  today is the offline `tests/benchmarks/suites/judge_agreement.py` replay over the labeled
-  corpus, measuring whether an LLM adds any lift over the deterministic rules on that envelope -
-  see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md). Wiring any judge into a live decision needs its
-  own ADR (raise-only governs the verdict *direction*, not whether the architecture becomes
-  network-dependent) and has not happened.
-- **Verification-integrity checks are path-class and argv-shape only, not content- or session-aware.**
-  A `git commit --no-verify`/`-n`/`--no-gpg-sign` requires authentication, as does deleting or renaming a
-  file that matches a test-file name/path pattern (`test_*.py`, `*_test.py`, `tests/**`,
-  `*.test.js`/`*.spec.ts`/`*.test.jsx`/`*.test.tsx`/`*.spec.jsx`/`*.spec.tsx`/`*.test.mjs`/`*.spec.mjs`),
-  and editing `CODEOWNERS` or
-  a lint/type-check config (`ruff.toml`, `mypy.ini`, `.eslintrc*`, `eslint.config.*`, including nested
-  copies in a subdirectory or monorepo package) alongside the CI-pipeline configs already covered above.
-  All three are raise-only and cannot tell a legitimate edit from a silencing one, so a routine `ruff.toml`
-  tune or a test rename during a genuine refactor steps up exactly the same as an attempt to hide a broken
-  test or a disabled lint rule — that is a deliberate false-positive cost, not a bug. The `-n` scoping
-  follows git's own argv grammar (it combines with other short commit flags such as `-an`, and can be
-  swallowed as another option's attached value, e.g. `-uno`/`-Skeyid`) rather than a bare substring match,
-  so a commit message or flag value that happens to contain the letter `n` is not mistaken for the bypass.
-  The same bypass is also caught at the CONFIG level, not just as a commit flag: `git -c
-  core.hooksPath=... commit` (repoints or empties the hooks dir for the whole invocation), `git -c
-  commit.gpgsign=false commit`, and the `--config-env=core.hooksPath=...` environment-variable
-  indirection (which can't be resolved statically, so its mere presence is enough to raise) all require
-  authentication the same as `--no-verify`. A repo-root `conftest.py` is not test-classed: the glob table
-  matches `test_*.py`/`*_test.py`/`tests/**` shapes only, not pytest's own discovery conventions, so
-  deleting or renaming a root-level `conftest.py` is invisible to this check. Rename detection is a
-  tool-name heuristic only ("rename"/"move" in the tool's name, gated to a `file_write`/`file_delete`
-  action so a mere read from a tool named e.g. "rename_file" doesn't count): a `git mv` or shell `mv` is a
-  command, not a path-target action, and is invisible to this check (`DestructiveCommandRule` does not
-  special-case it either); a rename tool that names itself something else is also invisible. The same gap
-  applies to an outright shell-level delete: `rm tests/unit/test_auth.py`, `rm -rf tests/`, and `git rm
-  tests/unit/test_auth.py` are command lines evaluated only by `DestructiveCommandRule`, which has no
-  test-file concept at all, so all three pass with no step-up — `test_file_removal` only ever sees a
-  `file_delete`/rename **tool** action, never a shell command that happens to target a test file.
-  Deliberately out of scope: detecting a `pytest.mark.skip`/`xfail`/`it.skip` marker inserted into a
-  *kept* test, a lowered `--cov-fail-under` threshold, a `pyproject.toml [tool.ruff]`-section-only edit,
-  and any cross-session "an assertion was edited in the same session as a non-test change" correlation —
-  all four need file content, an old-vs-new diff, or session history this rule never reads;
-  `pyproject.toml` itself is left unflagged for the same reason (constant, routine dependency-bump
-  traffic).
-- **Dependency admission is name-only and offline: it does not read your lockfile, does not resolve a
-  registry, and does not inspect postinstall scripts.** `DependencyAdmissionRule` parses `pip`/`npm`/
-  `cargo`/`gem`/`go`/... install commands and checks the package NAME ONLY against two bundled, static
-  JSON snapshots: a known-malicious list (hard `BLOCK`) and a popular-package list used only for an
-  edit-distance-1 typosquat heuristic (`AUTH`, never `BLOCK` — a statistical signal is capped by
-  construction). Both lists are point-in-time snapshots refreshed per release, not a live feed, and
-  they are **small starter seeds, not the thousands-of-names ceiling the format could hold**: the
-  popular-package seed is 69 names total (pypi 22, npm 22, cargo 10, rubygems 10, go 5) and the
-  known-malicious seed is 10 names (all npm). A name being on the popular list is also what makes it
-  *exempt* from the typosquat check, so a real, legitimate package that is absent from this small seed
-  can be gated once (a one-time `AUTH` step-up) if it happens to land one edit from a name that IS
-  seeded — a false positive that a larger seed would remove; see `src/doberman/engine/rules/data/README.md`
-  for the mechanics. A typosquat of an obscure package, a brand-new malicious package not yet in the
-  bundled list, a name that isn't within one edit of anything in the popular list, or an attack that
-  lives in a lockfile/manifest/postinstall script rather than the install command's argv, is not caught
-  here. **Execute-on-install shapes are a documented v1 gap:** `npx <pkg>`, `npm exec <pkg>`, and
-  `pipx run <pkg>` fetch-and-run a package in one step without ever calling an `install`/`add`
-  subcommand this rule recognizes, so none of them are parsed today. This is defense-in-depth against
-  the cheap, common case (a popular-package typo, a documented known-bad name), not a supply-chain
-  guarantee.
-- **The delete-class blast-radius preview is a snapshot, and its TOCTOU re-check is proxy-only.** Before an AUTH challenge for a recognized delete-class command (`rm`, `del`, `erase`, `rd`, `rmdir`, `Remove-Item`), Doberman computes a bounded, offline file/directory count for its operands (capped, wall-clock-budgeted, `.git`/outside-repo flagged) and shows it alongside the challenge. That count is a snapshot — which is exactly why the MCP-proxy path recomputes it right before forwarding and re-blocks (`effect_set_diverged`) on any drift. Drift is only detectable between two exact counts: a capped or unknown preview (past the 1,000-entry cap, a wall-clock timeout, or a delete segment with a live shell substitution) compares equal to a capped/unknown recompute by design — both non-authoritative shades share one digest sentinel — so `rm -rf node_modules` past the cap, or any dynamic `$( )` delete, is never caught by this guard. The host-hook path (Claude Code / Codex `PreToolUse`) has no equivalent post-approval re-decision point today, so this specific TOCTOU guard protects the proxy path only. Display and audit only in v1: the count never changes a verdict.
+Doberman is defense-in-depth, not a guarantee: every rule catches one specific kind of attack, and
+every rule has some way around it that a determined attacker could still find. Some gaps come from a
+deliberate trade-off against false positives (flagging something harmless); others are pieces of the
+design, like a runtime egress broker, that don't exist yet. None of them let an attacker turn a
+`BLOCK` into a silent `PASS`: the raise-only and fail-closed guarantees still hold everywhere. See
+[docs/LIMITATIONS.md](docs/LIMITATIONS.md) for the full, current list.
 
 ---
 
@@ -384,8 +316,9 @@ and never makes network requests.
 
 ## License
 
-Apache-2.0. The core is standalone: no proprietary dependency (CI-enforced). Each
-[release](https://github.com/DobermanCore/Doberman-Core/releases) also ships a CycloneDX SBOM listing the
-exact dependency set, see [SECURITY.md](SECURITY.md#software-bill-of-materials).
+Apache-2.0. The core is standalone: it has no proprietary dependency, and CI enforces that. Each
+[release](https://github.com/DobermanCore/Doberman-Core/releases) also ships a CycloneDX SBOM
+(software bill of materials, a full list of a build's dependencies) listing the exact dependency
+set. See [SECURITY.md](SECURITY.md#software-bill-of-materials).
 
 ---

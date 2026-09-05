@@ -340,6 +340,28 @@ _INLINE_PROCESS_SPAWN = re.compile(
 # never silent success.
 _MAX_COMMAND_SEGMENTS = 256
 
+#: #549 — bound on the number of characters of one (already substitution-
+#: stripped) segment that get handed to `shlex.split`. `_MAX_COMMAND_SEGMENTS`
+#: only bounds segment *count*; a single oversized segment (a heredoc, a
+#: base64 blob passed as one bare/quoted token) still drove `shlex.split`
+#: into super-linear time on its own (~31.5s measured locally on a 1 MB
+#: payload, ~7.7 min reported on an 800 KB one elsewhere; root cause is
+#: CPython's `shlex.read_token`, not this module).
+#: ponytail: a hard truncation, not a smarter parser. 64 KiB clears every
+#: existing adversarial payload in this module's own test suite (the
+#: largest quotes a ~16 KB `-c` script with its dangerous call placed AFTER
+#: a filler blob, on purpose, to prove the scan isn't position-limited —
+#: see test_control_plane_path_behind_filesystem_filler_still_blocks) with
+#: >3x headroom, while still cutting the reported 800 KB-1 MB payload down
+#: to a bounded, fast parse. Any cut — whether shlex raises on it (an open
+#: quote) or not (a cut landing in plain unquoted text) — always marks the
+#: walk `ambiguous = True`, so a destructive shape truncated away past the
+#: cut fails upward (AUTH, never a silent ALLOW) instead of vanishing. The
+#: truncated prefix is still handed to `shlex.split`, so a destructive head
+#: within the first 64 KiB still hits BLOCK on its own. Raise this if a real
+#: command legitimately needs more than 64 KiB in one segment.
+_MAX_SEGMENT_SCAN_BYTES = 65536
+
 # Any shell expansion can construct a destination at runtime. The shared walk
 # reports the fact; consumers decide whether it matters for their rule.
 _DYNAMIC_SHELL = re.compile(r"\$\(|`|\$(?:\{|[A-Za-z_])")
@@ -594,7 +616,21 @@ def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
             pending.extend(body_segments)
             ambiguous = ambiguous or body_unterminated
         try:
-            tokens = shlex.split(stripped, comments=True, posix=True)
+            # #549: bound by BYTES, not just segment count — an oversized
+            # single segment (a heredoc, a base64 blob) drove shlex.split
+            # into super-linear time on its own. Truncation happens AFTER
+            # substitution-stripping above, so a $()/backtick body deep in
+            # an oversized segment is already queued for its own walk and
+            # is never hidden by this cut.
+            # #549 follow-up: a cut landing OUTSIDE a quote never raises —
+            # shlex happily parses the truncated prefix — so a destructive
+            # suffix past byte 65536 (`"rm " + "a" * 70000 + " -rf /"`) was
+            # silently dropped with no failure-upward signal at all. Any cut
+            # marks the walk ambiguous; the truncated prefix is still parsed
+            # below so a destructive head still reaches BLOCK.
+            if len(stripped) > _MAX_SEGMENT_SCAN_BYTES:
+                ambiguous = True
+            tokens = shlex.split(stripped[:_MAX_SEGMENT_SCAN_BYTES], comments=True, posix=True)
         except ValueError:
             ambiguous = True
             continue
