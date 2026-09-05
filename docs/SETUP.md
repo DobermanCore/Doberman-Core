@@ -49,9 +49,9 @@ command), see the [PATH appendix](#appendix-a-stale-doberman-on-path). Maintaine
 
 One command does the whole job on any host. An interactive wizard detects which agents you have
 installed (Claude Code, Codex CLI, an MCP client, OpenClaw), asks which ones to guard, picks your
-security mode, tunes your guardrails, and wires each chosen host, then asks whether to send
-anonymous usage stats — finishing with a doctor pass and, if you wired a hooks-based host (Claude
-Code or Codex), an offer to run a scripted attack through the real engine right there so you can
+security mode, tunes your guardrails, and wires each chosen host. Then it asks whether to send
+anonymous usage stats, finishes with a doctor pass, and, if you wired a hooks-based host (Claude
+Code or Codex), offers to run a scripted attack through the real engine right there so you can
 watch it work:
 
 ```bash
@@ -66,38 +66,45 @@ doberman setup --yes
 with no prompts, useful for CI or scripting. Pass `--host` (repeatable) to pick hosts explicitly,
 e.g. `doberman setup --yes --host claude --host codex`, or `--host all` to wire all four at once.
 Pass `--dry-run` to preview the mode, the preference weights, and every file it would write, with
-nothing persisted (mirrors `install-hooks --dry-run`); `--global` writes your real home directory
-(hooks install for EVERY project on the machine, not just this repo — the prompt says so), so
+nothing persisted (mirrors `install-hooks --dry-run`). `--global` writes to your real home directory
+(hooks install for EVERY project on the machine, not just this repo; the prompt says so), so
 without `--yes` it asks to confirm first, and with `--yes` it prints the exact path before writing.
 Pass `--no-telemetry` to opt out for good without answering the telemetry question (same as
-`doberman telemetry off`, just one-step) — aborting the telemetry question itself (`q`, or a closed
-stdin) is not consent either and also leaves it off; the question's own default always mirrors
-whatever is currently on disk, so a prior opt-out shows `[y/N]` and a bare Enter re-affirms "off"
-instead of silently reversing it, and `--yes` never re-enables a persisted opt-out on its own. Every
-prompt in the wizard — menus (which hosts, which mode, each tuning weight) and yes/no confirms
-(telemetry, global scope, weight tuning, the closing demo offer) alike — accepts `q` or `quit` to
-abort cleanly instead of writing anything (menus print `(q to quit)` right in the prompt); the one
-exception is the closing demo offer, reached only after setup has already fully succeeded, where
-`q` just declines the demo (printing the same "Aborted - ..." wording) without turning a successful
-run into a failure. Either way, basic protection works immediately. The closing doctor pass is not
-cosmetic: if it finds a critical (most commonly the `doberman` command not being on PATH yet — the
-remedy now names the exact directory to add), the wizard prints `!! Setup incomplete !!` and exits
-`1` instead of claiming success — re-run `doberman doctor` for the fix, then `doberman setup` again.
+`doberman telemetry off`, just one step). Aborting the telemetry question itself (`q`, or a closed
+stdin) is not consent either, and it also leaves telemetry off. The question's own default always
+mirrors whatever is currently on disk, so a prior opt-out shows `[y/N]`, and a bare Enter re-affirms
+"off" instead of silently reversing it; `--yes` never re-enables a persisted opt-out on its own.
+
+Every prompt in the wizard accepts `q` or `quit` to abort cleanly instead of writing anything: this
+covers the menus (which hosts, which mode, each tuning weight) and the yes/no confirms (telemetry,
+global scope, weight tuning, the closing demo offer) alike, and menus print `(q to quit)` right in
+the prompt. The one exception is the closing demo offer, reached only after setup has already fully
+succeeded: there, `q` just declines the demo (printing the same "Aborted - ..." wording) without
+turning a successful run into a failure. Either way, basic protection works immediately.
+
+The closing doctor pass is not cosmetic. If it finds a critical problem (most commonly the
+`doberman` command not being on PATH yet; the remedy now names the exact directory to add), the
+wizard prints `!! Setup incomplete !!` and exits `1` instead of claiming success. Re-run `doberman
+doctor` for the fix, then `doberman setup` again.
+
 A run that wired ONLY `mcp` and/or `openclaw` (no hooks-based host at all) prints `!! Setup pending
-!!` instead of `-- Setup complete --`; a MIXED run (e.g. `--host claude --host mcp`, where claude is
+!!` instead of `-- Setup complete --`. A MIXED run (e.g. `--host claude --host mcp`, where claude is
 live but mcp still needs its manual paste-and-restart step) prints `!! Setup partly pending !!`
-instead — both non-`complete` headers use a second `!!` marker (not just color) so they're
-distinguishable in a piped/`NO_COLOR` transcript too, and both exit `3` (not `0` — something still
+instead. Both non-`complete` headers use a second `!!` marker, not just color, so they stay
+distinguishable in a piped or `NO_COLOR` transcript too, and both exit `3`, not `0`: something still
 needs a manual step, but nothing is broken either, so a script can tell either apart from both a
-fully-live run and a broken one) — the `Hosts:` block in the summary names, per host, which one is
-done and which still needs the manual step. **Exit `0` means the run completed as designed — it
-does not mean you got the mode you asked for.** A `--mode <lower>` request the raise-only gate
-refuses (run `doberman mode <name>` interactively to actually lower it) still exits `0`: the closing
-header itself names the refusal right alongside the outcome, e.g. `-- Setup complete (mode kept:
-balanced; light refused) --`, and the `Mode:` line below it repeats the same reason. When the wizard
-finishes, [set a possession factor](#4-set-a-password-and-2fa) — `doberman doctor`, one of the
-pointers in `doberman setup`'s own closing `Also:` line, already flags an unset one and names the
-same command.
+fully-live run and a broken one. The `Hosts:` block in the summary names, per host, which one is
+done and which still needs the manual step.
+
+**Exit `0` means the run completed as designed. It does not mean you got the mode you asked for.**
+A `--mode <lower>` request the raise-only gate refuses (run `doberman mode <name>` interactively to
+actually lower it) still exits `0`: the closing header itself names the refusal right alongside the
+outcome, e.g. `-- Setup complete (mode kept: balanced; light refused) --`, and the `Mode:` line below
+it repeats the same reason.
+
+When the wizard finishes, [set a possession factor](#4-set-a-password-and-2fa). `doberman doctor`,
+one of the pointers in `doberman setup`'s own closing `Also:` line, already flags an unset one and
+names the same command.
 
 On a different host, or want to see exactly what gets wired? The next section covers each path by
 hand.
@@ -116,8 +123,8 @@ hand.
 Hooks make Doberman gate every tool call your agent makes: built-ins (`Bash`, `Edit`, `Write`,
 ...) and any MCP tool, without rewiring your MCP config. The harness calls Doberman before each
 tool call, and Doberman answers allow or deny. A sensitive action opens Doberman's own in-session
-approval dialog (confirm or TOTP 2FA), so the agent can't bypass it by not "asking to use
-Doberman".
+approval dialog (a confirm, or a TOTP code, the six-digit code an authenticator app generates for
+2FA, two-factor authentication), so the agent can't bypass it by not "asking to use Doberman".
 
 Install with one command:
 
@@ -136,7 +143,7 @@ doberman install-hooks --host codex
 `install-hooks` writes `.claude/settings.json` for this project by default, `--global` writes
 `~/.claude/settings.json` for every project, and `--host codex` wires `doberman hook codex-pre`
 into a Codex CLI `hooks.json` instead. `--host` here is `claude` or `codex` only, since mcp and
-openclaw don't write a hook file — `doberman setup --host mcp`/`--host openclaw` prints the pointer
+openclaw don't write a hook file. `doberman setup --host mcp`/`--host openclaw` prints the pointer
 for those instead. Add `--dry-run` to see what would change without writing anything; a re-run
 whose merged hooks are unchanged prints `already wired: <path>` rather than `wrote <path>`. Remove
 hooks with `doberman uninstall-hooks` (same `--global` / `--host` flags); it strips only Doberman's
@@ -193,31 +200,35 @@ On Claude Code it writes this, or add it by hand:
 ```
 
 **The pre-hook.** `doberman hook pre` reads the tool call on stdin and runs Doberman's
-deterministic objective floor: path confinement, destructive commands, external-destination and
-secret-exfil checks, smuggled-token channels. A routine action passes silently; Doberman is
+deterministic objective floor: path confinement, destructive-command detection, checks for
+external destinations, secret-exfiltration checks (exfiltration: smuggling data out through some
+other channel), and smuggled-token channels. A routine action passes silently. Doberman is
 raise-only and never strips the harness's own prompts. A sensitive action opens Doberman's
 approval dialog, a topmost confirm or TOTP prompt bound to that exact action. Approve it and the
-call proceeds; decline it, or lose the channel, and it's denied, fail closed. A dangerous action
-is blocked outright, with a redaction-safe reason.
+call proceeds; decline it, or lose the channel, and it's denied. That is what "fail closed" means:
+when Doberman can't confirm an action is safe, it blocks it. A dangerous action is blocked
+outright, with a redaction-safe reason.
 
 **The post-hook.** `doberman hook post` runs after a tool executes and scans its output for
 credential-like material. Output containing a recognizable credential (a known key shape, a PEM
 block, a secret file's contents) is blocked from reaching the model; the secret is never echoed.
 A merely high-entropy token with no known credential shape (a hash, a UUID, a base64 fragment)
-passes through, since that heuristic false-positives on ordinary output, but it is still recorded
-and taints the session. Taint powers a multi-step exfiltration floor: the pre-hook raises any
-later egress (web, network, MCP) in a session that has already touched a secret, `ask` in
-light/balanced and a hard `deny` in strict/paranoid. When an outbound value exactly matches, by
-keyed-HMAC fingerprint, a secret that entered the session earlier, that confirmed read-then-send
-is a hard `deny` in every mode, even light.
+passes through, since that heuristic misfires on ordinary output too often to block on (a false
+positive), but it is still recorded and taints the session: once a session has touched a secret,
+it stays marked for the rest of that session. Taint powers a multi-step exfiltration floor. The
+pre-hook raises any later egress, meaning an outbound call over the web, network, or MCP, in a
+session that has already touched a secret: `ask` in light/balanced, a hard `deny` in
+strict/paranoid. When an outbound value exactly matches, by keyed-HMAC fingerprint (a one-way
+signature keyed to this device, not the raw secret), a secret that entered the session earlier,
+that confirmed read-then-send is a hard `deny` in every mode, even light.
 
 Both handlers fail closed and stay import-light, so they add minimal latency to each call. Every
-decision lands in the same local, redacted history: `doberman log` shows PreToolUse AUTH/BLOCK
-outcomes alongside PostToolUse ones, and `doberman status` leads with a one-line `Protected: yes`
+decision lands in the same local, redacted history. `doberman log` shows PreToolUse AUTH/BLOCK
+outcomes alongside PostToolUse ones. `doberman status` leads with a one-line `Protected: yes`
 / `Protected: no - <reason>` verdict (hooks installed for at least one host and `doberman`
-resolvable on PATH), then four sections — Hooks (which settings file(s) carry the hooks), Policy
+resolvable on PATH), then four sections: Hooks (which settings file(s) carry the hooks), Policy
 (mode, preferences, policy version, then the installed Doberman version), Auth (2FA, password,
-elevations, taint), and Health (a one-line pointer to `doberman doctor`) — followed by the last
+elevations, taint), and Health (a one-line pointer to `doberman doctor`). It ends with the last
 five decisions.
 
 **Doberman protects its own hooks.** Once installed, the agent can't quietly remove them. A write
@@ -233,7 +244,7 @@ allowed.
 ### Codex CLI
 
 `--host codex` wires a single `PreToolUse` hook (`doberman hook codex-pre`) into Codex's own
-`hooks.json`, not Claude's `settings.json` — everything else about `install-hooks` (idempotent,
+`hooks.json`, not Claude's `settings.json`. Everything else about `install-hooks` (idempotent,
 `--dry-run`, `already wired: <path>` on a no-op re-run, `uninstall-hooks --host codex` to remove it)
 works the same way:
 
@@ -247,21 +258,22 @@ doberman install-hooks --host codex --global
 
 The default (no `--global`) writes `<repo>/.codex/hooks.json`, wired for this project only;
 `--global` writes `~/.codex/hooks.json`, wired for every project Codex runs in. `--local` has no
-Codex equivalent — there's no per-project-untracked scope the way Claude Code has one.
+Codex equivalent: there's no per-project-untracked scope the way Claude Code has one.
 
 **Trust it once.** Codex asks you to trust a new hook the first time it actually *runs*, not at
 install time: run a Codex command and approve the hook when prompted, or launch with
 `--dangerously-bypass-hook-trust` only if you already vet the hook source yourself. Until you trust
-it the hook is wired but inert — Codex skips it rather than gating the call. Once trusted, Doberman
-gates every tool call in that scope from then on; unlike Claude Code's hooks, there's no session
+it, the hook is wired but inert; Codex skips it rather than gating the call. Once trusted, Doberman
+gates every tool call in that scope from then on. Unlike Claude Code's hooks, there's no session
 restart to wait for.
 
 Verify it's live: ask Codex to `cat .env` and confirm it is blocked.
 
 ### MCP proxy
 
-Doberman is a transparent MCP proxy. Give it your existing tool server command after `--`, and it
-intercepts everything in between:
+Doberman is a transparent MCP (Model Context Protocol, the standard your agent's tools speak)
+proxy. Give it your existing tool server command after `--`, and it intercepts everything in
+between:
 
 ```bash
 # Before: agent talks directly to your tool server
@@ -308,8 +320,8 @@ claude mcp add doberman -- doberman serve -- npx -y @modelcontextprotocol/server
 Cursor, Codex, or any MCP-compatible client uses the same `mcpServers` format in its own config
 file; substitute your own tool server command after `--`.
 
-**Remote servers.** A server reached over the network instead of spawned as a subprocess —
-Streamable HTTP (default) or legacy SSE — is fronted with `--url` instead of a command after `--`:
+**Remote servers.** A server reached over the network instead of spawned as a subprocess (Streamable
+HTTP by default, or legacy SSE) is fronted with `--url` instead of a command after `--`:
 
 ```bash
 doberman serve --url https://mcp.example.com/mcp
@@ -493,97 +505,107 @@ authenticated with that token. `--path` selects the repo to report on (default: 
 directory).
 
 It shows a summary stats line, led by one focal number (the pending count while something needs a
-human, else the recent-window BLOCK count), then `decisions` (total + a freshness timestamp, `updated
-HH:MM:SS (local)`), `verdicts (all time)` (the three badges, plus a recent-window breakdown when it
-differs from the all-time counts), and `top reasons (all time)` - every count explicitly labeled with
-its window so none can be confused with another - and a live decision feed that backfills recent
-decisions, then streams new ones, newest first. Both are read-only and serve only already-redacted fields, never
-a raw target, argument, or secret. Each feed row's timestamp is a client-computed relative age
-(`3m ago`, `2h ago`, `yesterday 11:00`, refreshed every 30s) rather than a bare UTC clock, with the
-absolute local time and the explicitly-labeled UTC value in a hover `title`. Verdict filter chips
-default to `Needs attention` (BLOCK + AUTH) rather than `All` - a fresh dashboard leads with what
-needs a human, not PASS noise - with `All`/`BLOCK`/`AUTH`/`PASS` one click away and the choice
-persisted per browser; at <=640px the chips collapse into one `<select>` and a `N of M shown` count
-sits next to it, updating live as rows stream in. A text filter (matching the visible explanation
-and reason-code gloss text too, not just the raw codes) sits alongside it, moving behind a
-collapsible `Filters` disclosure at <=640px along with the `Announce new rows` toggle so the first
-feed row still starts within budget on a narrow screen; a dropped live connection or a failed
-refresh is always shown in the UI (never silently), with a retry control.
+human, otherwise the recent-window BLOCK count). Below that sit `decisions` (total, plus a
+freshness timestamp, `updated HH:MM:SS (local)`), `verdicts (all time)` (the three badges, plus a
+recent-window breakdown when it differs from the all-time counts), and `top reasons (all time)`,
+where every count is explicitly labeled with its window so none can be confused with another. Below
+that is a live decision feed that backfills recent decisions, then streams new ones, newest first.
+Both are read-only and serve only already-redacted fields, never a raw target, argument, or secret.
 
-An `AUTH` challenge can be answered from the dashboard instead of the terminal: it lists pending
+Each feed row's timestamp is a client-computed relative age (`3m ago`, `2h ago`, `yesterday 11:00`,
+refreshed every 30s) rather than a bare UTC clock, with the absolute local time and the explicitly
+labeled UTC value in a hover `title`. Verdict filter chips default to `Needs attention` (BLOCK +
+AUTH) rather than `All`, since a fresh dashboard should lead with what needs a human, not PASS
+noise. `All`/`BLOCK`/`AUTH`/`PASS` are one click away, and the choice persists per browser. At
+640px or narrower, the chips collapse into one `<select>`, with an `N of M shown` count next to it
+that updates live as rows stream in.
+
+A text filter (matching the visible explanation and reason-code gloss text too, not just the raw
+codes) sits alongside it. At 640px or narrower it moves behind a collapsible `Filters` disclosure,
+along with the `Announce new rows` toggle, so the first feed row still starts within budget on a
+narrow screen. A dropped live connection or a failed refresh is always shown in the UI, never
+silently, with a retry control.
+
+An `AUTH` challenge can be answered from the dashboard instead of the terminal. It lists pending
 approvals and resolves one at a time, a single-use transition, so two concurrent resolves of the
-same row can never both win. Each pending card points at the channel that can actually answer -
-`d` denies the action outright, it does not send it anywhere, so the note reads `The raw command
+same row can never both win. Each pending card points at the channel that can actually answer.
+`d` denies the action outright; it does not send it anywhere, so the note reads `The raw command
 stays in your terminal. To read it before deciding, leave this card alone - it moves there in
-M:SS.` with a live countdown - and shows the same live countdown in the row header (`answerable
-here for M:SS, then it moves to your terminal`) - at 0 the challenge has genuinely moved to the
-terminal/GUI channel (not been denied), independent of the approval row's own longer DB TTL. Both
-Approve and Deny need the same
-two-step arm-then-confirm gesture (a 5s countdown) before they submit. The dashboard never verifies
-a TOTP code itself; a tier that needs one gets a real, visible "6-digit code" label above the field,
-and the code rides opaquely to the same auth-challenge machinery already running in the decision
-path. This channel engages only while the dashboard's own heartbeat is fresh; a stale heartbeat or
-an unanswered approval falls back to the next channel (MCP elicitation, then GUI dialog, then
-terminal) with no added latency.
+M:SS.` with a live countdown. The row header shows the same live countdown (`answerable here for
+M:SS, then it moves to your terminal`). At 0, the challenge has genuinely moved to the terminal/GUI
+channel (not been denied), independent of the approval row's own longer DB TTL.
+
+Both Approve and Deny need the same two-step arm-then-confirm gesture (a 5s countdown) before they
+submit. The dashboard never verifies a TOTP code itself. A tier that needs one gets a real, visible
+"6-digit code" label above the field, and the code rides opaquely to the same auth-challenge
+machinery already running in the decision path. This channel engages only while the dashboard's own
+heartbeat is fresh. A stale heartbeat, or an unanswered approval, falls back to the next channel
+(MCP elicitation, then GUI dialog, then terminal) with no added latency.
 
 Every `BLOCK`/`AUTH` row in the recent-decisions feed (and every pending card) leads with a one-line
 human explanation, with its reason codes glossed via a hover tooltip. Expanding a row (click, tap,
 or Enter/Space) reveals the same gloss text as a muted list, so keyboard and touch users reach it
-too, not only a mouse hovering - pending cards, which are never collapsed, just show that list
+too, not only a mouse hovering. Pending cards, which are never collapsed, just show that list
 always. A row's explanation itself expands by click or tap as well as Enter/Space.
 
-Keyboard shortcuts (`/` to filter, `Esc` to clear it or close whichever popover/panel is topmost,
-arrow keys/Home/End to move the active feed row, Enter/Space to expand its explanation, `r` to
-refresh, `a`/`d` to arm-then-confirm Approve/Deny on the first pending item, `?` for the full list)
-work from anywhere on the page; a `Shortcuts: on/off` toggle in that same panel turns off the five
-single-character bindings (`/ r ? a d`) specifically - Escape, the roving-focus keys, and the
-on-screen buttons keep working regardless - and persists per browser. A manual light/dark toggle also persists per browser regardless of the OS
-theme, and the browser tab's favicon tints amber while an approval is pending.
+Keyboard shortcuts work from anywhere on the page: `/` to filter, `Esc` to clear it or close
+whichever popover/panel is topmost, arrow keys/Home/End to move the active feed row, Enter/Space to
+expand its explanation, `r` to refresh, `a`/`d` to arm-then-confirm Approve/Deny on the first
+pending item, and `?` for the full list. A `Shortcuts: on/off` toggle in that same panel turns off
+the five single-character bindings (`/ r ? a d`) specifically. Escape, the roving-focus keys, and
+the on-screen buttons keep working regardless, and the toggle persists per browser. A manual
+light/dark toggle also persists per browser regardless of the OS theme, and the browser tab's
+favicon tints amber while an approval is pending.
 
 You can also switch Light/Balanced/Strict/Paranoid from the dashboard. It goes through the same
-gate as `doberman mode`: raising applies immediately with a single click; lowering restyles Save to
+gate as `doberman mode`. Raising applies immediately with a single click. Lowering restyles Save to
 a warning color, states a factual one-line consequence of the mode you picked (derived from that
-mode's real step-up thresholds - the floor hard blocks never change), and needs the same two-step
+mode's real step-up thresholds; the floor hard blocks never change), and needs the same two-step
 arm-then-confirm gesture (a 5s countdown) as approving a pending action, plus the same possession
-factor; with neither enrolled it fails closed. Dismissing the popover (Escape or an outside click)
-with a change still pending keeps it open instead of silently discarding it (it now visibly shakes and
-states so, since a silent no-op looked identical to a closed popover) - that warning stays put across a
-background stats poll too, clearing only on Save, Cancel, or a new mode selection; Cancel always discards. While the
-popover is open the rest of the page sits behind a scrim and is genuinely `inert` (not just visually
-dimmed), and the popover itself carries a visible "Security mode" title and a small tail pointing at its
+factor. With neither enrolled, it fails closed.
+
+Dismissing the popover (Escape or an outside click) with a change still pending keeps it open
+instead of silently discarding it: it now visibly shakes and states so, since a silent no-op looked
+identical to a closed popover. That warning stays put across a background stats poll too, clearing
+only on Save, Cancel, or a new mode selection; Cancel always discards. While the popover is open,
+the rest of the page sits behind a scrim and is genuinely `inert`, not just visually dimmed, and
+the popover itself carries a visible "Security mode" title and a small tail pointing at its
 trigger. Every attempt lands in the same append-only ledger (`doberman policy-history`).
 
 Each `BLOCK`/`AUTH` feed row leads with a short, reason-first headline (e.g. "Recursive delete blocked -
 shell_exec" or "Secret file read blocked - .env class") instead of the full explanation sentence, so a run
-of consecutive BLOCKs no longer all read identically until expanded; expanding a row keeps that headline
-visible and reveals the full sentence underneath it (never repeating the reason codes the row's own gloss
-list already shows). An absent or literally-`"unknown"` agent role reads as "an agent", never the bare
-word `unknown`. The feed itself
-is `role="log"` with `aria-live="off"` (a bare `role="log"` was silently announcing every arriving row one
-at a time) - a `Announce new rows: on/off` toggle next to the filter controls an ARIA summary instead,
-debounced to one announcement per 2s (e.g. "3 new decisions: 2 BLOCK, 1 PASS"). A pending card that crosses
-the dashboard's 90s answer window announces "Approval moved to your terminal" once; two tabs open on the
-same dashboard both catch up immediately on `visibilitychange` instead of waiting out the poll interval.
+of consecutive BLOCKs no longer all read identically until expanded. Expanding a row keeps that headline
+visible and reveals the full sentence underneath it, never repeating the reason codes the row's own gloss
+list already shows. An absent or literally-`"unknown"` agent role reads as "an agent", never the bare
+word `unknown`.
 
-At <=640px the topbar folds to one row (brand, connection chip, guard pill) plus a single joined
-`posture: <mode> - <word>` badge and the `change` control; the theme toggle moves into the shortcuts
-panel (opened via the `?` button, which stays put) to make room. `enforcement:` now reads a single word
-(`enforcing`/`monitoring`/`off`, the raw dial name is still in its `title`), and the "connected" chip is a
-plain rectangular tag (a dot inside it) rather than a second pill, so it no longer looks like a duplicate
-of the guard pill. The topbar stays pinned to the top of the page while scrolling (with a hairline/shadow
-that appears once actually scrolled), so the connection/posture controls and the mode-change trigger stay
-reachable against a long feed.
+The feed itself is `role="log"` with `aria-live="off"` (a bare `role="log"` was silently announcing every
+arriving row one at a time). An `Announce new rows: on/off` toggle next to the filter controls an ARIA
+summary instead, debounced to one announcement per 2s (e.g. "3 new decisions: 2 BLOCK, 1 PASS"). A pending
+card that crosses the dashboard's 90s answer window announces "Approval moved to your terminal" once. Two
+tabs open on the same dashboard both catch up immediately on `visibilitychange` instead of waiting out the
+poll interval.
+
+At 640px or narrower, the topbar folds to one row (brand, connection chip, guard pill) plus a single
+joined `posture: <mode> - <word>` badge and the `change` control. The theme toggle moves into the
+shortcuts panel (opened via the `?` button, which stays put) to make room. `enforcement:` now reads
+a single word (`enforcing`/`monitoring`/`off`; the raw dial name is still in its `title`), and the
+"connected" chip is a plain rectangular tag with a dot inside it, rather than a second pill, so it
+no longer looks like a duplicate of the guard pill. The topbar stays pinned to the top of the page
+while scrolling, with a hairline/shadow that appears once actually scrolled, so the
+connection/posture controls and the mode-change trigger stay reachable against a long feed.
 
 The feed itself renders newest-first (a fresh dashboard opens on the latest activity, not the oldest
-backfilled row); at <=640px it drops its own inner scroller in favor of page scroll so there's no nested
-scroll trap on a touch device. Escape from a no-match filter (and `Clear filters`/`Show all`) return focus
-to the first visible row, or the feed container itself if the filter still leaves nothing visible. The
-`Needs attention` chip carries a `title` defining it (`BLOCK + AUTH - what Doberman stopped or escalated`),
-repeated in the `?` shortcuts panel for anyone who can't hover it; the no-match empty state says "these
-filters" once both the verdict filter and the text query are narrowing the list together. `r` (and the
-Refresh button) announce `Refreshed - N decisions, M pending`. A manual light/dark choice now also sets
-`color-scheme` explicitly, so native form controls and scrollbars match it rather than following the OS
-preference alone.
+backfilled row). At 640px or narrower it drops its own inner scroller in favor of page scroll, so
+there's no nested scroll trap on a touch device. Escape from a no-match filter (and `Clear
+filters`/`Show all`) return focus to the first visible row, or the feed container itself if the
+filter still leaves nothing visible. The `Needs attention` chip carries a `title` defining it
+(`BLOCK + AUTH - what Doberman stopped or escalated`), repeated in the `?` shortcuts panel for
+anyone who can't hover it. The no-match empty state says "these filters" once both the verdict
+filter and the text query are narrowing the list together. `r` (and the Refresh button) announce
+`Refreshed - N decisions, M pending`. A manual light/dark choice now also sets `color-scheme`
+explicitly, so native form controls and scrollbars match it rather than following the OS preference
+alone.
 
 ### Run the demo
 
