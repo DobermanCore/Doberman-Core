@@ -303,6 +303,62 @@ async def test_migration_tolerates_a_racing_process_adding_a_column_first(tmp_pa
     assert versions == [SCHEMA_VERSION]
 
 
+# --- v2 -> v3: decisions gain `entity_id` (oldest guarded ALTER) -----------
+
+
+async def test_migration_tolerates_entity_id_already_present(tmp_path):
+    # Mirrors test_migration_tolerates_a_racing_process_adding_a_column_first
+    # for the oldest additive ALTER in _migrate_legacy: two processes racing
+    # the v2->v3 decisions.entity_id ALTER on the same pre-migration DB. Build
+    # a v2-shaped decisions table where entity_id is already present (the
+    # loser's view after the winner committed first) plus one existing row,
+    # and confirm opening doesn't raise "duplicate column name" and still
+    # reaches SCHEMA_VERSION with the row intact.
+    path = db_path(str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = await aiosqlite.connect(str(path))
+    await conn.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version (version) VALUES (2);
+        CREATE TABLE decisions (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                TEXT NOT NULL,
+            action_id         TEXT NOT NULL,
+            agent_role        TEXT,
+            action_type       TEXT,
+            target_path_class TEXT,
+            risk              TEXT,
+            source_context    TEXT,
+            final_verdict     TEXT NOT NULL,
+            decided_layer     TEXT,
+            reason_codes_json TEXT,
+            auth_required     INTEGER NOT NULL DEFAULT 0,
+            auth_result       TEXT,
+            elevation_id      TEXT,
+            entity_id         TEXT
+        );
+        INSERT INTO decisions (ts, action_id, final_verdict)
+            VALUES ('2026-01-01T00:00:00+00:00', 'legacy-action', 'PASS');
+        """
+    )
+    await conn.commit()
+    await conn.close()
+
+    async with open_db(str(tmp_path)) as conn:  # must not raise OperationalError
+        cols = await _columns(conn, "decisions")
+        assert "entity_id" in cols
+        assert "session_id" in cols  # later additive ALTERs still run too
+        async with conn.execute(
+            "SELECT action_id FROM decisions WHERE action_id = 'legacy-action'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row[0] == "legacy-action"  # existing row survived
+        async with conn.execute("SELECT version FROM schema_version") as cur:
+            versions = [r[0] for r in await cur.fetchall()]
+    assert versions == [SCHEMA_VERSION]
+
+
 def test_db_file_is_owner_only(tmp_path):
     async def _create():
         async with open_db(str(tmp_path)):

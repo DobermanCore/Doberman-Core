@@ -354,6 +354,24 @@ async def _table_columns(conn: aiosqlite.Connection, table: str) -> list[str]:
     return [row[1] for row in rows]
 
 
+async def _add_column_if_missing(conn: aiosqlite.Connection, table: str, column_def: str) -> bool:
+    """Run ``ALTER TABLE {table} ADD COLUMN {column_def}``, tolerating a second
+    process racing the same additive migration on the same pre-migration DB
+    (originally #556/#614's fix, generalized to every additive ALTER here).
+    The loser hits sqlite3's "duplicate column name" and is swallowed; any
+    other OperationalError re-raises. Returns True when this call actually
+    added the column (False when the race was already lost), so callers can
+    gate a one-time backfill on it.
+    """
+    try:
+        await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")  # noqa: S608 — fixed literals only
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+        return False
+    return True
+
+
 async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
     """v2 → v3: baselines become per-entity; decisions gain ``entity_id``.
 
@@ -367,13 +385,13 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
         await conn.execute("DROP TABLE baseline_counts")
     decision_cols = await _table_columns(conn, "decisions")
     if decision_cols and "entity_id" not in decision_cols:
-        await conn.execute("ALTER TABLE decisions ADD COLUMN entity_id TEXT")
+        await _add_column_if_missing(conn, "decisions", "entity_id TEXT")
     # v3 → v4: decisions gain ``session_id`` (HK.5.1) so the host-hook taint
     # ledger can correlate calls within one agent session. Additive ALTER on an
     # existing table; fresh DBs get it from _SCHEMA above. session_taint itself is
     # created additively by executescript (CREATE TABLE IF NOT EXISTS).
     if decision_cols and "session_id" not in decision_cols:
-        await conn.execute("ALTER TABLE decisions ADD COLUMN session_id TEXT")
+        await _add_column_if_missing(conn, "decisions", "session_id TEXT")
     # v8 -> v9: retention stamps (Subj1) — add `last_touched` to every baseline/
     # preference table so `doberman memory prune` can find an entity's most recent
     # activity. Additive ALTER on an existing table; fresh DBs get it from _SCHEMA
@@ -393,8 +411,8 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
     ):
         cols = await _table_columns(conn, table)
         if cols and "last_touched" not in cols:
-            await conn.execute(f"ALTER TABLE {table} ADD COLUMN last_touched TEXT")  # noqa: S608 — table is a fixed literal above
-            if backfill_from:
+            added = await _add_column_if_missing(conn, table, "last_touched TEXT")
+            if added and backfill_from:
                 await conn.execute(f"UPDATE {table} SET last_touched = {backfill_from}")  # noqa: S608 — fixed literals above
     # v11 -> v12: destination feature keys become keyed fingerprints — the raw
     # host must leave the store (a hostname can embed secret material). Legacy
@@ -420,14 +438,10 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
             "effects_hits_outside_repo INTEGER",
             "effects_digest_fp TEXT",
         ):
-            try:
-                await conn.execute(f"ALTER TABLE decisions ADD COLUMN {column}")  # noqa: S608 — fixed literals above
-            except sqlite3.OperationalError as e:
-                # Two processes racing this migration on the same pre-v15 DB
-                # (review fix for #556) — the loser tolerates "already added
-                # by the winner" and re-raises anything else.
-                if "duplicate column" not in str(e).lower():
-                    raise
+            # Two processes racing this migration on the same pre-v15 DB
+            # (review fix for #556) — _add_column_if_missing tolerates the
+            # loser's "already added by the winner".
+            await _add_column_if_missing(conn, "decisions", column)
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:
