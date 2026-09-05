@@ -92,10 +92,18 @@ jobs:
             exit 1
           fi
           echo "ok: core has no enterprise dependency"
-      # --timeout: a single stuck test dies in 5 min with a traceback naming it,
-      # instead of taking the whole leg to the job timeout with no diagnosis. The
-      # production-size gate modules carry their own `timeout` marker (see their
-      # `pytestmark`) because their module-scoped eval fixture lands on one item.
+      # --timeout: a single stuck test dies in 5 min instead of taking the whole
+      # leg to the job timeout. The production-size gate modules carry their own
+      # `timeout` marker (see their `pytestmark`) because their module-scoped eval
+      # fixture lands on one item. On Windows the only method is `thread`, which
+      # os._exit()s the xdist worker, and the worker's traceback goes to a stdout
+      # that execnet points at NUL - the controller only sees "node down".
+      # --max-worker-restart=0: a dead worker ends the run at once, reported as
+      # "worker crashed while running <test>". Left at the default, xdist 3.8
+      # replaces the worker and `--dist loadgroup` re-queues the dead worker's
+      # already-completed scopes as empty units (pytest-xdist#1378): the session
+      # then either deadlocks at ~99% until the job cap (ten Windows runs,
+      # 2026-09-03/04) or dies with `KeyError: <WorkerController gwN>`.
       # --durations: every run reports its slowest tests, so a creeping suite is
       # visible in the log before it becomes a timeout.
       # The GUI auth dialog is real Tk widgets; without a display its tests skip
@@ -109,7 +117,7 @@ jobs:
           DOBERMAN_TEST_FAST_HST_GATES: ${{ matrix.fast_gates && '1' || '' }}
         run: >
           ${{ runner.os == 'Linux' && 'xvfb-run -a -s "-screen 0 1280x800x24"' || '' }}
-          pytest -n auto --dist loadgroup --timeout=300 --durations=25 --durations-min=2.0
+          pytest -n auto --dist loadgroup --max-worker-restart=0 --timeout=300 --durations=25 --durations-min=2.0
           ${{ matrix.coverage && '--cov=doberman --cov-report=term-missing --cov-fail-under=90' || '' }}
   package-smoke-test:
     name: package-smoke-test (${{ matrix.os }})

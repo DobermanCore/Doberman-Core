@@ -185,3 +185,35 @@ def test_db_file_is_owner_only(tmp_path):
     assert path.exists()
     if os.name != "nt":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+async def test_reopen_at_current_version_skips_the_migration(tmp_path, monkeypatch):
+    # Every open used to re-run the whole migration (legacy probes, the full
+    # CREATE script, a committed version rewrite) — ~11 opens per decided
+    # action, each paying an fsync; on the Windows CI leg that made three
+    # integration tests take 180-200 s. A DB already at SCHEMA_VERSION needs
+    # none of it; anything else (fresh, older, no version table) still does.
+    from doberman.storage import db as db_module
+
+    calls: list[int] = []
+    real = db_module._migrate_legacy
+
+    async def counting(conn):
+        calls.append(1)
+        await real(conn)
+
+    monkeypatch.setattr(db_module, "_migrate_legacy", counting)
+    async with open_db(str(tmp_path)):
+        pass
+    assert calls == [1]  # fresh DB: migrated once
+    async with open_db(str(tmp_path)) as conn:
+        async with conn.execute("SELECT version FROM schema_version") as cur:
+            assert [r[0] for r in await cur.fetchall()] == [SCHEMA_VERSION]
+    assert calls == [1]  # current DB: nothing to migrate
+
+    async with aiosqlite.connect(str(db_path(str(tmp_path)))) as conn:
+        await conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION - 1,))
+        await conn.commit()
+    async with open_db(str(tmp_path)):
+        pass
+    assert calls == [1, 1]  # older DB: migrated again

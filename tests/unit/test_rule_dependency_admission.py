@@ -18,7 +18,6 @@ import os
 import pathlib
 import random
 import socket
-import time
 from datetime import datetime, timezone
 
 import pytest
@@ -537,10 +536,9 @@ def test_bounded_on_a_one_megabyte_command():
     # payload that this rule does not fix (out of this slice's scope) —
     # measured ~25s locally for a 1 MB command. This only proves
     # `DependencyAdmissionRule.evaluate()` completes rather than hangs.
+    # The hang guard is CI's per-test `--timeout`, not a wall-clock bound here:
+    # a 90 s bound failed at 97 s on a slow Windows runner (#588).
     rule = DependencyAdmissionRule()
     huge_command = "pip install " + ("a" * (1024 * 1024))
-    start = time.monotonic()
     result = rule.evaluate(_action(), _ctx(huge_command))
-    elapsed = time.monotonic() - start
     assert result.verdict is Verdict.PASS
-    assert elapsed < 90, f"took {elapsed:.1f}s"  # generous bound; not a speed claim

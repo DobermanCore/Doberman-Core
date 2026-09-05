@@ -13,6 +13,7 @@ installed.
 
 import json
 import re
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -79,35 +80,35 @@ def _visible_footer_text(app) -> str:
     return "  ".join(parts)
 
 
-async def _wait_for_footer_text(pilot, app, predicate, *, tries: int = 20, delay: float = 0.02):
+# Poll budget for eventually-consistent widget state. A passing check returns
+# on the first 20 ms tick that holds, so this only bounds a real failure; the
+# 0.4 s / 2 s budgets it replaces lost a Footer recompose under xdist load on
+# the Windows CI leg (`assert 'reload' in ''`, 2026-09-03).
+_WAIT_TIMEOUT = 10.0
+
+
+async def _wait_for_footer_text(pilot, app, predicate, *, timeout: float = _WAIT_TIMEOUT):
     """Poll `_visible_footer_text(app)` through `predicate` until it holds, or
-    `tries` attempts pass. Textual's Footer only recomposes after a dynamic
+    `timeout` seconds pass. Textual's Footer only recomposes after a dynamic
     `check_action` change (round 4 design critique item 3's row-action
     gating) via `refresh_bindings()` -> a signal -> `call_after_refresh` -
     genuinely eventually-consistent, so a single `pilot.pause()` can
     legitimately race it under load. Returns the last-seen text either way,
     so a real failure still shows a useful diff."""
-    text = _visible_footer_text(app)
-    for _ in range(tries):
-        if predicate(text):
-            return text
-        await pilot.pause(delay)
-        text = _visible_footer_text(app)
-    return text
+    return await _wait_for(pilot, lambda: _visible_footer_text(app), predicate, timeout=timeout)
 
 
-async def _wait_for(pilot, get_value, predicate, *, tries: int = 100, delay: float = 0.02):
+async def _wait_for(pilot, get_value, predicate, *, timeout: float = _WAIT_TIMEOUT):
     """General-purpose sibling of `_wait_for_footer_text` (round 5 design
-    critique item 11): poll `get_value()` through `predicate` until it holds,
-    or `tries * delay` (~2s by default) elapses. A widget's own update can
+    critique item 11): poll `get_value()` through `predicate` every 20 ms until
+    it holds, or `timeout` seconds elapse. A widget's own update can
     legitimately land a tick after the change that triggers it - reading it
     right after a single `pilot.pause()` can race that under load. Returns the
     last-seen value either way, so a real failure still shows a useful diff."""
+    deadline = time.monotonic() + timeout
     value = get_value()
-    for _ in range(tries):
-        if predicate(value):
-            return value
-        await pilot.pause(delay)
+    while not predicate(value) and time.monotonic() < deadline:
+        await pilot.pause(0.02)
         value = get_value()
     return value
 
