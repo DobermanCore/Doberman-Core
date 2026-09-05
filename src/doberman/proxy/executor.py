@@ -73,7 +73,12 @@ from doberman.policy.sources import effective_policy
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import challenge_copy, normalize
 from doberman.storage import tool_pins
-from doberman.storage.db import active_elevations, claim_single_use, grant_elevation
+from doberman.storage.db import (
+    active_elevations,
+    claim_single_use,
+    grant_elevation,
+    revoke_elevation,
+)
 from doberman.storage.log import recent_session_decisions, record_decision
 from doberman.subjective.baseline import (
     budget_allows_step_up,
@@ -646,6 +651,31 @@ async def _verify_artifact_digest(
     )
 
 
+async def _revoke_granted_elevation(elevation_id: str | None) -> None:
+    """Revoke an elevation granted moments ago in THIS call, when a post-approval
+    synthetic BLOCK follows it (issue #557).
+
+    ``_handle_auth`` grants a role elevation, then re-checks the action (TOCTOU
+    redecision, and C2's effect-set-divergence recompute) before releasing it. If
+    either re-check now BLOCKs, the grant must not outlive the action it was
+    approved for — an unrevoked grant stays active for its full TTL and an
+    immediate retry could ride it to PASS. Best-effort/fail-closed: the BLOCK
+    already being returned by the caller stands regardless of whether this
+    revoke itself succeeds, and a revoke error is swallowed rather than crashing
+    the decision path.
+    """
+    if elevation_id is None:
+        return
+    try:
+        await revoke_elevation(REPO_ROOT, elevation_id)
+    except Exception:  # noqa: BLE001 — a failed revoke must not crash/leak; the BLOCK still stands
+        _engine_logger.warning(
+            "elevation revoke failed after a post-approval BLOCK (elevation %s); "
+            "grant remains until TTL expiry",
+            elevation_id,
+        )
+
+
 async def _claim_single_use(action: SecurityObject, grants: tuple) -> bool:
     """Atomically claim any single-use elevation covering this action, BEFORE it forwards.
 
@@ -837,7 +867,10 @@ async def _handle_auth(
     redecision = await _apply_tool_pin_floor(tool_name, redecision)
     if redecision.final_verdict is Verdict.BLOCK:
         log_action(action, redecision.final_verdict)
-        await _persist(redecision, action, auth_result=auth_result.method, eid=eid)
+        await _revoke_granted_elevation(elevation_id)
+        await _persist(
+            redecision, action, auth_result=auth_result.method, elevation_id=elevation_id, eid=eid
+        )
         return _verdict_result(redecision)
 
     # C2 (ADR 0094): recompute the SAME operands against the live filesystem
@@ -854,6 +887,7 @@ async def _handle_auth(
         )
         if recomputed.digest != decision.effects.digest:
             diverged = _effect_set_diverged_decision(action)
+            await _revoke_granted_elevation(elevation_id)
             await _persist(
                 diverged,
                 action,
