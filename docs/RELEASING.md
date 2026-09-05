@@ -10,7 +10,7 @@ The checklist for cutting a release, kept in sync with `.github/workflows/publis
    - Synthetic (deterministic, from a cold clone): `python -m tests.benchmarks.run --suite synthetic --profile before_after`.
    - AgentDojo (operator-supplied): `pip install agentdojo` at a pinned commit, then `python -m tests.benchmarks.run --suite agentdojo --profile before_after`. Record the pinned commit and the run date. Keep the raw run out of git (`test-logs/`); transcribe only the aggregate numbers.
    - Update the "Fixed bypasses" wall with anything disclosed and fixed since the last release.
-4. **Version and changelog.** `python scripts/compile_changelog.py --check` is green (CI already enforces this on `main`). Then `python scripts/compile_changelog.py --write --release vX.Y.Z --headline "<headline>"` compiles every pending `changelog.d/<PR-number>.<type>.md` fragment into a dated, grouped section and deletes them; read it once as a stranger and tighten any bullet that needs a second read. Bump `version` in `pyproject.toml` to match (follow semver). Confirm the README roadmap and versioning reflect reality.
+4. **Version and changelog.** `python scripts/compile_changelog.py --check` is green (CI already enforces this on `main`). Then `python scripts/compile_changelog.py --write --release vX.Y.Z --headline "<headline>"` compiles every pending `changelog.d/<PR-number>.<type>.md` fragment into a dated, grouped section and deletes them. Read it once as a stranger and tighten any bullet that needs a second read. Bump `version` in `pyproject.toml` to match (follow semver). Confirm the README roadmap and versioning reflect reality.
 5. **Docs sweep.** Every protection claim in the README resolves to a parity cell or a benchmark number. No orphan adjectives.
 
 ## Cut a release
@@ -23,7 +23,7 @@ Publishing uses **PyPI Trusted Publishing (OIDC)** via `.github/workflows/publis
    pip install -i https://test.pypi.org/simple/ \
        --extra-index-url https://pypi.org/simple/ doberman-core
    ```
-3. Create a **GitHub Release** with tag `vX.Y.Z` (matching the version; the publish job refuses to upload when `pyproject.toml`'s version and the tag disagree). Publishing the release triggers the `pypi-publish` job, which uploads to PyPI and attaches a CycloneDX SBOM (`sbom.json`) to the release as a downloadable asset. The public core must build, test, and run with zero enterprise code installed (the standalone guarantee); CI's standalone step enforces this.
+3. Create a **GitHub Release** with tag `vX.Y.Z` (matching the version; the publish job refuses to upload when `pyproject.toml`'s version and the tag disagree). Publishing the release triggers the `pypi-publish` job, which uploads to PyPI and attaches a CycloneDX SBOM (Software Bill of Materials, a list of the project's dependencies; `sbom.json`) to the release as a downloadable asset. The public core must build, test, and run with zero enterprise code installed (the standalone guarantee). CI's standalone step enforces this.
    **If that run fails after the tag exists** (a trusted-publisher or workflow bug), fix `main`, then run the workflow manually with target `pypi` and `tag` set to the release tag (`gh workflow run publish.yml -f target=pypi -f tag=vX.Y.Z`). A rerun of the failed run reuses the old workflow snapshot and cannot pick up the fix; the manual run builds `main`, whose `pyproject.toml` already carries the version.
 4. Verify from a clean environment:
    ```bash
@@ -96,7 +96,7 @@ The sdist file list is pinned in `pyproject.toml` (`[tool.hatch.build.targets.sd
 `doberman` is already taken on PyPI by an unrelated, abandoned 2020 project, so releases publish as `doberman-core` until the name is reclaimed. Transferring it is a manual, human-reviewed process and not guaranteed.
 
 1. **Contact the current owner first.** Email the maintainer listed on <https://pypi.org/project/doberman/> and ask if they'll transfer the name. Keep the message for your records.
-2. **If there's no response, or they agree,** file a name request under PEP 541 at <https://github.com/pypi/support/issues> (the project-name-related template). Note that the project is abandoned (last release 0.0.4, September 2020), link this repo as evidence of active intended use, and reference any prior contact attempt.
+2. **If there's no response, or they agree,** file a name request under PEP 541 at <https://github.com/pypi/support/issues> (the project-name-related template). Say the project is abandoned (last release 0.0.4, September 2020), link this repo as evidence of active intended use, and reference any prior contact attempt.
 3. If granted, add `doberman` as the distribution name (or publish a thin `doberman` package that depends on `doberman-core`) and update the install docs.
 
 Until then, `doberman-core` is the canonical install name.

@@ -29,15 +29,25 @@ APPROVAL_FILE_ENV = "DOBERMAN_APPROVAL_FILE"
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 
-def _default_path() -> Path:
-    """Per-user config path OUTSIDE any repository (never committed)."""
+def config_dir() -> Path:
+    """The per-user Doberman config directory OUTSIDE any repository.
+
+    Parent of :func:`_default_path` — shared by every per-user config file
+    (``approval.json``, ``ntfy.json``, ...) so the platform-path logic lives
+    in exactly one place.
+    """
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.path.join(
             os.path.expanduser("~"), "AppData", "Local"
         )
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    return Path(base) / "doberman" / "approval.json"
+    return Path(base) / "doberman"
+
+
+def _default_path() -> Path:
+    """Per-user config path OUTSIDE any repository (never committed)."""
+    return config_dir() / "approval.json"
 
 
 def _path() -> Path:

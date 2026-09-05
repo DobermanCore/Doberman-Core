@@ -24,9 +24,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 
-from doberman.models import ActionType, Decision, SecurityObject
+from doberman.models import ActionType, Decision, EffectSet, SecurityObject
 from doberman.storage.db import open_db
 from doberman.storage.device_metrics import record_decision_metric
+from doberman.storage.fingerprint import fingerprint
 from doberman.storage.sinks import emit_to_sinks
 
 logger = logging.getLogger("doberman.storage.log")
@@ -37,8 +38,9 @@ _INSERT_DECISION = (
     "INSERT INTO decisions "
     "(ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id, "
-    "entity_id, session_id) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
+    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _INSERT_SHADOW = (
@@ -56,7 +58,8 @@ _UPSERT_FINGERPRINT = (
 _SELECT_DECISIONS = (
     "SELECT id, ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id, "
-    "entity_id, session_id "
+    "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
+    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp "
     "FROM decisions ORDER BY id DESC"
 )
 
@@ -65,7 +68,8 @@ _SELECT_DECISIONS = (
 _SELECT_DECISIONS_SINCE = (
     "SELECT id, ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, elevation_id, "
-    "entity_id, session_id "
+    "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
+    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp "
     "FROM decisions WHERE id > ? ORDER BY id ASC"
 )
 
@@ -102,15 +106,24 @@ _DECISION_COLUMNS = [
     "elevation_id",
     "entity_id",
     "session_id",
+    "effects_file_count",
+    "effects_dir_count",
+    "effects_capped",
+    "effects_hits_git",
+    "effects_hits_outside_repo",
+    "effects_digest_fp",
 ]
 
 
 def path_class(action: SecurityObject) -> str | None:
     """A redaction-safe class for a file target: drop the filename, keep dir + ext.
 
-    ``backend/auth/session.ts`` → ``backend/auth/*.ts``; ``.env`` → ``.env``
-    (dotfiles/extensionless names are themselves the class). Non-file actions
-    have no path class. Never returns the raw filename of an extensioned file.
+    ``backend/auth/session.ts`` → ``backend/auth/*.ts``; ``.ssh/id_rsa`` →
+    ``.ssh/*`` (extensionless names under a directory are wildcarded like any
+    other filename); ``.env`` → ``.env`` (a *top-level* dotfile/extensionless
+    name, with no directory component, is itself the class). Non-file actions
+    have no path class. Never returns the raw filename of a file under a
+    directory, extensioned or not.
 
     Public (renamed from ``_path_class``) so D3's dashboard-approval queue
     (``doberman.auth.dashboard_prompter``) can derive the same redaction-safe
@@ -123,13 +136,51 @@ def path_class(action: SecurityObject) -> str | None:
     pure = PurePosixPath(str(action.target).replace("\\", "/"))
     parent = pure.parent.as_posix()
     parent = "" if parent == "." else parent
-    stem_class = f"*{pure.suffix}" if pure.suffix else pure.name
+    # ponytail: extensionless names are their own class only with no
+    # directory (the bare-dotfile shape, e.g. ".env"); under a directory an
+    # extensionless name must be wildcarded too, or the raw filename leaks
+    # verbatim (".ssh/id_rsa", "/etc/passwd").
+    stem_class = f"*{pure.suffix}" if (pure.suffix or parent) else pure.name
     return f"{parent}/{stem_class}" if parent else stem_class
 
 
 def _decided_layer(decision: Decision) -> str:
     """Which layer produced the verdict: objective alone, or combined with subjective."""
     return "objective" if decision.subjective is None else "combined"
+
+
+def _effects_fields(effects: EffectSet | None) -> dict:
+    """Redaction-safe :class:`EffectSet` fields for the audit row (issue #556).
+
+    Every field is ``None`` when there's no preview (a non-delete-class
+    decision) — never 0/False, so "no preview" stays distinguishable from "an
+    empty one". ``effects_digest_fp`` is a keyed HMAC of the plain sha256
+    digest, never the plain digest itself: a sha256 of a small, guessable
+    relative-path set is brute-forceable without the key (CLAUDE.md §9).
+    """
+    if effects is None:
+        return {
+            "effects_file_count": None,
+            "effects_dir_count": None,
+            "effects_capped": None,
+            "effects_hits_git": None,
+            "effects_hits_outside_repo": None,
+            "effects_digest_fp": None,
+        }
+    try:
+        digest_fp = fingerprint(effects.digest)
+    except Exception:  # noqa: BLE001 — a fingerprint()-key failure must lose only
+        # this column, never the whole audit row (review fix for #556).
+        logger.debug("decision log: could not fingerprint effects digest")
+        digest_fp = None
+    return {
+        "effects_file_count": effects.file_count,
+        "effects_dir_count": effects.dir_count,
+        "effects_capped": effects.capped,
+        "effects_hits_git": effects.hits_git,
+        "effects_hits_outside_repo": effects.hits_outside_repo,
+        "effects_digest_fp": digest_fp,
+    }
 
 
 def build_record(
@@ -150,7 +201,7 @@ def build_record(
     session identifier (HK.5.1) — a UUID, not a secret — used to correlate the
     calls of one agent session for the multi-step taint floor.
     """
-    return {
+    record = {
         "ts": now.isoformat(),
         "action_id": decision.action_id,
         "agent_role": action.agent_role,
@@ -167,6 +218,8 @@ def build_record(
         "entity_id": entity_id,
         "session_id": session_id,
     }
+    record.update(_effects_fields(decision.effects))
+    return record
 
 
 async def record_decision(
@@ -220,6 +273,12 @@ async def record_decision(
                     record["elevation_id"],
                     record["entity_id"],
                     record["session_id"],
+                    record["effects_file_count"],
+                    record["effects_dir_count"],
+                    record["effects_capped"],
+                    record["effects_hits_git"],
+                    record["effects_hits_outside_repo"],
+                    record["effects_digest_fp"],
                 ),
             )
             for fp in action.payload_fingerprints:

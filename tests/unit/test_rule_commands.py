@@ -15,8 +15,6 @@ import pytest
 from doberman.engine.rules import commands as commands_module
 from doberman.engine.rules.commands import (
     DestructiveCommandRule,
-    command_contains_dynamic_content,
-    delete_class_operands,
     delete_class_operands_and_dynamic,
     walk_command,
 )
@@ -1153,50 +1151,55 @@ def test_shell_deletion_of_a_test_file_is_invisible_to_this_rule(command):
     assert result.verdict is Verdict.PASS
 
 
-# --- delete_class_operands (C2 Task 3) ---------------------------------------
+# --- delete_class_operands_and_dynamic operand extraction (C2 Task 3; the --
+# standalone delete_class_operands()/command_contains_dynamic_content()
+# wrappers these tests used to call were deleted (#558, C2 cleanup) as dead
+# code — zero production callers after the M1 single-parse refactor below
+# folded them into this one combined function, which is what these now
+# exercise directly. --------------------------------------------------------
 
 
 def test_delete_class_operands_rm():
-    assert delete_class_operands("rm -rf build") == ["build"]
+    assert delete_class_operands_and_dynamic("rm -rf build")[0] == ["build"]
 
 
 def test_delete_class_operands_rm_multiple():
-    assert delete_class_operands("rm -f a.txt b.txt") == ["a.txt", "b.txt"]
+    assert delete_class_operands_and_dynamic("rm -f a.txt b.txt")[0] == ["a.txt", "b.txt"]
 
 
 def test_delete_class_operands_windows_verb():
-    assert delete_class_operands("Remove-Item -Recurse -Force build") == ["build"]
+    assert delete_class_operands_and_dynamic("Remove-Item -Recurse -Force build")[0] == ["build"]
 
 
 def test_delete_class_operands_del_verb():
-    assert delete_class_operands("del /s /q build") == ["build"]
+    assert delete_class_operands_and_dynamic("del /s /q build")[0] == ["build"]
 
 
 def test_delete_class_operands_non_delete_command_is_none():
-    assert delete_class_operands("ls -la") is None
-    assert delete_class_operands("git status") is None
+    assert delete_class_operands_and_dynamic("ls -la")[0] is None
+    assert delete_class_operands_and_dynamic("git status")[0] is None
 
 
 def test_delete_class_operands_empty_command_is_none():
-    assert delete_class_operands("") is None
+    assert delete_class_operands_and_dynamic("")[0] is None
 
 
 def test_delete_class_operands_compound_command_collects_across_segments():
     # A benign segment plus a delete segment: operands come from the delete
     # segment only, not misattributed to the benign one.
-    assert delete_class_operands("echo hi && rm -rf target") == ["target"]
+    assert delete_class_operands_and_dynamic("echo hi && rm -rf target")[0] == ["target"]
 
 
 def test_delete_class_operands_opaque_shell_payload_is_none():
     # Deliberately NOT unwrapped (ponytail): an opaque `-c` payload AUTHs via
     # opaque_command, not a delete-class reason — showing no preview for an
     # unclassifiable payload is correct, never a guess.
-    assert delete_class_operands('bash -c "rm -rf /"') is None
+    assert delete_class_operands_and_dynamic('bash -c "rm -rf /"')[0] is None
 
 
 def test_delete_class_operands_reuses_the_rule_parse_not_a_reparse():
     # Same adversarial parsing the rule itself uses: an env-assignment prefix
-    # is stripped by _argv_from_tokens (found is still True). The substitution
+    # is stripped by argv_from_tokens (found is still True). The substitution
     # body is walk_command's OWN top-level segment (['echo', 'target']), not
     # inline operand text of the rm segment — walk_command returns a flat,
     # undifferentiated segment list with no parent/child link back to "rm", so
@@ -1207,7 +1210,7 @@ def test_delete_class_operands_reuses_the_rule_parse_not_a_reparse():
     # be "echo" (whose args are not, in general, its runtime stdout). No
     # known literal operand for this rm segment -> [] (found, but empty),
     # never a guess reconstructed from a sibling segment.
-    assert delete_class_operands("FOO=bar rm -rf $(echo target)") == []
+    assert delete_class_operands_and_dynamic("FOO=bar rm -rf $(echo target)")[0] == []
 
 
 # --- delete_class_operands_and_dynamic (M1, C2 final review) -----------------
@@ -1230,13 +1233,6 @@ def test_delete_class_operands_and_dynamic_parses_the_command_once(monkeypatch):
     assert len(calls) == 1
     assert operands == []
     assert dynamic is True
-
-
-def test_delete_class_operands_and_dynamic_matches_the_two_separate_calls():
-    for command in ("rm -rf build", "ls -la", "rm -rf $(echo x)", ""):
-        operands, dynamic = delete_class_operands_and_dynamic(command)
-        assert operands == delete_class_operands(command)
-        assert dynamic == command_contains_dynamic_content(command)
 
 
 # --- T3: walk the command literals an interpreter one-liner hands to a ------
@@ -1552,7 +1548,7 @@ def test_interpreter_spawn_explanation_is_redacted():
 
 
 # --- T5: a transparent wrapper's own options must not hide the command ------
-# `_argv_from_tokens` used to pop a wrapper name only when it was BARE — one
+# `argv_from_tokens` used to pop a wrapper name only when it was BARE — one
 # option on the wrapper (`sudo -u root`, `nice -n 10`, `timeout 5`, ...)
 # shifted argv so the option was misread as the command and every rule missed
 # it. Fixed at the one shared helper (`_WRAPPER_VALUE_OPTIONS`) so every
@@ -1785,7 +1781,7 @@ def test_split_segments_reports_termination():
 # --- T5-fix: an unresolved wrapper option in argv[0] fails upward -----------
 # `env -S <value>`'s splice can fail (`shlex.split` raises on an unbalanced/
 # unparseable value) leaving `-S`/its value tokens in place ahead of the
-# wrapped command (see `_argv_from_tokens`'s own docstring). `_segment_verdict`
+# wrapped command (see `argv_from_tokens`'s own docstring). `_segment_verdict`
 # keys every check off `tokens[0]`, so a leading-dash argv[0] matched nothing
 # and the whole segment — with the destructive command sitting right behind
 # it — read as benign. Fail closed instead: a segment whose argv[0] is still
@@ -1807,7 +1803,7 @@ def test_unresolved_wrapper_option_fails_upward(command):
 
 def test_wrapper_unknown_option_still_reaches_destructive_command():
     # `sudo --bogus-option rm -rf /`: sudo's own unrecognized option is
-    # dropped as a bare flag (see `_argv_from_tokens`), never swallowing the
+    # dropped as a bare flag (see `argv_from_tokens`), never swallowing the
     # `rm -rf /` behind it — the walk reaches it directly, so the verdict
     # must never read as benign (BLOCK, reached via the destructive-command
     # check itself, is fine — this isn't pinning on the leading-option floor).
@@ -1817,14 +1813,14 @@ def test_wrapper_unknown_option_still_reaches_destructive_command():
 
 def test_unresolved_wrapper_option_leading_option_helper():
     raw_tokens = ["env", "-S", "it's", "rm"]
-    tokens = commands_module._argv_from_tokens(raw_tokens)
+    tokens = commands_module.argv_from_tokens(raw_tokens)
     assert tokens[0] == "-S"
     assert commands_module._leading_option(raw_tokens, tokens) is True
 
 
 # --- T7-fix: the leading-option floor fires only after a wrapper was --------
 # stripped. `_leading_option` used to be blanket: any segment whose argv[0]
-# starts with `-` after `_argv_from_tokens` was AUTH. A verbless line that
+# starts with `-` after `argv_from_tokens` was AUTH. A verbless line that
 # simply BEGINS with an option (`--grep it's`, `-rf / rm`) never had a
 # wrapper stripped — a real shell rejects it outright, and the tool-args
 # form (`{"args": ["--grep", "it's"]}`) is a common benign shape (Grep/
