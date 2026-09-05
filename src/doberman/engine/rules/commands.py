@@ -960,19 +960,28 @@ def _windows_delete_verdict(tokens: list[str], bulk_threshold: int) -> Guardrail
 
 
 def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) -> bool:
-    """``git push`` with a force flag targeting a protected branch."""
-    if len(tokens) < 2 or tokens[0] != "git" or "push" not in tokens:
+    """``git push`` with a force flag targeting a protected branch.
+
+    Keys on the actual git verb (via :func:`_git_leading_globals`, which skips
+    leading global options like ``-C <path>``/``-c <k=v>``) and only inspects
+    that ``push`` invocation's OWN argv — never the full argv, so a force flag
+    or ``+ref``-shaped token that merely appears as another verb's *argument*
+    (``git log --grep push --force``) is never mistaken for an actual force-push.
+    """
+    argv, _ = _git_leading_globals(tokens)
+    if not argv or argv[0] != "push":
         return False
+    push_args = argv[1:]
     has_force = any(
-        t in ("-f", "--force") or t.startswith("--force-with-lease") or t == "+HEAD" for t in tokens
+        t in ("-f", "--force") or t.startswith("--force-with-lease") or t == "+HEAD"
+        for t in push_args
     )
     if not has_force:
         # A refspec like ``+main`` is also a force push of that ref.
-        if not any(t.startswith("+") for t in tokens[1:]):
+        if not any(t.startswith("+") for t in push_args):
             return False
         has_force = True
     protected_set = {b.lower() for b in protected}
-    push_args = tokens[tokens.index("push") + 1 :]
     positional = [t for t in push_args if not t.startswith("-")]
     explicit_refs = positional[1:]  # the first positional is the remote
     # Any token that names (or pushes to) a protected branch.
@@ -1676,14 +1685,20 @@ def _looks_like_fork_bomb(tokens: list[str]) -> bool:
 
 
 def _git_is_history_rewrite(tokens: list[str]) -> bool:
-    if tokens[0] != "git" or len(tokens) < 2:
+    """Keys on the actual git verb (see :func:`_git_leading_globals`) and only
+    inspects that verb's OWN argv, so ``reset``/``filter-branch``/``clean``
+    appearing merely as another verb's *argument* (``git log filter-branch``)
+    is never mistaken for the real subcommand."""
+    argv, _ = _git_leading_globals(tokens)
+    if not argv:
         return False
-    if "reset" in tokens and "--hard" in tokens:
-        return True
-    if "filter-branch" in tokens:
+    verb, rest = argv[0], argv[1:]
+    if verb == "reset":
+        return "--hard" in rest
+    if verb == "filter-branch":
         return True
     # ``git clean -f`` permanently removes untracked files.
-    return "clean" in tokens and any(t.startswith("-") and "f" in t for t in tokens)
+    return verb == "clean" and any(t.startswith("-") and "f" in t for t in rest)
 
 
 def _git_leading_globals(tokens: list[str]) -> tuple[list[str], list[str]]:
