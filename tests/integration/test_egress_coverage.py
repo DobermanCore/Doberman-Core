@@ -333,7 +333,7 @@ async def test_flag_taking_wrapper_egress_requires_auth(command, deny_auth):
     assert action.external_destination == "evil.example"
     assert "egress_ambiguous" not in action.metadata
 
-    bare_command = shlex.join(commands_module._argv_from_tokens(shlex.split(command)))
+    bare_command = shlex.join(commands_module.argv_from_tokens(shlex.split(command)))
     bare_action = normalize("shell_exec", {"command": bare_command})
     result = ExternalDestinationRule().evaluate(action, EvalContext())
     bare_result = ExternalDestinationRule().evaluate(bare_action, EvalContext())
@@ -499,7 +499,7 @@ async def test_wrapper_hidden_direct_exfil_verb_requires_auth(deny_auth):
     assert action.external_destination == "evil.example"
     assert "egress_ambiguous" not in action.metadata
 
-    bare_command = shlex.join(commands_module._argv_from_tokens(shlex.split(command)))
+    bare_command = shlex.join(commands_module.argv_from_tokens(shlex.split(command)))
     bare_action = normalize("shell_exec", {"command": bare_command})
     result = ExternalDestinationRule().evaluate(action, EvalContext())
     bare_result = ExternalDestinationRule().evaluate(bare_action, EvalContext())

@@ -175,7 +175,7 @@ _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # self-contained and is just a flag; only a BARE spelling from this set pops
 # an extra token. Every other leading ``-``/``--`` token on a wrapper is
 # popped as a bare flag (its arity is unknown, so it's dropped, never treated
-# as the command) -- see ``_argv_from_tokens``. ``sudo``'s ``-h`` is
+# as the command) -- see ``argv_from_tokens``. ``sudo``'s ``-h`` is
 # deliberately absent: ``sudo -h`` is help, a bare flag, not a value option.
 _WRAPPER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
     "sudo": frozenset(
@@ -356,6 +356,28 @@ _INLINE_PROCESS_SPAWN = re.compile(
 # Shared work bound for every static command walk. Exhaustion is ambiguity,
 # never silent success.
 _MAX_COMMAND_SEGMENTS = 256
+
+#: #549 — bound on the number of characters of one (already substitution-
+#: stripped) segment that get handed to `shlex.split`. `_MAX_COMMAND_SEGMENTS`
+#: only bounds segment *count*; a single oversized segment (a heredoc, a
+#: base64 blob passed as one bare/quoted token) still drove `shlex.split`
+#: into super-linear time on its own (~31.5s measured locally on a 1 MB
+#: payload, ~7.7 min reported on an 800 KB one elsewhere; root cause is
+#: CPython's `shlex.read_token`, not this module).
+#: ponytail: a hard truncation, not a smarter parser. 64 KiB clears every
+#: existing adversarial payload in this module's own test suite (the
+#: largest quotes a ~16 KB `-c` script with its dangerous call placed AFTER
+#: a filler blob, on purpose, to prove the scan isn't position-limited —
+#: see test_control_plane_path_behind_filesystem_filler_still_blocks) with
+#: >3x headroom, while still cutting the reported 800 KB-1 MB payload down
+#: to a bounded, fast parse. Any cut — whether shlex raises on it (an open
+#: quote) or not (a cut landing in plain unquoted text) — always marks the
+#: walk `ambiguous = True`, so a destructive shape truncated away past the
+#: cut fails upward (AUTH, never a silent ALLOW) instead of vanishing. The
+#: truncated prefix is still handed to `shlex.split`, so a destructive head
+#: within the first 64 KiB still hits BLOCK on its own. Raise this if a real
+#: command legitimately needs more than 64 KiB in one segment.
+_MAX_SEGMENT_SCAN_BYTES = 65536
 
 # Any shell expansion can construct a destination at runtime. The shared walk
 # reports the fact; consumers decide whether it matters for their rule.
@@ -611,7 +633,21 @@ def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
             pending.extend(body_segments)
             ambiguous = ambiguous or body_unterminated
         try:
-            tokens = shlex.split(stripped, comments=True, posix=True)
+            # #549: bound by BYTES, not just segment count — an oversized
+            # single segment (a heredoc, a base64 blob) drove shlex.split
+            # into super-linear time on its own. Truncation happens AFTER
+            # substitution-stripping above, so a $()/backtick body deep in
+            # an oversized segment is already queued for its own walk and
+            # is never hidden by this cut.
+            # #549 follow-up: a cut landing OUTSIDE a quote never raises —
+            # shlex happily parses the truncated prefix — so a destructive
+            # suffix past byte 65536 (`"rm " + "a" * 70000 + " -rf /"`) was
+            # silently dropped with no failure-upward signal at all. Any cut
+            # marks the walk ambiguous; the truncated prefix is still parsed
+            # below so a destructive head still reaches BLOCK.
+            if len(stripped) > _MAX_SEGMENT_SCAN_BYTES:
+                ambiguous = True
+            tokens = shlex.split(stripped[:_MAX_SEGMENT_SCAN_BYTES], comments=True, posix=True)
         except ValueError:
             ambiguous = True
             continue
@@ -670,12 +706,12 @@ def _wrapper_name(token: str) -> str:
 
 def _wrapper_opaque_option_ahead(tokens: list[str], name: str) -> bool:
     """True when scanning ``name``'s own option run (the same run
-    :func:`_argv_from_tokens` is about to strip) reaches one of its opaque-
+    :func:`argv_from_tokens` is about to strip) reaches one of its opaque-
     payload markers (bare or ``=``-attached — see ``_WRAPPER_OPAQUE_OPTIONS``)
     before the wrapped command starts. I2: ``runuser -c``/``--command`` must
     stay visible whole for :func:`_opaque_shell_payload` to inspect, exactly
     the way ``su -c`` does (``su`` is simply never a recognized wrapper at
-    all) — so :func:`_argv_from_tokens` breaks BEFORE popping anything for
+    all) — so :func:`argv_from_tokens` breaks BEFORE popping anything for
     this wrapper rather than dropping ``-c`` as a bare unknown-arity flag and
     losing the payload."""
     markers = _WRAPPER_OPAQUE_OPTIONS.get(name)
@@ -693,7 +729,7 @@ def _wrapper_opaque_option_ahead(tokens: list[str], name: str) -> bool:
     return False
 
 
-def _argv_from_tokens(
+def argv_from_tokens(
     tokens: list[str],
     *,
     keep: frozenset[str] = frozenset(),
@@ -702,6 +738,16 @@ def _argv_from_tokens(
 ) -> list[str]:
     """Strip prefixes (env assignments + transparent-wrapper name/options) from
     an already-parsed segment for command classification.
+
+    Shared contract: this is the one place that decides what a wrapped/
+    env-prefixed segment's "real" command is, and both the engine's own
+    rules (the destructive-command walk, dependency admission) and the
+    proxy's command-verb classifier (``doberman.proxy.normalize._command_verb``,
+    the allowed proxy -> engine import direction) call it so they always
+    agree on that answer — env-assignment skipping, the wrapper option
+    table, the ``env -S``/``--split-string`` splice, and leaving an
+    unresolved leading option in place (see ``consumed_value_option``/
+    ``consumed_any_option`` below) all behave identically for every caller.
 
     T5: a wrapper's own option used to shift argv so the option was misread
     as the command (``sudo -u root rm -rf /`` saw ``-u`` as argv[0]). Now:
@@ -792,9 +838,14 @@ def _argv_from_tokens(
     return tokens
 
 
+# #589: renamed from the private `_argv_from_tokens` to a public name since it's
+# a cross-module contract; kept as a one-release back-compat alias.
+_argv_from_tokens = argv_from_tokens
+
+
 def _leading_option(raw_tokens: list[str], tokens: list[str]) -> bool:
     """True when ``tokens[0]`` still looks like an option (``-``-prefixed)
-    after :func:`_argv_from_tokens` has stripped every env-assignment/wrapper
+    after :func:`argv_from_tokens` has stripped every env-assignment/wrapper
     prefix it can resolve, AND ``raw_tokens`` shows a wrapper actually sat in
     front of it (its first non-env-assignment token did not itself start
     with ``-``) — i.e. something was stripped and what's left is still an
@@ -802,7 +853,7 @@ def _leading_option(raw_tokens: list[str], tokens: list[str]) -> bool:
 
     T5-fix: this happens when a wrapper's value-option splice itself fails
     (e.g. ``env -S <value>`` where ``<value>`` doesn't ``shlex.split`` —
-    see ``_argv_from_tokens``'s own docstring) and the option/value tokens
+    see ``argv_from_tokens``'s own docstring) and the option/value tokens
     are left in place, unresolved, ahead of whatever command follows. A
     leading option can never be the command being run, so a caller that
     keys classification off ``tokens[0]`` (``_segment_verdict``,
@@ -831,7 +882,7 @@ def _argv(segment: str) -> list[str] | None:
         tokens = shlex.split(segment, posix=True)
     except ValueError:
         return None
-    return _argv_from_tokens(tokens)
+    return argv_from_tokens(tokens)
 
 
 #: A Windows drive root in any form a delete operand can arrive in: ``C:\``,
@@ -1350,7 +1401,7 @@ def _is_environment_dump_segment(raw_tokens: list[str]) -> bool:
     -p``, ``declare -x``/``typeset -x`` with no named variable, or a
     PowerShell ``Env:`` drive listing.
 
-    Runs on the RAW parsed segment, *before* :func:`_argv_from_tokens` strips
+    Runs on the RAW parsed segment, *before* :func:`argv_from_tokens` strips
     leading wrappers/assignments — that stripping is what makes bare ``env``
     invisible to :func:`_segment_verdict` (stripping ``env`` off ``["env"]``
     leaves an empty list, which the caller's ``if not tokens`` guard silently
@@ -1365,7 +1416,7 @@ def _is_environment_dump_segment(raw_tokens: list[str]) -> bool:
     still fails upward, just under a different reason code. The no-backslash
     form (``dir env:``) is unaffected.
     """
-    rest = _argv_from_tokens(raw_tokens, keep=frozenset({"env"}))
+    rest = argv_from_tokens(raw_tokens, keep=frozenset({"env"}))
     if not rest:
         return False
     # M5: `keep={"env"}` stops the strip at env's own token so it stays
@@ -1543,10 +1594,10 @@ def _xargs_command_start(tokens: list[str]) -> int:
 
 def _xargs_invoked_command(tokens: list[str]) -> tuple[str, list[str]] | None:
     """The command xargs will run, and the tokens after it — or ``None`` if
-    no command token follows xargs's own options. ``_argv_from_tokens``
+    no command token follows xargs's own options. ``argv_from_tokens``
     strips env assignments and transparent wrappers first, so
     ``xargs sudo kill -9`` still resolves to ``kill``."""
-    command_tokens = _argv_from_tokens(tokens[_xargs_command_start(tokens) :])
+    command_tokens = argv_from_tokens(tokens[_xargs_command_start(tokens) :])
     if not command_tokens:
         return None
     return command_tokens[0].lower(), command_tokens[1:]
@@ -2088,7 +2139,7 @@ def delete_class_operands_and_dynamic(command: str) -> tuple[list[str] | None, b
     operands: list[str] = []
     found = False
     for raw_segment in segments:
-        tokens = _argv_from_tokens(raw_segment)
+        tokens = argv_from_tokens(raw_segment)
         if not tokens or _leading_option(raw_segment, tokens):
             # T5-fix: an unresolved leading option (a failed wrapper-option
             # splice) is never a delete-class command — skip it rather than
@@ -2223,7 +2274,7 @@ class DestructiveCommandRule:
         while pending and processed < _MAX_COMMAND_SEGMENTS:
             processed += 1
             raw_segment = pending.pop()
-            # Checked on the RAW segment, before _argv_from_tokens strips
+            # Checked on the RAW segment, before argv_from_tokens strips
             # env-assignment/wrapper prefixes: `D=/dev/tcp/...; cat f > $D` or
             # `TARGET=/dev/tcp/... cat f` carry the /dev/tcp path only in the
             # env-assignment token, which the stripped argv below never sees.
@@ -2233,7 +2284,7 @@ class DestructiveCommandRule:
                 worst = _max_result(worst, _environment_dump_auth())
                 continue
             consumed_value_opt: list[bool] = []
-            tokens = _argv_from_tokens(raw_segment, consumed_value_option=consumed_value_opt)
+            tokens = argv_from_tokens(raw_segment, consumed_value_option=consumed_value_opt)
             if not tokens:
                 if consumed_value_opt:
                     # I2 root-cause: a wrapper VALUE option (one that ate a
@@ -2255,7 +2306,7 @@ class DestructiveCommandRule:
             if _leading_option(raw_segment, tokens):
                 # T5-fix: a wrapper's own option-value splice failed (e.g.
                 # `env -S <value>` where `<value>` doesn't shlex.split), so
-                # `_argv_from_tokens` left the option/value tokens in place —
+                # `argv_from_tokens` left the option/value tokens in place —
                 # tokens[0] is still an option, never the command. Every
                 # check below keys off tokens[0]; reading it as benign would
                 # hide whatever command actually follows. Fail upward.

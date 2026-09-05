@@ -21,7 +21,7 @@ Every item below is judged against these two. A feature that would need either p
 
 - Hosts: Claude Code, OpenClaw, and the MCP proxy, plus Codex and Cursor, both still marked experimental. The [parity matrix](docs/PARITY.md) shows which protection is proven on which host, with a link to the test behind each cell.
 - Engine: rules for destructive commands, secret reads, data leaving the machine, protected branches, and hidden Unicode tricks in text. A session memory also judges a command differently once the agent has touched a secret.
-- Approvals: a desktop dialog and a terminal prompt, each with a hard deadline that resolves to deny. A password or TOTP (a one-time code app) guards any loosening.
+- Approvals: a desktop dialog, a terminal prompt, and phone approvals (`doberman phone setup`), each with a hard deadline that resolves to deny. If the phone stays silent, the local dialog still opens with its usual deadline, so silence never approves anything. A password or TOTP (a one-time code app) guards any loosening.
 - Log: an append-only SQLite decision log with secrets redacted and paths replaced by fingerprints (a one-way keyed hash that stands in for the real path), and `doberman log --why` to read the reasons behind a verdict.
 - Benchmarks: an offline harness that scores the real engine over labeled tool calls, with the numbers and the failure cases in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - Plugins: seams (Python entry points, a way for another package to register code without editing core) for rules, detectors, policy sources, auth providers, audit sinks, and drift observers (watchers that flag a policy change which loosens protection).
@@ -36,7 +36,6 @@ Every item below is judged against these two. A feature that would need either p
 
 ### Next
 
-- Approvals on your phone. An approval you can answer from a phone notification. If the phone stays silent, the local dialog still opens with its usual deadline, so silence never approves anything.
 - Judgment as a last resort. An AI judge that can raise a verdict to AUTH when the rules are unsure, never lower one, with a spending cap and its own on-off switch.
 - Learning that forgets. Weights learned from your approve and deny history should decay back toward your chosen preset when they go stale (#410).
 - A real algebra version. Stamp the action vocabulary's version on every decision and refuse to trust a mismatch (#424).
