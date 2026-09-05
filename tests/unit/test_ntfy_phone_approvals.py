@@ -68,10 +68,12 @@ class FakeUrlopen:
 
     def __init__(self, responses):
         self.requests: list = []
+        self.timeouts: list = []
         self._responses = list(responses)
 
-    def __call__(self, req, timeout=None):  # noqa: ARG002 - timeout unused by the fake
+    def __call__(self, req, timeout=None):
         self.requests.append(req)
+        self.timeouts.append(timeout)
         if not self._responses:
             raise AssertionError("FakeUrlopen: no scripted response left")
         resp = self._responses.pop(0)
@@ -214,6 +216,21 @@ def test_delete_config(ntfy_cfg):
     assert ntfy.delete_config() is False  # idempotent
 
 
+def test_delete_config_returns_false_when_the_path_cannot_be_unlinked(ntfy_cfg):
+    """M3: `True` must mean the file was actually removed -- an unlink failure
+    (the path exists but can't be deleted, e.g. `phone off` racing another
+    process) returns False, never a false True. A directory in place of the
+    file triggers `Path.unlink()`'s OSError branch portably on both POSIX
+    (IsADirectoryError) and Windows (PermissionError)."""
+    path = ntfy.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir()
+    try:
+        assert ntfy.delete_config() is False
+    finally:
+        path.rmdir()
+
+
 # --------------------------------------------------------------------------- #
 # 2. publish — payload shape, actions, auth headers                           #
 # --------------------------------------------------------------------------- #
@@ -321,8 +338,19 @@ def test_wait_matches_the_exact_approve_line_and_ignores_noise():
     assert result == "approved"
     assert len(fake.requests) == 1
     req = fake.requests[0]
-    assert req.full_url == f"{cfg.server}/{cfg.reply_topic}/json?since=999"
+    assert req.full_url == f"{cfg.server}/{cfg.reply_topic}/json?since=940"  # since - 60 (M1: skew)
     assert req.get_method() == "GET"
+
+
+def test_wait_honours_a_reply_with_a_trailing_newline_and_surrounding_whitespace():
+    """M2: the `.strip()` on the inbound message is real -- a phone-app reply
+    line with a trailing newline or surrounding whitespace still matches."""
+    cfg = _cfg()
+    lines = [_msg_line("  approve NONCE123  \n"), b""]
+    fake = FakeUrlopen([_FakeResponse(lines=lines)])
+    channel = ntfy.NtfyChannel(cfg, urlopen=fake, clock=lambda: 1000.0)
+
+    assert channel.wait("NONCE123", since=1000.0, deadline_s=30) == "approved"
 
 
 def test_wait_deny_is_final_even_when_an_approve_follows():
@@ -389,6 +417,30 @@ def test_wait_returns_timeout_without_opening_the_stream_when_deadline_already_p
     assert fake.requests == []
 
 
+def test_wait_uses_the_full_remaining_deadline_as_the_socket_timeout():
+    """I2: the socket timeout handed to urlopen is the WHOLE remaining deadline,
+    not a smaller fixed cap -- otherwise any gap of more than that cap with no
+    bytes on the wire kills the stream long before wait_s is up. Script a reply
+    that only arrives once the fake clock has crossed the old 30s cap (t=40s
+    under wait_s=60) and assert it is still honoured, and that the timeout
+    passed to urlopen was the full remaining deadline (60s), not 30."""
+    cfg = _cfg(wait_s=60)
+    clock = {"t": 1000.0}
+
+    class _LateReplyResponse(_FakeResponse):
+        def readline(self):
+            clock["t"] = 1040.0  # the tap lands at t=40s -- past the old 30s cap
+            return _msg_line("approve NONCE123")
+
+    fake = FakeUrlopen([_LateReplyResponse()])
+    channel = ntfy.NtfyChannel(cfg, urlopen=fake, clock=lambda: clock["t"])
+
+    result = channel.wait("NONCE123", since=1000.0, deadline_s=60)
+
+    assert result == "approved"
+    assert fake.timeouts == [60.0]  # the full remaining deadline, never capped at 30
+
+
 def test_wait_sends_bearer_token_when_configured_and_omits_it_otherwise():
     """Review finding (c): the reply-topic stream GET carries the bearer token
     when one is configured (needed to read a self-hosted `deny-all` server) and
@@ -429,6 +481,20 @@ def test_ask_returns_unavailable_on_http_500_and_never_opens_the_stream():
 
     assert result == "unavailable"
     assert len(fake.requests) == 1
+
+
+def test_ask_omits_the_id_line_when_action_id_is_empty():
+    """M6: `action_id=""` (a Prompter used outside `run_auth_challenge`, e.g. no
+    active challenge) must not publish a dangling 'id ' line."""
+    cfg = _cfg()
+    fake = FakeUrlopen([_FakeResponse(status=200), _FakeResponse(lines=[b""])])
+    channel = ntfy.NtfyChannel(cfg, urlopen=fake, clock=lambda: 1000.0)
+
+    channel.ask("do the thing", action_id="", deadline_s=1)
+
+    published = json.loads(fake.requests[0].data)["message"]
+    assert published == "do the thing"
+    assert "id " not in published
 
 
 def test_ask_approves_end_to_end():

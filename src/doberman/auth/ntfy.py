@@ -74,7 +74,6 @@ _WAIT_MIN_S = 10
 _WAIT_MAX_S = 300
 _MESSAGE_MAX_BYTES = 3500
 _PUBLISH_TIMEOUT_S = 10.0
-_STREAM_TIMEOUT_S = 30.0
 _TITLE = "Doberman: approve this action?"
 #: The 2FA tiers already run the phone through NtfyApprovalMethod — never
 #: double-notify by also engaging the prompter for them.
@@ -89,8 +88,14 @@ class NtfyConfig:
     """One phone's config: where to publish and the two secret topics.
 
     ``topic`` is where the notification is published; ``reply_topic`` is a
-    SEPARATE topic the Approve/Deny buttons POST to — "the topic name is your
-    password" on ntfy.sh, so keeping them apart (and secret) matters.
+    SEPARATE topic the Approve/Deny buttons POST to. The split only limits
+    *reply injection* by someone who knows nothing but ``reply_topic`` —
+    anyone who can read ``topic`` sees the notification payload itself,
+    which carries the reply URL, the exact ``approve <nonce>``/``deny
+    <nonce>`` body, and the bearer token (when one is set), and can approve
+    without ever learning ``reply_topic``. Both topics AND the token are
+    equally secret — "the topic name is your password" on ntfy.sh applies to
+    all three.
     """
 
     server: str
@@ -177,9 +182,15 @@ def new_config(*, server: str = DEFAULT_SERVER, token: str = "", wait_s: int = 6
     )
 
 
-def is_enabled() -> bool:
-    """Configured AND opted in — both gates must hold (mirrors every approval method)."""
-    return load_config() is not None and approval_config.is_enabled(METHOD_NAME)
+def is_enabled(cfg: NtfyConfig | None = None) -> bool:
+    """Configured AND opted in — both gates must hold (mirrors every approval method).
+
+    Accepts an already-loaded ``cfg`` so a caller that needs the config object
+    too (:meth:`NtfyPrompter.confirm`) doesn't read the file twice.
+    """
+    if cfg is None:
+        cfg = load_config()
+    return cfg is not None and approval_config.is_enabled(METHOD_NAME)
 
 
 class NtfyUnavailable(RuntimeError):
@@ -292,19 +303,21 @@ class NtfyChannel:
         raises (fail closed: a streaming error is never treated as silence
         meaning approval)."""
         cfg = self._cfg
-        url = f"{cfg.server}/{cfg.reply_topic}/json?since={int(since) - 1}"
+        # since is widened by 60s against local/server clock skew — the nonce is
+        # per-request and minted fresh in ask(), so a wider re-read window cannot
+        # replay a stale reply, only avoid missing a fresh one.
+        url = f"{cfg.server}/{cfg.reply_topic}/json?since={int(since) - 60}"
         headers = {"Authorization": f"Bearer {cfg.token}"} if cfg.token else {}
         req = urllib.request.Request(url, headers=headers, method="GET")  # noqa: S310 — same host as publish
         approve_line, deny_line = f"approve {nonce}", f"deny {nonce}"
         deadline_at = since + deadline_s
-        # ponytail: one connection for the whole wait, timeout = min(30s,
-        # remaining) at open time; a real per-line-recomputed timeout would
-        # need direct socket manipulation urllib doesn't expose. Upgrade path
-        # only if a slow/idle stream is observed to overrun in practice.
+        # ponytail: one connection for the whole wait, socket timeout = the
+        # whole remaining deadline (not a smaller cap) so a quiet reply topic
+        # never kills the stream before wait_s is up.
         remaining = deadline_at - self._clock()
         if remaining <= 0:
             return "timeout"
-        timeout = min(_STREAM_TIMEOUT_S, remaining)
+        timeout = max(1.0, remaining)
         try:
             with self._urlopen(req, timeout=timeout) as resp:
                 while self._clock() < deadline_at:
@@ -328,7 +341,8 @@ class NtfyChannel:
         """Publish + wait in one call. ``"unavailable"`` when publish fails —
         the stream is never opened in that case."""
         nonce = secrets.token_urlsafe(16)
-        message = f"{prompt}\n\nid {action_id[:8]}"
+        short_id = action_id[:8]
+        message = f"{prompt}\n\nid {short_id}" if short_id else prompt
         try:
             since = self.publish(title=_TITLE, message=message, nonce=nonce)
         except NtfyUnavailable:
@@ -381,7 +395,7 @@ class NtfyPrompter:
     def confirm(self, message: str) -> bool:
         self.last_reason = None
         cfg = load_config()
-        if cfg is None or not approval_config.is_enabled(METHOD_NAME):
+        if not is_enabled(cfg):
             raise PrompterUnavailableError("ntfy phone approvals are not configured")
         challenge = current_challenge()
         if challenge is not None and challenge[2] in _TWO_FACTOR_TIERS:
