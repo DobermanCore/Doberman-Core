@@ -1,13 +1,16 @@
 # Doberman adapter for OpenClaw
 
 Routes every [OpenClaw](https://docs.openclaw.ai) tool call through Doberman's local, fail-closed
-PASS / AUTH / BLOCK decision engine before it runs. No MCP reconfiguration needed.
+(denies by default if anything goes wrong) PASS / AUTH / BLOCK decision engine before it runs.
+No MCP (Model Context Protocol, the standard way an agent calls external tool
+servers) reconfiguration needed.
 
 ## How it works
 
-This directory is a self-contained OpenClaw plugin, not a hook-pack (OpenClaw's
-`before_tool_call` event is only reachable from a typed plugin hook, `api.on("before_tool_call",
-...)`, never from a lifecycle/command hook-pack).
+A hook is code that runs automatically at a fixed point, here just before a tool call. This
+directory is a self-contained OpenClaw plugin, not a hook-pack (OpenClaw's `before_tool_call`
+event is only reachable from a typed plugin hook, `api.on("before_tool_call", ...)`, never from a
+lifecycle/command hook-pack).
 
 1. `index.js` registers a `before_tool_call` handler. On every tool call it spawns
    `doberman hook openclaw` as a fresh subprocess, writes the event as JSON on stdin, and waits up
@@ -73,7 +76,7 @@ After install, and after every OpenClaw upgrade or config change:
    prompt, interception is **not** active. Stop and re-check steps 1 and 2 before trusting this
    adapter for anything real.
 
-## Known limitations (this slice)
+## Known limitations
 
 - **`web_fetch`'s argument key is a best-effort assumption**, not independently confirmed against
   OpenClaw's docs (`params.url`, inferred by convention from `web_search`'s confirmed
@@ -82,8 +85,8 @@ After install, and after every OpenClaw upgrade or config change:
 - **AUTH approval outcomes are not yet recorded** to Doberman's local decision log. Only BLOCK and
   PASS/monitor-softened outcomes are; an AUTH's eventual resolution happens asynchronously via
   OpenClaw's own `/approve` flow, outside this process's lifetime (wiring `onResolution` back to
-  the log is a follow-up slice).
-- **Pre-execution gating only.** This slice adds no `after_tool_call`/output scan. A read's target
+  the log is planned as a follow-up).
+- **Pre-execution gating only.** This adapter adds no `after_tool_call`/output scan. A read's target
   path is still gated the same as any other file-touching action (`.env`, keys, and the rest of
   Doberman's protected/sensitive globs are blocked or authenticated up front), but a read tool's
   returned content isn't vetted for leaked secrets here, unlike the Claude Code post-hook, which
