@@ -292,10 +292,25 @@ def test_digest_stable_across_two_runs_on_an_unchanged_tree(tmp_path):
     first = compute_delete_effects(["target"], str(tmp_path))
     second = compute_delete_effects(["target"], str(tmp_path))
     assert first.digest == second.digest
-    # C2 cleanup (#558): mixed-case operand must produce the same digest as
+
+
+def test_digest_is_case_folded_regardless_of_operand_spelling(tmp_path_factory):
+    # C2 cleanup (#558): a mixed-case operand must produce the same digest as
     # its lower-case form (both route through _relposix which now lower-cases).
-    mixed_case = compute_delete_effects(["Target"], str(tmp_path))
-    assert mixed_case.digest == first.digest
+    # On a case-sensitive filesystem "target" and "Target" are different paths,
+    # so each spelling needs its own tree, walked by its own correctly-spelled
+    # operand — the fold is about the digest string, not the filesystem.
+    lower_root = tmp_path_factory.mktemp("lower")
+    _touch(lower_root / "target" / "a.txt")
+    _touch(lower_root / "target" / "b.txt")
+    lower = compute_delete_effects(["target"], str(lower_root))
+
+    mixed_root = tmp_path_factory.mktemp("mixed")
+    _touch(mixed_root / "Target" / "a.txt")
+    _touch(mixed_root / "Target" / "b.txt")
+    mixed_case = compute_delete_effects(["Target"], str(mixed_root))
+
+    assert mixed_case.digest == lower.digest
 
 
 def test_digest_differs_after_a_file_is_added(tmp_path):
