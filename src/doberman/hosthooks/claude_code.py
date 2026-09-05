@@ -224,7 +224,7 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             # Run Doberman's own action-bound challenge so the human can actually
             # approve in-session (issues #65/#67) — not just be told to.
             hook_result, auth_method = _resolve_auth(
-                result.decision, result.action, result.repo_root, result.session_id
+                result.decision, result.challenge_action, result.repo_root, result.session_id
             )
         else:
             hook_result = _decision_payload(result.decision)  # BLOCK -> deny

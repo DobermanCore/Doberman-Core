@@ -71,7 +71,7 @@ from doberman.models import (
 from doberman.policy.drift import acted_verdict, effective_enforcement
 from doberman.policy.sources import effective_policy
 from doberman.proxy.interception_log import log_action
-from doberman.proxy.normalize import normalize
+from doberman.proxy.normalize import challenge_copy, normalize
 from doberman.storage import tool_pins
 from doberman.storage.db import active_elevations, claim_single_use, grant_elevation
 from doberman.storage.log import recent_session_decisions, record_decision
@@ -777,12 +777,15 @@ async def _handle_auth(
     # Off the event loop: the challenge blocks for a human, and an elicitation
     # answer arrives over the very session this loop services — waiting in-loop
     # would deadlock it (and freeze the proxy during GUI/TTY prompts too).
+    # The challenge renders the raw command (credential tokens masked); logging
+    # and everything after the challenge keep using `action`.
+    challenge_action = challenge_copy(action, arguments or {})
     auth_result: AuthResult | None = None
     try:
         auth_result = await asyncio.to_thread(
             run_auth_challenge,
             decision,
-            action,
+            challenge_action,
             prompter=AUTH_PROMPTER,
             message_tone=load_message_tone(REPO_ROOT),
             repo_root=REPO_ROOT,
