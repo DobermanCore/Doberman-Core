@@ -27,6 +27,7 @@ SECURITY / resilience:
 """
 
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -404,18 +405,36 @@ async def _ensure_schema(conn: aiosqlite.Connection) -> None:
     await conn.commit()
 
 
+async def _schema_is_current(conn: aiosqlite.Connection) -> bool:
+    """True when the DB already records ``SCHEMA_VERSION`` — the only state
+    ``_ensure_schema`` would leave untouched. A missing table or any other
+    version says "migrate"; the migration itself decides what that means."""
+    try:
+        async with conn.execute("SELECT version FROM schema_version") as cur:
+            rows = await cur.fetchall()
+    except sqlite3.OperationalError:  # fresh file, or a pre-versioned DB
+        return False
+    return [row[0] for row in rows] == [SCHEMA_VERSION]
+
+
 @asynccontextmanager
 async def open_db(repo_root: str = ".") -> AsyncIterator[aiosqlite.Connection]:
     """Open (creating if needed) the repo DB with the schema ensured.
 
     Creates ``.doberman/`` ``0700`` and the DB file ``0600`` on first use.
+    The migration runs only when the version row is not current: one decided
+    action opens the DB ~11 times, and re-running the legacy probes, the full
+    CREATE script and a committed version rewrite on each of them was the
+    dominant cost of every multi-action test (~1,100 opens for a 100-action
+    warm-up; 180-200 s per test on the Windows CI leg).
     """
     path = db_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     conn = await aiosqlite.connect(str(path))
     try:
         await conn.execute("PRAGMA busy_timeout = 3000")
-        await _ensure_schema(conn)
+        if not await _schema_is_current(conn):
+            await _ensure_schema(conn)
         _restrict_permissions(path)
         yield conn
     finally:
