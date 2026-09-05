@@ -163,3 +163,42 @@ async def test_revoke_failure_after_block_still_fails_closed(
     assert ReasonCode.protected_path_blocked.value in text
     assert fake.calls == []
     assert any("elevation revoke failed" in r.message for r in caplog.records)
+
+
+async def test_single_use_unclaimable_after_elevation_grant_revokes_it(
+    monkeypatch, isolated_executor_repo_root
+):
+    """The single-use-unclaimable BLOCK path — a storage error mid-claim, not a
+    policy re-decision — revokes the elevation it followed too."""
+    monkeypatch.setattr(
+        executor,
+        "DEFAULT_OBJECTIVE",
+        StaticGuardrail(
+            GuardrailResult(
+                verdict=Verdict.AUTH,
+                risk=Risk.high,
+                reason_codes=[ReasonCode.sensitive_path_access],
+                explanation="test auth",
+            )
+        ),
+    )
+    monkeypatch.setattr(executor, "run_auth_challenge", _approve_role_elevation())
+
+    def boom_claim_single_use(repo_root, elevation_id):
+        raise RuntimeError("db exploded")
+
+    monkeypatch.setattr(executor, "claim_single_use", boom_claim_single_use)
+    async with proxied_session() as (fake, agent):
+        result = await agent.call_tool("fs_delete", {"path": "backend/api.ts"})
+
+    # The claim raises BEFORE the forward — the downstream must never see it.
+    assert result.isError
+    text = result.content[0].text
+    assert "blocked by policy" in text
+    assert ReasonCode.single_use_elevation_unclaimable.value in text
+    assert fake.calls == []
+
+    # The grant made moments earlier must not have survived the BLOCK.
+    root = str(isolated_executor_repo_root)
+    grants = await active_elevations(root, datetime.now(timezone.utc))
+    assert grants == []

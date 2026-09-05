@@ -907,6 +907,7 @@ async def _handle_auth(
         # Persist the synthetic unclaimable BLOCK instead, matching the PASS
         # path below.
         denial = _single_use_unclaimable_decision(action)
+        await _revoke_granted_elevation(elevation_id)
         await _persist(
             denial, action, auth_result="unclaimable", elevation_id=elevation_id, eid=eid
         )
