@@ -57,6 +57,22 @@ def test_dot_git_presence_sets_hits_git(tmp_path):
     assert effects.hits_git is True
 
 
+def test_dot_git_case_insensitive_on_windows_for_a_walked_descendant(tmp_path):
+    # C2 cleanup (#558): _touches_git compared the os.walk-discovered
+    # descendant's relative path case-sensitively even on Windows, where
+    # NTFS is case-insensitive-but-preserving — a git dir the filesystem
+    # happens to report as ".GIT" sailed past the check entirely. Windows
+    # only: POSIX genuinely has distinct ".git"/".GIT" directories and the
+    # case-sensitive comparison there must not change (see the digest-root
+    # test below for the root-basis half of this cleanup).
+    if os.name != "nt":
+        pytest.skip("NTFS-specific: case-insensitive-but-preserving filesystem")
+    _touch(tmp_path / "target" / ".GIT" / "HEAD", "ref: refs/heads/main")
+    _touch(tmp_path / "target" / "real.txt")
+    effects = compute_delete_effects(["target"], str(tmp_path))
+    assert effects.hits_git is True
+
+
 def test_operand_outside_repo_root_sets_hits_outside_repo_and_is_not_walked(tmp_path):
     outside = tmp_path.parent / f"outside-{tmp_path.name}"
     _touch(outside / "secret.txt")
@@ -195,8 +211,27 @@ def test_hitting_cap_reports_a_lower_bound_not_a_silent_zero(tmp_path):
         _touch(target / f"f{i}.txt")
     effects = compute_delete_effects(["target"], str(tmp_path), cap=10)
     assert effects.capped is True
-    assert effects.file_count == 10  # the cap value — "at least 10"
-    assert effects.dir_count is None
+    # C2 cleanup (#558): _cap_hit used to dump the whole cap value into
+    # file_count (dir_count=None) regardless of what was actually seen. The
+    # real split — target/ itself (1 dir) + files scanned up to the cap — now
+    # survives: both counts are exact lower bounds and sum to the cap.
+    assert effects.dir_count == 1  # target/ itself
+    assert effects.file_count == 9  # 1 dir + 9 files == cap (10)
+
+
+def test_cap_hit_reports_dirs_not_lumped_into_file_count(tmp_path):
+    # C2 cleanup (#558): a delete that is mostly directories used to render
+    # as "N+ files" — _cap_hit attributed every capped entry to file_count
+    # even when the walk had hit the cap on directories alone. This tree hits
+    # the cap on directories before a single file is ever scanned.
+    target = tmp_path / "target"
+    target.mkdir()
+    for i in range(10):
+        (target / f"d{i}").mkdir()
+    effects = compute_delete_effects(["target"], str(tmp_path), cap=5)
+    assert effects.capped is True
+    assert effects.dir_count == 5
+    assert effects.file_count == 0
 
 
 def test_wide_tree_returns_within_budget_capped(tmp_path):
@@ -267,6 +302,31 @@ def test_digest_differs_after_a_file_is_added(tmp_path):
     assert before.digest != after.digest
 
 
+def test_digest_root_basis_matches_via_a_symlinked_root(tmp_path):
+    # C2 cleanup (#558): the private _relposix() helper used to build a
+    # walked descendant's digest entry from os.path.abspath(repo_root) — the
+    # UNRESOLVED root — while a direct operand's canon.relposix (via the
+    # shared doberman.canonical.canonicalize helper) is computed against the
+    # RESOLVED root. On a symlinked repo root (e.g. macOS's /tmp ->
+    # /private/tmp) the two bases disagree, so the same physical tree reached
+    # via the symlink and reached directly produced two different digests —
+    # latent breakage for the proxy's TOCTOU drift check. Both must now agree
+    # (unified on the shared canonicalizer's root resolution).
+    real_root = tmp_path / "real_root"
+    real_root.mkdir()
+    _touch(real_root / "target" / "nested" / "a.txt")
+    link_root = tmp_path / "link_root"
+    try:
+        link_root.symlink_to(real_root, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation needs elevation on this Windows box")
+    via_link = compute_delete_effects(["target"], str(link_root))
+    via_real = compute_delete_effects(["target"], str(real_root))
+    assert via_link.file_count == via_real.file_count == 1
+    assert via_link.dir_count == via_real.dir_count == 2  # target/ + target/nested/
+    assert via_link.digest == via_real.digest
+
+
 def test_unknown_and_cap_hit_share_the_same_sentinel_digest(tmp_path):
     # A known->unknown OR known->cap-hit transition must always be detectable
     # by a plain digest inequality in the proxy's TOCTOU check — both
@@ -334,6 +394,23 @@ def test_format_effect_set_cap_hit():
     # separator while the known-count branch uses `{:,}` — inconsistent, and
     # the whole point of a preview is a number a human reads at a glance.
     assert format_effect_set(effects) == "1,000+ files"
+
+
+def test_format_effect_set_cap_hit_with_dir_split():
+    # C2 cleanup (#558): _cap_hit now carries the real files/dirs split
+    # instead of dumping everything into file_count. The renderer must show
+    # the true total (what "N+ files" used to mean) with the split as
+    # context — never understate it as "1+ files" for a mostly-directory cap
+    # hit.
+    effects = EffectSet(
+        file_count=1,
+        dir_count=999,
+        capped=True,
+        hits_git=False,
+        hits_outside_repo=False,
+        digest="d",
+    )
+    assert format_effect_set(effects) == "1,000+ (1 file, 999 directories)"
 
 
 def test_format_effect_set_hard_unknown():

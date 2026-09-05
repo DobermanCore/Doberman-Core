@@ -15,8 +15,6 @@ import pytest
 from doberman.engine.rules import commands as commands_module
 from doberman.engine.rules.commands import (
     DestructiveCommandRule,
-    command_contains_dynamic_content,
-    delete_class_operands,
     delete_class_operands_and_dynamic,
     walk_command,
 )
@@ -1153,45 +1151,50 @@ def test_shell_deletion_of_a_test_file_is_invisible_to_this_rule(command):
     assert result.verdict is Verdict.PASS
 
 
-# --- delete_class_operands (C2 Task 3) ---------------------------------------
+# --- delete_class_operands_and_dynamic operand extraction (C2 Task 3; the --
+# standalone delete_class_operands()/command_contains_dynamic_content()
+# wrappers these tests used to call were deleted (#558, C2 cleanup) as dead
+# code — zero production callers after the M1 single-parse refactor below
+# folded them into this one combined function, which is what these now
+# exercise directly. --------------------------------------------------------
 
 
 def test_delete_class_operands_rm():
-    assert delete_class_operands("rm -rf build") == ["build"]
+    assert delete_class_operands_and_dynamic("rm -rf build")[0] == ["build"]
 
 
 def test_delete_class_operands_rm_multiple():
-    assert delete_class_operands("rm -f a.txt b.txt") == ["a.txt", "b.txt"]
+    assert delete_class_operands_and_dynamic("rm -f a.txt b.txt")[0] == ["a.txt", "b.txt"]
 
 
 def test_delete_class_operands_windows_verb():
-    assert delete_class_operands("Remove-Item -Recurse -Force build") == ["build"]
+    assert delete_class_operands_and_dynamic("Remove-Item -Recurse -Force build")[0] == ["build"]
 
 
 def test_delete_class_operands_del_verb():
-    assert delete_class_operands("del /s /q build") == ["build"]
+    assert delete_class_operands_and_dynamic("del /s /q build")[0] == ["build"]
 
 
 def test_delete_class_operands_non_delete_command_is_none():
-    assert delete_class_operands("ls -la") is None
-    assert delete_class_operands("git status") is None
+    assert delete_class_operands_and_dynamic("ls -la")[0] is None
+    assert delete_class_operands_and_dynamic("git status")[0] is None
 
 
 def test_delete_class_operands_empty_command_is_none():
-    assert delete_class_operands("") is None
+    assert delete_class_operands_and_dynamic("")[0] is None
 
 
 def test_delete_class_operands_compound_command_collects_across_segments():
     # A benign segment plus a delete segment: operands come from the delete
     # segment only, not misattributed to the benign one.
-    assert delete_class_operands("echo hi && rm -rf target") == ["target"]
+    assert delete_class_operands_and_dynamic("echo hi && rm -rf target")[0] == ["target"]
 
 
 def test_delete_class_operands_opaque_shell_payload_is_none():
     # Deliberately NOT unwrapped (ponytail): an opaque `-c` payload AUTHs via
     # opaque_command, not a delete-class reason — showing no preview for an
     # unclassifiable payload is correct, never a guess.
-    assert delete_class_operands('bash -c "rm -rf /"') is None
+    assert delete_class_operands_and_dynamic('bash -c "rm -rf /"')[0] is None
 
 
 def test_delete_class_operands_reuses_the_rule_parse_not_a_reparse():
@@ -1207,7 +1210,7 @@ def test_delete_class_operands_reuses_the_rule_parse_not_a_reparse():
     # be "echo" (whose args are not, in general, its runtime stdout). No
     # known literal operand for this rm segment -> [] (found, but empty),
     # never a guess reconstructed from a sibling segment.
-    assert delete_class_operands("FOO=bar rm -rf $(echo target)") == []
+    assert delete_class_operands_and_dynamic("FOO=bar rm -rf $(echo target)")[0] == []
 
 
 # --- delete_class_operands_and_dynamic (M1, C2 final review) -----------------
@@ -1230,13 +1233,6 @@ def test_delete_class_operands_and_dynamic_parses_the_command_once(monkeypatch):
     assert len(calls) == 1
     assert operands == []
     assert dynamic is True
-
-
-def test_delete_class_operands_and_dynamic_matches_the_two_separate_calls():
-    for command in ("rm -rf build", "ls -la", "rm -rf $(echo x)", ""):
-        operands, dynamic = delete_class_operands_and_dynamic(command)
-        assert operands == delete_class_operands(command)
-        assert dynamic == command_contains_dynamic_content(command)
 
 
 # --- T3: walk the command literals an interpreter one-liner hands to a ------

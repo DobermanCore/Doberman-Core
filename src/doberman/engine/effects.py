@@ -4,7 +4,7 @@ ADR 0094 ("Bounded, read-only filesystem effect enumeration in the decision
 path") permits exactly this module — and only this module — to touch the
 filesystem beyond the usual DB/config reads: read-only ``os.walk``/``Path``
 calls against the ALREADY-ADVERSARIALLY-PARSED operands of a delete-class
-command (see ``engine/rules/commands.py::delete_class_operands``). No
+command (see ``engine/rules/commands.py::delete_class_operands_and_dynamic``). No
 subprocess, no network, ever. Display and audit only — the returned
 ``EffectSet`` never feeds risk or a verdict; see ``models.Decision.effects``,
 structurally isolated from ``final_verdict``/``final_risk`` the same way
@@ -43,8 +43,19 @@ def _digest(relpaths: set[str]) -> str:
 
 def _touches_git(relposix: str) -> bool:
     """True if ``.git`` is a path segment anywhere in ``relposix`` — not just
-    at the operand root (a delete under ``target/.git/`` still hits git)."""
-    return ".git" in relposix.split("/")
+    at the operand root (a delete under ``target/.git/`` still hits git).
+
+    Case-insensitive on Windows only (C2 cleanup, #558): NTFS is case-
+    insensitive-but-preserving, so a git dir the filesystem happens to report
+    as ``.GIT`` names the SAME directory as ``.git`` there and must still be
+    flagged. Left case-sensitive on POSIX, where ``.git``/``.GIT`` are
+    genuinely distinct directories — folding case there would over-flag an
+    unrelated delete as touching git.
+    """
+    segments = relposix.split("/")
+    if os.name == "nt":
+        return ".git" in (segment.lower() for segment in segments)
+    return ".git" in segments
 
 
 def _unknown(hits_git: bool, hits_outside_repo: bool) -> EffectSet:
@@ -59,11 +70,20 @@ def _unknown(hits_git: bool, hits_outside_repo: bool) -> EffectSet:
     )
 
 
-def _cap_hit(cap: int, hits_git: bool, hits_outside_repo: bool) -> EffectSet:
-    """Hit the entry cap: at least ``cap`` entries exist, exact count unknown."""
+def _cap_hit(files_seen: int, dirs_seen: int, hits_git: bool, hits_outside_repo: bool) -> EffectSet:
+    """Hit the entry cap: ``files_seen``/``dirs_seen`` are the exact counts
+    scanned before the cap fired (their sum is the cap) — a lower bound on
+    each true total, never a confirmed complete count.
+
+    C2 cleanup (#558): this used to dump the whole cap value into
+    ``file_count`` with ``dir_count=None`` regardless of what was actually
+    found, so a delete that was mostly directories rendered as "N+ files".
+    The caller already tracks both counts (``len(files)``/``len(dirs)``) —
+    passing them through instead of discarding them is the whole fix.
+    """
     return EffectSet(
-        file_count=cap,
-        dir_count=None,
+        file_count=files_seen,
+        dir_count=dirs_seen,
         capped=True,
         hits_git=hits_git,
         hits_outside_repo=hits_outside_repo,
@@ -79,9 +99,10 @@ def unknown_effects() -> EffectSet:
     """The ``unknown`` :class:`~doberman.models.EffectSet` state (ADR 0094),
     for a caller that must not even try a walk: a delete-class command whose
     operand list can't be trusted (e.g. a live shell substitution among the
-    operands — see ``engine/rules/commands.py::command_contains_dynamic_content``)
-    rather than a walk that started and then failed. Same sentinel digest as
-    an OS-error/cap/timeout failure — both are equally "not what was shown"
+    operands — see ``engine/rules/commands.py::delete_class_operands_and_dynamic``'s
+    ``dynamic`` return value) rather than a walk that started and then
+    failed. Same sentinel digest as an OS-error/cap/timeout failure — both
+    are equally "not what was shown"
     for the TOCTOU compare in ``proxy/executor.py``.
     """
     return _unknown(hits_git=False, hits_outside_repo=False)
@@ -122,13 +143,24 @@ def compute_delete_effects(
 
     deadline = time.monotonic() + budget_s
     root = os.path.abspath(str(repo_root))
+    # C2 cleanup (#558): this walked-descendant relpath used to be built
+    # against `root` above (os.path.abspath — never resolves symlinks), while
+    # a direct operand's canon.relposix (below) is built against the shared
+    # canonicalize() helper's RESOLVED root. On a symlinked repo root (e.g.
+    # macOS's /tmp -> /private/tmp) the two disagreed, corrupting a walked
+    # descendant's digest entry. Resolve once, the same way canonicalize()
+    # resolves its own root, so every entry in `files`/`dirs` shares one
+    # basis. `root` above stays unresolved for the actual filesystem-access
+    # joins just below (os.path.islink()/os.path.join()) — the OS follows a
+    # root-level symlink transparently there regardless.
+    _resolved_root = canonicalize(root, root=root).resolved
     files: set[str] = set()
     dirs: set[str] = set()
     hits_git = False
     hits_outside_repo = False
 
     def _relposix(abs_path: str) -> str:
-        return os.path.relpath(abs_path, root).replace(os.sep, "/")
+        return os.path.relpath(abs_path, _resolved_root).replace(os.sep, "/")
 
     for operand in operands:
         # C1 (C2 final review): the bounds above only ever fired inside
@@ -142,7 +174,7 @@ def compute_delete_effects(
         if time.monotonic() > deadline:
             return _unknown(hits_git, hits_outside_repo)
         if len(files) + len(dirs) >= cap:
-            return _cap_hit(cap, hits_git, hits_outside_repo)
+            return _cap_hit(len(files), len(dirs), hits_git, hits_outside_repo)
         try:
             # A NUL byte can never appear in a real path component on any
             # filesystem, so an operand containing one cannot denote a real
@@ -184,7 +216,7 @@ def compute_delete_effects(
                     hits_git = True
                 files.add(link_relposix)
                 if len(files) + len(dirs) >= cap:
-                    return _cap_hit(cap, hits_git, hits_outside_repo)
+                    return _cap_hit(len(files), len(dirs), hits_git, hits_outside_repo)
                 continue
             if _touches_git(canon.relposix):
                 hits_git = True
@@ -214,7 +246,7 @@ def compute_delete_effects(
                         hits_git = True
                     dirs.add(rel)
                     if len(files) + len(dirs) >= cap:
-                        return _cap_hit(cap, hits_git, hits_outside_repo)
+                        return _cap_hit(len(files), len(dirs), hits_git, hits_outside_repo)
                 for f in filenames:
                     full = os.path.join(dirpath, f)
                     if os.path.islink(full):
@@ -224,7 +256,7 @@ def compute_delete_effects(
                         hits_git = True
                     files.add(rel)
                     if len(files) + len(dirs) >= cap:
-                        return _cap_hit(cap, hits_git, hits_outside_repo)
+                        return _cap_hit(len(files), len(dirs), hits_git, hits_outside_repo)
         except (OSError, ValueError):
             return _unknown(hits_git, hits_outside_repo)
 
