@@ -800,6 +800,15 @@ def test_focus_ring_wrapper_lights_up_on_both_buttons(real_root):
     <FocusIn>/<FocusOut> for BOTH Deny and Approve -- the round-2 ring was
     tuned/verified against Deny only; this closes that gap for real, on the
     real widget tree, not just the palette constants above.
+
+    # ponytail: uses `_press` (below), not `event_generate`, for the same
+    # reason `_press`'s own docstring gives for KeyPress -- a CI process that
+    # is not the foreground session can lose Tk-internal focus at any moment,
+    # and a real, asynchronous <FocusOut> racing in right after this test's
+    # synthetic <FocusIn> (before the assert below runs) was the confirmed
+    # cause of the highlightbackground mismatch seen on windows-latest
+    # (#551). Dispatching the bound callback directly tests the exact same
+    # production binding deterministically, with no real focus involved.
     """
     import tkinter.ttk as ttk
 
@@ -813,13 +822,13 @@ def test_focus_ring_wrapper_lights_up_on_both_buttons(real_root):
     for label in ("Deny", "Approve"):
         button = buttons[label]
         wrapper = button.master
-        button.event_generate("<FocusIn>")
+        _press(button, "<FocusIn>")
         root.update()
         assert wrapper.cget("highlightbackground") == gui_prompter._RING_OUTER
         # highlightcolor too (P1 pixel-probe fix, item 1) -- some Tk builds
         # paint the ring from whichever of the two the platform consults.
         assert wrapper.cget("highlightcolor") == gui_prompter._RING_OUTER
-        button.event_generate("<FocusOut>")
+        _press(button, "<FocusOut>")
         root.update()
         assert wrapper.cget("highlightbackground") == gui_prompter._BG
         assert wrapper.cget("highlightcolor") == gui_prompter._BG
@@ -853,19 +862,26 @@ def _walk_widgets(widget):
 
 def _press(widget, sequence):
     """Run ``widget``'s own binding for ``sequence`` without going through Tk's
-    key-event delivery.
+    normal event delivery -- works for a KeyPress binding and for a
+    <FocusIn>/<FocusOut> one alike, since both go through the identical
+    %-substitution callback wrapper.
 
     ``event_generate`` for a KeyPress is not delivered to the named window: Tk
     redirects every key event to the application's focus window and DISCARDS
-    it when there is none -- and a CI process that is not the foreground
-    session can lose Tk-internal focus at any moment (Windows sends
-    WM_KILLFOCUS asynchronously after ``focus_force``), which is exactly the
-    flake seen on the Windows leg. The handlers under test read
-    ``root.focus_get()`` (faked above), so dispatching the bound callback
-    directly tests the same logic deterministically. tkinter registers the
-    callback as a Tcl command whose name is the first word of the bound
-    script; it is called with the 19 ``%``-substitution slots, which
-    ``Misc._substitute`` accepts as zero placeholders (``??`` trips its unguarded ``getint``).
+    it when there is none. A synthetic <FocusIn>/<FocusOut> has the mirror
+    problem: it fires the binding fine, but a CI process that is not the
+    foreground session can lose Tk-internal focus at any moment (Windows
+    sends WM_KILLFOCUS asynchronously after ``focus_force``), so a REAL,
+    asynchronous Focus event for the same widget can race in right after the
+    synthetic one and undo it before a test's assert runs -- confirmed as the
+    cause of the windows-latest flake in #551. Some handlers under test read
+    ``root.focus_get()`` (faked above); others are wired straight on the
+    widget (see the focus-ring test). Either way, dispatching the bound
+    callback directly tests the same logic deterministically, with no real
+    focus involved. tkinter registers the callback as a Tcl command whose
+    name is the first word of the bound script; it is called with the 19
+    ``%``-substitution slots, which ``Misc._substitute`` accepts as zero
+    placeholders (``??`` trips its unguarded ``getint``).
     """
     script = widget.bind(sequence)
     if not script:
@@ -2326,6 +2342,29 @@ def test_focus_ring_outer_line_actually_paints_a_real_pixel_probe(real_root):
         except Exception:  # noqa: S110 — best-effort only
             pass
 
+    def _confirmed_foreground() -> bool | None:
+        # Windows only: a real True/False answer, or None when we can't tell
+        # (no ctypes, window title not found) -- never used to block the
+        # probe on ITS OWN failure to answer, only on a confirmed "no".
+        # ponytail: GetForegroundWindow(), not winfo/focus_get() -- Tk only
+        # knows its OWN focus/mapped state, not whether Windows is actually
+        # compositing this window on top of everything else, which is the
+        # one thing an agent/CI process running off-screen can never win
+        # (SetForegroundWindow is deliberately restricted to the real
+        # foreground process). Fixing the real desktop is out of scope; this
+        # just tells the probe not to fight a battle it cannot win.
+        if sys.platform != "win32":
+            return None
+        try:
+            import ctypes
+
+            hwnd = ctypes.windll.user32.FindWindowW(None, gui_prompter._TITLE)
+            if not hwnd:
+                return None
+            return ctypes.windll.user32.GetForegroundWindow() == hwnd
+        except Exception:
+            return None
+
     def _ring_visible_once(button) -> bool:
         _force_topmost()
         try:
@@ -2366,6 +2405,15 @@ def test_focus_ring_outer_line_actually_paints_a_real_pixel_probe(real_root):
 
     if not (root.winfo_screenwidth() and _try_grab(image_grab)):
         pytest.skip("no capturable display")
+
+    _force_topmost()
+    root.update()
+    if _confirmed_foreground() is False:
+        pytest.skip(
+            "dialog window is confirmed NOT the OS foreground window (issue #551): "
+            "a screen-capture pixel probe here would race whatever window IS "
+            "foreground instead of exercising the ring paint itself"
+        )
 
     # Force a genuine focus TRANSITION into each button before probing it --
     # Deny already holds focus from the dialog's own construction-time
