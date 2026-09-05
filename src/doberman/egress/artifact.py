@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import logging
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -54,6 +55,24 @@ def _pins_file_path(repo_root: str) -> Path:
     return Path(repo_root) / CONFIG_DIR / PINS_FILE
 
 
+@lru_cache(maxsize=8)
+def _parse_pins_yaml_data(raw: bytes) -> dict:
+    """Parse+validate ``artifact_pins.yaml``, cached on its raw content (#552).
+
+    Same mechanism as :func:`doberman.config._parse_role_yaml_data`: keyed on
+    the file's ``bytes`` rather than ``(path, mtime_ns)``, because a
+    same-mtime-tick rewrite (coarse filesystem clock resolution, or two fast
+    writes) could hash to the same mtime key and serve a stale pin set --
+    for a *newly added* pin that means an artifact verifies UNPINNED instead
+    of MISMATCH, the loosening direction prime directive 2 forbids. The read
+    itself stays outside this helper (see ``load_pins``) so this function is
+    pure parse+validate; ``maxsize=8`` bounds memory across a handful of
+    repo roots/edits without unbounded growth. Raises straight through on
+    parse failure -- never cached.
+    """
+    return yaml.safe_load(raw.decode("utf-8")) or {}
+
+
 def load_pins(repo_root: str = ".") -> dict[str, str]:
     """Read pinned artifact digests from ``.doberman/artifact_pins.yaml``.
 
@@ -65,7 +84,10 @@ def load_pins(repo_root: str = ".") -> dict[str, str]:
     if not path.exists():
         return {}
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        # ponytail: one small read per decision; the parse+validate work below
+        # is cached on the bytes themselves, so no staleness ceiling remains.
+        raw = path.read_bytes()
+        data = _parse_pins_yaml_data(raw)
     except (OSError, yaml.YAMLError):
         logger.warning("could not read %s; no artifact pins loaded", path)
         return {}

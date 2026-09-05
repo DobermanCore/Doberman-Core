@@ -10,7 +10,9 @@ silently emptying the export.
 build_record() emits:
     ts, action_id, agent_role, action_type, target_path_class, risk,
     source_context, final_verdict, decided_layer, reason_codes,
-    auth_required, auth_result, elevation_id, entity_id, session_id
+    auth_required, auth_result, elevation_id, entity_id, session_id,
+    effects_file_count, effects_dir_count, effects_capped, effects_hits_git,
+    effects_hits_outside_repo, effects_digest_fp
 
 _ALLOWED_FIELDS selects the redaction-safe exportable subset:
     ts, action_type, risk, final_verdict, decided_layer,
@@ -46,8 +48,9 @@ def _build_record(**overrides: Any) -> dict[str, Any]:
     log.py breaks the tests here instead of silently emptying the export.
 
     Non-exportable fields (action_id, agent_role, target_path_class,
-    source_context, auth_required, elevation_id, entity_id) are included
-    because the real producer always emits them — the sink must strip them.
+    source_context, auth_required, elevation_id, entity_id, and the #556
+    EffectSet fields) are included because the real producer always emits
+    them — the sink must strip them.
     """
     base: dict[str, Any] = {
         # ── exported (in _ALLOWED_FIELDS) ──────────────────────────────────
@@ -67,6 +70,12 @@ def _build_record(**overrides: Any) -> dict[str, Any]:
         "auth_required": False,
         "elevation_id": None,
         "entity_id": None,
+        "effects_file_count": None,
+        "effects_dir_count": None,
+        "effects_capped": None,
+        "effects_hits_git": None,
+        "effects_hits_outside_repo": None,
+        "effects_digest_fp": None,
     }
     base.update(overrides)
     return base

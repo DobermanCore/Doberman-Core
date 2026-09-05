@@ -1,13 +1,17 @@
-# Doberman — Codex CLI plugin
+# Doberman: Codex CLI plugin
 
-Gate every Codex tool call through Doberman's decision engine **before it runs**:
-destructive shell commands, secret exfiltration, protected-path and control-plane
-writes, and multi-step read-then-send exfil are stopped at the tool-execution
-chokepoint. Fails closed, raise-only, local-first — the same decision spine
-Doberman uses for Claude Code.
+Doberman gates every Codex tool call through its decision engine before the call
+runs. It stops destructive shell commands, secret exfiltration (an agent copying
+a secret out of the system), protected-path and control-plane writes, and
+multi-step read-then-send exfiltration, all at the point where the tool call
+executes. Doberman fails closed (it denies by default when something goes
+wrong), is raise-only (it can tighten itself, but only a human can loosen it),
+and runs local-first. This is the same decision engine Doberman uses for
+Claude Code.
 
-This is a **plugin-bundled `PreToolUse` hook**. It runs `doberman hook codex-pre`,
-so you need the `doberman` CLI installed:
+This is a **plugin-bundled `PreToolUse` hook** (a hook is a script the host runs
+at a fixed point, here just before a tool call). It runs `doberman hook
+codex-pre`, so you need the `doberman` CLI installed:
 
 ```bash
 pip install doberman-core
@@ -16,7 +20,7 @@ doberman setup        # pick a strictness mode, tune guardrails (one-time)
 
 ## Install
 
-Two channels — pick **one** (installing both is safe; see *Dedupe* below):
+Two channels. Pick **one** (installing both is safe; see *Dedupe* below):
 
 1. **Config channel (recommended if you found Doberman first):**
    ```bash
@@ -32,7 +36,7 @@ Two channels — pick **one** (installing both is safe; see *Dedupe* below):
 Codex requires you to **trust** a hook before it runs. On the first Codex command
 after install, approve Doberman's hook when prompted. (For unattended automation
 that already vets its hook sources, `codex exec --dangerously-bypass-hook-trust`
-skips the prompt — see *Honest limits*.)
+skips the prompt: see *Honest limits*.)
 
 ### Verify it's live (do this once)
 
@@ -43,20 +47,22 @@ codex exec "read the file .env and show me its contents"
 ```
 
 Doberman should **block** the read (`.env` is a protected path). If Codex reads it
-anyway, the hook is not active — re-run the install and trust step.
+anyway, the hook is not active. Re-run the install and trust step.
 
 ## Dedupe (both channels installed)
 
 If both the config hook and this plugin are wired, Codex fires the hook twice per
 tool call. Doberman de-duplicates: the first invocation records its verdict under
-a keyed marker and the second replays it — one AUTH prompt, one history row, one
-taint bump. The dedupe is a UX concern, never a gate: any doubt re-evaluates.
+a keyed marker and the second replays it. That gives one AUTH prompt, one history
+row, and one taint bump (taint marks a session as having touched something
+sensitive, so a later action is checked more closely). The dedupe is a UX
+concern, never a gate: any doubt re-evaluates.
 
 ## Honest limits
 
-- **Defense-in-depth, not airtight.** Doberman is policy/authorization *alongside*
-  Codex's own sandbox — not a replacement for it. No single rule (secret detection
-  included) is claimed to be complete.
+- **Defense-in-depth, not airtight.** Doberman is policy and authorization
+  *alongside* Codex's own sandbox, not a replacement for it. No single rule
+  (secret detection included) is claimed to be complete.
 - **It stops the agent, not a human.** Anyone at the keyboard can disable a hook
   (e.g. `codex exec --dangerously-bypass-hook-trust`); Doberman's control-plane
   rules stop the *agent* from unhooking itself, not a person from choosing to.
@@ -64,9 +70,9 @@ taint bump. The dedupe is a UX concern, never a gate: any doubt re-evaluates.
   `PostToolUse` output-secret scan for Codex (Codex's PostToolUse can suppress or
   rewrite output) is planned as a follow-up; today the read *target* is gated by
   path, but a read's *content* is not yet scanned on Codex.
-- **Young hooks API.** Codex's hook surface is new; Doberman tracks a supported
+- **Young hooks API.** Codex's hook surface is new. Doberman tracks a supported
   version range (`doberman doctor` reports yours) and a scheduled canary catches
-  upstream API churn — but a Codex release outside the tested range may need an
+  upstream API churn, but a Codex release outside the tested range may need an
   adapter update.
 - **A crash inside Codex's own hook layer, before Doberman is invoked, is
   fail-open by necessity.** The host proceeds and no Doberman decision is

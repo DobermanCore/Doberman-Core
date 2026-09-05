@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from doberman.auth.approval import ApprovalMethod
 from doberman.auth.methods.windows_hello import WindowsHelloMethod
+from doberman.auth.ntfy import NtfyApprovalMethod
 
 
 def builtin_methods() -> list[ApprovalMethod]:
     """The approval methods that ship in core. Order is not preference (the user's
     enabled list sets preference); it's just the catalogue of what exists."""
-    return [WindowsHelloMethod()]
+    return [WindowsHelloMethod(), NtfyApprovalMethod()]

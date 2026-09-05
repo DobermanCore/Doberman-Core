@@ -66,11 +66,20 @@ DB_FILE = "doberman.db"
 #: Version 14 adds the untrusted-value echo tripwire's fingerprint store (C1:
 #: session_untrusted_value_fingerprints -- additive CREATE TABLE; keyed HMAC
 #: fingerprints of hostnames/URLs/emails only, never the raw value).
-#: Version 15 adds the ambient activity bus (FM.1): ``activity_events`` (the bus
+#: Version 15 adds the blast-radius preview's EffectSet fields to ``decisions``
+#: (issue #556): ``effects_file_count``/``effects_dir_count`` (counts),
+#: ``effects_capped``/``effects_hits_git``/``effects_hits_outside_repo``
+#: (booleans), and ``effects_digest_fp`` — a keyed HMAC of the EffectSet's
+#: sha256 digest (never the plain digest: a sha256 of a small, guessable
+#: relative-path set is brute-forceable without the key). All six are NULL for
+#: a decision with no preview (non-delete-class), never 0/False, so "no
+#: preview" stays distinguishable from "an empty one". Additive ALTER on an
+#: existing table; fresh DBs get it from _SCHEMA below.
+#: Version 16 adds the ambient activity bus (FM.1): ``activity_events`` (the bus
 #: log, append-only, bounded by retention purge) and ``monitor_state`` (a per-reader
 #: cursor so each consumer can resume without replaying). Both are additive
 #: CREATE TABLE IF NOT EXISTS — no legacy migration needed.
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -107,7 +116,13 @@ CREATE TABLE IF NOT EXISTS decisions (
     auth_result       TEXT,
     elevation_id      TEXT,
     entity_id         TEXT,
-    session_id        TEXT
+    session_id        TEXT,
+    effects_file_count         INTEGER,
+    effects_dir_count          INTEGER,
+    effects_capped             INTEGER,
+    effects_hits_git           INTEGER,
+    effects_hits_outside_repo  INTEGER,
+    effects_digest_fp          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS secret_fingerprints (
@@ -427,6 +442,28 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
             "DELETE FROM baseline_counts WHERE feature_key LIKE 'destination:%' "
             "AND feature_key NOT LIKE 'destination:hmac:%'"
         )
+    # v14 -> v15: blast-radius preview EffectSet fields on decisions (#556).
+    # Additive ALTER on an existing table; fresh DBs get it from _SCHEMA above.
+    # No backfill — existing rows predate the preview and correctly read as
+    # "no preview" (NULL), not a fabricated zero.
+    decision_cols = await _table_columns(conn, "decisions")
+    if decision_cols and "effects_file_count" not in decision_cols:
+        for column in (
+            "effects_file_count INTEGER",
+            "effects_dir_count INTEGER",
+            "effects_capped INTEGER",
+            "effects_hits_git INTEGER",
+            "effects_hits_outside_repo INTEGER",
+            "effects_digest_fp TEXT",
+        ):
+            try:
+                await conn.execute(f"ALTER TABLE decisions ADD COLUMN {column}")  # noqa: S608 — fixed literals above
+            except sqlite3.OperationalError as e:
+                # Two processes racing this migration on the same pre-v15 DB
+                # (review fix for #556) — the loser tolerates "already added
+                # by the winner" and re-raises anything else.
+                if "duplicate column" not in str(e).lower():
+                    raise
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

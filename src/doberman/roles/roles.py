@@ -25,6 +25,7 @@ SECURITY:
 from collections.abc import Iterable, Sequence
 from enum import StrEnum
 from fnmatch import fnmatch
+from functools import lru_cache
 from importlib.resources import files
 
 import yaml
@@ -104,12 +105,20 @@ def _matches_any(relposix: str, globs: Sequence[str]) -> bool:
     return any(fnmatch(relposix, pattern) for pattern in globs)
 
 
+@lru_cache(maxsize=1)
 def load_builtin_roles() -> dict[str, RoleDefinition]:
     """Load and validate the packaged built-in roles.
 
     Returns a mapping of role name → :class:`RoleDefinition`. Raises
     ``ValueError`` if the packaged data is malformed (a corrupt install should
     fail loudly, not silently ship an empty role set).
+
+    Cached for the life of the process (``lru_cache(maxsize=1)``, same
+    mechanism as :func:`doberman.storage.fingerprint._load_or_create_key`):
+    this reads a file packaged with the install, which cannot change without
+    a reinstall (a new process), so re-parsing it on every
+    :func:`doberman.config.load_active_role` call (every decided action, #552)
+    is pure overhead. A raised exception is never cached.
     """
     raw = files("doberman.roles").joinpath("builtin_roles.yaml").read_text(encoding="utf-8")
     data = yaml.safe_load(raw) or {}

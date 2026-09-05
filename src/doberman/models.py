@@ -478,9 +478,12 @@ class EffectSet(BaseModel):
     ``file_count``/``dir_count`` are ``None`` only in the hard-failure shade of
     the non-authoritative state (an OS error, a wall-clock timeout, or an
     unresolved glob-shaped operand) — no lower bound at all. Hitting the entry
-    cap is the OTHER non-authoritative shade: ``capped=True`` too, but
-    ``file_count`` reports the cap itself as a known lower bound ("at least
-    this many"). Never render either shade as an exact, reassuring number.
+    cap is the OTHER non-authoritative shade: ``capped=True`` too, but both
+    ``file_count`` and ``dir_count`` report the exact split scanned before the
+    cap fired (their sum is the cap) — each a known lower bound on its own
+    true total ("at least this many"), never the whole cap dumped into
+    ``file_count`` alone. Never render either shade as an exact, reassuring
+    number.
 
     ``digest`` is a stable hash of the sorted matched relative-path set (or a
     fixed sentinel shared by both non-authoritative shades) — never a raw path

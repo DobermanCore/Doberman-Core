@@ -1,22 +1,23 @@
 # Connector memo: Cursor
 
 > Decision memo for issue #244. Evidence gathered 2026-09-03 against Cursor's current hook
-> documentation and the Cursor forum; every claim below carries its source. This memo decides
-> whether a Cursor connector can hold Doberman's fail-closed guarantee and, if so, what envelope
-> it would use. It is not code.
+> documentation and the Cursor forum. Every claim below carries its source. This memo decides
+> whether a Cursor connector can hold Doberman's fail-closed guarantee (Doberman blocks, rather
+> than allows, when something goes wrong) and, if so, what envelope it would use. It is not code.
 
 ## Summary
 
 **Recommendation: build it, scoped.** Cursor exposes a real pre-execution gate for every built-in
-tool, `deny` is honored on every surface, and a per-hook `failClosed` flag turns hook failure into
-a block. Two honest limits shape the design: Cursor's own approval system ignores a hook's `allow`
-and `ask`, so a human-in-the-loop AUTH has to be Doberman's own challenge inside the hook, and the
-default failure mode is fail-open, so the installer must set `failClosed` on every registration and
-the install-integrity manifest must fingerprint that flag.
+tool, `deny` is honored on every surface, and a per-hook (a callback Cursor runs at a fixed point in
+a tool call) `failClosed` flag turns hook failure into a block. Two honest limits shape the design:
+Cursor's own approval system ignores a hook's `allow` and `ask`, so a human-in-the-loop AUTH has to
+be Doberman's own challenge inside the hook, and the default failure mode is fail-open, so the
+installer must set `failClosed` on every registration and the install-integrity manifest must
+fingerprint that flag.
 
-Today Cursor users reach Doberman only through the MCP proxy, which sees MCP tool calls and nothing
-else. A hook connector adds shell commands, file writes, and file reads, which is where the
-destructive-command, secret, and exfiltration rules do their work.
+Today Cursor users reach Doberman only through the MCP (Model Context Protocol) proxy, which sees
+MCP tool calls and nothing else. A hook connector adds shell commands, file writes, and file reads,
+which is where the destructive-command, secret, and exfiltration rules do their work.
 
 ## Capability matrix
 
@@ -43,7 +44,8 @@ allow-listed command auto-runs and its `allow` on a non-listed command still pro
 works correctly in all cases", two reporters, no staff reply, no fix version) [3]; for MCP, staff
 confirmed in March 2026 that "hooks can only deny actions" and `allow` does not override the MCP
 approval system [4]. Doberman's AUTH therefore runs the same way it does for Codex: the hook process
-issues Doberman's own challenge (local confirm, TOTP, or dashboard approval) and returns `allow` or
+issues Doberman's own challenge (local confirm, TOTP [a time-based one-time passcode from an
+authenticator app], or dashboard approval) and returns `allow` or
 `deny` to Cursor. Cursor's own prompt may then appear on top. That is a UX cost, not a security one.
 
 **Payload limits.** None documented. `tool_input` carries the full write content for `Write`; the
