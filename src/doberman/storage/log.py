@@ -108,9 +108,12 @@ _DECISION_COLUMNS = [
 def path_class(action: SecurityObject) -> str | None:
     """A redaction-safe class for a file target: drop the filename, keep dir + ext.
 
-    ``backend/auth/session.ts`` → ``backend/auth/*.ts``; ``.env`` → ``.env``
-    (dotfiles/extensionless names are themselves the class). Non-file actions
-    have no path class. Never returns the raw filename of an extensioned file.
+    ``backend/auth/session.ts`` → ``backend/auth/*.ts``; ``.ssh/id_rsa`` →
+    ``.ssh/*`` (extensionless names under a directory are wildcarded like any
+    other filename); ``.env`` → ``.env`` (a *top-level* dotfile/extensionless
+    name, with no directory component, is itself the class). Non-file actions
+    have no path class. Never returns the raw filename of a file under a
+    directory, extensioned or not.
 
     Public (renamed from ``_path_class``) so D3's dashboard-approval queue
     (``doberman.auth.dashboard_prompter``) can derive the same redaction-safe
@@ -123,7 +126,11 @@ def path_class(action: SecurityObject) -> str | None:
     pure = PurePosixPath(str(action.target).replace("\\", "/"))
     parent = pure.parent.as_posix()
     parent = "" if parent == "." else parent
-    stem_class = f"*{pure.suffix}" if pure.suffix else pure.name
+    # ponytail: extensionless names are their own class only with no
+    # directory (the bare-dotfile shape, e.g. ".env"); under a directory an
+    # extensionless name must be wildcarded too, or the raw filename leaks
+    # verbatim (".ssh/id_rsa", "/etc/passwd").
+    stem_class = f"*{pure.suffix}" if (pure.suffix or parent) else pure.name
     return f"{parent}/{stem_class}" if parent else stem_class
 
 

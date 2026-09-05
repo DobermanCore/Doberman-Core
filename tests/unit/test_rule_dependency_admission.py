@@ -277,6 +277,58 @@ def test_bundled_data_files_load_and_contain_seed_entries():
     assert "request" in popular_npm_all
 
 
+# ── #554: popular-seed expansion hygiene ──────────────────────────────────
+
+
+def test_popular_seed_is_sorted_deduped_and_has_no_denylist_collision():
+    # Reads the raw shipped JSON directly (not the loaded frozensets, which
+    # would hide ordering/duplicate issues) — guards the two provenance
+    # rules data/README.md commits to: the file stays sorted/deduped, and
+    # no popular name ever also appears on the known-malicious list for the
+    # same ecosystem (that would make a package simultaneously "exempt from
+    # the typosquat check" and "instant BLOCK", a self-contradiction).
+    import json as _json
+    from importlib.resources import files as _files
+
+    data = _files("doberman.engine.rules.data")
+    popular = _json.loads(data.joinpath("popular_packages.json").read_text(encoding="utf-8"))
+    malicious = _json.loads(
+        data.joinpath("known_malicious_packages.json").read_text(encoding="utf-8")
+    )
+
+    # Only the three ecosystems #554 actually expanded are alphabetically
+    # sorted; rubygems/go are untouched curated lists from the original
+    # seed and keep their original (non-alphabetical) order — reordering
+    # data this slice never touched would be pure diff noise.
+    sorted_ecosystems = {"pypi", "npm", "cargo"}
+    for ecosystem, names in popular.items():
+        if ecosystem == "generated_at":
+            continue
+        if ecosystem in sorted_ecosystems:
+            assert names == sorted(names), f"{ecosystem} popular list is not sorted"
+        assert len(names) == len(set(names)), f"{ecosystem} popular list has duplicates"
+        collisions = set(names) & set(malicious.get(ecosystem, []))
+        assert not collisions, f"{ecosystem} popular/known-malicious collision: {collisions}"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip install pydantic",
+        "npm install cross-env",
+        "cargo add hashbrown",
+    ],
+)
+def test_new_seed_entries_are_recognized_as_known(command):
+    # Representative new entries from the #554 expansion (real bundled
+    # data) evaluate to the "known popular package" outcome: PASS, not
+    # AUTH — same shape as the pre-existing
+    # test_npm_vuex_is_popular_not_a_typosquat_of_vue-style assertions
+    # above.
+    result = DependencyAdmissionRule().evaluate(_action(), _ctx(command))
+    assert result.verdict is Verdict.PASS
+
+
 # ── per-ecosystem value-flag regression ───────────────────────────────────
 # CRITICAL fix (whole-branch review): pip's -r/-c/-i/--index-url/--extra-
 # index-url used to be ONE global value-flag set applied to every
