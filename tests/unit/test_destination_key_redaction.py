@@ -86,6 +86,9 @@ async def test_v12_migration_purges_legacy_raw_destination_rows(tmp_path):
                 "VALUES (?, ?, 'frontend', 3, ?, ?, ?)",
                 (eid, key, stamp, stamp, stamp),
             )
+        # A DB below SCHEMA_VERSION migrates on its next open (a current one
+        # is left alone); the v11 stamp is what makes the reopen run the purge.
+        await conn.execute("UPDATE schema_version SET version = 11")
         await conn.commit()
 
     # Reopening runs _ensure_schema → the idempotent v12 purge.

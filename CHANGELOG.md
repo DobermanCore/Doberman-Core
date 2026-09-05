@@ -1,365 +1,265 @@
 # Changelog
 
-Shipped history for Doberman. Planned work lives on the [roadmap](README.md#roadmap) and the
-[project board](https://github.com/users/fu351/projects/5); exact per-commit detail is in the
-[git log](https://github.com/DobermanCore/Doberman-Core/commits/main) and
-[releases](https://github.com/DobermanCore/Doberman-Core/releases) (latest: **v0.18.5**, decision-log retention pruning, PyPI update nudges, and dashboard/doctor polish — atop **v0.18.4**'s the third friction-reduction patch — a five-minute approval memory for exact repeats, `uninstall --global`, a `doctor` check for dangling hooks, and usage telemetry on by default — atop **v0.18.3**'s tap-to-approve 2FA (a Windows Hello / Touch ID biometric can stand in for the TOTP code) — atop **v0.18.2**'s friction-reduction patch — spurious secret-detector prompts on ordinary ids/paths/UUIDs fixed, and the detector now self-checks and fails closed — atop **v0.18.1**'s README-image docs patch and **v0.18.0**'s security-audit wave — the proxy output-secret gate closed over error and structured/embedded channels, per-user auth state and Windows-separator paths brought under control-plane protection — plus the RAND-aligned guardrail rehaul and the UX/contributor work since 0.17.1).
+This file records every user-visible change to Doberman, one line per change, newest release first.
+Planned work lives on the [roadmap board](https://github.com/users/fu351/projects/5); each release also
+gets its own [notes on GitHub](https://github.com/DobermanCore/Doberman-Core/releases).
+
+Not yet released: [`changelog.d/`](changelog.d/), compiled into the next version.
+
+## v0.18.6 — 2026-09-04
+Closes detection bypasses and rebuilds setup, the dashboard, and the TUI.
+
+### Security
+- The destructive-command rule now scans a command-shaped argument whatever the tool is called, closing a gap where renaming the tool avoided detection (#519)
+- Every rule/detector/auth-provider plugin is opt-in by name (`doberman plugins enable <name>`); role elevation now always also asks the local provider (#520)
+- A password lockout now persists to disk across restarts, with the same 15-minute cooldown TOTP already had, instead of resetting on every new CLI process (#521)
+- A single-use elevation grant is now claimed atomically; a losing concurrent call is blocked instead of both being allowed through (#522)
+- The destructive-command rule and the egress walker now scan both sides of a single `&`, since both `cmd.exe` and POSIX shells run both commands (#524)
+- A host-namespaced MCP tool (`mcp__<server>__write_file`) now classifies by its real tool name, so path and role rules apply instead of treating it as unknown (#525)
+- Password guesses are counted before the hash runs, so parallel guesses can't dodge the lockout; an unrecordable attempt is refused (#526)
+- A tool call's command line is rebuilt from `command` and `args` with boundaries kept, so a list-form payload can't dodge the scanner (#527)
+- `doberman setup --yes` can no longer lower the security mode or preference weights past the possession-factor gate (#530)
+- The GUI auth dialog no longer lets a keypress during closing flip an expired denial into an approval (#536)
+- An unanswered approval now expires within 10 minutes instead of 20, so a `two_factor` challenge nobody answered can't stay approvable past its real deadline (#545)
+- Reverse shells (`nc -e`, socat `EXEC:`, an inline socket that spawns a shell) now hard-block instead of prompting; probes and plain sockets are unchanged (#570)
+- A Tk auth dialog no longer changes the hook's exit code on teardown, where a denied or expired action could execute if the hook crashed (#575)
+- Mail addresses obfuscated as `[at]`/`(dot)`, spaced `@`, or bare `at`/`dot` words in untrusted input now trip the echo tripwire like literal ones (#578)
+- The destructive-command rule now sees through shell syntax, `sudo`/`env`/`nice`/`timeout`-style wrappers, and nested command substitutions instead of stopping at them (#580)
+- Process kills (`kill`, `pkill`, `taskkill`, `Stop-Process`, `os.kill`) and interpreter one-liners that spawn a subprocess now require authentication (#580)
+- Every command-scan bound now fails upward to authentication instead of skipping, and a package-manager verb hidden behind wrapper options no longer gets the implied-registry pass (#580)
+
+### Added
+- Every saved policy now gets a content-hash version in `.doberman/policies.db`; `doberman policy-versions` lists them, `--show` prints one, `--verify` checks the catalogue (#513)
+- `doberman setup` now asks which hosts to guard, with detected hosts preselected, `--host` repeatable, and a doctor pass at the end (#528)
+- The dashboard gets verdict/text filters, keyboard shortcuts (`/`, arrows, `a`/`d`, `?` for help), a live countdown on pending cards, and a light/dark toggle (#533)
+- `doberman tui` is now a full decision browser: verdict/risk chips, a full-screen `why` view, filtering, and jump/copy keys; `doberman log --why` prints the same explanation (#534)
+- `doberman setup --dry-run` now previews the mode, preferences, and every file it would write, with nothing persisted (#535)
+- The GUI auth dialog is rebuilt: a bounded, expandable command panel, a severity chip for risk, and a live countdown extendable up to 10 times (#536)
+- The destructive-command rule now recognizes raw-socket egress shapes (`/dev/tcp`, netcat/socat exec, `openssl s_client`, an inline socket payload) and steps them up to `AUTH` (#538)
+- Added an experimental, offline-only BYO-model judge behind the `[judge]` extra; it is not wired into any live decision yet (#539)
+- A new verification-integrity rule pack requires authentication for `git commit --no-verify`-style bypasses and for deleting or renaming a test file (#541)
+- A new offline dependency admission gate blocks a known-malicious package name and authenticates a likely typosquat (one character off a popular name) (#543)
+- A host, URL, or email seen in a `WebFetch`/`WebSearch` result now raises a later egress to that exact value from allowed to authentication-required (#547)
+- A delete-class command (`rm`, `del`, `Remove-Item`, ...) reaching an AUTH challenge now shows a bounded file/directory count, and re-blocks if the filesystem changed since approval (#548)
+- `install-hooks` now fingerprints its own hook registration and warns if a hook is later stripped or changed; `doberman doctor` reports intact, diverged, or untracked (#561)
+- Benchmark harness gains RedCode-Exec, MSB, and LLMail-Inject suite adapters (`DOBERMAN_BENCH_*_DIR`, no data vendored); measured numbers and documented gaps live in `docs/BENCHMARKS.md` (#562)
+- Opt-in `--replay-session` harness mode replays each case in an isolated session with the real post-decide floors; every report is labeled `session_replay: true/false` (#562)
+- Command-shaped benchmark actions classify egress through the proxy's own destination extractor, so the harness measures shipped behavior instead of under-reporting it (#562)
+- The auth dialog window now carries the Doberman mark as its icon instead of Tk's default feather (#565, thanks @thesageak)
+- Experimental Cursor native-hooks adapter: `doberman hook cursor` gates Cursor's tool-use events on the same decision engine as Claude Code and Codex (#568)
+- `doberman install-hooks --host cursor` wires Cursor's hooks and a session heartbeat; `doberman doctor` gets a new "Cursor hooks" check (#571)
+- `doberman serve --url` now fronts a remote MCP server (Streamable HTTP or `--transport sse`) through the same policy chokepoint as a local command (#574)
+- A repo-committed `doberman.policy.yaml` is now resolved on every action, so teams can review policy changes in pull requests; dropping a glob needs `doberman policy-file --accept` (#579)
+- `doberman memory seed --from traces.jsonl` warms a fresh install's behavioral baseline from operator-supplied allowed-action traces (#579)
+- `whole_script_confusable` flags a token written entirely in Latin-lookalike Cyrillic or Greek letters (an all-Cyrillic "paypal") and steps it up to `AUTH` (#579)
+- A `doberman.cost_observers` plugin can now receive loop anomalies via an optional `on_loop_anomaly` hook (#579)
+- A worked example detector plugin ships at `examples/plugin-detector/`, alongside `docs/EXTENDING.md` documenting every entry-point group (#579)
+
+### Changed
+- `doberman setup` now shows the mode in force, scopes its doctor pass to your wired hosts, and offers `doberman demo` before you leave (#530)
+- Deny is now the dashboard's primary action and needs the same two-step confirm as Approve; lowering the security mode needs the same confirm gesture (#533)
+- `doberman setup` now ends honestly: `-- Setup complete/pending/incomplete --` with exit codes 0/1/3, and its output wraps and colors like `doberman status`/`doctor` (#535)
+- The subjective-layer benchmark diagnostic reports a held-out-benign false-positive rate next to the AUC and gains a seeded `--suite devsession` corpus that engages the full ensemble (#542)
+- Tk auth dialogs show one decision per screen: subtitle, reassurance, and keyboard note fold into "What is this?"; the severity word prints once (#590)
+
+### Fixed
+- The auth dialog now shows a keyboard hint (`Tab/Arrows: switch - Enter: confirm - Esc: deny`) and grows to fit it instead of clipping (#507, thanks @thesageak)
+- The dashboard's mode-change form now actually closes, and approve/deny, live-feed, and refresh failures show in the UI instead of failing silently (#533)
+- An unanswered approval-memory lookup no longer hangs the hook, falling back to a prompt after 5 seconds; an aborted `setup` run reports what was written (#535)
+- The GUI auth dialog now scales correctly under DPI scaling and works with screen readers (#536)
+- Fixed a `doberman tui` crash on startup caused by a mount-timing race in the first row's highlight (#546)
+- A mailbox destination (`local@domain`, `mailto:`) no longer triggers a false "embeds credentials" prompt on every mail send in Light/Balanced (#564)
+- `doberman hook cursor` now reads stdin as raw UTF-8 bytes, so the BOM Windows `cursor-agent` emits no longer turns every hook into a deny (#571)
+- `doberman hook pre` now answers Cursor-shaped payloads instead of failing closed, which had denied every Cursor shell command on machines with global hooks installed (#576)
+- The test suite no longer touches your real Claude settings: every test gets a throwaway home and a guard fails the run if it changes (#577)
+- The store skips its schema migration when already current, about 11 fewer fsyncs per decided action (#591)
+
+### Docs
+- Added `docs/AUTHORITY_TIERS.md`, documenting which layer of a decision may `BLOCK` versus only step up to `AUTH` (#544)
+- Added `docs/CONTROL_COVERAGE.md`, mapping Doberman's controls to the OWASP Top 10 for LLM Applications and the NIST AI RMF (#579)
+- `docs/BENCHMARKS.md`: RedCode rows re-measured on `main` after the reverse-shell and command-walk hardening; in-scope ASR 0.104 → 0.010, only 7 print-only variants remain (#584)
 
 ## v0.18.5 — 2026-08-30
+Decision-log retention, update nudges, and dashboard polish.
 
-> **Retention, self-awareness, and a tighter bar for tutorials.** The decision log can now be
-> pruned by age or row budget without touching pending approvals, and it prunes every resolved
-> AUTH row, not just three literal outcomes. `doberman update` and a passive nudge in `status`
-> tell you when you're behind PyPI. The dashboard lets you copy a pending approval's redacted
-> details, shows the real mark, and keeps its counters in step with the feed. The doctor reports
-> the password factor and the optional dash/tui extras; changelog fragments end the CHANGELOG
-> conflict tax; and the plugin tutorials are covered by CI without ever being installed.
+### Added
+- `doberman decision-log-prune` deletes resolved rows by age or row budget; pending approvals and the policy ledger are untouched (#461, #502)
+- `doberman update` checks PyPI once and prints the upgrade command; `doberman status` nudges when you are behind. Off under `DO_NOT_TRACK`, `CI`, or `DOBERMAN_UPDATE_CHECK=off` (#508)
+- Dashboard: a **Copy details** action on each pending card copies the redacted fields as JSON (#498, thanks @slegarraga)
+- `doberman doctor` reports the password factor and the optional dash/tui extras (#474, #475, thanks @slegarraga)
+- `doberman egress-velocity [KNOB] [VALUE]` shows or sets the burst, volume, and fan-out detection thresholds (#459, thanks @Maqbool61)
 
-- **Decision-log retention is explicit and fail-safe.** `doberman decision-log-prune` lets an
-  operator delete resolved rows by age and/or retained-row budget; pending AUTH challenges and the
-  append-only policy-change ledger are never touched, and mediated agents cannot invoke the
-  mutating command through the shell. Any AUTH row with a recorded outcome (approval method,
-  denied, blocked, error, executed) counts as resolved and is eligible for pruning, not only the
-  three literal values it originally accepted (#461, #502)
+### Changed
+- Changelog entries now compile from a per-PR `changelog.d/` fragment instead of one shared file, so parallel PRs stop colliding (#476, thanks @slegarraga)
 
-- **`doberman update` — and a passive "new version available" nudge.** Doberman now tells you when the
-  installed version is behind PyPI, so a friction fix reaches you without watching the releases page.
-  `doberman update` does one timeout-bounded PyPI check and prints the `pip install -U` command (it never
-  installs anything); `doberman status` shows a one-line nudge when a newer version is cached. The check is
-  best-effort and fail-open (an unreachable PyPI is silent, never an error), caches for 24h, never runs on
-  the hook/proxy hot paths, and is off under `DO_NOT_TRACK`, `CI`, or `DOBERMAN_UPDATE_CHECK=off` (#508).
+### Fixed
+- `install-hooks --dry-run` now previews the exact command the installer writes (#463, thanks @slegarraga)
+- `tune --json` output is compact like every other JSON command (#470, thanks @slegarraga)
+- `doberman log` columns no longer shift for long action types like `network_request` (#472, thanks @slegarraga)
+- The dashboard stats strip now updates immediately instead of lagging behind the live feed (#491)
+- The dashboard header shows the real Doberman mark instead of a placeholder "D" (#490)
 
-- **Copy a pending approval's details from the dashboard.** A **Copy details** action on each pending card copies only the existing redacted fields as formatted JSON (thanks @slegarraga, #498, closes #443)
-
-- **`doberman doctor` reports the password factor:** a `Password` row next to `2FA`, OK when
-  enrolled, a non-critical WARN with the `doberman password set` hint when not; presence only, never
-  the secret (thanks @slegarraga, #474, closes #439)
-
-- **`doberman doctor` reports the optional UI extras:** `Dash extra` and `TUI extra` rows say
-  whether `starlette`/`textual` are installed (via `find_spec`, nothing imported) and print the
-  `pip install 'doberman[dash]'`/`[tui]` hint when not (thanks @slegarraga, #475, closes #440)
-
-- **`doberman egress-velocity [KNOB] [VALUE]`:** show or set the `burst`, `volume-bytes`, and
-  `fanout` detection thresholds from the CLI. Lowering a threshold applies at once; raising one
-  crosses the same possession-factor gate as every other loosening (TOTP if enrolled, else the
-  password), is recorded in the policy-change ledger, and is saved only when approved, so
-  hand-editing the policy file is no longer the only way to set them (thanks @Maqbool61, #459,
-  closes #457)
-
-- **`install-hooks --dry-run` previews the command the installer really writes.** The SessionStart
-  line now comes from the same `DASHBOARD_COMMAND` constant as the write path (`doberman
-  session-summary`), so the preview cannot drift again (thanks @slegarraga, #463, closes #429)
-
-- **`tune --json` is compact** like every other JSON command (`separators=(",", ":")`), keeping
-  the machine-readable output contract in docs/CLI.md (thanks @slegarraga, #470, closes #431)
-
-- **`doberman log` columns no longer shift** for the 15-character action types (`network_request`,
-  `package_install`): the action column width now comes from the `ActionType` enum, the way verdict
-  labels already do (thanks @slegarraga, #472, closes #428)
-
-- **The dashboard stats strip stays in step with the live feed.** A decision landing in the feed
-  now triggers an immediate (trailing-debounced 150 ms) stats refresh instead of lagging up to 5 s
-  behind the list; the 5 s interval remains as a fallback. (#491)
-
-- **Tests:** the data-class rule's two documented non-detections are now proven: a six-digit
-  one-time code bound for an external host stays PASS, and the valid SSN's digits without dashes
-  stay PASS, so the rule is pinned to the dashed shape rather than the value (thanks @slegarraga,
-  #468, closes #405)
-
-- **Docs:** five stale "(a later slice)" comments that promised features which have since shipped
-  now describe what the code does today (thanks @slegarraga, #473, closes #426)
-
-- **Changelog entries no longer collide on every parallel pull request.** Each PR now adds its
-  own `changelog.d/<PR-number>.md`, and release tooling compiles those fragments together
-  (thanks @slegarraga, #476, closes #456)
-
-- **The dashboard header now shows the real Doberman mark.** The placeholder "D" is replaced by
-  an embedded PNG data URI, so `doberman dash` stays one self-contained page with no static-file
-  route. (#490)
-
-- **`docs/README.md` indexes every doc page.** An "open this when…" guide to each document makes
-  the right one a single scan away (thanks @navaneethsankar07, #492, #500, closes #409)
-
-- **Tests:** the core standalone-guarantee test asserts no `doberman.audit_sinks` plugin is
-  registered by default again; the plugin-audit-sink tutorial is now covered by a CI-visible test
-  that never installs it (#501)
+### Docs
+- `docs/README.md` indexes every doc page (#492, #500, thanks @navaneethsankar07)
 
 ## v0.18.4 — 2026-08-26
+Friction reduction, part three: tap-to-approve 2FA, repeat-approval memory, safer uninstalls, and default telemetry.
 
-> **Friction reduction, part three, and the lights come on.** A repeat of an approved action now
-> re-prompts at a one-click confirm instead of the full ladder; `uninstall --global` and the doctor's
-> `Hook command` check close the dangling-hook trap; `demo --quiet` and the global-hook exclusion
-> round out the CLI. Usage telemetry is on by default with a one-time notice, the same allowlist, and
-> the kill switches unchanged, so from this version the project can see what people actually use.
+### Added
+- 2FA can be approved with a Windows Hello or Touch ID tap instead of a TOTP code (`doberman 2fa methods enable`)
+- `doberman demo --quiet` suppresses narration and prints only the summary line and exit code, for CI smoke tests
+- `doberman doctor` flags dangling hook entries when the installed `doberman` binary is no longer on PATH
+- `doberman uninstall --global` removes hooks, project state, auth factors, and the package device-wide, gated the same as any other removal
+- Repeated approvals get a five-minute memory: an identical action re-prompts with a one-click confirm instead of the full auth ladder
 
-- **Telemetry is now on by default (opt-out).** Anonymous usage counts (the same five allowlisted
-  events, no paths, prompts, secrets, or profiles) are sent unless you turn them off; the first CLI
-  command prints a one-line notice to stderr before anything is sent, `doberman setup` asks with a
-  default of Yes, and `doberman telemetry off`, `DO_NOT_TRACK`, `DOBERMAN_TELEMETRY=0`, and `CI`
-  still switch it off. The PostHog project key ships in the package, so events flow from this
-  version on.
-- **`doberman demo --quiet`:** suppresses the banner, the per-scenario narration, and the closing
-  `doberman dash` hint, keeping only the summary line/table (silent on a full match, loud on a
-  mismatch) and the exit code — so `demo` can run as a CI smoke test ("is the engine alive")
-  without polluting build logs. Mirrors `scan --quiet`; display-only, the scenarios and the engine
-  path are untouched.
-- **`doberman uninstall` now actually stops protection when hooks are global.** Previously,
-  `uninstall` was project-scoped only: if a global (`--global`) Claude Code hook or a Codex
-  `user`-scope hook was still installed, it kept firing in the "uninstalled" project and silently
-  recreated `.doberman/` there the next time any decision needed recording. `uninstall` now
-  detects this and automatically adds the project to a device-wide exclusion list
-  (`~/.doberman/excluded_projects.json`) that the (unchanged) global hook checks — first, before
-  anything else — on every call, so an excluded project gets a true no-op instead. The list is
-  only ever written by the already possession-factor-gated `uninstall` flow; reading it is a pure,
-  side-effect-free check that fails closed. Run `doberman install-hooks` in that project again to
-  clear the exclusion (no gate needed — re-arming protection is a strengthen). `doberman status`
-  reports whether the current project is excluded.
-- **`doberman doctor` catches dangling hook entries.** New critical `Hook command` check: when hooks are
-  installed but the bare `doberman` they invoke is not on PATH (package removed, bin dir not on PATH), the
-  host fails the hook and carries on unmediated, so `doctor` now fails and names the fix - put the binary
-  back on PATH, or strip the entries with `doberman uninstall-hooks`. Diagnosis only; `doctor` stays
-  read-only.
-- **Device-wide uninstall:** `doberman uninstall --global` now removes writable Claude Code and Codex
-  hooks, project state, possession factors, the fingerprint key, and device state before removing the
-  package through pip or pipx. The same fail-closed factor gate runs before any removal; `--yes` skips
-  only the typed `DOBERMAN` confirmation, `--dry-run` changes nothing, and `--keep-package` preserves
-  the package. Codex plugin hooks remain under `codex plugin` control.
-- **Five-minute exact-action approval memory.** A repeat of an action approved with local auth or
-  2FA still prompts, but at one-click `soft_confirm`, keyed only by an HMAC of the exact pre-redaction
-  action. Destructive, critical, excluded, or tainted-session actions never downgrade; soft confirms
-  never chain; `doberman approvals status|clear|ttl` exposes bounded human controls.
+### Changed
+- **Breaking:** anonymous usage telemetry is now on by default (five allowlisted events only, no paths/prompts/secrets); opt out with `doberman telemetry off`
 
-## v0.18.3 — 2026-08-26
+### Fixed
+- `doberman uninstall` now actually stops protection when hooks are installed globally, not just for the current project
 
-> **Friction reduction, part two.** The second factor no longer has to be a typed code. Turn on an
-> approval method and a single Windows Hello / Touch ID tap satisfies a 2FA-tier challenge — presence
-> and possession in one gesture — with TOTP still there as the fallback. Opt-in, fail-closed, and
-> pluggable, so phone-push backends can register without touching the core.
+## v0.18.2 — 2026-08-26
+Fewer spurious secret-detector prompts, opt-in telemetry, and a docs rewrite.
 
-- **Approve 2FA with a tap instead of a code (opt-in, pluggable).** A new approval-method framework lets
-  a Windows Hello / Touch ID biometric — or a future push channel — stand in for the TOTP code on a
-  2FA-tier challenge: one tap proves presence and possession. It is strictly opt-in
-  (`doberman 2fa methods enable <name>`); with nothing enabled the flow is unchanged. **Fail-closed and
-  never a bypass:** a timeout, cancel, error, or an unavailable device denies or falls back to TOTP —
-  only an explicit human approval (or a valid code) satisfies the tier. Windows Hello ships as the first
-  backend (`pip install "doberman-core[winhello]"`, Windows-only); Duo and Telegram/ntfy/webhook follow.
-  Third-party backends register through the `doberman.approval_methods` entry-point group.
+### Security
+- Re-approving a changed tool pin now resets its learned familiarity and revokes the tool's scope tokens immediately
 
-## v0.18.2 — 2026-08-25
+### Added
+- Anonymous CLI telemetry is available as an opt-in (`doberman telemetry on|off|status`)
+- `doberman tune` reports friction telemetry and proposes possession-gated standing-elevations (#403)
+- MCP tool schemas are pinned on first use; a later mismatch requires `doberman tools approve <tool_name>` (#394)
+- Card numbers, IBANs, and SSNs in an outbound payload to an external destination now require authentication (#392)
+- A shell command that only dumps the environment (`env`, `printenv`, `export`, PowerShell `Env:` listing) now requires authentication (#455, thanks @QY-25123)
+- OpenTelemetry `AuditSink` forwards redacted decisions to any OTLP/HTTP collector (#368, thanks @Maqbool61)
+- `doberman scan --mcp` statically scans known MCP configs for risky patterns without running servers (#393)
+- The dashboard can change strictness mode directly, gated like `doberman mode`; live-feed rows now show risk level and source context
+- Every GitHub release now ships a CycloneDX SBOM (`sbom.json`) listing exact resolved dependencies
 
-> **Friction reduction.** This release is about getting out of your way. The secret detector no longer
-> fires spurious approval prompts on ordinary identifiers, paths, and UUIDs — the single biggest source
-> of click-through fatigue — and it now self-checks at import so a bad change can't silently break it.
-> The opt-in usage telemetry and the rewritten docs from the last cycle ride along.
+### Changed
+- `doberman message-tone human|technical` switches auth-prompt wording between plain language and the technical format; human is now the default
+- The auth dialog and dashboard are restyled onto Doberman's brand system, with a live ON GUARD/ALERT status pill and a per-project dashboard tab title
+- Destination hosts in the decision log are stored as HMAC fingerprints instead of plain names
 
-- **Weak-secret false positives on identifiers, paths, and ids fixed; the rule now self-checks.** The
-  generic high-entropy heuristic no longer steps an ordinary identifier, a relative path, a UUID/digest,
-  or a `word+number` build tag up to an `AUTH` prompt. That false positive trained click-through fatigue
-  and, through the host-hook taint ledger, could gate a whole session's egress after a single
-  UUID-bearing scratch path. The new exemption is shape-based and raise-only — every real credential
-  still fires, and the measured cost is documented under README → Known limitations. Separately,
-  `SecretLeakageRule` runs an invariant self-check at import and **degrades to a fail-closed `AUTH`** if it
-  ever cannot evaluate, so a bad edit can neither let a secret through (never `PASS`) nor brick tool
-  mediation into a `rule_error` on every action.
-- **Anonymous CLI telemetry is available as an explicit opt-in.** It is off by default, uses only
-  stdlib networking, sends allowlisted counts and command names to PostHog, and never runs on the
-  per-tool hook or proxy paths. `doberman telemetry on|off|status` controls the local consent state.
-- **Docs rewrite, and a docs site.** Every page under `docs/`, the README, `CONTRIBUTING.md`, and the
-  OpenClaw adapter README were rewritten for accuracy against the v0.18.1 `--help` output and for voice
-  (plain, specific, no marketing). The README is now a front door (6.9k → 3.5k words); its deep sections
-  moved to `docs/TUNING.md`, `docs/PLUGINS.md`, `docs/RECOVERY.md`, and `docs/TURN_GATE.md`. The CLI
-  reference covers all 37 commands (the `2fa` group, `uninstall`, `message-tone`, and `tools approve` were
-  missing); the reason-code catalogue header says 57, matching the enum, and five raise-site columns were
-  corrected; the two overlapping release docs merged into `docs/RELEASING.md`; the OTel sink doc now
-  states the real log level for failed posts (`warning`, not `debug`). These files are also the source of
-  the new documentation site at [docs.trydoberman.dev](https://docs.trydoberman.dev).
-- **Dashboard: per-project tab title.** `doberman dash` is already scoped to one repo per run
-  (`--path`, default the current directory), but every browser tab read the same "Doberman
-  Dashboard" title, so running several dashboards side by side (one per project) gave no way to
-  tell the tabs apart. The tab title and the topbar now carry the repo folder's name (e.g.
-  `widget-service — Doberman Dashboard`), safely escaped for both the HTML shell and the inline
-  JS unread-count title update.
-- **Security fix (#399): a GUI auth dialog can no longer silently misbehave off the main thread on macOS.** Every real caller runs a `Prompter` on a background daemon thread (`doberman.auth.challenge._run_with_deadline`, or `asyncio.to_thread` on the MCP-proxy path) so a wall-clock deadline can be enforced on a channel that might otherwise block forever. Cocoa's Tk backend requires its event loop to start on the process's real main thread; constructing `Tk()` off it is a documented hazard that does not reliably surface as a catchable error the way a missing `$DISPLAY` does — it can silently fail to render, or abort the process, either of which could leave an `AUTH`-tier action looking approved with no human ever having seen a dialog. `GuiPrompter` now refuses before ever touching `tkinter` when it detects this exact condition (macOS + off the main thread), reporting the channel unavailable so `FallbackPrompter` moves on to the terminal — and if that is also unavailable, the action is denied. Windows/Linux behavior is unchanged.
-- **Deps: `river` capped below 0.26 on Python 3.11.** river 0.26.0 subscripts
-  `csv.DictReader` at import time, which only Python >= 3.12 supports, so any
-  import of the subjective layer (and therefore the whole test suite) died on
-  3.11 with `TypeError: type 'DictReader' is not subscriptable`. 3.12+ keeps
-  the unpinned floor.
-- **`calibrate_perplexity_threshold`, the model-agnostic half of the OT.4 perplexity seam:**
-  `doberman.tokens.calibrate_perplexity_threshold(benign_scores, target_fpr)` returns the
-  nearest-rank empirical `(1 - target_fpr)` quantile of a benign score corpus, for the
-  `TokenChannelDetector` `perplexity_fn`/`perplexity_threshold` seam. Fails closed (raises
-  `ValueError`) on an out-of-range `target_fpr` or fewer than 20 benign scores. No model, no
-  new dependency; the reference scorer that calls it lands separately as an optional extra.
-- **Auth dialog: the highlighted button takes the click again.** The Canvas focus ring was
-  drawn on top of the keyboard-highlighted button, and Tk hit-tests a polygon's whole interior
-  even when unfilled — so clicking Deny (or Approve, after Tab) did nothing and the hover
-  shade never showed. The ring now sits beneath the buttons; a real-Tk test pins the click
-  target and a faked-canvas test pins the stacking on headless CI.
-- **Rug-pull follow-through — approving a changed tool pin now resets learned familiarity:**
-  `approve_pin` deletes every entity's `tool:<name>` baseline rows in the same transaction as the
-  promote, so a schema-changed tool scores as brand-new after re-approval instead of inheriting
-  pre-change trust. (The reset helper existed but nothing called it; found by the subjective-layer
-  hardening audit.)
-- **Destination baseline keys are now keyed fingerprints:** the per-entity baseline stored
-  `destination:<host>` verbatim — the one feature key that was neither a coarse class nor a
-  fingerprint, so a secret encoded into a hostname would persist after any allowed egress.
-  Hosts are now HMAC-fingerprinted (familiarity math unchanged), a fingerprint failure drops
-  the key rather than storing the raw host, and the v12 schema migration purges legacy raw
-  rows (raise-safe: colder scores as more novel). Found by the hardening audit's redaction probe.
-- **Changed tool pins void live scope tokens:** the proxy's pin floor now revokes every
-  entity's "approve for this task" tokens for a tool the moment its changed contract is
-  sighted, so comfort granted against the old schema cannot mute the step-up on the new one.
-- **Plain-language auth messages — new `message_tone` setting:** the authorization prompt now
-  speaks plainly by default — *"Your agent wants to run a command: … Approve this exact action?"* —
-  instead of the terse `[RISK: …] role: … reason: …` block. `doberman message-tone human|technical`
-  switches between the two; **human** is the default. The setting is cosmetic — it changes wording
-  only and is **not** possession-factor gated (there is no strengthen/weaken ordering to a phrasing
-  choice). Reason codes and the PASS/AUTH/BLOCK verdict are identical either way and still logged;
-  only what the human reads changes.
-- **Auth popup redesign — one brand system across every surface:** the out-of-band
-  tkinter authorization dialog is redrawn on a `Canvas` — the Doberman logo mark, a
-  tan **DOBERMAN** wordmark, a rounded message panel (with the command shown in amber),
-  and rounded Deny/Approve buttons — on the shared brand palette (warm near-black, tan
-  brand, amber AUTH-verdict Approve). This replaces the flat dialog and its off-brand
-  orange accent so the popup matches the landing page and explainer video; the panel
-  height sizes to the message. Appearance only — the security contract is unchanged and,
-  where Canvas buttons can't inherit `focus_set()`, explicitly reimplemented: Deny starts
-  keyboard-highlighted so an unmodified Enter can never approve, closing or timing out
-  denies, and the 2FA code entry stays masked.
-- **Release SBOM:** every GitHub Release now ships a CycloneDX SBOM (`sbom.json`) listing the
-  exact resolved dependency set, generated by `pip-audit` and attached automatically by the
-  publish workflow. See [RELEASING.md](docs/RELEASING.md#software-bill-of-materials-sbom).
-- **New:** `doberman tune` — friction telemetry report (interventions/session, top AUTH reasons,
-  approval rates, weekly trend) plus possession-gated standing-elevation proposals where an AUTH
-  class has been approved every time; never applies anything itself, `--accept <id>` routes through
-  the same weaken chokepoint as every other policy loosening (#243).
-- **Dashboard: richer live-feed rows.** The live decision feed (`GET /api/feed`) now includes each row's `risk` and `source_context`, and the dashboard shows both (a risk badge plus a `from:<context>` tag). A `PASS` on an action with no path class (e.g. `shell_exec`, which has no file target) and no reason codes previously rendered as bare noise (verdict + action type only) - both fields were already redaction-safe classifications on the decision row, just not surfaced.
-- **Dashboard: brand-aligned visual refresh.** The local dashboard is restyled onto Doberman's
-  shared brand system (warm near-black surface, tan brand, PASS/AUTH/BLOCK verdict ramp), with the
-  Doberman logo mark and a live **ON GUARD / ALERT** status pill that flips to ALERT the moment an
-  approval is waiting on a human. Appearance only: no new endpoints, no change to auth, redaction,
-  or the decision path, and the feed's auto-scroll and risk/source columns are unchanged.
-  Follow-up: the restyle briefly wrapped the feed list in a container, which broke the CSS-only
-  "no decisions yet" empty-state (it stayed visible even with rows); the wrapper is removed so the
-  empty-state hides correctly again, and a test now guards the sibling structure the reveal needs.
-  The README demo gif is refreshed to the new dark brand look.
-- **Environment-variable dump detection** (thanks @QY-25123): a shell command whose sole effect
-  is to enumerate/print the process environment — bare `env`, any form of `printenv`, `export`/
-  `export -p`, `declare -x`/`typeset -x` with no named variable, or a PowerShell `Env:` drive
-  listing (`Get-ChildItem Env:`/`gci env:`/`dir env:`/`ls Env:`) — now steps up to authentication
-  before it runs. Previously these fell through a gap between the destructive-command rule (no
-  file/network target to check) and the secrets rule (nothing secret-shaped in the *command
-  text* itself, only in output the command hadn't produced yet): `env`'s own listing in
-  `_TRANSPARENT_WRAPPERS` stripped it down to an empty token list pre-execution, so the process
-  environment — a common carrier for API keys and tokens — could be printed straight into an
-  agent's context with no pre-execution check at all, only a same-turn output scan after the
-  fact. New reason code `environment_dump_command`. Legitimate uses are unaffected: `env
-  FOO=bar real_command` (env as a wrapper) and `export FOO=bar`/`declare -x FOO=bar` (setting one
-  variable) still pass.
-- **New:** the dashboard can now change the strictness mode itself (`GET`/`POST /api/mode`,
-  a `change` control next to the mode badge) instead of requiring the terminal. It routes
-  through the exact same gate as `doberman mode`/`doberman setup` — a new shared
-  `doberman.policy.drift.apply_mode_change` — so raising strictness stays frictionless and
-  lowering it is denied without the same possession factor (2FA if enrolled, else the Doberman
-  password), recorded in the same append-only ledger. The dash server never verifies the code
-  itself, mirroring `/api/resolve`'s existing discipline.
-- **MCP tool-schema pinning** (#246): every proxied `tools/list` now records a keyed-HMAC
-  trust-on-first-use pin for each tool's name, description, and input schema. A later mismatch
-  raises live calls to AUTH in Light/Balanced or BLOCK in Strict/Paranoid until a human runs
-  `doberman tools approve <tool_name>`; raw schemas are never stored or logged.
-- **PII / financial data-class exfil rule** (#321): checksum-valid structured personal/financial
-  data — payment card numbers (issuer prefix + Luhn), IBANs (mod-97), dashed US SSNs — in an
-  outbound payload with an external destination now steps up to authentication in every mode.
-  Presence alone never escalates (co-occurrence gate); only the class label is ever logged.
-- **OpenTelemetry AuditSink** (#245, @Maqbool61): forwards the redacted decision record to any
-  OTLP/HTTP collector, config-gated via `.doberman/audit_otel.yaml`; inert without config.
-- **New:** `doberman scan --mcp` statically scans known repository MCP configs for redaction-safe admission-risk pattern classes without running servers or making network requests (#240).
+### Fixed
+- The GUI auth dialog no longer silently fails to render off the main thread on macOS (#453, thanks @harshitagrawal2O)
+- The secret detector no longer flags ordinary identifiers, paths, UUIDs, or build tags as leaked secrets, and fails closed if it can't evaluate
+- Clicking a keyboard-highlighted auth-dialog button (Deny or Approve) now actually registers the click
 
-## 0.18.1 — 2026-08-15
+### Docs
+- Every page under `docs/`, the README, and `CONTRIBUTING.md` were rewritten for accuracy; new site at docs.trydoberman.dev
 
-- **Docs:** the README's logo and demo GIF now use absolute `raw.githubusercontent.com` URLs so they render on the PyPI project page. They used repo-relative paths, which GitHub resolves but PyPI (which renders the README standalone) cannot, so both showed as broken images on the 0.18.0 page. Docs-only; no code change.
+## v0.18.1 — 2026-08-15
+A documentation fix for broken images on PyPI.
 
-## 0.18.0 — 2026-08-15
+### Docs
+- The README's logo and demo GIF now use absolute URLs so they render correctly on the PyPI project page
 
-This release completes the security-audit wave: three fixes held privately until every one was ready are published together, so no fix disclosed a live bypass ahead of its own remediation. It also carries the RAND-aligned guardrail rehaul (session correlator, opt-in default role, memory governance, egress task-match, the labeled detection corpus) and the UX/contributor work merged since 0.17.1.
+## v0.18.0 — 2026-08-15
+Security-audit fixes, a new detection and role-governance layer, and CLI polish.
 
-- **Security fix — the proxy output-secret gate now covers error results and structured/embedded channels.** Two gaps let a credential in a tool's output reach the model: an `isError=True` result skipped the output scan (and the artifact-integrity check) at both call sites, and the scan folded only `TextContent`, so a secret in `structuredContent` (JSON) or an `EmbeddedResource` was never inspected. A new `_scannable_text()` folds all three channels, and taint-recording, single-use consumption, and the scan are hoisted above the error guard at both sites. Two deliberate raise-only tightenings: an errored result now records output taint, and a single-use grant is spent by an errored execution too (an errored secret-fishing or destructive call cannot retry for free). ADR 0062 (#378)
-- **Security hardening — the per-user auth state is now control plane.** The TOTP seed, its lockout counter, and the password hash live in a per-user config dir (`%LOCALAPPDATA%` / `$XDG_CONFIG_HOME` / `~/.config`, then `doberman/`), deliberately outside any repository so they are never committed. That also put them outside the repo-root confinement the control-plane path globs rely on, so a mediated shell command naming one of them was not recognised as control-plane tamper. They are now matched explicitly, so an agent-run command that deletes, overwrites, or reads them is blocked like any other attempt to disable the guard. The globs deliberately name the state directory's real parents and the three real filenames rather than any directory called `doberman`, so ordinary work on a checkout of this project is unaffected. ADR 0065 (#379)
-- **Security fix — control-plane paths are now recognised regardless of separator style.** The command rule parses shell input with POSIX tokenization, in which `\` is an escape character, so a control-plane path written with Windows separators did not survive tokenization as a path and was not recognised as one. A mediated shell command could therefore reach Doberman's own state or its host-hook config. The rule now also scans a separator-normalized view of the command; the pass is scan-only, so it can only add a control-plane block and never changes how a command is otherwise classified. ADR 0066 (#380)
-- **New:** `doberman uninstall` — one gated command removes this project's protection: the project- and local-scope hooks (Claude Code and Codex) plus `.doberman/`. It is possession-factor gated like `taint clear`/`memory reset` (2FA if enrolled, else the password; with neither enrolled it fails closed and removes nothing), confirms by asking you to type the project directory name back (`--yes` skips the confirmation, never the factor check), and is strictly project-scoped — `--global` hooks and device-wide password/2FA state survive even a successful run. A shelled `doberman uninstall` from the agent itself is blocked at the command rule (thanks @QY-25123, #375, closes #250)
-- **Docs/tests:** the host-parity matrix now marks "tool output carrying credentials is blocked from the model" as proven on the MCP proxy — the existing end-to-end gating test gained the parity marker, the table cell comes from the generator, and CI keeps the committed doc verified against the markers (thanks @jasperdingg, #374, closes #332)
-- **Docs:** README and the setup guide now warn that `doberman uninstall-hooks` must run *before* `pip uninstall doberman-core` (pip has no post-uninstall cleanup, so the hook entries strand and every tool call fails with `command not found`), and that simply reinstalling the package repairs the stranded entries — no hand-editing of `settings.json` (thanks @QY-25123, #373)
-- **New:** a labeled detection corpus + per-category FPR/TPR harness (C8, closes #241) — the existing benchmark suite proved the *harness* was wired correctly against a narrow synthetic case, but detection *quality* (false-positive rate, the driver of approval fatigue) went unmeasured. `tests/corpus/detection_corpus.jsonl` is a flat, hand-editable JSONL of ~137 labeled rows across injection / exfiltration / secrets / destructive / encoded / benign; `python -m tests.benchmarks.run --suite corpus --corpus` reports TPR, `tpr_strict`, FPR, and precision per category, plus the ids of any row that broke its assertion. Each attack row carries a **measured, raise-only floor** (`expected_verdict_at_least`, calibrated against the live engine — a floor may only rise, never silently drop) and each benign row a **false-positive guard** (`forbidden_verdict_at_least` — a legitimate action must not be over-blocked); a deterministic gate in CI (`tests/integration/test_corpus_gate.py`) fails on any floor or guard violation. Adding a labeled row is data, not code — no harness change. The corpus is redaction-clean (payload text never enters a report) and push-protection-safe (the secrets category triggers on credential *paths* and shapeless high-entropy values, never assembled provider literals). Calibration surfaced a genuine precision note: reading an `.env.example` template over-blocks (the secret-path regex matches `.env.*` fail-closed), and pure natural-language injection is a documented objective-layer gap (TPR 0.0 — a provenance/subjective concern)
-- **New:** an egress task-match leg for the session correlator (D2) — `correlated_trifecta` no longer false-positives when a session legitimately reads untrusted content, reads a credential, then egresses to a destination the user's own pre-inference turn actually named. Task tokens (registered-domain host mentions) are extracted from the turn gate's **typed-only** user prompt — never the agent's pasted/tool-fetched context — so a prompt injection can't forge a justification and suppress the floor. A fire-condition narrowing (raise-only, never a new lowering path); fails closed (a task-token read error still fires the trifecta); only normalized host tokens are stored, never the raw prompt
-- **New:** a built-in, opt-in least-privilege default role (D1) — `doberman role enable-default` activates a packaged `"default"` role for repos with no hand-written `.doberman/role.yaml`, so the Feature 4 role boundary no longer sits dormant unless you author YAML yourself. It's a generic role for a coding assistant: ordinary source/config/docs/test files anywhere in the repo classify in-scope, CI/CD config and `infra/**`/`migrations/**` step up to authentication, and any unrecognized file type falls back to the model's existing safe default (also AUTH) — paths outside the repo root are already a hard block for every role. An explicit `role.yaml` always overrides the opt-in default, and turning the opt-in *off* (`doberman role disable-default`) is a weaken gated behind the same possession-factor confirmation as lowering `mode`/`enforcement`; with the opt-in unset, behavior is byte-identical to before this existed
-- **New:** memory governance for the subjective baseline/preference store — `doberman memory reset` (gated wipe of the learned per-entity behavioral memory, scoped with `--entity <id>` or whole-repo, behind the same possession-factor gate as `doberman taint clear`; a successful reset is recorded to the append-only policy-change ledger) and `doberman memory prune --older-than-days N` (ungated retention maintenance that drops entities untouched past a window, never touching the decision log). Closes the "reliable deletion" and "retention limit" gaps RAND flags for persistent agent memory. Schema bumped to v9: a `last_touched` column, additively migrated and backfilled from each table's existing timestamp, on every baseline/preference table
-- **New:** a second built-in subjective detector, `Base64BlobDetector` — flags a suspiciously large base64-looking blob in a tool call's arguments (a common encode-and-exfiltrate shape: **bulk** file/secret contents smuggled out as one encoded payload; small credentials remain the objective secrets rule's job). Reasons about shape and size only (never base64-decodes or echoes the payload) and tolerates PEM/MIME newline wrapping, raise-only to `AUTH` (never blocks, never lowers a verdict), with a configurable size threshold to bound false positives on legitimately binary-ish arguments. Defense-in-depth — evadable by splitting the blob across sub-threshold calls. New reason code `oversized_encoded_blob`. Closes #212
-- **Security fix:** the mandated lethal-trifecta floor (sensitive data + untrusted provenance + external destination) now also fires at the **objective** layer, not only the subjective one. The execution rule runs the objective guardrail first and short-circuits on any non-PASS, so an objective `AUTH` (e.g. an unknown-external-destination step-up) used to run *before* the subjective floor and mask it: in Strict/Paranoid a full lethal-trifecta action that also tripped that AUTH ended at `AUTH` instead of the mandated hard `BLOCK`. A new objective `TrifectaFloorRule` re-asserts the hard block (strict/paranoid only; abstains in Light/Balanced so the existing soft-mode `AUTH` path is byte-identical), and the subjective floor stays in place — defense-in-depth, raise-only, no other behavior change. The predicate moved to a models-only leaf module (`doberman.engine.trifecta`) so the perf-sensitive host-hook path picks it up without subjective's ML import chain
-- **Security fix:** the destructive-command rule's vocabulary was POSIX-only (`rm`, `dd`, `mkfs`, `git`) — live testing of the Codex CLI integration on Windows proved `Remove-Item sentinel.txt` (and any PowerShell/cmd delete) passed unmediated. `Remove-Item`/`ri`/`rmdir`/`del`/`erase`/`rd`/`Clear-Content`/`clc` now map onto the same severity ladder as `rm` (catastrophic recursive+force at a root/home target → BLOCK; bulk or unrecoverable-gitignored-data operand → AUTH), `powershell`/`pwsh`/`cmd` inline payloads (`-Command`, `/c`) get the same opaque-AUTH-plus-body-scan treatment as `bash -c` (`-EncodedCommand` stays opaque-only — base64 can't be vetted), and `Format-Volume`/`Clear-Disk`/`format` join the disk-wipe BLOCK list
-- **Fix:** `doberman doctor`'s Codex CLI version check resolved `codex` via a bare argv lookup, which cannot find npm's `codex.cmd` shim on Windows (`CreateProcess` doesn't apply `PATHEXT` to a bare command name) — reported a false "not found" WARN on a box where Codex ran fine. Now resolves through `shutil.which` first (PATHEXT-aware on every platform)
-- **Fix:** the BLOCK/AUTH-denied next-step guidance said "outside the hooked Claude Code session" even for Codex sessions — `doberman.hosthooks.hookio` is shared across both hosts. Reworded to "outside the hooked agent session"
-- **Security fix:** deleting an unrecoverable, gitignored data file (local DB `*.db`/`*.sqlite*`, `.env`, `*.key`) now requires authentication instead of silently passing (AN-1) — narrow lexical gate on `rm` operands; directory deletes remain out of scope
-- **Security fix:** the dash disables uvicorn's access log so the signed dashboard URL token never lands in server logs (#286, ADR 0063)
-- **New:** `doberman 2fa reset-lockout` clears the TOTP rate-limit lockout early, gated on your local password (never on the locked-out 2FA factor, which cannot verify itself). With no password enrolled it refuses and points to the self-recovering cooldown (UX-B, #285)
-- **Auth-challenge timeouts now read as timeouts, not refusals** (AN-4a, follows ADR 0046's wall-clock deadline): an AUTH challenge that reaches its deadline unanswered is logged as `timeout` rather than `denied`, and the host-hook deny message says the request *expired* — so an audit, and the user, can tell silence from a deliberate "no". Denied either way (fail closed) (#281)
-- **New (interface only):** `doberman.auth.async_challenge` — `ChallengeHandle`, the `AsyncChallengeBackend` protocol, `InMemoryAsyncBackend`, and the `doberman.async_challenge_backends` entry-point group. Nothing is wired into the live decision path yet; every terminal state denies (thanks @Maqbool61, #273, closes #144)
-- **New:** shell tab completion is enabled — `doberman --install-completion` (thanks @slegarraga, #280, closes #255)
-- **UX:** `--help` groups commands into panels — Getting started / Daily use / Policy & control / Auth & recovery / Advanced (thanks @slegarraga, #279, closes #259)
-- **UX:** `uninstall-hooks` now states what it leaves behind (`.doberman/`, `~/.doberman/metrics.db`, password/2FA enrollment), and `setup`'s next steps name the exit (thanks @slegarraga, #276, closes #256)
-- **UX:** CLI diagnostics now use one severity vocabulary: `error:` for non-zero failures, `warning:` for successful but skipped or degraded work, and `note:` for informational asides (#344)
-- **Docs:** docs/CLI.md documents `log --jsonl` (field allowlist, newest-first, empty-if-none) and the scan evidence 3-vs-10 display cap (thanks @AshSgDe29071999, #295, closes #223)
-- **New:** `WebhookAuditSink` — the first built-in concrete audit sink (F8.5). Drop a `.doberman/audit_webhook.yaml` (`url`, `auth_env`, `timeout_s`) and every redacted decision record is also POSTed to your own log pipeline. `emit()` never blocks the decision path (bounded queue, drop-oldest with a counted drop), HTTPS is required off-loopback, and the auth token is read from the named env var at POST time — never stored, never logged (thanks @Maqbool61, #317, closes #233)
-- **CI:** Python 3.13 joins the test matrix, and the package classifiers say so (thanks @jasperdingg, #328, closes #211)
-- **Docs:** [`docs/ADAPTER_GUIDE.md`](docs/ADAPTER_GUIDE.md) — the shared shape of Doberman's host adapters: hook lifecycle, normalization into `SecurityObject`, per-host verdict enforcement, and a checklist for writing a third adapter (thanks @AshSgDe29071999, #316, closes #189)
-- **Docs:** docs/CLI.md now documents every user-facing CLI command — 29 of 29, including the `2fa`, `password`, `taint`, and `hook` groups (thanks @AshSgDe29071999, #297, closes #222)
+### Security
+- The proxy output-secret gate now covers error results and structured or embedded response channels, closing a leak path (#378)
+- Control-plane state (the TOTP seed, password hash) and Windows-style path separators are both now correctly recognized as protected, closing two bypasses (#379, #380)
+- The lethal-trifecta floor (sensitive data, untrusted provenance, and an external destination) now also fires at the objective layer in Strict and Paranoid modes
+- The destructive-command rule now recognizes PowerShell and cmd deletes (`Remove-Item`, `rmdir`, `del`, `Format-Volume`), not just POSIX `rm`/`dd`/`mkfs`
+- Deleting an unrecoverable gitignored file (`*.db`, `.env`, `*.key`) now requires authentication instead of passing silently
+- The dashboard no longer writes its signed session URL token to server logs (#286)
 
-## 0.17.1 — 2026-08-06
+### Added
+- `doberman uninstall` removes this project's hooks and `.doberman/`, gated behind your password or 2FA (#375, thanks @QY-25123)
+- `doberman role enable-default` turns on a built-in least-privilege role for repos with no hand-written role file
+- `doberman memory reset` and `doberman memory prune --older-than-days N` manage the learned per-entity behavioral memory
+- A new detector flags suspiciously large base64-looking blobs in tool-call arguments as possible bulk exfiltration
+- `doberman 2fa reset-lockout` clears the TOTP lockout early, gated on your local password (#285)
+- `doberman --install-completion` enables shell tab completion (#280, thanks @slegarraga)
+- `WebhookAuditSink` posts every redacted decision to your own log pipeline via `.doberman/audit_webhook.yaml` (#317, thanks @Maqbool61)
+- Python 3.13 is now a supported and tested version (#328, thanks @jasperdingg)
 
-- **Security fix (AN-4b):** a plugin `AuthProvider` that raised a non-`Exception` `BaseException` (`SystemExit`, or its own `BaseException` subclass) slipped past every caller's `except Exception` and left the mediated action neither approved nor denied — an action escaping the fail-closed path. `run_auth_challenge` now converts any non-cooperative `BaseException` from the challenge worker into a denial at the one provider seam, tagged `method="error"` so the audit tells it apart from a timeout or a human "no". `asyncio.CancelledError` still propagates (cancellation stays cooperative) and a regular `Exception` keeps its existing propagation to the caller, so no call site changes behavior for the paths that already worked. ADR 0064
-- **UX fix wave** (from the 2026-08-05 UX audit + critique; all shipped 2026-08-06): every verdict-printing surface now routes through the shared render layer — color when the terminal supports it, `NO_COLOR`/pipe-safe, fixed-width labels that never shift alignment (#252) · dash light mode re-tuned to AA contrast on the verdict badges, pending approvals announced via a polite live region + a tab-title count, TOTP input properly labeled, side-stripe dropped (#261) · every AUTH channel now states its auto-deny deadline (TTY prompt, GUI dialog, dash card expiry) and `doberman status` surfaces challenges auto-denied in the last 24h (#265) · the setup wizard re-prompts on a mistyped mode instead of exiting and losing every answer (the `--mode` flag path keeps its hard usage error), explains each preference dimension inline, and drops the asked-then-discarded profile question (#266) · **`doberman dashboard` is renamed `doberman session-summary`** — the old name survives as a hidden permanent alias so existing SessionStart hooks keep working, `install-hooks` writes the new name, and `uninstall-hooks` recognizes both (#267) · the dash Approve control is arm-then-confirm (first click arms, second within 3s resolves; Deny stays single-click — denying is the safe direction) (#268)
-- **Docs:** README states the defense-in-depth disclaimer once and drops the SEO keyword footer (thanks @slegarraga, #264, closes #257) · stale "a later slice adds `install-hooks`" hook help replaced with a pointer to the real command (thanks @AshSgDe29071999, #263, closes #253)
-- **Machine-readable CLI output** across the read-only commands, so Doberman's decisions can be piped into other tooling instead of scraped: `doberman scan --json` (one document, capabilities sorted by `(category, name)` for deterministic diffs) · `doberman doctor --json` (health checks + critical failures, health exit codes unchanged) · `doberman policy-history --json` (the redacted policy-change ledger as a JSON array) · `doberman log --jsonl` (one redacted decision per line). Every JSON path emits an explicit **allowlist** of already-redacted columns rather than serializing rows wholesale, so a column added to the decisions table later cannot leak into a machine-readable stream by default — the same fail-closed posture the human views already had. Thanks NanoRisk6 (#207, #208, #210)
-- **`doberman scan --quiet`** suppresses the risk map on stdout for scripted use, leaving exit behavior unchanged. Note that `scan` currently exits 0 regardless of what it finds — making the exit codes actually meaningful is tracked in #193. Thanks NanoRisk6 (#208, closes #187)
-- **Docs:** [`docs/CLI.md`](docs/CLI.md), a full command/flag reference for the CLI (thanks NanoRisk6, #208, closes #185) · [`docs/REASON_CODES.md`](docs/REASON_CODES.md), cataloguing all **51** `ReasonCode` values with the condition that fires each one and its raise sites — the reference for reading a `BLOCK`/`AUTH` explanation (thanks NanoRisk6, #209, closes #186)
-- **`doberman taint clear`** — the gated recovery command for sticky session taint. Taint never expires on its own (a timed reset would just be a bypass an attacker waits out), so a single legitimate secret read can otherwise leave a repo's egress raised to AUTH/BLOCK in strict/paranoid for the rest of the session with no in-band reset. The new command wipes both taint stores (`session_taint` and `session_secret_fingerprints`) for the current repo, but only after verifying the strongest enrolled possession factor (TOTP if enrolled, else the local password) — with neither enrolled it refuses outright, and a denied or failed gate leaves every row untouched. Agents still cannot reach it: `taint` was already control-plane-blocked from a mediated shell call, so this is a human-only, own-terminal escape hatch.
+### Changed
+- An unanswered AUTH challenge is now logged and reported as a timeout rather than a denial (#281)
+- `--help` now groups commands into panels, and `uninstall-hooks`/`setup` state what's left behind and how to exit (#276, #279, thanks @slegarraga)
+- CLI diagnostics now use one consistent severity vocabulary: `error:`, `warning:`, `note:` (#346, thanks @floze-the-genius)
 
-## Shipped
-- Tool mediation · decision engine · objective guardrail (paths, commands, destinations, secrets, **smuggled-token channels**) · subjective guardrail (adaptive behavioral baselines, **OOD/homoglyph token signals**) · roles & boundaries · capability discovery · tiered auth (confirm → TOTP → scoped elevation) · audit log · policy-drift & poisoning defense (classify strengthen/weaken, possession-factor-gated permanent weakening, append-only ledger, **enforce/monitor/off enforcement dial — now consumed by the decision path (discretionary verdicts soften; the objective floor stays live), softening now gated behind the same possession-factor check as a policy weakening (TOTP if enrolled else password, fails closed with neither — no confirm-only fallback) + a ledger-verified tamper clamp**, **strictness `mode` and SL5 `prefs` now use the corrected 2FA-or-password gate: password is the minimum factor, optional TOTP takes precedence when enrolled, neither enrolled fails closed, and raising stays frictionless**) · universal subjective layer (SL1–SL9)
-- Local auth-factor lifecycle: `doberman password set [--force]` · `doberman 2fa setup [--force]` · **`doberman 2fa remove`** (unenroll TOTP) — rotating *or* dropping TOTP proves the code you currently hold, through the same rate-limited check that trips the persisted lockout, so a wrong code leaves the factor intact; removing the last possession factor is permitted but fails closed (every weakening denied until one is enrolled again)
-- Benchmark harness (suite-agnostic ASR/FPR over labeled actions; `builtins_only` vs `with_plugins`; deterministic synthetic gate; external-suite adapters via `tests/benchmarks/`)
-- Tutorial custom Guardrail plugin package ([`examples/plugin-guardrail/`](examples/plugin-guardrail/)) — installable via the `doberman.rules` entry-point group with a worked discovery + AUTH demo
-- Host-harness integration: Claude Code `PreToolUse` + `PostToolUse` hooks (`doberman hook pre`/`post`) gate every built-in *and* MCP tool call — and scan tool **output** for leaked secrets — with no MCP reconfig; fail-closed, import-light, surfacing an in-session approval dialog (confirm / TOTP 2FA) on a sensitive action, and recording a local redacted history
-- Host-harness integration: an OpenClaw plugin (`adapters/openclaw/`, `doberman hook openclaw`) gates every `before_tool_call` event through the same fail-closed decision path — verdict `allow`/`block`/`auth` maps to a no-op / terminal block / OpenClaw's own `/approve` flow respectively (no Doberman-local challenge dialog — the gateway has no interactive terminal). Ships as a plain, build-step-free ESM plugin; see `adapters/openclaw/README.md` for install and the mandatory "verify it's live" canary check
-- One-command onboarding: `doberman setup` (alertness + guardrails + auto-wires the hooks) · `install-hooks`/`uninstall-hooks` · `doberman doctor` (read-only health self-check: hooks / config / DB / 2FA / enforcement dial / fingerprint key; non-zero exit on any critical failure)
-- Host-harness self-protection: an agent cannot disable the hooks by editing `.claude/settings.json` — the hook-install file is a blocked control-plane path (like `.doberman/`)
-- Host-harness containment (taint-primary): a sticky per-session taint ledger + a **multi-step exfiltration floor** — an egress in a session that already accessed a secret is raised (`ask`, or a hard `deny` in strict/paranoid); and a **read-vs-send fingerprint match** hard-blocks a confirmed exfil (an outbound value equal to a secret read earlier) in every mode — catching read-then-send exfil a single-call rule can't see
-- **MCP-proxy parity:** the pure-MCP proxy's `decide_and_execute` now runs the same **output-scan secret gate** as the host-hook's `PostToolUse` handler — a credential-shaped result returned by a wrapped MCP tool server is blocked before it reaches the model, reusing the same `ObjectiveGuardrail` / secret-detection rule (no second detector); a merely high-entropy, non-credential-shaped result still passes through and records taint, matching the host-hook's own false-positive-avoiding behavior
-- `doberman status` now shows the current per-repo taint state (which taint kinds have accumulated, and their counts) alongside role/mode/policy/elevations
-- Session dashboard: `doberman dashboard` (print-and-exit, wired as a `SessionStart` hook by `install-hooks`) shows a device-global, lifetime PASS/AUTH/BLOCK rollup — verdict class + count only, redaction-safe, best-effort so it can never slow down or break a decision
-- Decision-transparency TUI: `doberman tui` (optional `textual` extra) browses the redacted decision log and turns each row's verdict + reason codes into a plain-language "why" — a deterministic offline template by default, with an optional, opt-in Claude-Haiku narrator (`[explain]` extra, `ANTHROPIC_API_KEY` + `DOBERMAN_EXPLAIN_LLM=1`) that only rewords the already-made verdict and fails safe to the template
-- **Security fix:** protected-path confinement (`ProtectedPathRule`) now canonicalizes and matches the **raw, un-redacted** call argument when available, instead of the redacted `action.target` — closing a bypass where a path over 256 chars (or one only revealed as protected/traversing after canonicalization) had already been replaced with `"<redacted>"` before the confinement check ran, letting the write slip past as PASS
-- **Security fix:** severity-weighted familiarity in the subjective baseline — destructive capabilities (delete/grant/execute), secret/sensitive targets, external destinations, and many/mass blast radii now need **10 allowed observations** (not the default 3) before they count as familiar/zero-novelty, so a dangerous capability can no longer be slow-boiled to invisibility in just 3 allows; raise-only, benign action classes keep the default threshold
-- **Security fix:** tightened four false-positive-prone subjective-inference regexes (`doberman.subjective.infer`) to cut unnecessary AUTH prompts — `ls -lart` no longer reads as a recursive shell flag cluster, a URL query string (`?q=...`) no longer reads as a glob, a "token counting" tool description no longer reads as credential access, and a chained/benign `--force`/`--hard-links` command no longer reads as irreversible — while keeping true positives (`-R`, `git reset --hard`, an admitted API token) matching
-- **Security hardening:** confirmed and regression-tested that deleting *or* overwriting `.doberman/policies.yaml` through a mediated action is control-plane-blocked (not just writes) — closing the reset-abuse path where deleting the policy file could fake a "fresh install" and re-trigger the establishment carve-out
-- AUTH prompts now lead with a `[RISK: <level>]` badge (LOW/MEDIUM/HIGH/CRITICAL) so a human sees the decision's severity at a glance before reading the rest of the challenge — purely presentational, anti-fatigue; no verdict/tier/decision logic changes
-- **Security fix:** the TOTP 2FA rate limiter now persists its lockout state to disk (colocated with the secret) instead of an in-memory counter, and self-expires after a 15-minute cooldown — closing a bypass where a **fresh process** (e.g. a per-invocation host-hook adapter) reset the failure count for free, letting an attacker retry indefinitely, while also giving the long-running proxy's lockout a bounded, self-service recovery instead of a permanent softlock (`reset_attempts()` remains available for a future admin-facing reset command)
-- **Security hardening (H1):** the MCP proxy's `normalize()` redaction no longer relies solely on its own length/shape stopgap — it now also runs the canonical shared secret detector (`doberman.engine.rules.secrets`, the same one that drives `secret_exfiltration`), layered strictly ON TOP of the stopgap so coverage can only widen, never narrow (Azure/GCP/Stripe/SendGrid/npm/JWT/DB-URI/env-assignment shapes the old stopgap missed are now redacted too). The proxy's `_call_tool` handler is also now wrapped end-to-end: any unexpected exception escaping `decide_and_execute` returns a fail-closed error naming only a reason code and the exception's class — never the exception's own message or a raw argument fragment — closing the last gap where an unhandled error could have leaked call content back to the agent
-- **Turn gate (Feature 11):** a second, pre-inference invocation point (`doberman.turngate`) that judges the user's *turn* — prompt plus attached/pasted/tool-fetched content — before a single inference token is spent. Tier 0 deterministic signatures (instruction nullification, authority override, secret export, encoded payload) hard-block on an issue-vs-mention + origin discrimination (untrusted-origin match always blocks; a typed *mention* steps up instead of blocking); Tier 1 heuristic classes (embedded pasted instructions, persona override, obfuscation, urgency+secrecy framing) are AUTH-only and structurally block-incapable; a stylometric co-occurrence gate steps up only when an extreme per-entity style outlier coincides with a sensitive apparent intent, never on style alone; a repeat-after-block escape hatch scales the re-challenge to the original block (Tier 0 → 2FA) with single-use approval and a third-attempt lockout. Released turns tag-and-pass a bounded, raise-only `TurnContext` into the action stage (a flagged turn's follow-on actions score harsher; flagged pasted segments inherit `provenance: untrusted_data`). The turn gate is additive and an efficiency/early-warning layer only — the action gate above remains the safety guarantee, and with no host pre-inference hook or `DOBERMAN_TURN_GATE=off` it is simply absent.
-- **Turn gate boundary:** the import-linter contract now forbids the policy core from importing **either** invocation adapter (`doberman.proxy`, `doberman.turngate`) — the turn gate stays a pure adapter, injected into the engine like the proxy, never a static dependency of it.
-- Dashboard, interactive AUTH approve/deny (D3): a `pending_approvals` queue mediates between the decision path and the dashboard purely through SQLite — never HTTP into the decision path. `DashboardPrompter` implements the existing `Prompter` interface, engaging the queue only while a liveness heartbeat is fresh; a stale/missing heartbeat, an unanswered approval, or a poll timeout all fall back to the next channel (elicitation → GUI → terminal) with zero added latency and no denial invented on the dashboard's behalf. Resolution is a single-use, race-safe `UPDATE ... WHERE status='pending'` transition (a resolved/expired row 409s), and the dashboard only ever relays a decision (plus, for 2FA tiers, a code) — verification stays entirely in the decision-path process via the existing TOTP check. Pending rows carry only already-redacted fields (action type, risk, reason codes, explanation, path class) — never a raw target or secret
-- Dashboard visual polish (D5): color-coded PASS/AUTH/BLOCK and risk badges (mirroring the terminal's `[RISK: <level>]` convention) in the live feed and pending-approval cards, a header bar surfacing the current mode + effective enforcement from the existing `/api/stats` fields, and a CSS-only designed empty state for both the feed and the pending-approvals list before any decisions arrive. The dark-by-default palette is formalized as CSS custom properties with a `prefers-color-scheme: light` override — still one inline shell, no build step, no new dependencies, no endpoint/auth/redaction changes
-- **Egress-breakout defense (EB.1) — raise-only static egress classification:** the MCP proxy now parses the *raw* shell/package/git command (a new lossless `walk_command` that preserves the env-assignments, `env`-wrappers, and proxy evidence a token-stripped `_argv` would drop) and surfaces `external_destination` from it — so a network reach hidden inside a `shell_exec`/`package_install`/`git_op` (`curl`, `wget`, `pip`, `git push`, …) is visible to the guardrails instead of slipping past as an opaque command. The existing secret-exfil floor therefore fires — **a session-secret plus command egress = BLOCK** — and `ExternalDestinationRule` steps any command egress (even trusted-looking or unresolvable) plus one `egress_ambiguous` signal (dynamic host, route/proxy override, unbalanced quoting, the 256-char work cap, or multi-host) up to **AUTH**. A new `NormalizationFailureRule` turns a parser crash into a fail-closed objective floor (`normalization_failed` was set but consumed by nothing before). Command egress is excluded from the subjective baseline so it can't be slow-boiled to familiar, and secret-shaped host labels are HMAC-redacted before they reach the `SecurityObject`. Strictly **raise-only** — never a new PASS, never a lowered verdict (a follow-up adversarial review caught and fixed one command-family dest-key regression on the branch before merge)
-- **Runtime egress broker (RB.1) — the `EgressBroker` seam, wired but dormant:** a new core package, `doberman.egress`, defines the interface a future runtime enforcement broker (e.g. a forcing forward proxy) implements: `enforcement_status()` (`PROVEN`/`UNPROVEN`/`ABSENT`), a *prospective* `classify(action)` returning a `BrokerVerdict` (`allowlisted`, `will_enforce`, `reason_codes` — deliberately no `actual_destination`, since a forward proxy only learns the real destination at connect time, after the tool-call decision), and a *retrospective* `connection_events(entity, window)` for later ground-truth reconciliation. Third-party brokers register via the `doberman.egress_brokers` entry-point group, discovered the same way as every other plugin seam. `ExternalDestinationRule` now consults a registered broker (fail-closed: no broker, a non-`PROVEN` status, or a raising/malformed broker are all treated identically to `ABSENT`) on every egress-classified action — but the verdict is currently **discarded outright**: no broker, however permissive, can raise or lower today's static-only AUTH/BLOCK behavior. PASS-authority only starts at RB.4
-- **Runtime egress broker (RB.2a) — default-deny allowlist + a two-sided enforcement probe, still dormant:** `doberman.egress.allowlist.EgressAllowlist` is a default-deny host allowlist seeded from `ExternalDestinationRule`'s own `TRUSTED_HOSTS` and reusing its exact host-canonicalization/suffix-matching logic (no second parser to drift out of sync), optionally extended from a repo's `.doberman/egress_allowlist.yaml` (additive-only, fails closed on anything malformed). `doberman.egress.enforcement.EnforcementProbe` answers `enforcement_status()` honestly, and requires proof from **both** directions before claiming enforcement: a direct TCP connection to a known non-allowlisted host must FAIL (any failure — refused, timed out, unreachable) *and* a probe routed through the broker to an allowlisted host must SUCCEED; only then is the result `PROVEN`. A failed direct attempt alone is never enough — a dropped-packet firewall or a resolver policy that blocks the specific probe target produce the same observable failure as real enforcement on a machine whose egress is otherwise wide open, so a negative-only probe would falsely read `PROVEN` in both cases. Any exception in either half, or no broker probe available at all (RB.2a ships no listener, so none can be wired in yet), also fails closed to `UNPROVEN`. `EnforcementProbe.status()` is a pure, non-blocking cache read — safe to call from inside the decision path's own running event loop — that never itself runs the probe; a separate async `refresh()`, driven off the decision path by whoever owns the broker, does the actual two-sided probing and updates the TTL'd cache (a never-refreshed or stale-past-TTL cache reads as `UNPROVEN`). `doberman.egress.local.LocalEgressBroker` is the first concrete `EgressBroker` (the core reference / forcing-forward-proxy topology): it wires the allowlist and probe together, but since RB.2a ships no listener yet, `classify()` always returns `will_enforce=False` — it cannot truthfully promise to enforce anything until RB.2b adds the proxy (and its broker probe). **Not registered as a `doberman.egress_brokers` entry point** — this slice changes no behavior on `main` and grants no `PASS`
-- **Runtime egress broker (RB.2b) — the forcing forward proxy, still dormant:** `doberman.egress.proxy.ForwardProxy` is a minimal, stdlib-only (`asyncio`) HTTP `CONNECT` forward proxy that enforces `EgressAllowlist` **at the socket** — a denied destination's upstream connection is never opened; the proxy replies `403` and stops, and the fake-origin test proving zero upstream connections on denial is the load-bearing test in the new suite. Binds `127.0.0.1` only (never configurable to a wider host — an open forward proxy reachable off-box is a severe vulnerability), an ephemeral port by default, and bounds the request/header read to 8 KiB against a memory-exhaustion client. Every attempt (allowed or denied) is recorded as a redaction-shaped `ConnectionEvent` — canonical host + a coarse byte count only, never payload/request content — into a bounded, in-memory `collections.deque` (not SQLite). Known, deliberate scope limits: **HTTP `CONNECT` only** (no SOCKS4/5) and **no transparent/SNI-sniffing mode** (it only mediates traffic a client explicitly routes to it). `doberman.egress.local.LocalEgressBroker` can now optionally take a running `ForwardProxy`: `connection_events()` returns its real recorded events, `classify()`'s `will_enforce` can now read `True` (only while a proxy is actually running), and its `EnforcementProbe` can be wired with a positive prober (`proxy.probe`, already `async def`) that connects *through* the proxy and is awaited directly by `refresh()` — never `asyncio.run()`, which would raise when called from inside the proxy's own running event loop — making `PROVEN` reachable for the first time via the broker's own `refresh_enforcement()`. With no proxy injected (still the default), behavior is byte-for-byte unchanged from RB.2a. **Still not registered as a `doberman.egress_brokers` entry point and still grants no `PASS`** — RB.4 is what lets a broker verdict change a decision
-- **Runtime egress broker (RB.3) — retrospective ground-truth reconciliation:** `ExternalDestinationRule` now asks a registered broker what an entity's connections *actually* showed a moment ago (`connection_events`, over a bounded 15-minute window) and, if any observed host diverges from this rule's own static host-trust classification, **raises** the verdict the rule was already about to return — stepping a `PASS` up to `AUTH` and attaching a new `egress_route_divergence` reason code (or just appending the code onto an already-`AUTH` command-egress result). This is deliberately **retrospective, never prospective**: a forward proxy only learns an action's real destination at `CONNECT` time, *after* the tool-call decision, so this can never be a pre-flight check of the pending action's own destination. Strictly raise-only — it never grants `PASS` and never lowers an already-higher verdict (an already-`BLOCK` decision from another rule, e.g. secret exfiltration, stays `BLOCK` through `combine`). Fails closed to "no signal" — never a crash — on no broker, no `entity_id` in context, or a broker whose `connection_events` raises; with no broker registered, behavior is byte-for-byte unchanged from today. The divergence explanation and reason code never name the observed host itself, only the classification mismatch
-- **Runtime egress broker (RB.4) — broker-backed egress PASS behind proven enforcement:** `ExternalDestinationRule` can now contribute `PASS` (reason code `egress_broker_enforced`) in place of its two "static parsing can't prove it" `AUTH` outcomes — command egress with a resolved host, and an unknown/untrusted network destination — but **only** when a broker is genuinely `PROVEN` to enforce egress **and** its verdict both `allowlisted` this exact destination **and** `will_enforce` it at the socket (a bare allowlist claim from a broker that isn't itself running a proxy is still not proof, and stays `AUTH`). RB.3's retrospective route-divergence check always wins over a broker `PASS`: it wraps the rule's whole static result, so a `PASS` this slice grants is raised right back to `AUTH` the same way a trust-list `PASS` always was. `combine()` remains untouched and strictly raise-only (`max()` over verdict/risk), so a broker `PASS` can never punch through another rule's `AUTH`/`BLOCK` — the secret-exfiltration floor and the lethal-trifecta floor are unaffected and still win via `combine`. `UNPROVEN`/`ABSENT`/no broker/a raising broker are all still `None` from `consult_broker` and behave exactly as before — dormant by default, byte-for-byte unchanged with no broker registered
-- **Runtime egress broker (RB.5) — mode-gated egress posture over the broker:** the four strength modes (`doberman.policy.modes`) gain a new `egress_hard_block` flag, mirroring the existing `trifecta_hard_block`/`token_channel_hard_block` precedent — `False` in Light/Balanced/Strict, `True` only in Paranoid. In Paranoid, `ExternalDestinationRule` now escalates a non-allowlisted egress destination straight to a hard `BLOCK` (reason code `egress_blocked_by_mode`) instead of `AUTH` — but **only** when a broker `PROVEN` to enforce egress also attests it will itself `will_enforce` (drop) that exact destination at the socket; a mirror image of RB.4's `_broker_grants_pass` gate with `allowlisted` flipped, so the block is truthful rather than merely advisory. Strict keeps today's `AUTH`; Light/Balanced are untouched. Strictly raise-only, and — the load-bearing guarantee — **dormant with no broker registered in every mode, including Paranoid**: with nothing actually enforcing the drop at the socket, a hard block would be a lie, so behavior stays byte-for-byte unchanged from EB.1. RB.4's broker-backed `PASS` and RB.3's route-divergence raise are both untouched and still take precedence where they already did
-- **Runtime egress broker (RB.6) — real per-entity egress-velocity signal:** a new bounded, in-memory `EgressVelocityTracker` (`doberman.egress.velocity`, explicitly NOT SQLite) folds a registered broker's retrospective `connection_events()` for an entity into a per-entity `collections.deque(maxlen=256)`, capped at 1024 distinct tracked entities with least-recently-assessed eviction — so an attacker-controlled `entity_id` can never turn this into a memory-exhaustion vector. Over the same bounded 15-minute window RB.3 already uses, three module-constant-gated signals can trip: **burst** (more than 20 connection attempts), **volume** (more than 50 MiB sent), and **fan-out** (more than 10 distinct hosts). A trip **raises** `ExternalDestinationRule`'s verdict — `PASS` steps to `AUTH`, and the new `anomalous_egress_velocity` reason code is appended whether the verdict was already `AUTH` or `BLOCK` — and it wins even over RB.4's broker-backed `PASS` (a velocity anomaly always overrides a proven-enforcement allow). Strictly raise-only: `combine()`, the secret-exfiltration floor, and the lethal-trifecta floor are all untouched. Fails closed to "no signal" — never a crash — on no broker, no `entity_id` in context, or a broker whose `connection_events()` raises; with no broker registered, behavior is byte-for-byte unchanged
-- **Runtime egress broker (RB.7) — post-fetch artifact digest verification, the feature's final slice:** a small pinned-digest store (`doberman.egress.artifact.ArtifactPinStore`, loaded the same `.doberman/`-config convention as `EgressAllowlist`, from an optional `.doberman/artifact_pins.yaml`) lets the proxy verify a fetched artifact's content **after the fact — never before.** This is deliberately *not* what the original plan sketched (scoping RB.4's broker-backed `PASS` to a verified artifact): a `PASS` is granted before the fetch happens, and the RB.2b `ForwardProxy` is an HTTP `CONNECT` proxy that relays TLS **opaquely** — it never sees plaintext response bytes — so verifying content pre-decision would require TLS MITM interception, deliberately excluded from this feature. Instead, `decide_and_execute` now compares a `network_request` action's returned RESULT text against any pin for its target identity (sha256 digest, `hmac.compare_digest` constant-time comparison) at the same point the existing output secret-scan already runs: a `MISMATCH` withholds the content from the agent entirely (new reason code `artifact_digest_mismatch`, one BLOCK log row, not a clean one, mirroring the secret-scan gate); `MATCH` and the common case `UNPINNED` (no pin configured for that identity) both pass through unchanged — with no `artifact_pins.yaml` at all, behavior is byte-for-byte unchanged from before this slice. Fails closed (denies) on any internal verification error. **Honest scope: unpinned artifacts are not verified at all** — this closes a narrow, opt-in integrity gap for artifacts an operator has explicitly pinned by URL, not a general supply-chain or TOFU guarantee
-- **Security fix (fail-closed):** an AUTH challenge that nobody answers now **denies** instead of blocking the caller for ever. The fail-closed guarantee was implemented purely as `except Exception` around the challenge, which catches a prompter that *raises* — but `GuiPrompter`'s `mainloop()` and `TtyPrompter`'s `readline()` block without returning *or* raising, so no handler could fire: the decision was never persisted and the agent's tool call hung indefinitely (observed in the wild: three `doberman hook pre` processes wedged ~40 minutes). **An indefinite block is not a denial** — and it failed worst exactly where agents actually run, headless and unattended, where no GUI or terminal channel can ever be answered. `run_auth_challenge` now imposes a hard wall-clock deadline (`DEFAULT_CHALLENGE_TIMEOUT_S`, 1200s) on every challenge, running the provider on a daemon worker and denying on expiry with the distinct `method`/`auth_result` value `"timeout"` so an audit can tell *silence* from a human *"no"* (they call for different operator responses). An answer arriving after the deadline is never honoured. The deadline sits at the challenge seam rather than inside each prompter deliberately: both the prompter and the provider are **plugin seams** (`doberman.auth_providers`), so a per-channel timeout would be one registered plugin away from being false again. `GuiPrompter` additionally bounds its own dialog (`DEFAULT_DIALOG_TIMEOUT_S`, 120s) so the window closes itself — visibly, releasing its Tk root — well before the outer deadline has to abandon the thread; in practice that 120s bound, not the outer backstop, is what resolves the observed hang. The outer value is sized above the worst-case *legitimate* fallback chain (dashboard 90s → elicitation 300s → GUI 120s → terminal) run **twice**, because a 2FA/elevation tier dispatches the whole chain once for `confirm()` and again for `read_code()` under the same budget — sizing it for a single pass would cut off a human mid-TOTP-entry and manufacture a denial of an action they were actively approving, on the highest-risk tiers. So it only ever bites when nobody is answering anywhere. **Honest scope:** Python cannot kill a thread wedged in native code, so an abandoned worker is left running as a daemon — its answer is discarded and it cannot delay interpreter exit, but a stranded `readline` on an unattended terminal does persist for the life of the process, and a late answer on such a worker can still touch the TOTP lockout counter (it can never approve the action). `TtyPrompter` remains unbounded on its own, covered only by the outer deadline. The distinct `"timeout"` value is currently surfaced in the decision log by the **proxy** path only; the turn-gate paths still record an expiry as `denied`
-- **CLI decision presentation:** a new `doberman.render` module gives `doberman demo` (and future CLI output) fixed-width, color-coded verdict labels (`BLOCK` bright-red-bold, `AUTH` yellow-bold, `PASS` green) and wraps long explanations to the real terminal width (clamped 60–120 cols) instead of one unwrapped line — killing a 242-char line the old output could produce. Colors honor `NO_COLOR` and auto-strip on a non-TTY/redirected stream (deferring to Click's own detection); padding is identical colored or not, so columns never shift. The demo's self-verification is now silent on a matched scenario (dropping the `[OK]`/`Match` bookkeeping that read as "this attack was fine" when it only meant "matched the script") and loud on a mismatch (an unmissable ASCII marker naming actual vs. expected) — the exit-code contract (`0` = every scenario matched) is unchanged. A new eighth scenario (`git clone` to an external host) now demonstrates a genuine `AUTH` verdict from the real engine under default settings — the human-in-the-loop moment the README already advertised, with no fabricated verdict. Purely presentational — no decision/rule/engine changes
-- **CI/CD-config protection beyond GitHub Actions:** the protected-path rule now steps a write/delete/read against **GitLab CI (`.gitlab-ci.yml`), Jenkins (`Jenkinsfile` + `.suffix` variants), CircleCI (`.circleci/**`), and Azure Pipelines (`azure-pipelines.yml`)** up to **AUTH** — the same treatment GitHub Actions workflows already got. An agent rewriting the pipeline that builds/tests/signs/deploys a repo (to exfiltrate a deploy secret or disable a required check) is a human-in-the-loop moment on *every* CI system, not just GitHub. Surfaced via a shared `CICD_CONFIG_GLOBS` set folded into the sensitive globs; **raise-only** (these paths passed silently before), and canonicalized matching still catches `..`/case/symlink spellings. The built-in role boundaries (`frontend`/`backend`/`fullstack`/`docs`/`devops`) now list the same CI/CD systems alongside GitHub Actions wherever the role already referenced it, so role-boundary scoping matches the objective floor. Path-glob work carried forward from harshitagrawal2O's PR #164 (@harshitagrawal2O, thank you!); the role-boundary siblings, containment/traversal regression coverage, and this changelog entry complete Issue #92
-- **Path-matching fix:** the shared path canonicalizer (`doberman.canonical.canonicalize`) now strips trailing spaces and dots from each path component before glob matching, on every platform — Windows treats trailing dots/spaces in a filename as insignificant and drops them when the file is opened, so a padded spelling and its unpadded counterpart are the same on-disk file and must match the same rule. A component that reduces to nothing (e.g. all dots/spaces) has no safe reduced form and is conservatively treated as an escape rather than matched with a dropped component. Raise-only — every path that already matched a rule still does; this only closes the padded-spelling gap
-- **Role-boundary fix:** the `devops` role no longer allow-lists `.github/workflows/**` — it now escalates to AUTH for a CI/CD config edit exactly like the other four CI systems (GitLab, Jenkins, CircleCI, Azure Pipelines), which already escalated for `devops` and every other role. Previously `devops` was the sole role treating GitHub Actions as in-scope, an inconsistency left over from before PR #203 added the other CI systems. Raise-only: a `devops` agent editing a GitHub Actions workflow now gets a human-in-the-loop step-up where it previously didn't; `infra/**`, `deploy/**`, `docker/**`, and `**/*.tf` remain allowed
+### Fixed
+- The session correlator no longer flags reading a credential when the user's own earlier prompt named the destination
+- `doberman doctor`'s Codex check no longer false-warns on Windows; denial messages no longer assume Claude Code under Codex
+
+### Docs
+- README and the setup guide warn that `uninstall-hooks` must run before `pip uninstall doberman-core` (#373, thanks @QY-25123)
+- `docs/CLI.md` documents every CLI command including `log --jsonl`; new `docs/ADAPTER_GUIDE.md` covers writing a host adapter (#295, #297, #316, thanks @AshSgDe29071999)
+- Docs confirm the MCP proxy blocks credential-carrying tool output too, not just the host hook (#374, thanks @jasperdingg)
+
+## v0.17.1 — 2026-08-07
+Bug fixes, machine-readable CLI output, and a session-taint reset command.
+
+### Security
+- An `AuthProvider` plugin raising a non-`Exception` (like `SystemExit`) no longer leaves an action neither approved nor denied; it now counts as a denial
+
+### Added
+- `doberman scan/doctor/policy-history --json` and `doberman log --jsonl` emit machine-readable output through an explicit redaction allowlist (thanks NanoRisk6)
+- `doberman scan --quiet` suppresses the risk map for scripted use (thanks NanoRisk6)
+- `doberman taint clear` resets sticky session taint after verifying your strongest enrolled auth factor
+
+### Changed
+- `doberman dashboard` is renamed `doberman session-summary`; the old name still works (#267)
+- Verdict output is now colored (`NO_COLOR`-safe) with fixed-width labels, and AUTH prompts state their auto-deny deadline (#252, #265)
+- The dashboard's Approve control now needs two clicks to confirm; Deny stays one click, and light mode meets AA contrast (#261, #268)
+- The setup wizard now re-prompts on a mistyped mode instead of losing your answers (#266)
+
+### Docs
+- README states the defense-in-depth disclaimer once (#264, thanks @slegarraga); hook help now points to the real `install-hooks` command (#263, thanks @AshSgDe29071999)
+- New `docs/CLI.md` command reference and `docs/REASON_CODES.md` reason-code list (thanks NanoRisk6)
+
+## v0.17.0 — 2026-07-30
+The egress-broker extension point, plus AUTH-timeout and path-matching fixes.
+
+### Security
+- An unanswered AUTH challenge now denies on a wall-clock deadline instead of hanging indefinitely
+- Trailing dots and spaces in a path are now stripped before matching a protected-path rule, closing a padded-spelling bypass on Windows
+
+### Added
+- A runtime egress-broker extension point lets a forward proxy verify and enforce network destinations; dormant until a broker is registered
+- `doberman 2fa remove` unenrolls TOTP
+- CI/CD config protection now covers GitLab CI, Jenkins, CircleCI, and Azure Pipelines, not just GitHub Actions (#164, thanks @harshitagrawal2O)
+
+### Changed
+- The `devops` role no longer allow-lists GitHub Actions workflows; CI config edits now escalate to authentication like every other role
+- CLI output is now color-coded by verdict and wraps long explanations to the terminal width
+
+### Fixed
+- The dashboard now keeps you signed in across a reload, and the 2-second poll no longer clears an in-progress TOTP entry
+
+## v0.16.0 — 2026-07-23
+Raw shell and package commands are now scanned for hidden network egress.
+
+### Added
+- Doberman now parses the raw shell, package, and git command and detects a network destination hidden inside it, even through `env` or a wrapper
+- A command that both touches a session secret and reaches an external destination now hard-blocks; an ambiguous or unresolvable destination requires authentication
+
+### Fixed
+- The reported version number is now sourced from installed package metadata, so it can't drift from what's published
+
+## v0.15.0 — 2026-07-19
+First PyPI release: the turn gate, a live dashboard, and a demo reel.
+
+### Security
+- A hardening pass across 17 pull requests closed proxy and host-hook secret-redaction gaps and persisted the TOTP lockout across restarts
+
+### Added
+- The turn gate now extends per-call lethal-trifecta protection across a whole multi-step turn, with provenance inheritance and risk clamping between related actions
+- `doberman dash` (`pip install "doberman-core[dash]"`) is a local dashboard with a live decision feed, verdict stats, and interactive approve/deny for AUTH prompts
+- `doberman demo` runs a scripted attack reel — secret exfiltration, `rm -rf ~`, a force-push, Unicode-smuggled egress — through the real decision engine
+
+### Docs
+- New `CONTRIBUTING.md` guide for external contributors
+
+## v0.11.0 — 2026-06-17
+First public release: tool mediation, guardrails, roles, and tiered authentication.
+
+### Added
+- The decision engine mediates every tool call into an allow, authenticate, or block verdict
+- Objective guardrail rules cover path confinement, destructive commands, external destinations, secret patterns, and smuggled-token channels
+- A subjective guardrail layer builds adaptive per-entity behavioral baselines and flags out-of-distribution and homoglyph token signals
+- Roles and repo boundaries, capability discovery, and tiered auth from a local confirm up to TOTP and scoped elevation
+- A local redacted audit log and raise-only policy-drift defense
+- `doberman serve` runs a stdio MCP proxy in front of any MCP server

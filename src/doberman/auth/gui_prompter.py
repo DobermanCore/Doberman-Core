@@ -119,7 +119,6 @@ _BRAND_FONT = (
     12,
     "bold",
 )  # sized to sit near the 16-20px mark, not tower over it
-_SUB_FONT = ("Segoe UI", 9)
 _BODY_FONT = ("Segoe UI", 10)
 _TARGET_FONT = ("Consolas", 12, "bold")
 _SMALL_FONT = ("Segoe UI", 9)
@@ -140,26 +139,20 @@ _TARGET_PREVIEW_HEAD_LINES = 4  # collapsed preview: whole LOGICAL lines kept fr
 #: for the noun derived from ``parts["verb"]``/``parts["tool"]`` (item 4).
 _TOGGLE_EXPAND_LABEL = "Show the full target"
 
-_SUBTITLE = "Doberman guards your agent's tool calls"
+#: Shown inside the collapsed "What is this?" panel of the Tk dialogs and as its
+#: own line by the TTY prompter (which imports it).
 _REASSURANCE = "Denying stops only this action; your agent keeps running."
 _QUESTION = "Approve this exact action?"
 #: The question outranks its own explanation (item 7 -- the "why" line stays
 #: _BODY_FONT/regular); bold is the ONLY thing distinguishing them, so this is
 #: _BODY_FONT plus a bold weight, nothing else.
 _QUESTION_FONT = (_BODY_FONT[0], _BODY_FONT[1], "bold")
-#: Round 7 (P1 item 1): the headline stays _FG at EVERY severity, including
-#: CRITICAL -- bold is the only thing that ever distinguishes it from
-#: ordinary body text. A CRITICAL dialog used to also paint the headline in
-#: the same BLOCK-red as the risk chip, the risk sentence, AND the sub-10s
-#: countdown -- four elements sharing one hue meant "this is severe" and
-#: "you are almost out of time" read as the SAME signal. Severity now lives
-#: only in the chip + risk sentence (see :func:`_chip_style`/
-#: :func:`_severity_ramp`); urgency lives only in the countdown
-#: (:func:`_build_countdown`'s own amber ramp) -- never both at once.
+#: The headline stays _FG/bold at every severity: severity speaks only through
+#: the chip (:func:`_chip_style`), urgency only through the countdown's amber
+#: ramp (:func:`_build_countdown`) -- never one hue for both.
 _HEADLINE_FONT = (_BODY_FONT[0], _BODY_FONT[1], "bold")
-_HINT = "Tab/Arrows: move - Enter: use the focused button - Esc: deny"
-_HINT_CODE = "Enter: submit code - Tab: buttons - Esc: deny"
-_CODE_PROMPT = "Enter the 6-digit code from your authenticator app to approve:"
+_HINT = "Enter uses the focused button - Esc denies"
+_HINT_CODE = "Enter submits the code - Esc denies"
 _CODE_LABEL = "6-digit code from your authenticator"
 _CODE_ERROR_DIGITS = "Only digits, please."
 _CODE_ERROR_COUNT = "Codes are 6 digits - you entered {n}."
@@ -642,16 +635,17 @@ def _content_frame(root: Any) -> Any:
     return frame
 
 
-def _build_brand(frame: Any) -> None:
-    """A compact mark+wordmark row with the subtitle right under it (9pt) —
-    the whole block stays under ~48px tall so the space it used to take
-    (a bigger mark, a 12px bottom pad) goes to the "decide" group instead
-    (see :func:`_build_group_divider`), not to the brand itself.
+def _build_brand(frame: Any, requester: str | None = None) -> None:
+    """One row: mark + wordmark on the left and, when known, the requesting
+    agent (``"Agent: <role> - via <tool>"``, muted) on the right -- who is
+    asking sits beside who is guarding, and the block stays under ~48px so
+    its footprint goes to the decision below it. There is no subtitle: the
+    collapsed "What is this?" panel opens with the same fact.
     """
     import tkinter as tk
 
     row = tk.Frame(frame, bg=_BG)
-    row.pack(fill="x", pady=(0, 1))
+    row.pack(fill="x", pady=(0, 8))
     logo = _load_logo()
     row._logo_ref = logo  # tkinter drops unreferenced images -- keep it alive
     if logo is not None:
@@ -661,18 +655,16 @@ def _build_brand(frame: Any) -> None:
         )
     else:
         tk.Label(row, text="DOBERMAN", fg=_BRAND, bg=_BG, font=_BRAND_FONT).pack(side="left")
-    tk.Label(
-        frame, text=_SUBTITLE, fg=_MUTED, bg=_BG, font=_SUB_FONT, anchor="w", justify="left"
-    ).pack(fill="x", pady=(0, 4))
+    if requester:
+        tk.Label(row, text=requester, fg=_MUTED, bg=_BG, font=_SMALL_FONT, anchor="e").pack(
+            side="right"
+        )
 
 
 def _build_group_divider(frame: Any, *, pady: tuple = (4, 10)) -> None:
-    """A thin hairline. The default spacing separates the "what" group
-    (target/question/why/risk) from the "decide" group (countdown/buttons) —
-    the vertical space freed by shrinking the brand block (:func:`_build_brand`)
-    goes here, so the two groups read as visually distinct instead of one long
-    undifferentiated stack of lines. A tighter ``pady`` is used inside the
-    "what" group itself, above the risk row (item 6).
+    """The one hairline in a dialog: it separates the "what" group (headline,
+    target, why, risk, help) from the "decide" group (question, buttons,
+    countdown), so the two read as distinct instead of one long stack.
     """
     import tkinter as tk
 
@@ -680,12 +672,13 @@ def _build_group_divider(frame: Any, *, pady: tuple = (4, 10)) -> None:
 
 
 _HELP_LABEL = "What is this?"
+_HELP_KEYS = "Tab or the arrow keys move between the buttons."
 
 
 def _help_explanation(why: str | None) -> str:
-    """The collapsed help affordance's two-line explanation (item 10) — pure
-    string composition, split out from the Tk widget wiring in
-    :func:`_build_help_affordance` so it is testable without a display.
+    """The "What is this?" explanation -- pure string composition, split out
+    from the Tk widget wiring in :func:`_build_help_affordance` so it is
+    testable without a display (the TTY prompter reuses it too).
     """
     clause = (why or "it looked unusual for this agent").strip().rstrip(".")
     clause = clause[:1].lower() + clause[1:] if clause else clause
@@ -696,20 +689,28 @@ def _help_explanation(why: str | None) -> str:
     )
 
 
+def _help_panel_text(why: str | None) -> str:
+    """Everything the collapsed panel says: the explanation, the reassurance
+    that denying stops only this action, and the longer keyboard note -- the
+    three facts the dialog used to spend always-visible rows on.
+    """
+    return f"{_help_explanation(why)}\n{_REASSURANCE}\n{_HELP_KEYS}"
+
+
 def _build_help_affordance(frame: Any, why: str | None) -> None:
     """A collapsed-by-default, focusable link ("What is this?") that expands
-    a plain-language explanation of what Doberman is and why THIS action
-    stopped — orientation for a human seeing this dialog for the first time.
-    Never the default focus: nothing here calls ``focus_set``/``focus_force``,
-    so :func:`_wire_keyboard`'s own ``deny_btn.focus_force()`` (run separately
-    by the caller) is unaffected regardless of build order.
+    :func:`_help_panel_text` -- orientation for a human seeing this dialog
+    for the first time. Never the default focus: nothing here calls
+    ``focus_set``/``focus_force``, so :func:`_wire_keyboard`'s own
+    ``deny_btn.focus_force()`` (run separately by the caller) is unaffected
+    regardless of build order.
     """
     import tkinter as tk
     import tkinter.ttk as ttk
 
     body = tk.Label(
         frame,
-        text=_help_explanation(why),
+        text=_help_panel_text(why),
         fg=_MUTED,
         bg=_BG,
         font=_SMALL_FONT,
@@ -722,7 +723,7 @@ def _build_help_affordance(frame: Any, why: str | None) -> None:
     def _toggle() -> None:
         state["expanded"] = not state["expanded"]
         if state["expanded"]:
-            body.pack(fill="x", pady=(0, 6))
+            body.pack(fill="x", pady=(0, 6), after=link)  # right under the link, not at the bottom
             link.configure(text="Hide")
         else:
             body.pack_forget()
@@ -1172,28 +1173,13 @@ def _risk_text_for_dialog(parts: dict, *, has_code_field: bool) -> str:
     return f"Risk: {risk_word} - {_TIER_HINT_CONFIRM_ONLY}"
 
 
-def _severity_ramp(word: str | None) -> tuple[str, bool]:
-    """(colour, bold) for a severity word — critical/high are bold BLOCK-red,
-    medium is amber, and low (or an unrecognized/missing word — the least
-    alarming reading, never the most) is ordinary body text.
-    """
-    if word in ("critical", "high"):
-        return _SEV_CRITICAL, True
-    if word == "medium":
-        return _APPROVE, False
-    return _FG, False
-
-
 def _chip_style(word: str | None) -> tuple[str | None, str]:
-    """``(fill, border_and_text)`` for the severity CHIP -- distinct from
-    :func:`_severity_ramp`, which colours the risk SENTENCE.
-
-    LOW (or an unrecognized/missing word) is a muted OUTLINE chip: no fill,
-    ``_MUTED`` text/border. The old code filled every chip's background with
-    :func:`_severity_ramp`'s colour, and low's ramp colour is ``_FG`` (near-
-    white) -- a pixel-luminance regression where the LEAST alarming severity
-    painted the single BRIGHTEST chip on the dialog (item 2). Medium/high/
-    critical keep a solid fill; only low is ever an outline.
+    """``(fill, border_and_text)`` for the severity chip: critical/high a
+    solid BLOCK-red fill, medium a solid amber fill, and low (or an
+    unrecognized/missing word -- the least alarming reading, never the most)
+    a muted OUTLINE with no fill, so it can never out-luminate a real fill
+    chip (a filled near-white LOW chip was once the brightest thing on the
+    dialog).
     """
     if word in ("critical", "high"):
         return _SEV_CRITICAL, _BG
@@ -1202,43 +1188,50 @@ def _chip_style(word: str | None) -> tuple[str | None, str]:
     return None, _MUTED
 
 
+def _risk_hint(risk_text: str) -> str:
+    """The tier hint after the severity word -- ``"Risk: high - confirm to
+    continue"`` gives ``"confirm to continue"``; empty when the text carries
+    none (the technical tone's bare ``"RISK: HIGH"``).
+    """
+    _word, sep, hint = risk_text.partition(" - ")
+    return hint.strip() if sep else ""
+
+
 def _build_risk_line(frame: Any, risk_text: str, risk_word: str | None) -> None:
-    """The risk line as a small severity chip (e.g. ``" HIGH "``) plus the
-    risk text itself. The word (always present, in the chip AND the text)
-    carries the meaning regardless of color, so nothing here rests on colour
-    alone.
+    """One row: the severity chip (``" HIGH RISK "`` -- the word is always in
+    the chip's text, so nothing rests on colour alone) and, muted beside it,
+    the tier hint. The severity word prints exactly once on the dialog.
     """
     import tkinter as tk
 
-    color, bold = _severity_ramp(risk_word)
     fill, chip_color = _chip_style(risk_word)
     row = tk.Frame(frame, bg=_BG)
-    row.pack(fill="x", pady=(0, 6))
+    row.pack(fill="x", pady=(2, 4))
     chip_kwargs: dict[str, Any] = {}
     if fill is None:
-        # Outline chip (low/unrecognized): no fill -- a border instead of a
-        # solid block, so it can never out-luminate a real fill chip.
         chip_kwargs.update(
             highlightthickness=1, highlightbackground=chip_color, highlightcolor=chip_color
         )
     tk.Label(
         row,
-        text=f" {(risk_word or 'low').upper()} ",
+        text=f" {(risk_word or 'low').upper()} RISK ",
         bg=fill or _BG,
         fg=chip_color,
         font=_CHIP_FONT,
         **chip_kwargs,
-    ).pack(side="left", padx=(0, 8), pady=1, anchor="n")
-    tk.Label(
-        row,
-        text=risk_text,
-        fg=color,
-        bg=_BG,
-        font=(_SMALL_FONT[0], _SMALL_FONT[1], "bold") if bold else _SMALL_FONT,
-        anchor="w",
-        justify="left",
-        wraplength=max(_wrap_px(frame) - 60, 100),
-    ).pack(side="left", fill="x", expand=True)
+    ).pack(side="left", padx=(0, 10), pady=1)
+    hint = _risk_hint(risk_text)
+    if hint:
+        tk.Label(
+            row,
+            text=hint,
+            fg=_MUTED,
+            bg=_BG,
+            font=_SMALL_FONT,
+            anchor="w",
+            justify="left",
+            wraplength=max(_wrap_px(frame) - 120, 100),
+        ).pack(side="left", fill="x", expand=True)
 
 
 def _warn_time_remaining(root: Any, secs: int) -> None:
@@ -1262,39 +1255,32 @@ def _warn_time_remaining(root: Any, secs: int) -> None:
 def _build_countdown(
     root: Any, frame: Any, timeout_s: float, on_expire: Any, *, action_id: str = "unknown"
 ) -> Any:
-    """A ticking "auto-denies in M:SS" label, plus a "More time" control
-    (WCAG 2.2.1 — a human actually present must be able to ask for more
-    time). Round 7 (P1 item 1): the label ramps muted -> amber-bold under
-    30s -> amber-bold with a leading "!" under 10s — deliberately NEVER the
-    chip/risk-sentence's severity BLOCK-red, so time-urgency and action-
-    severity stay two independently legible signals instead of one shared
-    red wash (a CRITICAL action with under 10s left used to paint the
-    headline, the chip, the risk sentence, AND this countdown all the same
-    red at once). At zero, a brief "Denied" flash — an actual denial, not
-    mere urgency — DOES use BLOCK-red, then the dialog closes.
+    """One row: a ticking "auto-denies in M:SS" label on the left and the
+    "More time" control on the right (WCAG 2.2.1 -- a human actually present
+    must be able to ask for more time; up to :data:`_MAX_EXTENSIONS` uses of
+    :data:`_EXTENSION_SECONDS` each, the button re-labelled with the uses
+    left, every use logged by action id only). The label ramps muted ->
+    amber-bold under 30s -> amber-bold with a leading "!" under 10s, never
+    the chip's severity red: time-urgency and action-severity stay two
+    separately legible signals. The expiry flash ("Denied - no answer in
+    M:SS") is an actual denial and does use BLOCK-red.
 
-    At zero, ``on_expire`` runs FIRST and SYNCHRONOUSLY, before this function
-    ever shows the flash or schedules the window's close: it must resolve the
-    shared answer to a denial (through the same "first answer wins" door every
-    ``_decide`` in the populate functions resolves through) and disable every
-    interactive widget, so a click or Return landing during the 0.6s flash
-    (:data:`_EXPIRY_FLASH_MS`) can never still change the outcome. The "More
-    time" button is disabled the same instant, alongside Deny/Approve/the
-    code entry.
-
-    "More time" is usable up to :data:`_MAX_EXTENSIONS` times per dialog
-    (round 6, item 6 — previously exactly once; a real, focusable, but never
-    the *default*-focused control — :func:`_wire_keyboard` always moves
-    initial focus to Deny after this function returns), each use extending
-    the countdown by :data:`_EXTENSION_SECONDS` and re-labelling the button
-    with how many uses remain (:func:`_more_time_label`); every use is logged
-    (the action id only, never the target).
+    At zero, ``on_expire`` runs FIRST and SYNCHRONOUSLY, before the flash is
+    shown or the close is scheduled: it must resolve the shared answer to a
+    denial (through the same "first answer wins" door every ``_decide``
+    resolves through) and disable every interactive widget, so a click or
+    Return landing during the 0.6s flash (:data:`_EXPIRY_FLASH_MS`) can never
+    change the outcome. "More time" is disabled the same instant. It is a real,
+    focusable control but never the default focus -- :func:`_wire_keyboard`
+    holds initial focus on Deny.
     """
     import tkinter as tk
     import tkinter.ttk as ttk
 
-    label = tk.Label(frame, fg=_MUTED, bg=_BG, font=_DEADLINE_FONT, anchor="w")
-    label.pack(fill="x", pady=(2, 4))
+    row = tk.Frame(frame, bg=_BG)
+    row.pack(fill="x", pady=(0, 2))
+    label = tk.Label(row, fg=_MUTED, bg=_BG, font=_DEADLINE_FONT, anchor="w")
+    label.pack(side="left", fill="x", expand=True)
     total = max(1, int(timeout_s))
     remaining = {"s": total}
     extended = {"used": 0}
@@ -1302,9 +1288,7 @@ def _build_countdown(
     def _paint(secs: int) -> None:
         text = deadline_note_mmss(secs)
         if secs < 30:
-            # Amber-bold, never the severity BLOCK-red -- urgency is its own
-            # signal, distinct from how risky the action itself is (P1 item 1).
-            color, bold = _APPROVE, True
+            color, bold = _APPROVE, True  # amber, never the severity red
             if secs < 10:
                 text = f"! {text}"
         else:
@@ -1330,12 +1314,12 @@ def _build_countdown(
         _paint(remaining["s"])
 
     more_time_btn = ttk.Button(
-        frame,
+        row,
         text=_more_time_label(_MAX_EXTENSIONS),
         command=_extend,
         style="Doberman.Link.TButton",
     )
-    more_time_btn.pack(anchor="w", pady=(0, 6))
+    more_time_btn.pack(side="right", padx=(8, 0))
 
     def _tick() -> None:
         remaining["s"] -= 1
@@ -1344,8 +1328,8 @@ def _build_countdown(
         if remaining["s"] <= 0:
             on_expire()
             more_time_btn.state(["disabled"])
-            # Block-red, not plain body text (item 7): an expiry is a denial,
-            # not a neutral status update, and must read as one.
+            # Block-red, not plain body text: an expiry is a denial, not a
+            # neutral status update, and must read as one.
             label.configure(
                 text=f"Denied - no answer in {_mmss(total)}", fg=_SEV_CRITICAL, font=_DEADLINE_FONT
             )
@@ -1538,11 +1522,70 @@ def _disable_on_expiry(root: Any, widgets: dict) -> None:
 # --- confirm dialog: flat-string (legacy) + structured (parts) ----------------------
 
 
+def _build_headline(frame: Any, parts: dict) -> None:
+    """The headline (``"Your agent wants to <verb>:"``), bold ``_FG`` at every
+    severity. The technical tone's headline embeds ``"[RISK: HIGH]"`` as text
+    for the flat TTY/dashboard renderings; the chip already says it here, so
+    the bracket is stripped and the verb (absent from that headline) gets
+    its own ``"Action: <verb>"`` line.
+    """
+    if parts.get("headline"):
+        headline_text = parts["headline"]
+        if parts.get("tone") == "technical":
+            headline_text = _headline_without_risk_bracket(headline_text)
+        _build_line(frame, headline_text, font=_HEADLINE_FONT, fg=_FG)
+    if parts.get("tone") == "technical":
+        _build_line(frame, f"Action: {parts['verb']}", font=_SMALL_FONT, fg=_MUTED)
+
+
+def _build_notes(frame: Any, parts: dict) -> None:
+    """Under the target, in reading order: the approval-memory notice and the
+    blast radius as muted notes (read after the action, never before it),
+    then ``why`` in the body face -- the reason outranks every hint.
+    """
+    if parts.get("notice"):
+        _build_line(frame, parts["notice"], font=_SMALL_FONT, fg=_MUTED)
+    effects_line = _effects_line(parts)
+    if effects_line:
+        _build_line(frame, effects_line, font=_SMALL_FONT, fg=_MUTED)
+    if parts.get("why"):
+        _build_line(frame, parts["why"], font=_BODY_FONT, fg=_FG)
+
+
+def _build_verdict_controls(
+    root: Any,
+    frame: Any,
+    timeout_s: float,
+    specs: list[tuple[str, Any, str]],
+    *,
+    widgets: dict,
+    on_expire: Any,
+    hint: str,
+    action_id: str = "unknown",
+    risk_word: str | None = None,
+) -> tuple[Any, Any]:
+    """The bottom of every dialog: the Deny/Approve row, the countdown row,
+    and the one-line keyboard hint. The safety wiring lives here so no
+    populate function can forget it: Deny takes initial focus and Return
+    follows focus (:func:`_wire_keyboard`), a CRITICAL Approve is gated
+    (:func:`_gate_approve_for_critical`), and expiry locks ``widgets``
+    through ``on_expire`` before the window closes (:func:`_build_countdown`).
+    """
+    deny_btn, approve_btn = _build_buttons(frame, specs)
+    widgets["deny"], widgets["approve"] = deny_btn, approve_btn
+    _wire_keyboard(root, deny_btn, approve_btn)
+    if risk_word:
+        _gate_approve_for_critical(root, approve_btn, risk_word)
+    _build_countdown(root, frame, timeout_s, on_expire=on_expire, action_id=action_id)
+    _build_line(frame, hint, font=_DEADLINE_FONT, fg=_MUTED, pady=(2, 0))
+    return deny_btn, approve_btn
+
+
 def _populate_confirm(root: Any, message: str, answer: dict, timeout_s: float) -> None:
     """Legacy flat-string body: back-compat for any ``Prompter`` caller that only
     ever hands this a rendered ``message`` string (and for tests stubbing this
-    exact seam). Shows the whole message as one block — no target/headline
-    hierarchy, since there is no structured data to split it from — but reuses
+    exact seam). Shows the whole message as one block -- no target/headline
+    hierarchy, since there is no structured data to split it from -- but reuses
     the same real-widget button/countdown/escape machinery as the structured
     path below, so it is never less keyboard-safe or accessible.
     """
@@ -1572,60 +1615,32 @@ def _populate_confirm(root: Any, message: str, answer: dict, timeout_s: float) -
         _resolve(False, "expired")
         _disable_on_expiry(root, widgets)
 
-    _build_countdown(root, frame, timeout_s, on_expire=_lock_out)
-    deny_btn, approve_btn = _build_buttons(
+    _build_verdict_controls(
+        root,
         frame,
+        timeout_s,
         [
             ("Deny", lambda: _decide(False, "denied"), "Doberman.Deny.TButton"),
             ("Approve", lambda: _decide(True, "approved"), "Doberman.Approve.TButton"),
         ],
+        widgets=widgets,
+        on_expire=_lock_out,
+        hint=_HINT,
     )
-    widgets["deny"], widgets["approve"] = deny_btn, approve_btn
-    _wire_keyboard(root, deny_btn, approve_btn)
-    _build_line(frame, _HINT, font=_DEADLINE_FONT, fg=_MUTED, pady=(4, 0))
     root.bind("<Escape>", lambda _e: _decide(False, "denied"))
 
 
 def _populate_confirm_parts(root: Any, parts: dict, answer: dict, timeout_s: float) -> None:
-    """Structured body: the target gets its own headline panel; the question,
-    risk line, and countdown are drawn OUTSIDE it, so nothing about the target
-    (however long) can push them out of view. Segments are read from ``parts``
-    by name — never sniffed from indentation — so the action's own target text
-    can never forge itself into looking like the risk line or the question.
-
-    The "technical" tone already embeds its risk badge and role in the
-    headline (``"[RISK: HIGH]  Doberman authentication required [...]"``);
-    the severity chip is drawn regardless — severity is a visual signal (color
-    AND word), not merely restating the headline's text, and every tone
-    deserves the same at-a-glance signal — alongside a compact
-    ``"Action: <verb>"`` line so the verb (missing from the structured
-    technical rendering before) is still visible. The GUI's own headline
-    label strips the technical tone's "[RISK: HIGH]" bracket (the chip already
-    says it — item 11). Round 7 (P1 item 1): the headline stays ``_FG``/bold
-    at EVERY severity, including CRITICAL — a prior round additionally
-    coloured a CRITICAL headline the same BLOCK-red as the chip, which meant
-    the headline, the chip, the risk sentence, AND the sub-10s countdown all
-    shared one hue; severity now speaks only through the chip and risk
-    sentence (:func:`_build_risk_line`).
-
-    Layout (item 6): the target panel, the approval-memory notice (moved to
-    AFTER it — "read after the action", styled as a muted note, not the
-    brand-coloured alert it used to be BEFORE the human even saw the target),
-    then the question. The agent identity / why / risk / reassurance lines
-    are grouped together as one block (previously identity sat off on its
-    own, ahead of the target panel) with a hairline above the risk row, and
-    the why line is promoted to body face/colour (never smaller/muteder than
-    the keyboard hint below it — the reason must outrank the hint). The
-    question itself is drawn BOLD (item 7) — the one line every dialog most
-    needs read first — while its own explanation (``why``) stays regular
-    weight, so the question visually outranks it.
-
-    A two_factor/role_elevation flow's FIRST dialog is this one; it gets its
-    own "Step 1 of 2" marker (item 8) so a two-step flow reads as one
-    sequence from the very first screen, not just the second. The risk
-    line's hint is rebuilt for THIS dialog kind (:func:`_risk_text_for_dialog`,
-    ``has_code_field=False``) — a confirm-only step never claims "this needs
-    your code" before any code field exists.
+    """Structured body, top to bottom: brand row (with the requesting agent),
+    a "Step 1 of 2" marker for the tiers whose flow has a code dialog after
+    this one, the headline, the target panel, the notes and ``why``, the
+    severity chip with its tier hint (:func:`_risk_text_for_dialog` with
+    ``has_code_field=False`` -- a confirm-only step never claims "this needs
+    your code"), the collapsed "What is this?" panel, then under the one
+    hairline the bold question directly above Deny/Approve, the countdown
+    row, and the keyboard hint. Segments are read from ``parts`` by name --
+    never sniffed from indentation -- so the target text can never forge
+    itself into looking like the question or the risk row.
     """
 
     def _resolve(value: bool, reason: str) -> bool:
@@ -1642,34 +1657,17 @@ def _populate_confirm_parts(root: Any, parts: dict, answer: dict, timeout_s: flo
     risk_word = _severity_from_risk_text(parts["risk"]) if parts.get("risk") else None
 
     frame = _content_frame(root)
-    _build_brand(frame)
+    _build_brand(frame, _agent_identity_line(parts))
     if parts.get("tier") in _TWO_STEP_TIERS:
         _build_line(frame, _STEP_ONE, font=_SMALL_FONT, fg=_MUTED)
-    if parts.get("headline"):
-        headline_text = parts["headline"]
-        if parts.get("tone") == "technical":
-            headline_text = _headline_without_risk_bracket(headline_text)
-        _build_line(frame, headline_text, font=_HEADLINE_FONT, fg=_FG)
-    if parts.get("tone") == "technical":
-        _build_line(frame, f"Action: {parts['verb']}", font=_SMALL_FONT, fg=_MUTED)
+    _build_headline(frame, parts)
     _build_target_panel(root, frame, parts["target"], toggle_label=_toggle_expand_label(parts))
-    if parts.get("notice"):
-        _build_line(frame, parts["notice"], font=_SMALL_FONT, fg=_MUTED)
-    effects_line = _effects_line(parts)
-    if effects_line:
-        _build_line(frame, effects_line, font=_SMALL_FONT, fg=_MUTED)
-    _build_line(frame, _QUESTION, font=_QUESTION_FONT, fg=_FG, pady=(2, 8))
-    identity = _agent_identity_line(parts)
-    if identity:
-        _build_line(frame, identity, font=_SMALL_FONT, fg=_MUTED)
-    if parts.get("why"):
-        _build_line(frame, parts["why"], font=_BODY_FONT, fg=_FG)
+    _build_notes(frame, parts)
     if parts.get("risk"):
-        _build_group_divider(frame, pady=(2, 6))
         _build_risk_line(frame, _risk_text_for_dialog(parts, has_code_field=False), risk_word)
-    _build_line(frame, _REASSURANCE, font=_SMALL_FONT, fg=_MUTED, pady=(2, 8))
     _build_help_affordance(frame, parts.get("why"))
     _build_group_divider(frame)
+    _build_line(frame, _QUESTION, font=_QUESTION_FONT, fg=_FG, pady=(0, 4))
 
     widgets: dict[str, Any] = {}
 
@@ -1680,20 +1678,20 @@ def _populate_confirm_parts(root: Any, parts: dict, answer: dict, timeout_s: flo
         _resolve(False, "expired")
         _disable_on_expiry(root, widgets)
 
-    _build_countdown(
-        root, frame, timeout_s, on_expire=_lock_out, action_id=parts.get("action_id", "unknown")
-    )
-    deny_btn, approve_btn = _build_buttons(
+    _build_verdict_controls(
+        root,
         frame,
+        timeout_s,
         [
             ("Deny", lambda: _decide(False, "denied"), "Doberman.Deny.TButton"),
             ("Approve", lambda: _decide(True, "approved"), "Doberman.Approve.TButton"),
         ],
+        widgets=widgets,
+        on_expire=_lock_out,
+        hint=_HINT,
+        action_id=parts.get("action_id", "unknown"),
+        risk_word=risk_word,
     )
-    widgets["deny"], widgets["approve"] = deny_btn, approve_btn
-    _wire_keyboard(root, deny_btn, approve_btn)
-    _gate_approve_for_critical(root, approve_btn, risk_word)
-    _build_line(frame, _HINT, font=_DEADLINE_FONT, fg=_MUTED, pady=(4, 0))
     root.bind("<Escape>", lambda _e: _decide(False, "denied"))
 
 
@@ -1778,7 +1776,7 @@ def _wire_code_submit(root: Any, entry: Any, error_label: Any, on_code: Any) -> 
 
 
 def _populate_code(root: Any, message: str, answer: dict, timeout_s: float) -> None:
-    """Legacy flat-string body — see :func:`_populate_confirm`'s docstring."""
+    """Legacy flat-string body -- see :func:`_populate_confirm`'s docstring."""
     import tkinter as tk
 
     def _resolve(value: Any, reason: str) -> bool:
@@ -1797,8 +1795,8 @@ def _populate_code(root: Any, message: str, answer: dict, timeout_s: float) -> N
     _build_line(frame, message, pady=(0, 10))
     _build_line(frame, _CODE_LABEL, font=_SMALL_FONT, fg=_MUTED, pady=(0, 2))
     entry = _make_code_entry(frame)
-    # Block-red, not Approve's amber (item 7): an inline validation error is
-    # a denial-adjacent signal, not an affordance to keep going.
+    # Block-red, not Approve's amber: an inline validation error is a
+    # denial-adjacent signal, not an affordance to keep going.
     error_label = tk.Label(frame, fg=_SEV_CRITICAL, bg=_BG, font=_SMALL_FONT, anchor="w")
     error_label.pack(fill="x", pady=(0, 4))
     submit = _wire_code_submit(root, entry, error_label, lambda code: _decide(code, "approved"))
@@ -1813,33 +1811,30 @@ def _populate_code(root: Any, message: str, answer: dict, timeout_s: float) -> N
         _resolve(None, "expired")
         _disable_on_expiry(root, widgets)
 
-    _build_countdown(root, frame, timeout_s, on_expire=_lock_out)
-    deny_btn, approve_btn = _build_buttons(
+    _build_verdict_controls(
+        root,
         frame,
+        timeout_s,
         [
             ("Deny", lambda: _decide(None, "denied"), "Doberman.Deny.TButton"),
             ("Approve with code", submit, "Doberman.Approve.TButton"),
         ],
+        widgets=widgets,
+        on_expire=_lock_out,
+        hint=_HINT_CODE,
     )
-    widgets["deny"], widgets["approve"] = deny_btn, approve_btn
-    _wire_keyboard(root, deny_btn, approve_btn)
-    _build_line(frame, _HINT_CODE, font=_DEADLINE_FONT, fg=_MUTED, pady=(4, 0))
     root.bind("<Escape>", lambda _e: _decide(None, "denied"))
     entry.focus_force()
 
 
 def _populate_code_parts(root: Any, parts: dict, answer: dict, timeout_s: float) -> None:
-    """Structured body — see :func:`_populate_confirm_parts`'s docstring.
-
-    This is the SECOND of a two-step flow (confirm, then code) and must
-    explain itself just as much as the first dialog does: a "Step 2 of 2"
-    line, the same ``why``/risk/reassurance facts, not just the code prompt
-    and the target repeated — a human landing on this dialog cold (it can
-    outlive the first one, or a channel could be re-entered) should never
-    have to guess why they're being asked. Layout mirrors
-    :func:`_populate_confirm_parts` (item 6): the notice moves after the
-    target panel; identity/why/risk/reassurance are grouped with a hairline
-    above risk; why is promoted to body face.
+    """Structured body -- the SECOND dialog of a two-step flow, laid out like
+    :func:`_populate_confirm_parts` so a human landing here cold (it can
+    outlive the first dialog) still sees who is asking, what, and why: brand
+    row, "Step 2 of 2", headline, target, notes and ``why``, the chip with
+    the code-step hint (``has_code_field=True``), the help panel, then under
+    the hairline the question, the code field, Deny / Approve with code, the
+    countdown row, and the keyboard hint.
     """
     import tkinter as tk
 
@@ -1857,34 +1852,23 @@ def _populate_code_parts(root: Any, parts: dict, answer: dict, timeout_s: float)
     risk_word = _severity_from_risk_text(parts["risk"]) if parts.get("risk") else None
 
     frame = _content_frame(root)
-    _build_brand(frame)
+    _build_brand(frame, _agent_identity_line(parts))
     _build_line(frame, _STEP_TWO, font=_SMALL_FONT, fg=_MUTED)
-    _build_line(frame, _CODE_PROMPT)
+    _build_headline(frame, parts)
     _build_target_panel(root, frame, parts["target"], toggle_label=_toggle_expand_label(parts))
-    if parts.get("notice"):
-        _build_line(frame, parts["notice"], font=_SMALL_FONT, fg=_MUTED)
-    effects_line = _effects_line(parts)
-    if effects_line:
-        _build_line(frame, effects_line, font=_SMALL_FONT, fg=_MUTED)
-    _build_line(frame, _QUESTION, font=_QUESTION_FONT, fg=_FG, pady=(2, 8))
-    identity = _agent_identity_line(parts)
-    if identity:
-        _build_line(frame, identity, font=_SMALL_FONT, fg=_MUTED)
-    if parts.get("why"):
-        _build_line(frame, parts["why"], font=_BODY_FONT, fg=_FG)
+    _build_notes(frame, parts)
     if parts.get("risk"):
-        _build_group_divider(frame, pady=(2, 6))
         _build_risk_line(frame, _risk_text_for_dialog(parts, has_code_field=True), risk_word)
-    _build_line(frame, _REASSURANCE, font=_SMALL_FONT, fg=_MUTED, pady=(2, 8))
+    _build_help_affordance(frame, parts.get("why"))
+    _build_group_divider(frame)
+    _build_line(frame, _QUESTION, font=_QUESTION_FONT, fg=_FG, pady=(0, 4))
     _build_line(frame, _CODE_LABEL, font=_SMALL_FONT, fg=_MUTED, pady=(0, 2))
     entry = _make_code_entry(frame)
-    # Block-red, not Approve's amber (item 7): an inline validation error is
-    # a denial-adjacent signal, not an affordance to keep going.
+    # Block-red, not Approve's amber: an inline validation error is a
+    # denial-adjacent signal, not an affordance to keep going.
     error_label = tk.Label(frame, fg=_SEV_CRITICAL, bg=_BG, font=_SMALL_FONT, anchor="w")
     error_label.pack(fill="x", pady=(0, 4))
     submit = _wire_code_submit(root, entry, error_label, lambda code: _decide(code, "approved"))
-    _build_help_affordance(frame, parts.get("why"))
-    _build_group_divider(frame)
 
     widgets: dict[str, Any] = {"entry": entry}
 
@@ -1895,20 +1879,20 @@ def _populate_code_parts(root: Any, parts: dict, answer: dict, timeout_s: float)
         _resolve(None, "expired")
         _disable_on_expiry(root, widgets)
 
-    _build_countdown(
-        root, frame, timeout_s, on_expire=_lock_out, action_id=parts.get("action_id", "unknown")
-    )
-    deny_btn, approve_btn = _build_buttons(
+    _build_verdict_controls(
+        root,
         frame,
+        timeout_s,
         [
             ("Deny", lambda: _decide(None, "denied"), "Doberman.Deny.TButton"),
             ("Approve with code", submit, "Doberman.Approve.TButton"),
         ],
+        widgets=widgets,
+        on_expire=_lock_out,
+        hint=_HINT_CODE,
+        action_id=parts.get("action_id", "unknown"),
+        risk_word=risk_word,
     )
-    widgets["deny"], widgets["approve"] = deny_btn, approve_btn
-    _wire_keyboard(root, deny_btn, approve_btn)
-    _gate_approve_for_critical(root, approve_btn, risk_word)
-    _build_line(frame, _HINT_CODE, font=_DEADLINE_FONT, fg=_MUTED, pady=(4, 0))
     root.bind("<Escape>", lambda _e: _decide(None, "denied"))
     entry.focus_force()
 
@@ -2035,11 +2019,13 @@ def _populate_outcome_notice(root: Any, text: str, outcome: str = "denied") -> N
     brand_row._logo_ref = logo  # tkinter drops unreferenced images -- keep it alive
     if logo is not None:
         tk.Label(brand_row, image=logo, bg=_PANEL).pack(side="left")
-        tk.Label(brand_row, text="DOBERMAN", fg=_BRAND, bg=_PANEL, font=_SUB_FONT).pack(
+        tk.Label(brand_row, text="DOBERMAN", fg=_BRAND, bg=_PANEL, font=_SMALL_FONT).pack(
             side="left", padx=(6, 0)
         )
     else:
-        tk.Label(brand_row, text="DOBERMAN", fg=_BRAND, bg=_PANEL, font=_SUB_FONT).pack(side="left")
+        tk.Label(brand_row, text="DOBERMAN", fg=_BRAND, bg=_PANEL, font=_SMALL_FONT).pack(
+            side="left"
+        )
     tk.Label(panel, text=text, fg=color, bg=_PANEL, font=_BODY_FONT, padx=20).pack()
     next_step = _OUTCOME_NEXT_STEP.get(outcome)
     if next_step:

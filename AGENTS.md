@@ -129,8 +129,11 @@ Everything passes; do **not** weaken a test or invariant to get green.
 
 **Step 7 — Update docs and the README (required every slice).** With **every commit/slice** keep these in sync as part
 of the same change — never as an afterthought:
-- **`README.md`**: update the feature summary, versioning/changelog, quickstart, and roadmap so they reflect what now
+- **`README.md`**: update the feature summary, versioning, quickstart, and roadmap so they reflect what now
   exists. A slice that adds/changes public behavior **must** move the README.
+- **`changelog.d/<PR>.<type>.md`**: one typed fragment per user-visible change, one line per change, in the format
+  `changelog.d/README.md` describes. Never edit `CHANGELOG.md` directly; it is compiled at release
+  (`docs/RELEASING.md`). `python scripts/compile_changelog.py --check` must pass (CI runs it).
 - Other docs (CLI/config/usage) as usual when behavior changed.
 
 **Step 8 — Commit** (Conventional Commits; tests ship **in the same PR** as the code, ideally same commit). Use the

@@ -49,13 +49,37 @@ def sink_file(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathli
     return path
 
 
+@pytest.fixture
+def enable_plugin(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
+    """Enable the example in a test-local, process-snapshotted allowlist."""
+    from doberman.engine import plugin_config
+
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(tmp_path / "plugins.json"))
+    plugin_config.enable("example_sink")
+    plugin_config.reset_snapshot()
+    yield
+    plugin_config.reset_snapshot()
+
+
 # ---------------------------------------------------------------------------
 # A: Discovery
 # ---------------------------------------------------------------------------
 
 
-def test_entry_point_is_discoverable_after_install():
-    """``pip install -e`` registers the entry point; discover_audit_sinks finds it."""
+def test_entry_point_is_not_discoverable_without_enable(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Installing an example alone must not load it without explicit opt-in."""
+    from doberman.engine import plugin_config
+
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(tmp_path / "plugins.json"))
+    plugin_config.reset_snapshot()
+    assert not any(isinstance(sink, ExampleAuditSink) for sink in discover_audit_sinks())
+    plugin_config.reset_snapshot()
+
+
+def test_entry_point_is_discoverable_after_install(enable_plugin):
+    """``pip install -e`` plus explicit opt-in makes discover_audit_sinks find the example."""
     sinks = discover_audit_sinks()
     assert any(isinstance(s, ExampleAuditSink) for s in sinks), (
         f"ExampleAuditSink not discovered via {AUDIT_SINK_GROUP!r}; "

@@ -57,6 +57,7 @@ jobs:
             echo "FAIL: enterprise package found in core environment"
             exit 1
           fi
+      # --max-worker-restart=0: see ci.yml (a replaced worker deadlocks loadgroup).
       # -p randomly prints its seed at the top of the log; reproduce an order
       # failure locally with `pytest -p randomly -p "randomly_seed=<seed>"`.
       # Warnings are errors on every leg via pyproject's `filterwarnings` (with the
@@ -66,7 +67,7 @@ jobs:
         env:
           DOBERMAN_TEST_REAL_HST: "1"
         run: >
-          pytest -n auto --dist loadgroup -p randomly --timeout=900 --durations=40 --durations-min=5.0
+          pytest -n auto --dist loadgroup --max-worker-restart=0 -p randomly --timeout=900 --durations=40 --durations-min=5.0
 
   dependency-audit:
     name: Dependency vulnerability audit

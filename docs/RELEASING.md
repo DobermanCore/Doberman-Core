@@ -10,7 +10,7 @@ The checklist for cutting a release, kept in sync with `.github/workflows/publis
    - Synthetic (deterministic, from a cold clone): `python -m tests.benchmarks.run --suite synthetic --profile before_after`.
    - AgentDojo (operator-supplied): `pip install agentdojo` at a pinned commit, then `python -m tests.benchmarks.run --suite agentdojo --profile before_after`. Record the pinned commit and the run date. Keep the raw run out of git (`test-logs/`); transcribe only the aggregate numbers.
    - Update the "Fixed bypasses" wall with anything disclosed and fixed since the last release.
-4. **Version and changelog.** Run `python scripts/compile_changelog.py --write` to collect all pending `changelog.d/<PR-number>.md` files into a fresh `Unreleased` section; review that output before promoting it to the new version heading. Bump `version` in `pyproject.toml` (follow semver). Confirm the README roadmap and versioning reflect reality.
+4. **Version and changelog.** `python scripts/compile_changelog.py --check` is green (CI already enforces this on `main`). Then `python scripts/compile_changelog.py --write --release vX.Y.Z --headline "<headline>"` compiles every pending `changelog.d/<PR-number>.<type>.md` fragment into a dated, grouped section and deletes them; read it once as a stranger and tighten any bullet that needs a second read. Bump `version` in `pyproject.toml` to match (follow semver). Confirm the README roadmap and versioning reflect reality.
 5. **Docs sweep.** Every protection claim in the README resolves to a parity cell or a benchmark number. No orphan adjectives.
 
 ## Cut a release
@@ -35,6 +35,27 @@ Publishing uses **PyPI Trusted Publishing (OIDC)** via `.github/workflows/publis
 > The distribution name on PyPI is `doberman-core`; the import name and CLI
 > command stay `doberman` (`import doberman`, `doberman --help`). See
 > "Claiming the `doberman` name" below for why.
+
+## Release notes
+
+Write the GitHub release body from this template (under 150 words); the title is `vX.Y.Z — <the same headline>`.
+
+```
+<Two or three sentences: what someone running Doberman gets from this release, in their words.>
+
+**Highlights**
+- <the three to five bullets a reader cares about most, copied from the changelog without the PR numbers>
+
+**Upgrade**
+`pip install -U doberman-core`. <One line per change that needs action, or "No action needed.">
+
+Full changelog: https://github.com/DobermanCore/Doberman-Core/blob/main/CHANGELOG.md#vXYZ--YYYY-MM-DD ·
+Compare: https://github.com/DobermanCore/Doberman-Core/compare/vPREV...vX.Y.Z · Thanks @a, @b.
+```
+
+The release body is never a copy of the changelog section. If a release has one theme, say it in the first
+sentence and let the highlights prove it; if it has none, say what kind of release it is (fixes, a single
+feature, a wave of small improvements) and stop.
 
 ## One-time PyPI setup (already done; reference only)
 

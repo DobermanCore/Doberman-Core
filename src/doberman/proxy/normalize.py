@@ -23,7 +23,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from doberman.canonical import canonicalize
-from doberman.engine.rules.commands import command_line_from_arguments, walk_command
+from doberman.engine.rules.commands import (
+    _argv_from_tokens,
+    command_line_from_arguments,
+    walk_command,
+)
 from doberman.engine.rules.destinations import _parse_host
 from doberman.engine.rules.secrets import candidate_secret_fingerprints, contains_strong_secret
 from doberman.models import ActionType, ReasonCode, Risk, SecurityObject, SourceContext
@@ -176,8 +180,24 @@ _REQUIREMENT_FILE_FLAGS = frozenset({"-r", "--requirement", "-c", "--constraint"
 _PM_REGISTRY_ENV_NAMES = frozenset(
     {"PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_INDEX_URL", "NPM_CONFIG_REGISTRY", "GOPROXY"}
 )
-_TRANSPARENT_COMMAND_WRAPPERS = frozenset(
-    {"command", "env", "exec", "ionice", "nice", "nohup", "sudo", "time"}
+#: N7 — HOME/XDG_CONFIG_HOME and the *_CONFIG_FILE/*_USERCONFIG vars relocate
+#: which config file a package manager reads its registry from just as
+#: directly as `sudo -H` does (C1), so an INLINE prefix (`HOME=/tmp pip
+#: install ...`) must disqualify the implied-registry PASS the same way.
+#: Deliberately a SEPARATE set from _PM_REGISTRY_ENV_NAMES above, used only by
+#: _pm_route_redirect's inline-assignment scan: HOME (unlike PIP_INDEX_URL) is
+#: ambiently set in essentially every real process, so folding it into
+#: _ambient_registry_override's os.environ scan would AUTH every package
+#: fetch everywhere, not just a command that explicitly overrides it.
+_PM_INLINE_REGISTRY_ENV_NAMES = _PM_REGISTRY_ENV_NAMES | frozenset(
+    {
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "PIP_CONFIG_FILE",
+        "NPM_CONFIG_USERCONFIG",
+        "NPM_CONFIG_GLOBALCONFIG",
+        "UV_CONFIG_FILE",
+    }
 )
 _PROXY_ENV_NAMES = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"})
 _ROUTE_OVERRIDE_FLAGS = frozenset({"--connect-to", "--proxy", "--resolve", "-x"})
@@ -252,20 +272,28 @@ def _command_name(token: str) -> str:
     return token.replace("\\", "/").rsplit("/", 1)[-1].lower()
 
 
-def _command_verb(tokens: list[str]) -> tuple[str | None, list[str]]:
-    """Return the visible executable + arguments without losing the input tokens."""
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if _ENV_ASSIGNMENT.match(token):
-            index += 1
-            continue
-        name = _command_name(token)
-        if name in _TRANSPARENT_COMMAND_WRAPPERS:
-            index += 1
-            continue
-        return name, tokens[index + 1 :]
-    return None, []
+def _command_verb(tokens: list[str]) -> tuple[str | None, list[str], bool]:
+    """Return the visible executable + arguments without losing the input tokens.
+
+    T5: shares ``_argv_from_tokens`` with the destructive-command rule (the
+    allowed proxy -> engine import direction) so a flag-taking wrapper's own
+    option (``sudo -u root``, ``timeout 5``, ...) is consumed instead of
+    misread as the command — the wrapped command's egress verb/host is then
+    recovered the same way a bare invocation's is.
+
+    The third element (C1) is True when ``_argv_from_tokens`` consumed at
+    least one wrapper OPTION (not just a bare wrapper name) to reach that
+    verb — ``sudo -H``/``sudo -u <user>``/``nice -n 10`` change exactly the
+    thing (HOME, acting uid) that decides which config file a package
+    manager's default-route fetch actually resolves against, so the caller
+    must not treat this segment as if the bare command had been typed.
+    """
+    consumed_option: list[bool] = []
+    rest = _argv_from_tokens(tokens, consumed_any_option=consumed_option)
+    wrapper_resolved = bool(consumed_option)
+    if not rest:
+        return None, [], wrapper_resolved
+    return _command_name(rest[0]), rest[1:], wrapper_resolved
 
 
 def _is_egress_verb(verb: str | None, arguments: list[str]) -> bool:
@@ -350,9 +378,9 @@ def _pm_route_redirect(tokens: list[str]) -> bool:
     for token in tokens:
         assignment = _ENV_ASSIGNMENT.match(token)
         if assignment:
-            if assignment.group("name").upper() in _PM_REGISTRY_ENV_NAMES and assignment.group(
-                "value"
-            ):
+            if assignment.group(
+                "name"
+            ).upper() in _PM_INLINE_REGISTRY_ENV_NAMES and assignment.group("value"):
                 return True
             continue
         if not token.startswith("-") or "=" not in token:
@@ -473,12 +501,16 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
     had_credentials = False
     route_override = False
     unresolved_wrapper = False
+    wrapper_resolved = False
 
     for tokens in segments:
-        verb, arguments = _command_verb(tokens)
-        # A flag-taking transparent wrapper (`sudo -u X`, `nice -n N`, `ionice -c N`)
-        # shifts argv so the wrapper's own option is misread as the command verb; the
-        # real command is then unidentified -> fail upward, never treat it as local.
+        verb, arguments, resolved = _command_verb(tokens)
+        wrapper_resolved = wrapper_resolved or resolved
+        # T5: `_command_verb` now sees through a wrapper's own options, so a
+        # leading `-` token only survives here in the one narrow case
+        # `_argv_from_tokens` deliberately leaves unresolved (`env -S` whose
+        # value can't be shlex-split) -- the real command is unidentified,
+        # so fail upward rather than treat it as local.
         if verb is not None and verb.startswith("-"):
             unresolved_wrapper = True
             continue
@@ -538,6 +570,7 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
         and not dynamic_walk
         and not route_override
         and not had_credentials
+        and not wrapper_resolved
         and not _ambient_proxy_present()
         and not _ambient_registry_override()
     ):
