@@ -65,13 +65,15 @@ except PackageNotFoundError:
 """
 
 
-def _run(python: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run(
+    python: Path, *args: str, cwd: Path, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     for variable in _PIP_REDIRECTION_ENVIRONMENT_VARIABLES:
         environment.pop(variable, None)
     result = subprocess.run(  # noqa: S603 - the interpreter and arguments are test-controlled
         [str(python), *args],
-        cwd=_REPO_ROOT,
+        cwd=cwd,
         check=False,
         capture_output=True,
         env=environment,
@@ -86,8 +88,8 @@ def _run(python: Path, *args: str, check: bool = True) -> subprocess.CompletedPr
     return result
 
 
-def _plugin_is_installed(python: Path) -> bool:
-    result = _run(python, "-c", _INSTALLATION_STATE_CHECK, check=False)
+def _plugin_is_installed(python: Path, cwd: Path) -> bool:
+    result = _run(python, "-c", _INSTALLATION_STATE_CHECK, cwd=cwd, check=False)
     if result.returncode == 0:
         return True
     if result.returncode == _PACKAGE_NOT_FOUND_EXIT_CODE:
@@ -109,7 +111,7 @@ def installed_plugin_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     # a throwaway plugins file so `_DISCOVERY_CHECK`'s `enable()` call never
     # touches this machine's real per-user allowlist.
     monkeypatch.setenv("DOBERMAN_PLUGINS_FILE", str(tmp_path / "plugins.json"))
-    assert not _plugin_is_installed(python)
+    assert not _plugin_is_installed(python, cwd=tmp_path)
     try:
         _run(
             python,
@@ -122,11 +124,12 @@ def installed_plugin_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
             "--no-deps",
             "-e",
             str(_PLUGIN_ROOT),
+            cwd=tmp_path,
         )
-        assert _plugin_is_installed(python)
+        assert _plugin_is_installed(python, cwd=tmp_path)
         yield python
     finally:
-        if _plugin_is_installed(python):
+        if _plugin_is_installed(python, cwd=tmp_path):
             _run(
                 python,
                 "-m",
@@ -137,11 +140,12 @@ def installed_plugin_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
                 "uninstall",
                 "-y",
                 _PLUGIN_DISTRIBUTION,
+                cwd=tmp_path,
             )
-        assert not _plugin_is_installed(python)
+        assert not _plugin_is_installed(python, cwd=tmp_path)
 
 
 def test_installed_plugin_is_discovered_and_fires_despite_pip_target(
-    installed_plugin_python: Path,
+    installed_plugin_python: Path, tmp_path: Path
 ) -> None:
-    _run(installed_plugin_python, "-c", _DISCOVERY_CHECK)
+    _run(installed_plugin_python, "-c", _DISCOVERY_CHECK, cwd=tmp_path)
