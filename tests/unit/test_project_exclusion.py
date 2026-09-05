@@ -16,6 +16,7 @@ confinement rule.
 """
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from doberman.hosthooks import claude_code, codex
 from doberman.hosthooks import spine as spine_module
 from doberman.hosthooks.openclaw import evaluate_before_tool_call
 from doberman.models import ActionType, EvalContext, SecurityObject, Verdict
+from doberman.storage import exclusions as exclusions_module
 from doberman.storage.exclusions import (
     add_exclusion,
     excluded_projects_path,
@@ -125,6 +127,52 @@ def test_wrong_shaped_json_fails_closed_to_not_excluded(tmp_path):
     path.write_text(json.dumps(["just", "a", "list"]), encoding="utf-8")
 
     assert load_excluded_projects() == []
+
+
+def test_load_excluded_projects_parses_once_for_unchanged_content(tmp_path):
+    # Same finding as #552 (role.yaml, artifact_pins.yaml): load_excluded_projects
+    # re-read AND re-parsed the file on every host-hook invocation with zero
+    # caching. Now content-keyed: the read still happens every call (the file is
+    # tiny), but the expensive JSON parse+validate must run exactly once for N
+    # calls against unchanged content.
+    project = tmp_path / "proj"
+    project.mkdir()
+    path = excluded_projects_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"excluded": [str(project)]}), encoding="utf-8")
+    exclusions_module._parse_excluded_projects_data.cache_clear()
+
+    for _ in range(20):
+        entries = load_excluded_projects()
+        assert entries == [str(project)]
+
+    info = exclusions_module._parse_excluded_projects_data.cache_info()
+    assert info.misses == 1  # the real (disk-touching) parse ran exactly once
+    assert info.hits == 19
+
+
+def test_load_excluded_projects_picks_up_a_same_mtime_rewrite(tmp_path):
+    # The cache must NOT go stale the way a naive (path, mtime_ns) key would: a
+    # same-mtime-tick rewrite (coarse filesystem clock resolution, or two fast
+    # writes -- e.g. `doberman uninstall` immediately followed by a hook read)
+    # must still be picked up on the very next call.
+    first_project = tmp_path / "proj-a"
+    first_project.mkdir()
+    second_project = tmp_path / "proj-b"
+    second_project.mkdir()
+    path = excluded_projects_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"excluded": [str(first_project)]}), encoding="utf-8")
+    exclusions_module._parse_excluded_projects_data.cache_clear()
+
+    assert load_excluded_projects() == [str(first_project)]
+
+    stat_before = path.stat()
+    path.write_text(json.dumps({"excluded": [str(second_project)]}), encoding="utf-8")
+    os.utime(path, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+    assert path.stat().st_mtime_ns == stat_before.st_mtime_ns  # same-tick, by construction
+
+    assert load_excluded_projects() == [str(second_project)]
 
 
 def test_dober_home_env_isolation_is_honored(tmp_path):
