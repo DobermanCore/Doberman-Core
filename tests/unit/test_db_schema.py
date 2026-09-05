@@ -2,11 +2,13 @@
 
 import asyncio
 import os
+import sqlite3
 import stat
 
 import aiosqlite
+import pytest
 
-from doberman.storage.db import SCHEMA_VERSION, db_path, open_db
+from doberman.storage.db import SCHEMA_VERSION, _add_column_if_missing, db_path, open_db
 
 _EXPECTED_TABLES = {
     "schema_version",
@@ -303,6 +305,94 @@ async def test_migration_tolerates_a_racing_process_adding_a_column_first(tmp_pa
     assert versions == [SCHEMA_VERSION]
 
 
+# --- _add_column_if_missing itself (direct unit test, review fix for #619) -
+
+
+async def test_add_column_if_missing_returns_true_then_false_then_reraises(tmp_path):
+    # For a single-column ALTER (unlike the v14->v15 six-column loop),
+    # _migrate_legacy's own "is this column already there" guard short-circuits
+    # before _add_column_if_missing ever runs once the column is present, so
+    # no _migrate_legacy-shaped test can reach the helper's except-branch.
+    # Exercise the helper directly instead: first call adds the column and
+    # returns True; a second call with the same column_def hits sqlite's
+    # "duplicate column name" and returns False without raising; a genuinely
+    # different OperationalError (ALTER against a table that doesn't exist)
+    # still re-raises.
+    path = db_path(str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = await aiosqlite.connect(str(path))
+    await conn.execute("CREATE TABLE widgets (id INTEGER PRIMARY KEY)")
+    await conn.commit()
+
+    assert await _add_column_if_missing(conn, "widgets", "name TEXT") is True
+    assert "name" in await _columns(conn, "widgets")
+
+    assert await _add_column_if_missing(conn, "widgets", "name TEXT") is False
+
+    with pytest.raises(sqlite3.OperationalError):
+        await _add_column_if_missing(conn, "no_such_table", "name TEXT")
+
+    await conn.close()
+
+
+# --- v2 -> v3: decisions gain `entity_id` (oldest guarded ALTER) -----------
+
+
+async def test_migration_tolerates_entity_id_already_present(tmp_path):
+    # NOT a race-branch test (that would require reaching _add_column_if_missing
+    # with the column already present, but _migrate_legacy's own presence-check
+    # short-circuits first for this single-column ALTER — see
+    # test_add_column_if_missing_returns_true_then_false_then_reraises above for
+    # direct coverage of the helper's guard). This test instead confirms the
+    # ordinary migration path: a v2-shaped decisions table (entity_id already
+    # in the CREATE, as a hand-built fixture would look after any prior
+    # migration) plus one existing row still opens cleanly, migrates to
+    # SCHEMA_VERSION, and keeps its data.
+    path = db_path(str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = await aiosqlite.connect(str(path))
+    await conn.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version (version) VALUES (2);
+        CREATE TABLE decisions (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                TEXT NOT NULL,
+            action_id         TEXT NOT NULL,
+            agent_role        TEXT,
+            action_type       TEXT,
+            target_path_class TEXT,
+            risk              TEXT,
+            source_context    TEXT,
+            final_verdict     TEXT NOT NULL,
+            decided_layer     TEXT,
+            reason_codes_json TEXT,
+            auth_required     INTEGER NOT NULL DEFAULT 0,
+            auth_result       TEXT,
+            elevation_id      TEXT,
+            entity_id         TEXT
+        );
+        INSERT INTO decisions (ts, action_id, final_verdict)
+            VALUES ('2026-01-01T00:00:00+00:00', 'legacy-action', 'PASS');
+        """
+    )
+    await conn.commit()
+    await conn.close()
+
+    async with open_db(str(tmp_path)) as conn:  # must not raise OperationalError
+        cols = await _columns(conn, "decisions")
+        assert "entity_id" in cols
+        assert "session_id" in cols  # later additive ALTERs still run too
+        async with conn.execute(
+            "SELECT action_id FROM decisions WHERE action_id = 'legacy-action'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row[0] == "legacy-action"  # existing row survived
+        async with conn.execute("SELECT version FROM schema_version") as cur:
+            versions = [r[0] for r in await cur.fetchall()]
+    assert versions == [SCHEMA_VERSION]
+
+
 def test_db_file_is_owner_only(tmp_path):
     async def _create():
         async with open_db(str(tmp_path)):
@@ -356,5 +446,5 @@ def test_schema_text_change_requires_a_version_bump():
 
     from doberman.storage.db import _SCHEMA
 
-    assert SCHEMA_VERSION == 15
-    assert hashlib.sha256(_SCHEMA.encode()).hexdigest()[:16] == "2ce5a459629272bd"
+    assert SCHEMA_VERSION == 16
+    assert hashlib.sha256(_SCHEMA.encode()).hexdigest()[:16] == "b2254cd9babf4eb5"

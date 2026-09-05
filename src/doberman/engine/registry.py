@@ -80,6 +80,11 @@ EGRESS_BROKER_GROUP = "doberman.egress_brokers"
 #: Lets hosted/push-based approval channels (Slack, e-mail, etc.) supply a custom
 #: backend without importing core's synchronous prompter chain.
 ASYNC_CHALLENGE_BACKEND_GROUP = "doberman.async_challenge_backends"
+#: Ambient activity collectors (FM.1) register here; called per daemon tick.
+#: Each collector exposes a ``collect() -> Iterable[ActivityEvent]`` method.
+#: Failures are isolated — a raising collector skips its events but never
+#: crashes the bus or the proxy daemon.
+COLLECTOR_GROUP = "doberman.collectors"
 
 #: Every entry-point group Doberman discovers, for callers (the ``doberman
 #: plugins list`` CLI) that need to enumerate installed-but-maybe-not-enabled
@@ -97,6 +102,7 @@ ALL_GROUPS: tuple[str, ...] = (
     ADJUDICATOR_GROUP,
     EGRESS_BROKER_GROUP,
     ASYNC_CHALLENGE_BACKEND_GROUP,
+    COLLECTOR_GROUP,  # FM.1 — ambient activity collectors
 )
 
 
@@ -550,3 +556,49 @@ def discover_cost_observers() -> list[object]:
             continue
         observers.append(candidate)
     return observers
+
+
+def _looks_like_collector(obj: object) -> bool:
+    """Structural check: does ``obj`` expose a callable ``collect`` method?
+
+    Used by :func:`discover_collectors` to filter out mis-registered plugins
+    before the bus tries to call ``collect()``.
+    """
+    return callable(getattr(obj, "collect", None))
+
+
+def discover_collectors() -> list[object]:
+    """Discover ambient activity collectors (FM.1, group ``doberman.collectors``).
+
+    Loaded defensively like every other seam: an import/constructor failure, or
+    an object that is not collector-shaped (no callable ``collect``), is logged
+    and skipped.  Returns ``[]`` when nothing is installed — the bus then
+    produces no events, which is correct for a core-only installation.  Core
+    never imports a collector by name.
+
+    Each discovered collector must expose::
+
+        def collect(self) -> Iterable[ActivityEvent]: ...
+
+    A collector that raises during ``collect()`` is isolated: its events are
+    dropped for that tick, but the bus and every other collector continue
+    unaffected.
+    """
+    collectors: list[object] = []
+    seen: set[str] = set()
+    for entry_point in _iter_allowed_entry_points(COLLECTOR_GROUP):
+        key = f"{COLLECTOR_GROUP}:{getattr(entry_point, 'name', id(entry_point))}"
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = _load_and_construct(entry_point)
+        if candidate is None:
+            continue
+        if not _looks_like_collector(candidate):
+            logger.warning(
+                "skipping collector %r: not collector-shaped (no callable 'collect')",
+                getattr(entry_point, "name", "?"),
+            )
+            continue
+        collectors.append(candidate)
+    return collectors
