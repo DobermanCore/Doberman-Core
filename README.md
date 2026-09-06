@@ -296,6 +296,10 @@ See [the roadmap](ROADMAP.md) for what's planned and in flight, the
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, CI checks, project invariants, and the
 PR workflow.
 
+The Linux Python 3.12 CI leg installs and tests every `examples/plugin-*` package after the
+standalone core suite. Example suites stay outside root pytest discovery so core is tested without
+the tutorial plugins installed.
+
 CI also runs `python scripts/check_markdown_links.py`, a deterministic offline check for
 repository-local Markdown links and heading anchors. It skips external URLs and fenced code blocks
 and never makes network requests.
