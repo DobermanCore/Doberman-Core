@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from doberman.auth import approval_config, ntfy
+from doberman.auth import approval, approval_config, ntfy
 from doberman.auth.approval import ApprovalOutcome, request_approval
 from doberman.auth.challenge import run_auth_challenge
 from doberman.auth.gui_prompter import FallbackPrompter, PrompterUnavailableError
@@ -561,6 +561,17 @@ def test_method_deadline_is_min_of_timeout_and_wait(ntfy_cfg, monkeypatch):
     ntfy.NtfyApprovalMethod().request("p", action_id="a", timeout_s=999)
 
     assert calls[0][2] == 10  # wait_s wins
+
+
+def test_default_budget_never_caps_a_configured_wait(ntfy_cfg, monkeypatch):
+    ntfy.save_config(ntfy.new_config(wait_s=300))
+    approval_config.enable(ntfy.METHOD_NAME)
+    calls = _patch_channel(monkeypatch, "approved")
+
+    request_approval(ntfy.NtfyApprovalMethod(), "p", action_id="a")
+
+    assert calls[0][2] == 300  # a --wait 300 is honored, not capped at the old 90 s default
+    assert approval.DEFAULT_APPROVAL_TIMEOUT_S >= ntfy._WAIT_MAX_S
 
 
 def test_method_not_configured_returns_unavailable_without_asking(ntfy_cfg, monkeypatch):

@@ -55,9 +55,13 @@ Security-posture commands used by [the setup guide](SETUP.md). These groups also
 | `doberman 2fa methods enable <name>` | Enable an approval method (opt-in) so a tap replaces the 2FA code when available; TOTP stays as the fallback. | none |
 | `doberman 2fa methods disable <name>` | Disable an approval method; 2FA falls back to the next enabled method or to TOTP. | none |
 | `doberman 2fa methods status` | Show which proof the next 2FA challenge would use, an approval method, or the TOTP code. | none |
+| `doberman phone setup` | Turn on phone approvals over ntfy: generate two secret topics, print the one to subscribe to, send a test notification. | `--server URL`, `--token TOKEN`, `--wait SECONDS` (10-300), `--force` (rotate both topics) |
+| `doberman phone test` | Send another test notification once you're subscribed. | none |
+| `doberman phone status` | Show whether phone approvals are on, the server host, a four-character topic prefix, and the wait; never the reply topic or the token. | none |
+| `doberman phone off` | Turn phone approvals off and delete the local config. | none |
 | `doberman password set` | Set or rotate the local password possession factor. | `--force` (rotate after proving the current password) |
 
-The `2fa` subcommands take no `--path`: TOTP enrollment is a device-wide factor, not a per-repo one.
+The `2fa` and `phone` subcommands take no `--path`: both are device-wide factors, not per-repo ones.
 
 ## Recovery
 

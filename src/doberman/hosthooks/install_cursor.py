@@ -54,7 +54,7 @@ GATE_EVENTS: tuple[str, ...] = (EVENT_PRE_TOOL, EVENT_SHELL, EVENT_MCP, EVENT_RE
 
 #: Cursor's per-hook timeout (seconds) must outlast Doberman's in-hook approval dialog, or an
 #: unanswered AUTH is denied by the timeout instead of the human.
-GATE_TIMEOUT_S = int(DEFAULT_APPROVAL_TIMEOUT_S) + 30  # 120
+GATE_TIMEOUT_S = int(DEFAULT_APPROVAL_TIMEOUT_S) + 30  # 330
 
 #: sessionStart is a cosmetic heartbeat, not a gate — a short timeout is fine, and
 #: `failClosed: false` (see session_start_entry) means it can never abort a session.
