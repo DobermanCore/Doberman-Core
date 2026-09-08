@@ -16,6 +16,7 @@ In alphabetical order by handle (ordering is not a ranking):
 - [@AmirF194](https://github.com/AmirF194)
 - [@AshSgDe29071999](https://github.com/AshSgDe29071999)
 - [@averyquinnhq](https://github.com/averyquinnhq)
+- [@be-student](https://github.com/be-student)
 - [@Bestpart-Irene](https://github.com/Bestpart-Irene)
 - [@blackcoderx](https://github.com/blackcoderx)
 - [@harshitagrawal2O](https://github.com/harshitagrawal2O)
@@ -28,10 +29,12 @@ In alphabetical order by handle (ordering is not a ranking):
 - [@Shihasz](https://github.com/Shihasz)
 - [@slegarraga](https://github.com/slegarraga)
 - [@snowyukitty](https://github.com/snowyukitty)
+- [@Som0111](https://github.com/Som0111)
 - [@stevenmini2019](https://github.com/stevenmini2019)
 - [@thesageak](https://github.com/thesageak)
 - [@Tian-Tan](https://github.com/Tian-Tan)
 - [@tomatotomata](https://github.com/tomatotomata)
+- [@vortsghost2025](https://github.com/vortsghost2025)
 
 The living list of everyone who has landed a commit is always on the
 [GitHub contributors graph](https://github.com/DobermanCore/Doberman-Core/graphs/contributors).
