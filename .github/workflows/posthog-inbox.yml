@@ -1,0 +1,41 @@
+name: PostHog inbox to issues
+
+# Mirrors PostHog Self-driving reports into GitHub issues labelled `posthog`, so the
+# findings land where maintainers already work. PostHog's own agents stay switched off
+# for this project (its inbox autostart is disabled): PostHog finds, maintainers fix.
+# Idempotent: a hidden marker in each issue body keys the deduplication. Details and the
+# environment contract live in scripts/posthog_inbox_to_issues.py.
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print what would be filed instead of filing it"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: posthog-inbox
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    # Forks have neither the key nor the inbox; the script would exit 0 anyway.
+    if: github.repository == 'DobermanCore/Doberman-Core'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Mirror new reports
+        run: python scripts/posthog_inbox_to_issues.py ${{ inputs.dry_run == true && '--dry-run' || '' }}
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
