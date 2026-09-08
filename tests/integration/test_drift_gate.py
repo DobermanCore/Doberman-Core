@@ -1,10 +1,15 @@
-"""Slice 10.2 — weakening is gated behind 2FA + a diff; strengthen/neutral apply."""
+"""Slice 10.2 — weakening is gated behind 2FA + a diff; strengthen/neutral apply.
+
+This proves the CLI gate mechanism itself (``doberman.policy.drift.apply_change``),
+host-independent; the parity row ``raise-only-drift``'s per-host cells live in
+``tests/unit/test_hosthook_raise_only_drift.py`` and
+``tests/integration/test_proxy_raise_only_drift.py``.
+"""
 
 import inspect
 from datetime import datetime, timezone
 
 import pyotp
-import pytest
 
 from doberman.auth import password, totp
 from doberman.policy.drift import Classification, apply_change
@@ -33,7 +38,6 @@ def _enrolled_code() -> str:
     return pyotp.TOTP(totp._read_secret()).now()
 
 
-@pytest.mark.guarantee("raise-only-drift", host="mcp-proxy")
 async def test_weaken_requires_2fa_and_shows_a_diff(tmp_path):
     code = _enrolled_code()
     prompter = ScriptedPrompter(confirm=True, code=code)
