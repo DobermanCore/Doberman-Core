@@ -42,7 +42,9 @@ _EVENT_PROPERTIES = {
     "telemetry_disabled": frozenset(),
     "setup_completed": frozenset({"mode", "host", "hooks_installed", "global_install", "source"}),
     "cli_command": frozenset({"command"}),
-    "usage_summary": frozenset({"total", "pass", "auth", "block", "days_since_first_seen"}),
+    "usage_summary": frozenset(
+        {"total", "pass", "auth", "block", "approved", "denied", "days_since_first_seen"}
+    ),
 }
 _SENDER_THREADS: list[threading.Thread] = []
 _THREADS_LOCK = threading.Lock()
@@ -145,6 +147,10 @@ def _forced_off_reasons() -> tuple[str, ...]:
         reasons.append("DOBERMAN_TELEMETRY disables telemetry")
     if os.environ.get("CI", ""):
         reasons.append("CI is set")
+    if os.environ.get("PYTEST_CURRENT_TEST", ""):
+        # The Core test suite clears the other kill switches to exercise sending, and leaked
+        # about 30,000 anonymous ids into the real project between 2026-08-27 and 09-08.
+        reasons.append("running under pytest")
     if _project_key().startswith(_PLACEHOLDER_PREFIX):
         reasons.append("PostHog project key is still the placeholder")
     return tuple(reasons)
@@ -314,9 +320,13 @@ def capture(
             method="POST",
         )
 
+        # Bound now, not inside the thread: a sender that outlives a test's monkeypatch must
+        # keep the stub instead of finding the real transport again.
+        opener = urllib.request.urlopen
+
         def send() -> None:
             try:
-                with urllib.request.urlopen(request, timeout=3):  # noqa: S310 — fixed HTTPS host
+                with opener(request, timeout=3):  # noqa: S310 — fixed HTTPS host
                     pass
             except Exception:  # noqa: BLE001 — telemetry transport is best-effort
                 return
@@ -363,6 +373,8 @@ def maybe_send_usage_summary(home: Path | None = None, now: datetime | None = No
                     "pass": int(metrics["pass"]),
                     "auth": int(metrics["auth"]),
                     "block": int(metrics["block"]),
+                    "approved": int(metrics.get("approved", 0)),
+                    "denied": int(metrics.get("denied", 0)),
                     "days_since_first_seen": days,
                 },
                 home=home,
