@@ -41,14 +41,10 @@ jobs:
     # names that branch protection and the merge queue key on.
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    # Per-OS job ceiling: Linux legs run 4-7 min, Windows ~18 min, and a slow
-    # Windows runner has been 1.7x that (a 30-min cap cancelled a green run at
-    # 99%). The per-test --timeout below is what catches a hang; this only bounds
-    # a pathological runner.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}
-    # Windows runners default `run:` to PowerShell; pin bash (Git Bash ships on
-    # GitHub's Windows images) so the shell-scripted steps behave identically on
-    # every OS.
+    # Job ceiling: the Linux legs run 4-7 min. The per-test --timeout below is
+    # what catches a hang; this only bounds a pathological runner. (The Windows
+    # leg is the sharded `test-windows` job below, with its own ceiling.)
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
@@ -67,17 +63,6 @@ jobs:
           - os: "ubuntu-latest"
             python-version: "3.12"
             coverage: true
-          # Doberman is a local-first tool that runs on developer machines of every
-          # OS, and it carries OS-specific code (e.g. the Windows O_BINARY key-write
-          # path in storage/fingerprint.py). Guard that surface with one Windows leg
-          # so cross-platform regressions surface in CI, not on a contributor's box.
-          # (The nightly deep workflow adds Windows 3.11/3.13 and macOS.)
-          - os: "windows-latest"
-            python-version: "3.12"
-            # The gate modules run at production size on every Linux leg and on
-            # every nightly leg; on the Windows PR leg their DB-heavy eval stalled
-            # the job to its cap four times (tests/conftest.py explains).
-            fast_gates: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -119,6 +104,73 @@ jobs:
           ${{ runner.os == 'Linux' && 'xvfb-run -a -s "-screen 0 1280x800x24"' || '' }}
           pytest -n auto --dist loadgroup --max-worker-restart=0 --timeout=300 --durations=25 --durations-min=2.0
           ${{ matrix.coverage && '--cov=doberman --cov-report=term-missing --cov-fail-under=90' || '' }}
+  test-windows:
+    # Doberman is a local-first tool that runs on developer machines of every
+    # OS, and it carries OS-specific code (e.g. the Windows O_BINARY key-write
+    # path in storage/fingerprint.py). Guard that surface with a Windows leg so
+    # cross-platform regressions surface in CI, not on a contributor's box.
+    # (The nightly deep workflow adds Windows 3.11/3.13 and macOS.)
+    # The leg is sharded four ways: the same ~5,500 tests take ~5 min on a Linux
+    # runner and ~20 min on a Windows one (measured 2026-09-08, run 34277568161),
+    # and that single job was the whole run's wall clock. pytest-split deselects
+    # everything outside this shard's group at collection time; xdist still
+    # parallelises within the shard. With no `.test_durations` file it splits
+    # evenly by count, and `least_duration` interleaves neighbouring tests across
+    # shards so a slow module is spread out rather than landing on one shard.
+    name: test (windows-latest, 3.12, shard ${{ matrix.shard }}/4)
+    runs-on: windows-latest
+    # A quarter of the suite is ~5 min on a normal runner; a slow one has been
+    # 1.7x that. The per-test --timeout below still catches a hang.
+    timeout-minutes: 25
+    # Windows runners default `run:` to PowerShell; pin bash (Git Bash ships on
+    # GitHub's Windows images) so the shell-scripted steps behave identically to
+    # the Linux legs.
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      - name: Standalone guarantee (no enterprise installed)
+        run: |
+          if pip list | grep -qi doberman-enterprise; then
+            echo "FAIL: enterprise package found in core environment"
+            exit 1
+          fi
+          echo "ok: core has no enterprise dependency"
+      # Same pytest flags as the Linux legs (rationale above). The gate modules
+      # run at production size on every Linux leg and on every nightly leg; on
+      # the Windows PR leg their DB-heavy eval stalled the job to its cap four
+      # times (tests/conftest.py explains), hence the fast gates here.
+      - name: Test suite (shard ${{ matrix.shard }} of 4)
+        env:
+          DOBERMAN_TEST_FAST_HST_GATES: "1"
+        run: >
+          pytest -n auto --dist loadgroup --max-worker-restart=0 --timeout=300 --durations=25 --durations-min=2.0
+          --splits 4 --group ${{ matrix.shard }} --splitting-algorithm least_duration
+  test-windows-gate:
+    # One check carrying the pre-shard job's name, so branch protection's required
+    # context "test (windows-latest, 3.12)" keeps working unchanged and a change
+    # in shard count never needs a protection-rule edit. `if: always()` makes it
+    # run (and fail) when a shard fails or is cancelled instead of being skipped.
+    name: test (windows-latest, 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: test-windows
+    if: always()
+    steps:
+      - name: All four Windows shards passed
+        run: |
+          echo "shards: ${{ needs.test-windows.result }}"
+          test "${{ needs.test-windows.result }}" = "success"
   package-smoke-test:
     name: package-smoke-test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
