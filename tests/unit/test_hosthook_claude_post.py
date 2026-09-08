@@ -279,7 +279,7 @@ def test_mcp_tool_clean_output_abstains(cwd):
 # ---------------------------------------------------------------------------
 
 
-def test_post_hook_does_not_load_the_numeric_stack():
+def test_post_hook_does_not_load_the_numeric_stack(tmp_path):
     """A PostToolUse hook runs after EVERY tool call — it must stay light.
 
     Asserts (in a clean subprocess) that running the post-hook does NOT import
@@ -293,7 +293,7 @@ def test_post_hook_does_not_load_the_numeric_stack():
         "'tool_name':'Bash',"
         "'tool_input':{'command':'ls'},"
         "'tool_response':'total 0',"
-        "'cwd':'.',"
+        f"'cwd':{str(tmp_path)!r},"
         "}));"
         "print(','.join(m for m in ('river','numpy','scipy') if m in sys.modules))"
     )
