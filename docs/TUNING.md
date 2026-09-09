@@ -186,34 +186,58 @@ disk is the last recorded one. See [POLICY_VERSIONS.md](POLICY_VERSIONS.md).
 
 ## Phone approvals (ntfy), `doberman phone`
 
-When a `two_factor` or `role_elevation` challenge needs a human, Doberman can push it to your phone
-through [ntfy](https://ntfy.sh) (a free, open push notification service; self-hosting is also
-possible) instead of only waiting on a local dialog. The notification carries Approve and Deny
-buttons, so a tap answers the challenge from wherever you are.
+When a challenge needs a human, Doberman can push it to your phone through
+[ntfy](https://ntfy.sh) (a free, open push notification service; self-hosting is also possible)
+instead of only waiting on a local dialog. The notification carries Approve and Deny buttons, so a
+tap answers the challenge from wherever you are.
+
+Every AUTH tier uses it once it is on. On `soft_confirm` and `local_auth` a tap is the
+confirmation. On `two_factor` and `role_elevation` a tap is the second factor and **replaces the
+TOTP code**: nothing else is asked after a tap. Enable it only if a tap on your unlocked phone is a
+good enough second factor for you. It covers the Claude Code, Codex, and Cursor hooks and the MCP
+proxy. OpenClaw hands an AUTH verdict to its own `/approve` flow and never runs Doberman's phone
+challenge.
 
 Four commands:
 
 - `doberman phone setup [--server URL] [--token TOKEN] [--wait SECONDS] [--force]` turns it on. It
   generates two secret topic names, prints the one to subscribe to in the ntfy app (the second,
-  reply topic, is never shown), and sends a test notification.
+  reply topic, is never shown), and sends a test notification. If the test notification fails, the
+  config is kept and the method stays enabled: subscribe, then run `doberman phone test`.
 - `doberman phone test` sends another test notification once you're subscribed.
-- `doberman phone status` shows whether it's on, the server host, and the wait time, never the full
-  topic or token.
+- `doberman phone status` shows whether it's on, the server host, the first four characters of the
+  subscribe topic, and the wait time; never the reply topic or the token.
 - `doberman phone off` turns it off and deletes the local config.
 
 The config file lives at `%LOCALAPPDATA%\doberman\ntfy.json` on Windows, or
 `$XDG_CONFIG_HOME/doberman/ntfy.json` (falling back to `~/.config/doberman/ntfy.json` when that
 variable is unset) on Linux/macOS. `DOBERMAN_NTFY_FILE` overrides the path.
 
-`--wait` sets how many seconds Doberman waits for a tap, clamped to 10-300 (default 60). If nobody
-taps in time, Doberman falls back to the terminal TOTP (one-time code app) prompt. Silence never
-approves or denies anything on its own.
+`--wait` sets how many seconds Doberman waits for a tap, clamped to 10-300 (default 60), on every
+tier. If nobody taps in time, the host hooks move on to the desk dialog (120 s), then the terminal
+prompt, and on the 2FA tiers end at the TOTP code entry; the MCP proxy tries its dashboard first,
+then the phone, then the same fallbacks. Silence is never taken as approval. If no channel answers,
+the whole challenge auto-denies after 600 s and the action is refused. `--wait` changes only the
+phone stage; it cannot extend that ceiling, and the Claude Code hook's 660 s harness timeout stays
+above it.
 
-`--server` points setup at a self-hosted ntfy instance instead of the public `ntfy.sh`. `--token` is
-a bearer token for that server, when it needs one.
+Phone approval is one of the approval methods `doberman 2fa methods list` shows, and the 2FA tiers
+use the first enabled method that is available here, in preference order. If Windows Hello is
+enabled ahead of `ntfy`, the phone never rings for a 2FA challenge on that machine; `doberman 2fa
+methods status` shows which proof the next challenge will use.
+
+`--server` points setup at a self-hosted ntfy instance instead of the public `ntfy.sh`. Use an
+`https://` URL: over plain HTTP the notification and the reply carry the secrets below in the
+clear. `--token` is a bearer token for that server, when it needs one. A token typed on the command
+line lands in shell history, so read it from a file instead (`--token "$(cat ~/.ntfy-token)"` in
+bash, `--token (Get-Content ~/.ntfy-token)` in PowerShell), or edit `ntfy.json` after setup. Scope
+the token to those two topics only, with server ACLs that let only your phone and Doberman read or
+publish them.
 
 Both topic names and the token are secrets, not just the reply topic. The push notification itself
 carries the reply URL, the exact Approve/Deny reply text, and the bearer header, so anyone who can
-read the topic can approve or deny without ever learning the reply topic. If self-hosting, scope the
-token narrowly to those two topics. Prefer letting `phone setup` prompt for `--token` rather than
-typing it on the command line, since a typed argument lands in shell history.
+read the subscribe topic can approve or deny without ever learning the reply topic. The two-topic
+design stops replayed or stale replies and anyone who knows only the reply topic; it does not stop
+a reader of the subscribe topic. If a topic leaks, rotate with `doberman phone setup --force`,
+which generates two new topics. On `ntfy.sh` there is nothing to revoke and `phone off` only
+deletes the local file; on a self-hosted server, also revoke the old token and topic ACLs.
