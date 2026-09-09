@@ -32,12 +32,14 @@ class _Response:
 
 
 def _ready(telemetry, tmp_path, monkeypatch):
-    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
-    monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
-    monkeypatch.delenv("CI", raising=False)
+    _clear_kill_switches(monkeypatch)
     monkeypatch.setenv("DOBERMAN_HOME", str(tmp_path))
-    telemetry.enable(home=tmp_path)
     monkeypatch.setenv(telemetry.ENV_KEY, _KEY)
+    # Stub the transport BEFORE enabling. Until 2026-09-08 this helper enabled first, and the
+    # "telemetry_enabled" event of every test that used it went to the real project.
+    _capture_requests(telemetry, monkeypatch)
+    telemetry.enable(home=tmp_path)
+    telemetry._join_sender_threads(timeout=1.0)
 
 
 def _capture_requests(telemetry, monkeypatch):
@@ -60,6 +62,43 @@ def _clear_kill_switches(monkeypatch):
     monkeypatch.delenv("DO_NOT_TRACK", raising=False)
     monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
     monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+
+def test_pytest_is_a_kill_switch(tmp_path, monkeypatch):
+    """The test runner's own marker forces telemetry off: a suite run never reads as an install."""
+    from doberman import telemetry
+
+    for name in ("DO_NOT_TRACK", "DOBERMAN_TELEMETRY", "CI"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/unit/test_telemetry.py::x (call)")
+    monkeypatch.setenv(telemetry.ENV_KEY, _KEY)
+    requests = _capture_requests(telemetry, monkeypatch)
+
+    assert "running under pytest" in telemetry.status(home=tmp_path).forced_off_reasons
+    assert telemetry.is_enabled(home=tmp_path) is False
+    telemetry.capture("cli_command", {"command": "doctor"}, home=tmp_path)
+    telemetry.enable(home=tmp_path)
+    assert _bodies(telemetry, requests) == []
+
+
+def test_sender_keeps_the_transport_it_was_created_with(tmp_path, monkeypatch):
+    """A sender bound to a stub must not find the real transport once the stub is gone."""
+    from doberman import telemetry
+
+    _ready(telemetry, tmp_path, monkeypatch)
+    held = []
+    monkeypatch.setattr(threading.Thread, "start", lambda self: held.append(self))
+    requests = _capture_requests(telemetry, monkeypatch)
+    telemetry.capture("cli_command", {"command": "doctor"}, home=tmp_path)
+    assert len(held) == 1
+
+    def later(request, timeout):
+        raise AssertionError("the sender reached a transport installed after capture()")
+
+    monkeypatch.setattr("urllib.request.urlopen", later)
+    held[0].run()
+    assert [json.loads(r.data)["event"] for r, _t in requests] == ["cli_command"]
 
 
 def test_default_on_first_capture_creates_id_and_posts(tmp_path, monkeypatch):
@@ -332,7 +371,7 @@ def test_usage_summary_sends_at_most_once_per_day(tmp_path, monkeypatch):
     from doberman import telemetry
 
     _ready(telemetry, tmp_path, monkeypatch)
-    for verdict in ("PASS", "PASS", "AUTH", "BLOCK"):
+    for verdict in ("PASS", "PASS", "AUTH", "AUTH_APPROVED", "BLOCK"):
         record_decision_metric(verdict, home=tmp_path)
     requests = _capture_requests(telemetry, monkeypatch)
 
@@ -350,6 +389,8 @@ def test_usage_summary_sends_at_most_once_per_day(tmp_path, monkeypatch):
         "pass": 2,
         "auth": 1,
         "block": 1,
+        "approved": 1,
+        "denied": 0,
         "days_since_first_seen": 0,
     }
     assert {key: bodies[0]["properties"][key] for key in expected} == expected

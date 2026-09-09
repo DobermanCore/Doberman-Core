@@ -28,7 +28,7 @@ The event-specific data is:
 | `telemetry_disabled` | Telemetry is disabled; this is sent before the local flag changes | None |
 | `setup_completed` | Setup finishes successfully | `mode`, `host`, `hooks_installed`, `global_install`, `source` |
 | `cli_command` | A CLI command runs, except `hook`, `serve`, and `telemetry` | `command` (the command name only, such as `doctor` or `taint.clear`) |
-| `usage_summary` | At most once every 24 hours, alongside a CLI command | Lifetime `total`, `pass`, `auth`, and `block` counts, plus `days_since_first_seen` |
+| `usage_summary` | At most once every 24 hours, alongside a CLI command | Lifetime `total`, `pass`, `auth`, and `block` counts, how many of those AUTH prompts were `approved` or `denied`, plus `days_since_first_seen` |
 
 Doberman also sends a random UUID as the event's distinct id and a UTC event timestamp. The id is
 created when telemetry is first enabled. It is not derived from the machine, user, hostname, or
@@ -65,6 +65,7 @@ These environment variables force telemetry off even when the local state says e
 - `DO_NOT_TRACK` set to any non-empty value other than `0`
 - `DOBERMAN_TELEMETRY=0`, `false`, or `off`
 - `CI` set to any non-empty value
+- `PYTEST_CURRENT_TEST` set, which the pytest test runner does for every test, so a test suite never reports as an install
 
 `doberman telemetry status` shows active kill switches.
 
