@@ -404,6 +404,14 @@ with Codex's own `--dangerously-bypass-hook-trust` flag. And a control-plane pat
 from a shell variable, a glob pattern, or a `python -c` payload, isn't caught by this kind of static
 command-text check.
 
+A hook that a plugin update or a settings edit binds to a lifecycle event (session start, before or
+after a tool call) runs as the host itself, not as a tool call, so it never reaches the engine at
+all. HookPry ([arXiv 2609.03884](https://arxiv.org/abs/2609.03884)) measured that vector at 77%
+verified success across seven harnesses, Claude Code and Codex CLI included, with none of 1,000 runs
+blocked. Doberman's install manifest fingerprints only its own hook entries, so `doberman doctor`
+does not notice a foreign hook today. A ledger of every installed hook command, scanned with the
+shell rules, is a roadmap item.
+
 ## An optional AI judge exists for measurement only, not for live decisions
 
 Installing `pip install "doberman-core[judge]"`, setting an `ANTHROPIC_API_KEY`, and setting
@@ -500,7 +508,7 @@ subcommand this rule recognizes, so none of them are checked today. All of this 
 against the cheap, common case, a popular-package typo or a documented known-bad name, not a
 guarantee against a compromised software supply chain.
 
-## The preview of how many files a delete would affect is a one-time snapshot, and only the MCP proxy re-checks it before acting
+## The preview of how many files a delete would affect is a one-time snapshot, and the drift check only works when both counts are exact
 
 Before showing an `AUTH` challenge for a recognized delete command (`rm`, `del`, `erase`, `rd`,
 `rmdir`, `Remove-Item`), Doberman computes a bounded, offline count of how many files and
@@ -508,10 +516,11 @@ directories the command's targets would affect, the command's blast radius (how 
 would do). That count is capped, limited to a fixed amount of wall-clock time, and flags anything
 inside `.git` or outside the repo. It's shown alongside the approval prompt.
 
-That count is only a snapshot, taken once. That's exactly why the MCP proxy path recomputes it again
-right before actually forwarding the command, and blocks it (reason code `effect_set_diverged`) if
-the count changed in between, a TOCTOU check (time-of-check-to-time-of-use: making sure nothing
-changed between when Doberman checked and when it actually acts).
+That count is only a snapshot, taken once. That's exactly why Doberman recomputes it again right
+before the command actually runs, and blocks it (reason code `effect_set_diverged`) if the count
+changed in between, a TOCTOU check (time-of-check-to-time-of-use: making sure nothing changed
+between when Doberman checked and when it actually acts). Both the MCP proxy path and the host-hook
+path now do this.
 
 Drift between the two counts is only detectable when both are exact. A preview that hit its cap or
 couldn't be computed (past the 1,000-entry limit, a timeout, or a delete target built with a live
@@ -519,6 +528,7 @@ shell substitution) compares equal to a recount that's also capped or unknown, b
 non-authoritative results share one placeholder value. So `rm -rf node_modules` past the entry cap,
 or any delete built with a dynamic `$(...)`, is never caught by this specific guard.
 
-The host-hook path (Claude Code's or Codex's `PreToolUse` hook) has no equivalent recheck after
-approval today, so this particular protection only covers the MCP proxy path. In this first version,
-the count is for display and the audit log only; it never changes a verdict by itself.
+One host adapter is still outside this: OpenClaw hands an `AUTH` to its own `/approve` flow, which
+resolves outside Doberman's process, so there is no moment inside the hook where a recheck could run.
+Claude Code, Codex, and Cursor all route their approval through the shared host-hook path and are
+covered.
