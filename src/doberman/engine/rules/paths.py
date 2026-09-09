@@ -26,6 +26,7 @@ rejected at construction so a misconfiguration can never make everything match
 import fnmatch
 import posixpath
 import re
+import shlex
 from collections.abc import Iterable, Sequence
 
 from doberman.canonical import canonicalize
@@ -279,9 +280,24 @@ TEST_FILE_GLOBS: tuple[str, ...] = (
     "**/*.spec.[jt]sx",
     "**/*.test.mjs",
     "**/*.spec.mjs",
+    # A repo-root conftest.py (pytest fixture/plugin config) is a test file by
+    # pytest's own discovery rules, but previously matched none of the globs
+    # above — only a "tests/conftest.py" copy matched "tests/**" (#648).
+    "conftest.py",
 )
 
 _TEST_FILE_PATTERNS = _sanitize_globs(TEST_FILE_GLOBS)
+
+
+def is_test_file(relposix: str) -> bool:
+    """True if a canonical (lower-cased) relposix path matches the test-file
+    glob table (:data:`TEST_FILE_GLOBS`). Public so :mod:`doberman.engine.rules.
+    commands` (``DestructiveCommandRule``) can flag a shell ``mv``/``git mv`` of
+    a test file the same way :class:`ProtectedPathRule` flags a delete/rename
+    tool call — the same cross-module reuse pattern as :func:`names_control_plane`.
+    """
+    return _matches_any(relposix, _TEST_FILE_PATTERNS)
+
 
 #: Heuristic for "this tool call is a rename/move". ActionType has no dedicated
 #: rename member (normalize.py has no rename-verb -> ActionType mapping, and
@@ -294,15 +310,55 @@ _TEST_FILE_PATTERNS = _sanitize_globs(TEST_FILE_GLOBS)
 _RENAME_TOOL_HINT = re.compile(r"(?i)rename|move")
 
 
-def _is_delete_or_rename(action_type: ActionType, tool_name: str) -> bool:
+def _shell_mv_source(command: str) -> str | None:
+    """SOURCE operand of a plain ``mv SRC DST`` / ``git mv SRC DST`` shell
+    command, or ``None``. LIMITATIONS.md: "A `git mv` or shell `mv` is a
+    command, not a path-targeted tool action, so it's invisible to this
+    check" (#648) — a shell tool (e.g. Bash) never names itself "rename"/
+    "move", so :data:`_RENAME_TOOL_HINT` alone misses it. Deliberately narrow:
+    only the two-operand shape (leading ``-`` flags skipped, a DEST must also
+    be present), not the full adversarial command walk
+    ``DestructiveCommandRule`` performs for its own copy of this check.
+    """
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return None
+    if tokens[:1] == ["mv"]:
+        operands = tokens[1:]
+    elif tokens[:2] == ["git", "mv"]:
+        operands = tokens[2:]
+    else:
+        return None
+    positional = [t for t in operands if not t.startswith("-")]
+    return positional[0] if len(positional) >= 2 else None
+
+
+def _shell_command_text(raw_arguments: dict) -> str | None:
+    """The raw command-line string from a shell-tool call's arguments, if any."""
+    for key in ("command", "cmd", "script"):
+        value = raw_arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _is_delete_or_rename(
+    action_type: ActionType, tool_name: str, raw_path: str = "", command: str | None = None
+) -> bool:
     if action_type is ActionType.file_delete:
         return True
     # The tool-name hint is a MUTATION signal, not an action-type-agnostic
     # one: a file_read whose tool merely happens to be named "rename_file"
     # (e.g. a dry-run/preview call) is not a rename in progress.
-    return action_type in ProtectedPathRule.MUTATION_ACTION_TYPES and bool(
+    if action_type in ProtectedPathRule.MUTATION_ACTION_TYPES and bool(
         _RENAME_TOOL_HINT.search(tool_name or "")
-    )
+    ):
+        return True
+    # A shell command (tool_name e.g. "Bash") whose payload is a `mv`/`git mv`
+    # of THIS path is a rename too, even though the tool isn't file_write/
+    # file_delete and isn't named rename/move (#648).
+    return command is not None and raw_path == _shell_mv_source(command)
 
 
 #: N3(b) / round 3 — every pattern in CONTROL_PLANE_GLOBS (read them:
@@ -520,6 +576,15 @@ class ProtectedPathRule:
         paths = raw_path_candidates(raw_arguments) if isinstance(raw_arguments, dict) else []
         if not paths:
             paths = _candidate_paths(action)
+
+        # A shell command's own `mv`/`git mv` SOURCE is a rename target too
+        # (#648) — extracted from raw_arguments alongside the raw path keys
+        # above, never from the (possibly redacted) command in action.target.
+        command = _shell_command_text(raw_arguments) if isinstance(raw_arguments, dict) else None
+        mv_source = _shell_mv_source(command) if command else None
+        if mv_source and mv_source not in paths:
+            paths = [*paths, mv_source]
+
         if not paths:
             return GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 
@@ -527,7 +592,7 @@ class ProtectedPathRule:
         worst = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
         for raw_path in paths:
             result = self._evaluate_one(
-                raw_path, root, action.action_type, action.tool_name, is_mutation
+                raw_path, root, action.action_type, action.tool_name, is_mutation, command
             )
             if _is_more_severe(result, worst):
                 worst = result
@@ -542,6 +607,7 @@ class ProtectedPathRule:
         action_type: ActionType,
         tool_name: str,
         is_mutation: bool,
+        command: str | None = None,
     ) -> GuardrailResult:
         canonical = canonicalize(raw_path, root=root)
 
@@ -581,7 +647,7 @@ class ProtectedPathRule:
                 ),
             )
 
-        if _is_delete_or_rename(action_type, tool_name) and _matches_any(
+        if _is_delete_or_rename(action_type, tool_name, raw_path, command) and _matches_any(
             canonical.relposix, _TEST_FILE_PATTERNS
         ):
             return GuardrailResult(

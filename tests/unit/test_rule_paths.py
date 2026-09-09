@@ -465,6 +465,15 @@ def test_test_file_rename_hint_gated_on_mutation_action_type(tmp_path):
     assert result.verdict is Verdict.PASS
 
 
+def test_root_conftest_delete_requires_auth(tmp_path):
+    # A repo-root conftest.py (not under tests/) previously matched no
+    # TEST_FILE_GLOBS entry at all — LIMITATIONS.md's root-conftest gap (#648).
+    action = _action("conftest.py", action_type=ActionType.file_delete)
+    result = RULE.evaluate(action, _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.test_file_removal in result.reason_codes
+
+
 def test_cicd_path_that_also_looks_like_a_test_file_stays_sensitive_path_access(tmp_path):
     # ".github/workflows/tests/ci.yml" matches BOTH the CI/CD sensitive-glob
     # set ("**/.github/workflows/**") AND the test-file glob table

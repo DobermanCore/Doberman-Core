@@ -35,7 +35,12 @@ import re
 import shlex
 from collections.abc import Iterable
 
-from doberman.engine.rules.paths import names_control_plane, needs_filesystem_resolution
+from doberman.canonical import canonicalize
+from doberman.engine.rules.paths import (
+    is_test_file,
+    names_control_plane,
+    needs_filesystem_resolution,
+)
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -1787,6 +1792,12 @@ def _segment_verdict(
         return windows_delete
 
     # --- Risky but recoverable → AUTH ---
+    mv_source = _mv_rename_source(tokens)
+    if mv_source is not None and is_test_file(canonicalize(mv_source, root=root).relposix):
+        return _auth(
+            ReasonCode.test_file_removal,
+            "Command moves/renames a test file; authentication required.",
+        )
     if cmd == "rm" and _count_delete_operands(tokens) >= bulk_threshold:
         return _auth(
             ReasonCode.bulk_operation,
@@ -1845,6 +1856,27 @@ _FORK_BOMB_RE = re.compile(r":\s*[(]\s*[)]\s*[{][^}]*[|&;]\s*:")
 def _looks_like_fork_bomb(tokens: list[str]) -> bool:
     joined = " ".join(tokens)
     return bool(_FORK_BOMB_RE.search(joined))
+
+
+def _mv_rename_source(tokens: list[str]) -> str | None:
+    """SOURCE operand of a plain ``mv SRC DST`` / ``git mv SRC DST`` segment,
+    or ``None``. Mirrors :func:`doberman.engine.rules.paths._shell_mv_source`
+    (#648: "A `git mv` or shell `mv` is a command ... and `DestructiveCommandRule`
+    doesn't special-case it either") — leading ``-`` flags are skipped; a DEST
+    must also be present, so a bare ``mv --help``/``git mv`` with nothing to
+    move to is never mistaken for a rename in progress. Keys the git case on
+    the actual verb (:func:`_git_leading_globals`), so ``git log --grep mv``
+    is never misread as ``git mv``.
+    """
+    if tokens[:1] == ["mv"]:
+        operands = tokens[1:]
+    else:
+        argv, _ = _git_leading_globals(tokens)
+        if not argv or argv[0] != "mv":
+            return None
+        operands = argv[1:]
+    positional = [t for t in operands if not t.startswith("-")]
+    return positional[0] if len(positional) >= 2 else None
 
 
 def _git_is_history_rewrite(tokens: list[str]) -> bool:
