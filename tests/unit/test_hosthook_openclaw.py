@@ -283,7 +283,10 @@ def test_block_reason_never_echoes_the_secret(cwd):
         json.dumps({"tool_name": "read", "params": {"path": ".env"}, "cwd": "."}),
     ],
 )
-def test_always_emits_exactly_one_json_document(stdin_text):
+def test_always_emits_exactly_one_json_document(stdin_text, tmp_path, monkeypatch):
+    # The payloads say ``cwd: "."`` (the wire shape); resolve it to a tmp root so
+    # the hook records into that, never into the checkout's ``.doberman/``.
+    monkeypatch.chdir(tmp_path)
     out = run_before_tool_call_hook(stdin_text)
     assert out is not None
     assert "\n" not in out
@@ -295,7 +298,7 @@ def test_always_emits_exactly_one_json_document(stdin_text):
 # --- hot-path weight (subprocess-per-call UX guarantee) ----------------------
 
 
-def test_hook_does_not_load_the_numeric_stack():
+def test_hook_does_not_load_the_numeric_stack(tmp_path):
     """The subprocess bridge spawns a fresh interpreter PER CALL — it must stay light.
 
     Asserts (in a clean subprocess) that running the hook does NOT import
@@ -304,7 +307,8 @@ def test_hook_does_not_load_the_numeric_stack():
     code = (
         "import sys, json;"
         "from doberman.hosthooks.openclaw import run_before_tool_call_hook;"
-        "run_before_tool_call_hook(json.dumps({'tool_name':'exec','params':{'command':'ls'},'cwd':'.'}));"
+        "run_before_tool_call_hook(json.dumps({'tool_name':'exec','params':{'command':'ls'},"
+        f"'cwd':{str(tmp_path)!r}}}));"
         "print(','.join(m for m in ('river','numpy','scipy') if m in sys.modules))"
     )
     result = subprocess.run(  # noqa: S603 — controlled call: our own interpreter + a fixed string

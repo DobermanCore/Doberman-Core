@@ -259,11 +259,12 @@ def test_no_tool_use_id_means_no_unpaired_dedupe(tmp_path, monkeypatch):
 # --- hot path: the Claude path must never import the Cursor adapter --------
 
 
-def test_claude_payload_does_not_import_cursor_module():
+def test_claude_payload_does_not_import_cursor_module(tmp_path):
     code = (
         "import sys, json;"
         "from doberman.hosthooks.claude_code import run_pre_hook;"
-        "run_pre_hook(json.dumps({'tool_name':'Bash','tool_input':{'command':'ls'},'cwd':'.'}));"
+        "run_pre_hook(json.dumps({'tool_name':'Bash','tool_input':{'command':'ls'},"
+        f"'cwd':{str(tmp_path)!r}}}));"
         "print('doberman.hosthooks.cursor' in sys.modules)"
     )
     result = subprocess.run(  # noqa: S603 — controlled call: our own interpreter + a fixed string
@@ -282,9 +283,13 @@ def test_post_hook_cursor_shell_abstains(tmp_path):
     assert claude_code.run_post_hook(json.dumps(payload)) is None
 
 
-def test_post_hook_cursor_read_abstains(tmp_path):
+def test_post_hook_cursor_read_abstains(tmp_path, monkeypatch):
     payload = _load("pre_tool_use_read.json", tmp_path)
     payload["hook_event_name"] = "postToolUse"
+    # A Cursor Read payload carries no ``cwd`` at all, and the post hook resolves
+    # its root from ``cwd`` (not ``workspace_roots``), so it records history under
+    # the process cwd: point that at the tmp root, not the checkout.
+    monkeypatch.chdir(tmp_path)
     assert claude_code.run_post_hook(json.dumps(payload)) is None
 
 
@@ -298,12 +303,18 @@ def test_post_hook_cursor_read_abstains(tmp_path):
 # `hook pre` command, not the adapter function directly.
 
 
-def test_real_shell_fixture_bytes_through_cli_are_not_denied_closed():
+def test_real_shell_fixture_bytes_through_cli_are_not_denied_closed(tmp_path):
     from doberman.cli.main import app
 
     raw = (FIXTURES / "pre_tool_use_shell.json").read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")  # the BOM cursor-agent actually sends
-    result = CliRunner().invoke(app, ["hook", "pre"], input=raw)
+    # Same re-encoding as the Read test below: the captured workspace root is a
+    # scrubbed ``C:\Users\dev\proj``, which the hook would otherwise create (as a
+    # literal directory under the checkout on Linux) to record the decision in.
+    payload = json.loads(raw.decode("utf-8-sig"))
+    payload["workspace_roots"] = [str(tmp_path)]
+    encoded = ("\ufeff" + json.dumps(payload)).encode("utf-8")
+    result = CliRunner().invoke(app, ["hook", "pre"], input=encoded)
     assert result.exit_code == 0
     # "echo hello-doberman" is benign -> abstain (nothing printed), not a deny.
     assert result.stdout.strip() == ""

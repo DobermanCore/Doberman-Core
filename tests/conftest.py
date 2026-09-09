@@ -35,6 +35,52 @@ _REAL_USER_SETTINGS_BEFORE = (
     _REAL_USER_SETTINGS.read_bytes() if _REAL_USER_SETTINGS.exists() else None
 )
 
+# Every storage/config entry point defaults ``repo_root`` to ".", so a test that
+# hands a hook ``cwd: "."`` (or no root at all) writes a real ``.doberman/`` store
+# into the checkout. Rows pile up there across the run, and any later test that
+# opens the cwd store sees them: the TUI column-order test went red on a CI shard
+# that way. A store already present when the process starts (a developer's live
+# hook keeps one) is not the suite's, so the check below stays off then.
+_CHECKOUT_STORE = Path(__file__).resolve().parents[1] / ".doberman"
+_CHECKOUT_STORE_PRESENT_AT_START = _CHECKOUT_STORE.exists()
+
+
+def _checkout_store_snapshot() -> frozenset[tuple[str, int, int]]:
+    entries: set[tuple[str, int, int]] = set()
+    try:
+        for path in _CHECKOUT_STORE.rglob("*"):
+            try:
+                stat = path.stat()
+            except OSError:  # a journal file vanishing mid-write; the db itself still shows
+                continue
+            if path.is_file():
+                entries.add(
+                    (str(path.relative_to(_CHECKOUT_STORE)), stat.st_size, stat.st_mtime_ns)
+                )
+    except OSError:
+        return frozenset({("<unreadable>", -1, -1)})
+    return frozenset(entries)
+
+
+@pytest.fixture(autouse=True)
+def checkout_store_untouched(request):
+    """Fail any test that creates or changes the checkout's ``.doberman/`` store.
+
+    Under xdist the writer may be a test running alongside this one on another
+    worker; ``-n 0`` attributes exactly.
+    """
+    if _CHECKOUT_STORE_PRESENT_AT_START:
+        yield
+        return
+    before = _checkout_store_snapshot()
+    yield
+    after = _checkout_store_snapshot()
+    assert after == before, (
+        f"{request.node.nodeid} created or changed {_CHECKOUT_STORE}: it (or, under xdist, a test "
+        "running alongside it) used the checkout as its Doberman root. Give it a tmp_path root or "
+        "monkeypatch.chdir(tmp_path); run with -n 0 to attribute exactly."
+    )
+
 
 @pytest.fixture(autouse=True)
 def isolated_user_home(tmp_path, monkeypatch):
