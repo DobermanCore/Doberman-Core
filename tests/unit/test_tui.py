@@ -295,10 +295,10 @@ async def test_next_line_present_for_block_and_auth_absent_for_pass(tmp_path):
         assert next_text == ""
 
 
-async def test_columns_are_plain_words_in_the_documented_order():
+async def test_columns_are_plain_words_in_the_documented_order(tmp_path):
     # >=100 columns (round 8 design critique item 2 hides risk/auth below
     # that) so the full documented column set is actually on screen here.
-    app = DecisionExplainerApp(".")
+    app = DecisionExplainerApp(str(tmp_path))
     async with app.run_test(size=(120, 24)) as pilot:
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")

@@ -22,6 +22,22 @@ app = cli_module.app
 runner = CliRunner()
 
 
+def _telemetry_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear every kill switch so ``is_enabled()`` is True, and swallow the transport: until
+    2026-09-08 these runs posted a real ``setup_completed`` to the project on every test run."""
+    for name in ("DOBERMAN_TELEMETRY", "CI", "DO_NOT_TRACK", "PYTEST_CURRENT_TEST"):
+        monkeypatch.delenv(name, raising=False)
+
+    class _Sent:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout=None: _Sent())
+
+
 @pytest.fixture(autouse=True)
 def _doberman_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin `doberman` as resolvable so a healthy wired-hooks run reads as
@@ -1152,9 +1168,7 @@ def test_yes_telemetry_section_shows_compact_summary_not_full_explanation(
     below it (no redundant "Telemetry:" label - the header already said it) -
     never the full explanation, and never a 3rd mention from `Also:` (that
     pointer now lives only in this section - see the `Also:` tests)."""
-    monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
-    monkeypatch.delenv("CI", raising=False)
-    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
+    _telemetry_live(monkeypatch)
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "Counts and command names only." not in result.output
@@ -1182,9 +1196,7 @@ def test_yes_summary_always_shows_telemetry_on_line(
     # `_forced_off_reasons`) - clear every kill switch, not just the one this
     # test is nominally about, so this is deterministic on CI too (CI sets
     # `CI=true`, which previously made this "on" assertion fail there).
-    monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
-    monkeypatch.delenv("CI", raising=False)
-    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
+    _telemetry_live(monkeypatch)
     result = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "on - anonymous usage counts; `doberman telemetry off` to opt out" in result.output
@@ -1202,9 +1214,7 @@ def test_yes_summary_shows_telemetry_off_when_forced_off(tmp_path: Path) -> None
 def test_telemetry_summary_line_shows_even_after_help_already_marked_the_notice_seen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
-    monkeypatch.delenv("CI", raising=False)
-    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
+    _telemetry_live(monkeypatch)
     from doberman import telemetry
 
     telemetry.first_run_notice()  # simulate: a user who read `--help` first
@@ -1629,9 +1639,7 @@ def test_setup_help_never_prints_the_telemetry_notice(
     """item 3/10: `--help` never runs setup's own body (Click prints help and
     exits first), so the generic first-run notice must never show above the
     usage text either."""
-    monkeypatch.delenv("DOBERMAN_TELEMETRY", raising=False)
-    monkeypatch.delenv("CI", raising=False)
-    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
+    _telemetry_live(monkeypatch)
     result = runner.invoke(app, ["setup", "--help"])
     assert result.exit_code == 0, result.output
     assert "sends anonymous usage counts" not in result.output

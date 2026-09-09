@@ -65,7 +65,15 @@ def _decision_and_action(verdict: Verdict, action_id: str) -> tuple[Decision, Se
 class TestRecordAndReadMetrics:
     def test_absent_store_reads_all_zeros(self, tmp_path):
         metrics = read_metrics(home=tmp_path / "nope")
-        assert metrics == {"total": 0, "pass": 0, "auth": 0, "block": 0, "first_seen": None}
+        assert metrics == {
+            "total": 0,
+            "pass": 0,
+            "auth": 0,
+            "block": 0,
+            "approved": 0,
+            "denied": 0,
+            "first_seen": None,
+        }
 
     def test_increments_the_right_counter(self, tmp_path):
         record_decision_metric("PASS", home=tmp_path)
@@ -86,9 +94,17 @@ class TestRecordAndReadMetrics:
             "pass": 3,
             "auth": 1,
             "block": 1,
+            "approved": 0,
+            "denied": 0,
             "first_seen": metrics["first_seen"],
         }
         assert metrics["first_seen"] is not None
+
+    def test_auth_outcomes_ride_beside_the_verdict_and_stay_out_of_total(self, tmp_path):
+        for key in ("AUTH", "AUTH_APPROVED", "AUTH", "AUTH_DENIED", "PASS"):
+            record_decision_metric(key, home=tmp_path)
+        m = read_metrics(home=tmp_path)
+        assert (m["total"], m["auth"], m["approved"], m["denied"]) == (3, 2, 1, 1)
 
     def test_first_seen_is_set_once(self, tmp_path):
         record_decision_metric("PASS", home=tmp_path)
@@ -159,6 +175,19 @@ class TestRecordDecisionRollupWiring:
         await record_decision(decision, action, repo_root=str(tmp_path))
         # isolated_device_metrics_home fixture points DOBERMAN_HOME at a temp dir.
         assert read_metrics()["pass"] == 1
+
+    async def test_record_decision_counts_auth_outcomes(self, tmp_path):
+        for action_id, auth_result in (
+            ("act-auth-yes", "totp"),
+            ("act-auth-no", "autodeny"),
+            ("act-auth-pending", None),
+        ):
+            decision, action = _decision_and_action(Verdict.AUTH, action_id)
+            await record_decision(
+                decision, action, repo_root=str(tmp_path), auth_result=auth_result
+            )
+        m = read_metrics()
+        assert (m["total"], m["auth"], m["approved"], m["denied"]) == (3, 3, 1, 1)
 
     async def test_record_decision_survives_a_failing_metric_write(self, tmp_path, monkeypatch):
         def boom(*args, **kwargs):

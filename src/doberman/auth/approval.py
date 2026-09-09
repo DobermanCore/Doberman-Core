@@ -36,11 +36,11 @@ from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger("doberman.auth.approval")
 
-#: How long one approval request waits for the human before it gives up and
-#: denies. Kept below :data:`doberman.auth.challenge.DEFAULT_CHALLENGE_TIMEOUT_S`
-#: so the method resolves (visibly denying) before the outer challenge deadline
-#: has to abandon the thread — same discipline as the GUI dialog timeout.
-DEFAULT_APPROVAL_TIMEOUT_S: float = 90.0
+#: The default budget for one approval method's request, equal to the phone's
+#: maximum ``--wait``, so a configured wait is honored on the 2FA tiers. The
+#: 600 s challenge ceiling in :mod:`doberman.auth.challenge` still bounds the
+#: whole flow.
+DEFAULT_APPROVAL_TIMEOUT_S: float = 300.0
 
 
 class ApprovalOutcome(Enum):

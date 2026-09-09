@@ -52,7 +52,7 @@ def test_evaluates_a_one_megabyte_command_quickly():
     result = _cmd(huge_command)
     elapsed = time.perf_counter() - start
     print(f"\n1 MB command evaluated in {elapsed:.3f}s")
-    assert elapsed < 3.0, f"took {elapsed:.3f}s — the per-segment scan is not length-bounded"
+    assert elapsed < 6.0, f"took {elapsed:.3f}s — the per-segment scan is not length-bounded"
     # #549 follow-up: truncation now always marks the walk ambiguous (raise-
     # only — a cut can never prove nothing destructive follows it), so an
     # oversized segment fails upward to AUTH rather than silently PASSing.

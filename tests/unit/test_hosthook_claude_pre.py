@@ -263,7 +263,7 @@ def test_deny_reason_never_echoes_a_secret_in_a_bash_command(cwd):
 # --- hot-path weight (UX guarantee) ----------------------------------------
 
 
-def test_pre_hook_does_not_load_the_numeric_stack():
+def test_pre_hook_does_not_load_the_numeric_stack(tmp_path):
     """A PreToolUse hook runs before EVERY tool call — it must stay light.
 
     Asserts (in a clean subprocess) that running the pre-hook does NOT import
@@ -273,7 +273,8 @@ def test_pre_hook_does_not_load_the_numeric_stack():
     code = (
         "import sys, json;"
         "from doberman.hosthooks.claude_code import run_pre_hook;"
-        "run_pre_hook(json.dumps({'tool_name':'Bash','tool_input':{'command':'ls'},'cwd':'.'}));"
+        "run_pre_hook(json.dumps({'tool_name':'Bash','tool_input':{'command':'ls'},"
+        f"'cwd':{str(tmp_path)!r}}}));"
         "print(','.join(m for m in ('river','numpy','scipy') if m in sys.modules))"
     )
     result = subprocess.run(  # noqa: S603 — controlled call: our own interpreter + a fixed string

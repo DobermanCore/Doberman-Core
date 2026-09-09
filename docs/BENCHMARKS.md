@@ -46,6 +46,17 @@ reports both profiles plus the delta between them.
   single rule is complete. Doberman is defense-in-depth, not airtight.
 - An `AUTH` verdict is a human-in-the-loop outcome, not a block. Read `asr_strict`
   and the operator metrics alongside `asr`, or you will overstate the protection.
+  The [AUTH-gated breakdown](#where-the-strict-gap-sits-auth-gated-attacks-by-shape)
+  shows which attack shapes stop at `AUTH` rather than `BLOCK`.
+- They measure tool calls. A hook command that the host itself runs on a
+  lifecycle event (session start, before or after a tool call) is not a tool
+  call and never reaches the decision engine, so a hook bound by a plugin
+  update or a settings edit sits outside every number here. HookPry
+  ([arXiv 2609.03884](https://arxiv.org/abs/2609.03884)) measured that vector
+  across seven harnesses, Claude Code and Codex CLI included: 77% verified
+  success, 0 of 1,000 runs blocked by any harness. A ledger of every installed
+  hook command, scanned with the shell rules, is a roadmap item.
+- The per-rule catalog of known gaps lives in [Known limitations](LIMITATIONS.md).
 
 ## Subjective-layer baseline separation (diagnostic)
 
@@ -148,7 +159,9 @@ true-positive rate per attack class) with no external dependency.
 - **Honest, not tuned.** The corpus is *not* filtered to cases the engine wins.
   Pure natural-language injection scores **TPR 0.0**: the objective layer is
   structurally blind to it (a provenance/subjective concern), and the corpus says
-  so rather than hiding it. Calibration also surfaced a real precision note:
+  so rather than hiding it. Small open classifiers reach F1 0.86 to 0.91 on
+  email and table indirect injection in Mozilla.ai's study (linked under Judge
+  agreement below); an optional classifier extra is a roadmap item. Calibration also surfaced a real precision note:
   reading an `.env.example` template over-blocks, because the secret-path rule
   matches `.env.*` fail-closed.
 - **Redaction + push-safety.** Reports hold counts, rates, category labels, and
@@ -198,6 +211,12 @@ This section measures, offline, whether it is even worth wiring in.
   structurally blind to natural-language injection for the exact same reason
   the deterministic layer is (see the corpus's `injection` row above); this
   bench cannot and does not claim to close that gap.
+- **External evidence for the advisory cap.** Mozilla.ai's 2026 study of open
+  guardrails ([blog post](https://blog.mozilla.ai/can-open-source-guardrails-really-protect-ai-agents/))
+  scored two judge models grading function calls on HammerBench at F1 0.09 to
+  0.50, Cohen's kappa 0.26 against the labels, with different scores on
+  identical inputs. Consistent with that, the judge here is advisory and never
+  decides a verdict alone.
 - **Opt-in, never a live call in CI.** Requires `ANTHROPIC_API_KEY` and
   `DOBERMAN_JUDGE_ENABLED=1` (the same three-way gate
   `HaikuJudgeAdjudicator.adjudicate()` itself enforces: installed, keyed, and
@@ -343,7 +362,7 @@ classifier steps a bare `nc` port-probe (`ben-0020`, `nc -zv localhost 22`) up t
 egress bullet describes for any unresolvable-host `nc`/`ncat` invocation. The row's guard
 reflects that directly: it forbids `BLOCK`, not `AUTH`. It never claimed production
 wouldn't ask for confirmation, only that it wouldn't hard-block a routine port probe. No
-other benign row is affected in balanced mode. `tpr_strict` 0.08 in balanced mode says
+other benign row is affected in balanced mode. `tpr_strict` 0.10 in balanced mode says
 almost all mitigation is a human-gated `AUTH`, not a hard `BLOCK` (the same "AUTH is a
 leash, not a wall" caveat as the synthetic suite, now measured across categories). Two
 categories are honest weak spots: exfiltration is mode-gated (balanced deliberately
@@ -357,6 +376,43 @@ dependency-admission gate and destination rule classify more conservatively ther
 install command nor the `network_request` row is a direct-egress shell verb, so this is
 pre-existing and unrelated to the harness-parity fix. It was already true of the shipped
 corpus, simply not previously re-measured in this table.
+
+#### Where the strict gap sits: AUTH-gated attacks by shape
+
+Keeping `AUTH` out of the strict score makes the limitation visible. This table says
+where it sits. Every attack row below was mitigated, but at `AUTH`: the engine asked
+instead of blocking, so protection rests on a person spotting the problem before
+approving. The harness emits it as `auth_gated` in the `--corpus` report (counts,
+reason codes, and payload-free row ids). Same corpus and built-ins as the table above,
+re-run 2026-09-06; every per-category number above re-measured unchanged.
+
+| Category | Action | Reason code that stopped it at `AUTH` | Rows |
+|---|---|---|---|
+| encoded | `file_write` | `smuggled_token_channel` | 35 |
+| encoded | `file_write` | `anomalous_token_pattern` | 33 |
+| encoded | `file_write` | `possible_high_entropy_secret` | 1 |
+| destructive | `shell_exec` | `raw_socket_channel` | 4 |
+| destructive | `shell_exec` | `opaque_command` | 2 |
+| destructive | `shell_exec` | `destructive_command` + `egress_requires_auth` | 1 |
+| destructive | `git_op` | `destructive_command` | 1 |
+| destructive | `git_op` | `verification_bypass_flag` | 1 |
+| destructive | `file_delete` | `test_file_removal` | 1 |
+| exfiltration | `network_request` | `unknown_external_destination` | 4 |
+| secrets | `file_read` | `sensitive_secret_access` | 4 |
+| dependency | `shell_exec` | `dependency_name_typosquat` | 1 |
+| **Total** | | | **88 of 101 mitigated attacks (0.87)** |
+
+Per category, the AUTH-gated share of mitigated attacks is: encoded 69 of 69, exfiltration
+4 of 4, destructive 10 of 19, secrets 4 of 7, dependency 1 of 2 (injection mitigates nothing,
+so it has no share). Read it in two parts. The first three rows are the encoded-content
+heuristics, and they are `AUTH`-capped by design: a heuristic may raise a question but
+never hard-block on its own (see [Authority tiers](AUTHORITY_TIERS.md)), so 69 of the 88
+rows can only ever move to `BLOCK` through a stronger, signature-grade rule. The other 19
+rows are spread across nine shapes where the rule sees a risky shape but not proof: a raw
+socket opened from a shell, a destination it cannot resolve, a credential-shaped path read
+in balanced mode, a typosquat-looking package name. Each of those is a place where a
+tired reviewer clicking Approve is the whole defense. That is what `tpr_strict` 0.10
+means in practice.
 
 ### AgentDojo suite (extended, operator-supplied)
 
