@@ -7,8 +7,8 @@ user (scoped by virtue of living in their home directory), giving a lifetime
 "how many times has Doberman stepped in" summary.
 
 Redaction discipline matches the decision log: this store holds **only** a
-verdict class (PASS/AUTH/BLOCK) and a count — never a path, reason code, role,
-or any other per-action detail.
+verdict class (PASS/AUTH/BLOCK), whether an AUTH prompt was approved or denied,
+and a count — never a path, reason code, role, or any other per-action detail.
 
 Location override: pass ``home=`` directly, or set the ``DOBERMAN_HOME`` env
 var (tests point this at a temp dir so the real user rollup is never touched —
@@ -30,7 +30,19 @@ HOME_ENV = "DOBERMAN_HOME"
 
 _DB_NAME = "metrics.db"
 
-_EMPTY_METRICS = {"total": 0, "pass": 0, "auth": 0, "block": 0, "first_seen": None}
+#: Rollup keys for the two AUTH outcomes; ``record_decision`` writes one beside the verdict.
+AUTH_APPROVED = "AUTH_APPROVED"
+AUTH_DENIED = "AUTH_DENIED"
+
+_EMPTY_METRICS = {
+    "total": 0,
+    "pass": 0,
+    "auth": 0,
+    "block": 0,
+    "approved": 0,
+    "denied": 0,
+    "first_seen": None,
+}
 
 
 def _db_path(home: Path | None = None) -> Path:
@@ -94,7 +106,7 @@ def record_decision_metric(verdict: str, *, home: Path | None = None) -> None:
 def read_metrics(*, home: Path | None = None) -> dict:
     """Read the device-global rollup for ``doberman dashboard``.
 
-    Returns ``{total, pass, auth, block, first_seen}`` — all zero/None if the
+    Returns ``{total, pass, auth, block, approved, denied, first_seen}`` — all zero/None if the
     store doesn't exist yet. Never raises (a dashboard read must never crash
     the CLI or a SessionStart hook).
     """
@@ -108,11 +120,15 @@ def read_metrics(*, home: Path | None = None) -> dict:
             row = conn.execute("SELECT value FROM meta WHERE key = 'first_seen'").fetchone()
         finally:
             conn.close()
+        verdicts = {key: counts.get(key, 0) for key in ("PASS", "AUTH", "BLOCK")}
         return {
-            "total": sum(counts.values()),
-            "pass": counts.get("PASS", 0),
-            "auth": counts.get("AUTH", 0),
-            "block": counts.get("BLOCK", 0),
+            "total": sum(verdicts.values()),
+            "pass": verdicts["PASS"],
+            "auth": verdicts["AUTH"],
+            "block": verdicts["BLOCK"],
+            # AUTH outcomes stay out of ``total``: each is already counted as an AUTH.
+            "approved": counts.get(AUTH_APPROVED, 0),
+            "denied": counts.get(AUTH_DENIED, 0),
             "first_seen": row[0] if row else None,
         }
     except Exception:  # noqa: BLE001 — a dashboard read must never crash the CLI

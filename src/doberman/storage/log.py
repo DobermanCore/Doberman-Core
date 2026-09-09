@@ -26,7 +26,7 @@ from pathlib import PurePosixPath
 
 from doberman.models import ActionType, Decision, EffectSet, SecurityObject
 from doberman.storage.db import open_db
-from doberman.storage.device_metrics import record_decision_metric
+from doberman.storage.device_metrics import AUTH_APPROVED, AUTH_DENIED, record_decision_metric
 from doberman.storage.fingerprint import fingerprint
 from doberman.storage.sinks import emit_to_sinks
 
@@ -91,6 +91,22 @@ _SELECT_SESSION_DECISIONS = (
 # "blocked", "error", "approved", "denied", "executed", ...). A NULL
 # auth_result (still pending) is deliberately kept.
 _RESOLVED_DECISIONS_PREDICATE = "(final_verdict <> 'AUTH' OR auth_result IS NOT NULL)"
+
+# AUTH outcomes for the device rollup. Every path that persists an AUTH row writes either one
+# of these denial words or the name of what let the action run ("executed", "approved",
+# "totp", "soft_confirm+memory", ...), so anything outside this set counts as approved.
+_AUTH_DENIED_RESULTS = frozenset(
+    {
+        "denied",
+        "blocked",
+        "unclaimable",
+        "timeout",
+        "autodeny",
+        "async_timeout",
+        "async_denied",
+        "error",
+    }
+)
 _DELETE_RESOLVED_DECISIONS = "DELETE FROM decisions WHERE " + _RESOLVED_DECISIONS_PREDICATE  # noqa: S608 — fixed clause, params bound
 _DECISION_COLUMNS = [
     "id",
@@ -325,6 +341,9 @@ async def record_decision(
     # depth — record_decision_metric already swallows its own failures).
     try:
         record_decision_metric(record["final_verdict"])
+        if record["final_verdict"] == "AUTH" and record["auth_result"]:
+            denied = record["auth_result"] in _AUTH_DENIED_RESULTS
+            record_decision_metric(AUTH_DENIED if denied else AUTH_APPROVED)
     except Exception:  # noqa: BLE001 — the device rollup must never break execution
         logger.warning("device metrics rollup failed for action %s; continuing", decision.action_id)
 
