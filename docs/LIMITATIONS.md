@@ -456,15 +456,14 @@ environment-variable indirection (which can't be resolved just by reading the co
 mere presence is enough to require authentication) all require authentication the same as
 `--no-verify`.
 
-A repo-root `conftest.py` isn't classed as a test file: the pattern table matches `test_*.py`,
-`*_test.py`, and `tests/**` shapes only, not pytest's own file-discovery rules, so deleting or
-renaming a root-level `conftest.py` is invisible to this check.
-
-Rename detection only looks at the tool's name: it looks for "rename" or "move" in the name of a
+Rename detection mostly looks at the tool's name: it looks for "rename" or "move" in the name of a
 `file_write` or `file_delete` action, so a mere read from a tool merely named something like
-"rename_file" doesn't count. A `git mv` or shell `mv` is a command, not a path-targeted tool action,
-so it's invisible to this check, and `DestructiveCommandRule` doesn't special-case it either. A
-rename tool with any other name is also invisible.
+"rename_file" doesn't count, and a rename tool with any other name is invisible this way. A plain
+`mv SRC DST` / `git mv SRC DST` shell command is also recognized (its SOURCE operand runs through the
+same test-file check, and `DestructiveCommandRule` flags a test-file `mv`/`git mv` the same way), but
+only that exact two-operand shape — a wrapped, chained, or otherwise adversarially-parsed rename
+(the sort `DestructiveCommandRule`'s own command walk defends against elsewhere) is not unwrapped
+here.
 
 The same gap applies to an outright shell delete: `rm tests/unit/test_auth.py`, `rm -rf tests/`, and
 `git rm tests/unit/test_auth.py` are command lines that only `DestructiveCommandRule` evaluates, and

@@ -390,6 +390,22 @@ def test_custom_bulk_threshold_is_respected():
     assert rule.evaluate(action, ctx).verdict is Verdict.AUTH
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "mv tests/unit/test_x.py trash/test_x.py",
+        "git mv tests/unit/test_x.py trash/test_x.py",
+    ],
+)
+def test_mv_or_git_mv_of_test_file_requires_auth(command):
+    # #648: `DestructiveCommandRule` previously didn't special-case a shell
+    # `mv`/`git mv` of a test file at all — this mirrors ProtectedPathRule's
+    # own delete/rename-of-a-test-file AUTH.
+    result = _cmd(command)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.test_file_removal in result.reason_codes
+
+
 def test_shared_command_walk_preserves_pre_argv_env_and_wrapper_tokens():
     segments, ambiguous, dynamic = walk_command(
         "HTTPS_PROXY=http://proxy.evil.example env curl https://pypi.org/simple"
