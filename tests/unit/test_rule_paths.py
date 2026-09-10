@@ -474,6 +474,26 @@ def test_root_conftest_delete_requires_auth(tmp_path):
     assert ReasonCode.test_file_removal in result.reason_codes
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "mv /tmp/downloaded.txt ./notes.txt",
+        "mv ../scratch/a.py ./a.py",
+    ],
+)
+def test_mv_source_outside_repo_root_is_not_blocked(tmp_path, command):
+    # #689 review: ProtectedPathRule must not extract and evaluate a shell
+    # `mv`/`git mv` SOURCE operand — moving a file INTO the repo from outside
+    # legitimately canonicalizes outside the repo root, and running it through
+    # the escapes_root check false-positived as "possible traversal or
+    # symlink escape" (PR #689). DestructiveCommandRule (test_rule_commands.py)
+    # still catches a test-file mv/git mv on its own.
+    action = _action(None, action_type=ActionType.shell_exec, tool_name="Bash")
+    ctx = EvalContext(metadata={"raw_arguments": {"command": command}, "repo_root": str(tmp_path)})
+    result = RULE.evaluate(action, ctx)
+    assert result.verdict is Verdict.PASS
+
+
 def test_cicd_path_that_also_looks_like_a_test_file_stays_sensitive_path_access(tmp_path):
     # ".github/workflows/tests/ci.yml" matches BOTH the CI/CD sensitive-glob
     # set ("**/.github/workflows/**") AND the test-file glob table

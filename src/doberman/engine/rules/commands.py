@@ -1895,9 +1895,9 @@ def _looks_like_fork_bomb(tokens: list[str]) -> bool:
 
 def _mv_rename_source(tokens: list[str]) -> str | None:
     """SOURCE operand of a plain ``mv SRC DST`` / ``git mv SRC DST`` segment,
-    or ``None``. Mirrors :func:`doberman.engine.rules.paths._shell_mv_source`
-    (#648: "A `git mv` or shell `mv` is a command ... and `DestructiveCommandRule`
-    doesn't special-case it either") — leading ``-`` flags are skipped; a DEST
+    or ``None`` (#648: "A `git mv` or shell `mv` is a command ... and
+    `DestructiveCommandRule` doesn't special-case it either") — leading ``-``
+    flags are skipped; a DEST
     must also be present, so a bare ``mv --help``/``git mv`` with nothing to
     move to is never mistaken for a rename in progress. Keys the git case on
     the actual verb (:func:`_git_leading_globals`), so ``git log --grep mv``
