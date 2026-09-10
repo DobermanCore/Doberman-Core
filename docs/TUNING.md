@@ -217,7 +217,7 @@ variable is unset) on Linux/macOS. `DOBERMAN_NTFY_FILE` overrides the path.
 tier. If nobody taps in time, the host hooks move on to the desk dialog (120 s), then the terminal
 prompt, and on the 2FA tiers end at the TOTP code entry; the MCP proxy tries its dashboard first,
 then the phone, then the same fallbacks. Silence is never taken as approval. If no channel answers,
-the whole challenge auto-denies after 600 s and the action is refused. `--wait` changes only the
+the whole challenge auto-denies after 10 minutes and the action is refused. `--wait` changes only the
 phone stage; it cannot extend that ceiling, and the Claude Code hook's 660 s harness timeout stays
 above it.
 
@@ -233,6 +233,12 @@ line lands in shell history, so read it from a file instead (`--token "$(cat ~/.
 bash, `--token (Get-Content ~/.ntfy-token)` in PowerShell), or edit `ntfy.json` after setup. Scope
 the token to those two topics only, with server ACLs that let only your phone and Doberman read or
 publish them.
+
+The push itself carries the command the agent asked to run, rendered the same way the desk
+dialog renders it, with credential-shaped tokens masked and the text length-bounded. The gated
+command line therefore leaves the machine and is stored on whichever ntfy server you point at,
+public `ntfy.sh` included, until that message expires. Point `--server` at a self-hosted
+instance if that is not acceptable.
 
 Both topic names and the token are secrets, not just the reply topic. The push notification itself
 carries the reply URL, the exact Approve/Deny reply text, and the bearer header, so anyone who can

@@ -6,6 +6,53 @@ gets its own [notes on GitHub](https://github.com/DobermanCore/Doberman-Core/rel
 
 Not yet released: [`changelog.d/`](changelog.d/), compiled into the next version.
 
+## v0.18.7 — 2026-09-09
+Approve or deny from your phone, and three ways past the command scanner are closed.
+
+### Security
+- Active-role and artifact-pin config are re-parsed only when file content changes, closing a same-tick edit that could serve a stale role or pin (#552)
+- Destructive commands wrapped in `builtin` or `eval` are now detected instead of silently passing (#555)
+- A post-approval `BLOCK` now revokes the role elevation just granted, instead of leaving it active until its TTL expires (#557)
+- The decision log classes extensionless paths under a directory (`.ssh/id_rsa`) like any other filename instead of storing them verbatim (#605)
+- A destructive or egress command wrapped in `strace`, `flock`, `unshare`, or `taskset` now classifies the same as its unwrapped form instead of silently passing (#654)
+- The MCP admission scan now flags whole-script look-alike server names, not only mixed-script ones (#655, thanks @Som0111)
+- Claude Code hook entries now pin a `timeout` that outlasts Doberman's challenge ceiling, so a timed-out hook cannot fail open before Doberman denies (#660)
+- A delete approved through a host hook now shows its blast radius and is re-checked before it runs, denying if the files changed since approval (#665)
+
+### Added
+- Ambient activity bus (FM.1): ActivityEvent, SQLite bus, and the doberman.collectors entry-point seam (#512, thanks @Maqbool61)
+- Expanded the dependency-admission popular-package seed (pypi, npm, cargo) with 89 more real, download-ranked names, cutting false AUTH prompts on legitimate installs (#554)
+- The decision log now records a delete preview's file/dir counts and cap/git/outside-repo flags, with the effect digest stored as a keyed HMAC (#556)
+- Phone push approvals through ntfy: `doberman phone setup` sends two-factor and elevation challenges to your phone with Approve and Deny buttons (#609)
+- `protected_branches` role.yaml key widens force-push blocking to extra branches, always adding to the defaults, never replacing them (#620)
+- Corpus report emits auth_gated: attacks stopped at AUTH rather than BLOCK, by shape; docs/BENCHMARKS.md gains the table (#659).
+- The decision log now records which code path resolved an authentication and whether a person approved it; both surface in `doberman log --jsonl` (#663)
+
+### Changed
+- Excluded-project checks are re-parsed only when file content changes, cutting redundant JSON parsing on every host-hook call (#618)
+
+### Fixed
+- An oversized shell payload no longer stalls the destructive-command scan; a segment over 64 KiB is truncated and asks for approval instead (#549)
+- Read-only git commands (`log`, `grep`, `show`, ...) no longer BLOCK/AUTH just because an argument mentions a force-push or history-rewrite flag (#550)
+- The delete blast-radius preview now flags a `.GIT` directory the same as `.git` on Windows, where they are the same folder (#558)
+- The AUTH blast-radius preview no longer understates a delete's size when directories dominate; it now shows both counts on a capped scan (#558)
+- The auth prompt shows the command the agent asked to run, with credential-shaped tokens masked and long paths kept, instead of a wholesale `<redacted>` target (#599)
+- Every additive schema `ALTER` now tolerates a racing process adding the column first, not just #614's fix (#619)
+- The update nudge now orders `rc`/`beta`/`alpha`/`dev` suffixes: an installed rc is nagged toward its final, a final never toward a pre-release (#621; #666)
+- Terminal explanations wrap overlong non-path slash tokens within the configured width while preserving paths and URLs intact. (#657, thanks @be-student)
+- Phone approvals honor the configured `--wait` on the 2FA tiers; the approval budget no longer caps it at 90 s (#671)
+- TUNING.md phone section rewritten: every AUTH tier reaches the phone, a tap replaces the TOTP code, silence auto-denies after 10 minutes (#671)
+- Telemetry stays silent during pytest runs (`PYTEST_CURRENT_TEST` is a kill switch), and the daily summary counts approved and denied AUTH prompts (#673)
+
+### Docs
+- Plain-English rewrite of the adapter, example, rule_lab, and rules-data READMEs: terms defined on first use, same commands and facts (#600).
+- Plain-English README, CONTRIBUTING, SECURITY, and docs index; new ROADMAP.md states the vision, and Known limitations move to docs/LIMITATIONS.md (#601).
+- Plain-English pass over the docs/ guides: terms defined on first use, shorter sentences, same commands, tables, numbers, and reason codes (#602).
+- PARITY.md: the secret-egress taint floor is now proven on Codex (#632, thanks @jasperdingg)
+- README drops its Known limitations section; the catalog stays in docs/LIMITATIONS.md via docs/BENCHMARKS.md, which also notes the lifecycle-hook vector and judge evidence (#661).
+- PARITY.md: the gitignored-delete gate (AN-1) is now proven on Codex (#664, thanks @harshitagrawal2O)
+- PARITY.md: the policy-weakening row is now proven on every host hook and the MCP proxy, not only the CLI gate (#672)
+
 ## v0.18.6 — 2026-09-04
 Closes detection bypasses and rebuilds setup, the dashboard, and the TUI.
 
