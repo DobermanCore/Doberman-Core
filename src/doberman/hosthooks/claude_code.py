@@ -141,7 +141,11 @@ def _hook_output(permission: str, reason: str) -> dict[str, Any]:
 
 
 def _resolve_auth(
-    decision: Decision, action: SecurityObject, repo_root: str, session_id: str | None = None
+    decision: Decision,
+    action: SecurityObject,
+    repo_root: str,
+    session_id: str | None = None,
+    arguments: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     return hookio.resolve_auth_result(
         decision,
@@ -151,6 +155,7 @@ def _resolve_auth(
         message_tone=load_message_tone(repo_root),
         repo_root=repo_root,
         session_id=session_id,
+        arguments=arguments,
     )
 
 
@@ -224,7 +229,11 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             # Run Doberman's own action-bound challenge so the human can actually
             # approve in-session (issues #65/#67) — not just be told to.
             hook_result, auth_method = _resolve_auth(
-                result.decision, result.challenge_action, result.repo_root, result.session_id
+                result.decision,
+                result.challenge_action,
+                result.repo_root,
+                result.session_id,
+                tool_input,
             )
             auth_path = AuthPath.host_hook_challenge
             # #505/#399: this is the row that used to read `AUTH ... auth=executed`

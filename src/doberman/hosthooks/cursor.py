@@ -323,6 +323,9 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any]:
                     message_tone=load_message_tone(result.repo_root),
                     repo_root=result.repo_root,
                     session_id=result.session_id,
+                    arguments=payload.get("tool_input")
+                    if isinstance(payload.get("tool_input"), dict)
+                    else None,
                 )
                 auth_path = AuthPath.host_hook_challenge
                 human_confirmed = hookio.challenge_human_confirmed(host_out, auth_method)

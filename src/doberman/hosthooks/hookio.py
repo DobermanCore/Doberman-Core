@@ -140,6 +140,7 @@ def resolve_auth(
     message_tone: str = "human",
     repo_root: str | None = None,
     session_id: str | None = None,
+    arguments: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compatibility wrapper returning only the host payload."""
     return resolve_auth_result(
@@ -150,6 +151,7 @@ def resolve_auth(
         message_tone=message_tone,
         repo_root=repo_root,
         session_id=session_id,
+        arguments=arguments,
     )[0]
 
 
@@ -159,7 +161,9 @@ def resolve_auth(
 _COMMAND_BEARING = frozenset({ActionType.shell_exec, ActionType.git_op, ActionType.package_install})
 
 
-def _delete_operands(action: SecurityObject) -> tuple[list[str] | None, bool]:
+def _delete_operands(
+    action: SecurityObject, arguments: dict[str, Any] | None = None
+) -> tuple[list[str] | None, bool]:
     """``(operands, dynamic)`` for a delete-class action, else ``(None, False)``.
 
     Returns immediately for anything that is not a delete-class command, so no
@@ -170,7 +174,16 @@ def _delete_operands(action: SecurityObject) -> tuple[list[str] | None, bool]:
     """
     if action.action_type not in _COMMAND_BEARING:
         return None, False
-    command = (action.target or "").strip()
+    if arguments is None:
+        command = (action.target or "").strip()
+        if command == "<redacted>":
+            return [], True
+    else:
+        from doberman.engine.rules.commands import command_line_from_arguments
+
+        command = (command_line_from_arguments(arguments) or "").strip()
+        if not command and action.target == "<redacted>":
+            return [], True
     if not command:
         return None, False
     from doberman.engine.rules.commands import delete_class_operands_and_dynamic
@@ -227,6 +240,7 @@ def resolve_auth_result(
     message_tone: str = "human",
     repo_root: str | None = None,
     session_id: str | None = None,
+    arguments: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Run Doberman's tiered challenge for an AUTH and answer the host hook.
 
@@ -270,7 +284,7 @@ def resolve_auth_result(
         # operand list reused for the recheck below (one parse, matching the
         # proxy's own M1 note) — and skipped entirely, with no filesystem walk,
         # for any AUTH that is not a delete-class command.
-        operands, dynamic = _delete_operands(action)
+        operands, dynamic = _delete_operands(action, arguments)
         previewed = None
         challenged = decision
         if operands is not None and repo_root:
