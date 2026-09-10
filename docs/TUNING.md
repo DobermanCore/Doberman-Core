@@ -172,8 +172,10 @@ engineering view, `doberman message-tone technical` switches to the terse `[RISK
 …` block, and `doberman message-tone human` switches back. It changes wording only. The change is
 cosmetic, so it needs no possession-factor confirmation, and it never touches the decision, the
 reason codes, or what lands in the decision log.
-The command line shown is rendered from the raw arguments with credential-shaped tokens masked and
-cut at 300 characters; the decision log keeps only its redacted copy.
+The command line shown is rendered from the raw arguments with `Authorization`, `X-Api-Key`, and
+`X-Auth-Token` header values, common password flags, and unbroken 40+ character credential-like
+runs masked, then cut at 300 characters; a base64 value containing `/` is not covered. The decision
+log keeps only its redacted copy.
 
 ## Recovery actions
 
@@ -235,7 +237,9 @@ the token to those two topics only, with server ACLs that let only your phone an
 publish them.
 
 The push itself carries the command the agent asked to run, rendered the same way the desk
-dialog renders it, with credential-shaped tokens masked and the text length-bounded. The gated
+dialog renders it, with `Authorization`, `X-Api-Key`, and `X-Auth-Token` header values, common
+password flags, and unbroken 40+ character credential-like runs masked (a base64 value containing
+`/` is not covered), and the text length-bounded. The gated
 command line therefore leaves the machine and is stored on whichever ntfy server you point at,
 public `ntfy.sh` included, until that message expires. Point `--server` at a self-hosted
 instance if that is not acceptable.

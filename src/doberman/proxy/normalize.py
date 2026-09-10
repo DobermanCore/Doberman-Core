@@ -677,6 +677,31 @@ def _extract_target(action_type: ActionType, arguments: dict[str, Any]) -> tuple
 def _mask_secret_tokens(text: str) -> str:
     """Mask the whitespace-delimited tokens that look like a credential."""
 
+    # Challenge copies are sent to human-facing channels (including phone
+    # push), so mask credential-bearing syntax before the generic token pass.
+    text = re.sub(
+        r"(?i)(\b(?:authorization|x-api-key|x-auth-token)\s*:\s*)"
+        r"(?:(bearer|basic|token)\s+)?([^\s'\";,]+)",
+        lambda match: f"{match.group(1)}{match.group(2) + ' ' if match.group(2) else ''}{REDACTED}",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(?<!\S)(-p)(?!ass(?:word)?(?:\b|=))([^\s'\"]+)",
+        rf"\1{REDACTED}",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(?<!\S)(-p\s+|--password(?:=|\s+)|--user(?:=|\s+)[^\s:'\"]+:|"
+        r"-u\s+[^\s:'\"]+:|--http-user(?:=|\s+)[^\s:'\"]+:|"
+        r"--http-password\s+|-pass\s+|-k\s+)([^\s'\"]+)",
+        rf"\1{REDACTED}",
+        text,
+    )
+    # Deliberately excludes '/': slash-bearing values may be paths, which are
+    # the primary reason this prompt-only rendering exists. Known miss: a
+    # base64 value containing '/' is not covered by this floor.
+    text = re.sub(r"(?<![A-Za-z0-9+=_.-])[A-Za-z0-9+=_.-]{40,}(?![A-Za-z0-9+=_.-])", REDACTED, text)
+
     def _mask(match: re.Match[str]) -> str:
         token = match.group(0)
         name, sep, _value = token.partition("=")
