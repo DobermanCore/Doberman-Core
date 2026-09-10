@@ -116,10 +116,17 @@ def test_chained_command_second_segment_force_push_still_blocks():
 # value-taking git global option must not desync the verb walk. Before the
 # fix, ``_GIT_GLOBAL_OPTIONS_WITH_VALUE`` only knew ``-C``/``-c`` consume a
 # separate next token, so ``--git-dir /repo push --force ...`` read ``/repo``
-# as the verb and PASSed a real force-push. Verified against installed git
-# 2.54: the space form and the ``=``-joined form behave identically for
-# ``--git-dir``/``--work-tree``/``--namespace``/``--exec-path``/
-# ``--config-env`` — real git accepts both.
+# as the verb and PASSed a real force-push (``--attr-source`` had the
+# identical gap, #690). Verified against installed git 2.54: the space form
+# and the ``=``-joined form genuinely behave identically for
+# ``--git-dir``/``--work-tree``/``--namespace``/``--config-env``/
+# ``--attr-source`` — real git accepts both. ``--exec-path`` does NOT — a
+# bare ``--exec-path`` takes no argument and exits before running anything
+# after it — but stays in the parametrize table below anyway: the test only
+# checks that our own token-skip stays desync-proof given a value-shaped
+# following token, not that real git treats the two forms alike (raise-only
+# forbids dropping the entry; see the ``_GIT_GLOBAL_OPTIONS_WITH_VALUE``
+# comment in ``commands.py``).
 
 
 @pytest.mark.parametrize(
@@ -130,6 +137,7 @@ def test_chained_command_second_segment_force_push_still_blocks():
         ("--namespace foo", "--namespace=foo"),
         ("--exec-path /x", "--exec-path=/x"),
         ("--config-env FOO=BAR", "--config-env=FOO=BAR"),
+        ("--attr-source HEAD", "--attr-source=HEAD"),
     ],
 )
 def test_space_separated_global_option_still_locates_force_push_verb(space_form, equal_form):
