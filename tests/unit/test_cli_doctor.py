@@ -600,6 +600,68 @@ def test_doctor_integrity_intact(integrity_env: Path) -> None:
     assert "claude project" in r.detail
 
 
+def test_doctor_integrity_fails_when_claude_hooks_are_disabled(integrity_env: Path) -> None:
+    assert CliRunner().invoke(app, ["install-hooks", "--path", str(integrity_env)]).exit_code == 0
+    settings_path = resolve_settings_path("project", str(integrity_env))
+    data = _json.loads(settings_path.read_text(encoding="utf-8"))
+    data["disableAllHooks"] = True
+    settings_path.write_text(_json.dumps(data), encoding="utf-8")
+
+    r = _integrity(run_checks(str(integrity_env)))
+    status = next(
+        s
+        for s in integrity.check_all(str(integrity_env))
+        if s.host == "claude" and s.scope == "project"
+    )
+
+    assert r.status is CheckStatus.FAIL
+    assert r.critical is True
+    assert "disableAllHooks" in r.detail
+    assert status.state == "intact"
+    assert status.disabled is True
+
+
+@pytest.mark.parametrize("value", [False, "true", 1])
+def test_doctor_integrity_ignores_non_boolean_true_disable_setting(
+    integrity_env: Path, value
+) -> None:
+    assert CliRunner().invoke(app, ["install-hooks", "--path", str(integrity_env)]).exit_code == 0
+    settings_path = resolve_settings_path("project", str(integrity_env))
+    data = _json.loads(settings_path.read_text(encoding="utf-8"))
+    data["disableAllHooks"] = value
+    settings_path.write_text(_json.dumps(data), encoding="utf-8")
+
+    r = _integrity(run_checks(str(integrity_env)))
+
+    assert r.status is CheckStatus.OK
+    assert "intact" in r.detail
+
+
+def test_doctor_integrity_detects_disable_setting_in_merged_claude_scope(
+    integrity_env: Path,
+) -> None:
+    assert CliRunner().invoke(app, ["install-hooks", "--path", str(integrity_env)]).exit_code == 0
+    global_settings_path = resolve_settings_path("global", str(integrity_env))
+    global_settings_path.parent.mkdir(parents=True, exist_ok=True)
+    global_settings_path.write_text('{"disableAllHooks": true}', encoding="utf-8")
+
+    r = _integrity(run_checks(str(integrity_env)))
+
+    assert r.status is CheckStatus.FAIL
+    assert r.critical is True
+    assert "disableAllHooks" in r.detail
+
+
+def test_doctor_integrity_does_not_crash_on_malformed_settings(integrity_env: Path) -> None:
+    assert CliRunner().invoke(app, ["install-hooks", "--path", str(integrity_env)]).exit_code == 0
+    settings_path = resolve_settings_path("project", str(integrity_env))
+    settings_path.write_text("not json", encoding="utf-8")
+
+    r = _integrity(run_checks(str(integrity_env)))
+
+    assert isinstance(r.status, CheckStatus)
+
+
 def test_doctor_integrity_critical_divergence(integrity_env: Path) -> None:
     assert CliRunner().invoke(app, ["install-hooks", "--path", str(integrity_env)]).exit_code == 0
     settings_path = resolve_settings_path("project", str(integrity_env))

@@ -161,8 +161,19 @@ def _check_hook_integrity(path: str) -> CheckResult:
 
     name = "Hook integrity"
     statuses = check_all(path)
+    disabled = [s for s in statuses if s.disabled]
     diverged = [s for s in statuses if s.state == "diverged"]
     intact = [s for s in statuses if s.state == "intact"]
+    if disabled:
+        where = ", ".join(f"{s.host} {s.scope}" for s in disabled)
+        return CheckResult(
+            name,
+            CheckStatus.FAIL,
+            f"disabled ({where}) - Claude Code's top-level `disableAllHooks: true` "
+            "skips every hook; Doberman is not gating calls. Remove the setting and "
+            "re-run `doberman doctor`",
+            critical=True,
+        )
     if diverged:
         where = ", ".join(f"{s.host} {s.scope}: {'/'.join(s.diverged_events)}" for s in diverged)
         critical = any(s.critical for s in diverged)
