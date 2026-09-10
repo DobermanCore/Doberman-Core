@@ -94,6 +94,10 @@ def _resolve(command, repo_root, prompter=None):
     )
 
 
+def _long_absolute_path() -> str:
+    return "/" + "/".join(("nested",) * 10) + "/billing-node_modules"
+
+
 def _permission(payload):
     return (payload.get("hookSpecificOutput") or {}).get("permissionDecision")
 
@@ -151,6 +155,106 @@ def test_a_delete_class_auth_now_carries_a_preview_to_the_prompter(target):
 
     assert seen["effects"] is not None, "the challenge saw no blast-radius preview"
     assert seen["effects"].file_count == 3
+
+
+def test_delete_operands_use_raw_arguments_when_target_was_redacted():
+    raw_command = f"rm -rf {_long_absolute_path()}"
+    action = _action("<redacted>")
+
+    operands, dynamic = hookio._delete_operands(action, {"command": raw_command})
+
+    assert operands == [_long_absolute_path()]
+    assert dynamic is False
+
+
+def test_claude_adapter_passes_raw_command_for_redacted_delete_preview(monkeypatch, tmp_path):
+    from doberman.auth.challenge import AuthResult, AuthTier
+    from doberman.hosthooks import claude_code
+    from doberman.hosthooks.spine import SpineResult
+
+    raw_command = f"rm -rf {_long_absolute_path()}"
+    decision = _decision()
+    action = _action("<redacted>")
+    challenged = {"effects": None}
+    calls = {"recheck": 0}
+
+    def _capture(decision_arg, action_arg, **kwargs):
+        challenged["effects"] = decision_arg.effects
+        return AuthResult(
+            approved=True,
+            tier=AuthTier.soft_confirm,
+            method="local_auth",
+            at=datetime(2026, 6, 7, tzinfo=timezone.utc),
+            action_id=action_arg.id,
+        )
+
+    def _effects(operands, dynamic, repo_root):
+        calls["recheck"] += 1
+        from doberman.engine.effects import unknown_effects
+
+        return unknown_effects()
+
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _capture)
+    monkeypatch.setattr(hookio, "_effects_for", _effects)
+    monkeypatch.setattr(
+        claude_code.spine,
+        "evaluate_action",
+        lambda *args, **kwargs: SpineResult(
+            decision, action, Verdict.AUTH, "enforce", str(tmp_path), None, action
+        ),
+    )
+    out = claude_code.evaluate_pre(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": raw_command},
+            "cwd": str(tmp_path),
+        }
+    )
+
+    assert _permission(out) == "allow"
+    assert challenged["effects"] is not None
+    assert calls["recheck"] == 2
+
+
+def test_redacted_target_without_raw_arguments_gets_unknown_preview_and_recheck(
+    target, monkeypatch
+):
+    from doberman.auth.challenge import AuthResult, AuthTier
+
+    seen = {}
+
+    def _capture(decision, action, **kwargs):
+        seen["effects"] = decision.effects
+        return AuthResult(
+            approved=True,
+            tier=AuthTier.soft_confirm,
+            method="local_auth",
+            at=datetime(2026, 6, 7, tzinfo=timezone.utc),
+            action_id=action.id,
+        )
+
+    calls = {"n": 0}
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _capture)
+    real = hookio._effects_for
+
+    def _counting(operands, dynamic, repo_root):
+        calls["n"] += 1
+        return real(operands, dynamic, repo_root)
+
+    monkeypatch.setattr(hookio, "_effects_for", _counting)
+    out, method = hookio.resolve_auth_result(
+        _decision(),
+        _action("<redacted>"),
+        event=_EVENT,
+        prompter=_Approve(),
+        repo_root=str(target),
+    )
+
+    assert _permission(out) == "allow"
+    assert method == "local_auth"
+    assert seen["effects"].file_count is None
+    assert seen["effects"].dir_count is None
+    assert calls["n"] == 2
 
 
 def test_a_non_delete_auth_gets_no_preview_and_walks_nothing(target, monkeypatch):
