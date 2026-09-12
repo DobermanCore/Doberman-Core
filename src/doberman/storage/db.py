@@ -26,6 +26,7 @@ SECURITY / resilience:
   never to be silently elevated. ``busy_timeout`` lets a locked DB retry.
 """
 
+import asyncio
 import os
 import sqlite3
 from collections.abc import AsyncIterator
@@ -46,8 +47,8 @@ DB_FILE = "doberman.db"
 # using ``open_db`` so it remains safe as a standalone API, while this task-local
 # slot lets nested calls for the same repository share the outer connection.
 # ContextVar isolation prevents concurrent decisions from sharing a connection.
-_ACTIVE_DB: ContextVar[tuple[Path, aiosqlite.Connection] | None] = ContextVar(
-    "doberman_active_db", default=None
+_ACTIVE_DB: ContextVar[tuple[Path, aiosqlite.Connection, asyncio.AbstractEventLoop] | None] = (
+    ContextVar("doberman_active_db", default=None)
 )
 
 #: Current schema version. Bumped to 2 in Feature 8 (decision log + stores), to 3
@@ -519,14 +520,15 @@ async def open_db(repo_root: str = ".") -> AsyncIterator[aiosqlite.Connection]:
 
     Creates ``.doberman/`` ``0700`` and the DB file ``0600`` on first use.
     The migration runs only when the version row is not current. Nested calls
-    for the same repository reuse the task-local connection, so a complete
+    for the same repository and event loop reuse the task-local connection, so a complete
     proxy decision performs one physical open and one schema check. Calls made
     outside that scope keep the standalone open/close behavior.
     """
     path = db_path(repo_root)
     key = path.resolve()
     active = _ACTIVE_DB.get()
-    if active is not None and active[0] == key:
+    loop = asyncio.get_running_loop()
+    if active is not None and active[0] == key and active[2] is loop:
         yield active[1]
         return
 
@@ -538,7 +540,7 @@ async def open_db(repo_root: str = ".") -> AsyncIterator[aiosqlite.Connection]:
         if not await _schema_is_current(conn):
             await _ensure_schema(conn)
         _restrict_permissions(path)
-        token = _ACTIVE_DB.set((key, conn))
+        token = _ACTIVE_DB.set((key, conn, loop))
         yield conn
     finally:
         if token is not None:

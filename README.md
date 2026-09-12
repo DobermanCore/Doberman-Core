@@ -187,6 +187,8 @@ regression-tested to stay stateless.
 
 Each proxy decision reuses one task-local SQLite connection across its storage checks. Standalone
 storage calls and concurrent decisions retain independent connection lifecycles.
+AUTH workers running on another event loop open their own connection, including
+workers whose copied context outlives the original decision.
 
 Operators can bound how many decision rows are kept with `doberman decision-log-prune`. It deletes
 only resolved decisions, never pending `AUTH` rows or the append-only policy-change ledger. See the
