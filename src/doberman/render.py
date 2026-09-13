@@ -31,6 +31,27 @@ except ImportError:  # pragma: no cover - defensive only
 #: column-aligned (the padding is applied *inside* the styled string).
 _LABEL_WIDTH = max(len(v.value) for v in Verdict)
 
+#: What an ambient (FM.2) AUTH/BLOCK-grade row's verdict label shows instead
+#: of the real word - "no output may read as blocked" (issue #237's hard
+#: rule). Same width as every other verdict word, so `doberman log`'s
+#: columns never shift between a live row and an ambient one. Public (not
+#: leading-underscore): `doberman.tui` reuses the same word for its own
+#: verdict-cell rendering, so the CLI and the tui browser can never drift
+#: onto two different words for the same "this was never enforced" fact.
+AMBIENT_ALERT_WORD = "ALERT"
+
+
+def is_ambient_source_context(value: object) -> bool:
+    """Whether a decision row's ``source_context`` marks it as an ambient
+    monitor (FM.2, ``doberman.monitor.daemon``) alert rather than a live
+    inline decision - identical check to ``doberman.explain``'s private
+    ``_is_ambient_row``, duplicated (not imported) rather than shared,
+    because this module is a presentation-only leaf with no internal
+    dependency beyond ``doberman.models`` (see the module docstring).
+    """
+    return isinstance(value, str) and value.startswith("ambient:")
+
+
 _VERDICT_STYLES: dict[Verdict, dict[str, object]] = {
     Verdict.BLOCK: {"fg": "bright_red", "bold": True},
     Verdict.AUTH: {"fg": "yellow", "bold": True},
@@ -183,12 +204,23 @@ _NEXT_AUTH = (
 _TUI_HINT = "; press w for detail"
 
 
-def next_step_line(verdict: str | None, *, tui_hint: bool = True) -> str | None:
+def next_step_line(
+    verdict: str | None, *, tui_hint: bool = True, ambient: bool = False
+) -> str | None:
     """The "Next" remedy line for a raw verdict string (or `None`/anything
     unrecognized, e.g. PASS) - `None` when there's nothing to act on.
 
     ``tui_hint=False`` drops the trailing "press w for detail" - that key
-    only exists inside the tui, so `doberman log --why` must not print it."""
+    only exists inside the tui, so `doberman log --why` must not print it.
+
+    ``ambient=True`` (FM.2's alert rows - see :func:`verdict_label_str`)
+    always returns `None`, regardless of verdict: nothing was ever blocked
+    or challenged, so there is no policy/role change or re-auth step to
+    point at - inventing one would itself read as "this was enforced,"
+    exactly what the hard rule forbids.
+    """
+    if ambient:
+        return None
     if verdict == Verdict.BLOCK.value:
         line = _NEXT_BLOCK
     elif verdict == Verdict.AUTH.value:
@@ -278,20 +310,41 @@ def verdict_label(verdict: Verdict) -> str:
     return typer.style(padded, **_VERDICT_STYLES.get(verdict, {}))
 
 
-def verdict_label_str(value: str) -> str:
+def verdict_label_str(value: str, *, ambient: bool = False) -> str:
     """Like :func:`verdict_label`, but for a verdict already read back as a plain string
     (e.g. a DB row's ``final_verdict``).
 
     An unrecognized value (corrupt row, future verdict) never raises — it is padded to
     the same fixed width and returned uncolored, so a log/status viewer can't crash on it.
+
+    ``ambient=True`` — the row's ``source_context`` starts with ``"ambient:"``
+    (FM.2, ``doberman.monitor.daemon``) — renders :data:`AMBIENT_ALERT_WORD`
+    instead of the real AUTH/BLOCK word (PASS is unaffected). FM.2's hard
+    rule: "no output may read as blocked" — the row's stored verdict is the
+    true, unmodified value :func:`doberman.storage.log.record_decision`
+    wrote (structured/``--jsonl`` output keeps it); only this human-facing
+    label is softened, the same split :mod:`doberman.explain` makes for
+    prose explanations.
     """
+    if ambient and value in (Verdict.AUTH.value, Verdict.BLOCK.value):
+        padded = f"{AMBIENT_ALERT_WORD:<{_LABEL_WIDTH}}"
+        if not supports_color():
+            return padded
+        return typer.style(padded, fg="magenta", bold=True)
     try:
         return verdict_label(Verdict(value))
     except ValueError:
         return f"{value:<{_LABEL_WIDTH}}"
 
 
-def verdict_rich_style(verdict: Verdict, *, chip: bool = False) -> str:
+#: Ambient (FM.2) alert style - deliberately distinct from BLOCK's red and
+#: AUTH's yellow, so the tui's verdict column lets color alone say "this was
+#: never enforced," the same fact :data:`AMBIENT_ALERT_WORD` says in words.
+_AMBIENT_CHIP_STYLE = "bold #000000 on bright_magenta"
+_AMBIENT_PLAIN_STYLE = "bold magenta"
+
+
+def verdict_rich_style(verdict: Verdict, *, chip: bool = False, ambient: bool = False) -> str:
     """Rich style string for `verdict` (e.g. `rich.text.Text(..., style=...)`).
 
     Same palette `verdict_label` uses, just expressed for Rich instead of
@@ -304,7 +357,15 @@ def verdict_rich_style(verdict: Verdict, *, chip: bool = False) -> str:
     solid colored background) for BLOCK/AUTH — measured to clear a 4.5:1
     contrast floor where the plain foreground-only style does not, including
     on the cursor row. PASS is unaffected by ``chip`` (it isn't a warning).
+
+    ``ambient=True`` overrides the AUTH/BLOCK styles with the single
+    distinct "alert" style above, regardless of ``chip`` — an ambient
+    AUTH/BLOCK-grade row (FM.2) must never carry the same color that means
+    "this was actually enforced" elsewhere in the same view. PASS is
+    unaffected (an ambient PASS row isn't an alert).
     """
+    if ambient and verdict in (Verdict.AUTH, Verdict.BLOCK):
+        return _AMBIENT_CHIP_STYLE if chip else _AMBIENT_PLAIN_STYLE
     styles = _CHIP_VERDICT_STYLES if chip else _RICH_VERDICT_STYLES
     return styles.get(verdict, "")
 

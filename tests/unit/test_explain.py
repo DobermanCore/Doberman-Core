@@ -423,6 +423,92 @@ def test_headline_distinguishes_otherwise_identical_block_rows():
     assert a != b
 
 
+# --- FM.2: ambient monitor rows never read as if something was enforced -----
+#
+# The monitor (doberman.monitor.daemon) tags its rows
+# source_context="ambient:<collector_id>" via record_decision's
+# source_context_override. None of these tests touch the daemon - they pin
+# down explain.py's own contract: detect that shape and (a) prefix every
+# rendered explanation with "observed (not enforced): " and (b) never let a
+# BLOCK/AUTH-grade ambient row read as if it were actually blocked or
+# challenged.
+
+
+def test_template_explanation_for_ambient_block_is_prefixed_and_never_says_hard_block():
+    row = _row(
+        source_context="ambient:stub.collector",
+        final_verdict="BLOCK",
+        reason_codes_json=json.dumps(["destructive_command"]),
+    )
+    text = template_explanation(row)
+    assert text.startswith("observed (not enforced): ")
+    assert "hard block" not in text.lower()
+    assert "policy or role change" not in text.lower()
+
+
+def test_why_body_for_ambient_auth_is_prefixed_and_never_mentions_challenge():
+    row = _row(
+        source_context="ambient:stub.collector",
+        final_verdict="AUTH",
+        reason_codes_json=json.dumps(["unknown_external_destination"]),
+    )
+    text = why_body(row)
+    assert text.startswith("observed (not enforced): ")
+    assert "authentication challenge" not in text.lower()
+    assert "role elevation" not in text.lower()
+
+
+def test_first_sentence_for_ambient_row_is_prefixed():
+    row = _row(source_context="ambient:stub.collector", final_verdict="BLOCK")
+    text = first_sentence(row)
+    assert text.startswith("observed (not enforced): ")
+
+
+def test_headline_for_ambient_block_never_says_blocked():
+    row = _row(
+        source_context="ambient:stub.collector",
+        final_verdict="BLOCK",
+        reason_codes_json=json.dumps(["destructive_command"]),
+    )
+    text = headline(row)
+    assert "blocked" not in text.lower()
+    assert "flagged" in text.lower()
+
+
+def test_headline_for_ambient_auth_never_says_needs_approval():
+    row = _row(
+        source_context="ambient:stub.collector",
+        final_verdict="AUTH",
+        reason_codes_json=json.dumps(["unknown_external_destination"]),
+    )
+    text = headline(row)
+    assert "needs approval" not in text.lower()
+    assert "flagged" in text.lower()
+
+
+def test_ambient_pass_row_is_only_prefixed_verdict_word_unchanged():
+    """A PASS-grade ambient row isn't an alert - the hard rule is about
+    AUTH/BLOCK-grade verdicts reading as enforced, not about PASS wording."""
+    row = _row(
+        source_context="ambient:stub.collector",
+        final_verdict="PASS",
+        reason_codes_json=json.dumps([]),
+    )
+    assert "allowed" in headline(row).lower()
+    assert template_explanation(row).startswith("observed (not enforced): ")
+
+
+def test_non_ambient_row_rendering_is_unaffected():
+    """A live-gate row (source_context='user', not 'ambient:...') renders
+    exactly as it always has - the ambient prefix/rewording must never leak
+    onto a real inline decision."""
+    row = _row(source_context="user", final_verdict="BLOCK")
+    text = template_explanation(row)
+    assert not text.startswith("observed (not enforced): ")
+    assert "hard block" in text.lower()
+    assert "blocked" in headline(row).lower()
+
+
 @pytest.mark.parametrize(
     "reason_codes_json",
     [

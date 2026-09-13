@@ -90,6 +90,7 @@ from doberman.policy.sources import (
 from doberman.render import (
     format_utc_timestamp,
     humanize_auth_result,
+    is_ambient_source_context,
     next_step_line,
     style_text,
     verdict_label,
@@ -186,6 +187,15 @@ plugins_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(plugins_app, name="plugins", rich_help_panel="Advanced")
+
+monitor_app = typer.Typer(
+    help=(
+        "Ambient observe-only daemon (FM.2): scores non-inline activity through "
+        "the same decision engine, never enforces."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(monitor_app, name="monitor", rich_help_panel="Advanced")
 
 memory_app = typer.Typer(
     help="Learned behavioral memory: profile, gated reset, and retention pruning.",
@@ -1228,7 +1238,7 @@ def _status_payload(path: str) -> dict:
     """Collect the same redacted data the text and JSON status views share.
 
     Nothing secret-shaped is included: enrollment is a boolean, elevations carry
-    ids/scopes/expiry only, decisions carry ts/verdict/reason codes only.
+    ids/scopes/expiry only, decisions carry ts/verdict/reason codes/source_context only.
     """
     from doberman.storage.policy_catalogue import current_snapshot, policy_version
 
@@ -1277,6 +1287,7 @@ def _status_payload(path: str) -> dict:
                 "ts": row["ts"],
                 "final_verdict": row["final_verdict"],
                 "reason_codes": reasons,
+                "source_context": row["source_context"],
             }
         )
 
@@ -1431,7 +1442,10 @@ def _render_status_text(payload: dict) -> None:
     else:
         for row in recent:
             reasons = ", ".join(row["reason_codes"]) or "-"
-            typer.echo(f"  {row['ts']}  {verdict_label_str(row['final_verdict'])}  {reasons}")
+            ambient = is_ambient_source_context(row.get("source_context"))
+            typer.echo(
+                f"  {row['ts']}  {verdict_label_str(row['final_verdict'], ambient=ambient)}  {reasons}"
+            )
 
     missed = payload["missed_challenges_24h"]
     if missed:
@@ -2327,7 +2341,14 @@ def tune(
 # for "allowed without a human" cannot answer the question #399 raised. Both are
 # closed values (an AuthPath enum member; 1/0/NULL) and can never carry command
 # text, so exporting them widens the stream by nothing an operator must redact.
-_JSONL_EXTRA_COLUMNS = ("id", "agent_role", "risk", "auth_path", "human_confirmed")
+_JSONL_EXTRA_COLUMNS = (
+    "id",
+    "agent_role",
+    "risk",
+    "auth_path",
+    "human_confirmed",
+    "source_context",
+)
 
 # Keep every action type in one column even when a new enum member outgrows the
 # historical 13-character values (network_request/package_install are 15).
@@ -2394,18 +2415,24 @@ def log(
     for row in rows:
         target = row["target_path_class"] or "-"
         reasons = ", ".join(json.loads(row["reason_codes_json"] or "[]")) or "-"
+        ambient = is_ambient_source_context(row.get("source_context"))
         # A pending AUTH row (no answer yet) must never look identical to "no
-        # auth step at all" - round 5 design critique item 7.
+        # auth step at all" - round 5 design critique item 7. An ambient
+        # AUTH-grade alert (FM.2) was never actually challenged, so it must
+        # never show "pending - not yet answered" either - that reads as a
+        # live outstanding challenge, exactly what the hard rule ("no output
+        # may read as blocked") forbids.
         auth = (
             f"; auth={humanize_auth_result(row['auth_result'], verdict=row['final_verdict'])}"
-            if row["auth_result"] or row["final_verdict"] == "AUTH"
+            if not ambient and (row["auth_result"] or row["final_verdict"] == "AUTH")
             else ""
         )
         # round 8 design critique item 7: the same "YYYY-MM-DD HH:MM:SS UTC"
         # format the tui's why panel shows (no microseconds) - `--jsonl`
         # keeps the raw stored `ts` string unchanged (scripts parse that one).
         typer.echo(
-            f"{format_utc_timestamp(row['ts'])}  {verdict_label_str(row['final_verdict'])} "
+            f"{format_utc_timestamp(row['ts'])}  "
+            f"{verdict_label_str(row['final_verdict'], ambient=ambient)} "
             f"{row['action_type']:<{_ACTION_WIDTH}} {target}  [{reasons}]{auth}"
         )
         # --why (round 4 design critique item 8, round 6 item 7): a compact,
@@ -2420,7 +2447,7 @@ def log(
             any_explained = True
             for line in wrap_detail(why_body(row)):
                 typer.echo(line)
-            next_line = next_step_line(row["final_verdict"], tui_hint=False)
+            next_line = next_step_line(row["final_verdict"], tui_hint=False, ambient=ambient)
             if next_line:
                 for line in wrap_detail(next_line):
                     typer.echo(line)
@@ -2570,6 +2597,92 @@ def demo(
 
     if not all(outcome.matched for outcome in outcomes):
         raise typer.Exit(code=1)
+
+
+@monitor_app.command("run")
+def monitor_run(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root to observe."),
+    interval: float = typer.Option(
+        5.0, "--interval", min=0.5, help="Seconds between scoring ticks."
+    ),
+    mode: str = typer.Option(
+        "balanced", "--mode", help="Security mode used to score ambient events."
+    ),
+) -> None:
+    """Run the warm, observe-only ambient daemon (FM.2, issue #237).
+
+    Each tick, polls every registered `doberman.collectors` entry point,
+    emits what they see onto the FM.1 activity bus, drains the bus from this
+    daemon's own saved cursor, and scores each drained event through the
+    SAME decision engine the live gate uses -- recording an alert row for
+    anything AUTH/BLOCK-grade. Structurally observe-only: no prompter, no
+    executor, and no challenge is ever imported or constructed here, so
+    nothing this process does can block, challenge, or execute anything. A
+    dead or never-started monitor changes nothing about the live inline gate
+    -- it is a second, independent consumer of the bus, not a dependency of
+    the decision path.
+
+    Refuses to start a second daemon for the same `--path` while another
+    one's heartbeat is still fresh (see `doberman monitor status`). Runs
+    until interrupted with Ctrl+C.
+    """
+    from doberman.monitor.daemon import (
+        MONITOR_HEARTBEAT_MAX_AGE_S,
+        MonitorAlreadyRunning,
+        run_forever,
+    )
+
+    try:
+        resolved_mode = resolve_mode(mode)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(
+        f"doberman monitor: observe-only, ticking every {interval:.1f}s "
+        f"(mode={resolved_mode.value})"
+    )
+    typer.echo("Ctrl+C to stop. This process never blocks, challenges, or executes anything.")
+
+    try:
+        run_forever(path, interval_s=interval, mode=resolved_mode.value)
+    except MonitorAlreadyRunning:
+        typer.echo(
+            "error: a doberman monitor daemon already appears to be running for "
+            f"this repo (heartbeat fresher than {MONITOR_HEARTBEAT_MAX_AGE_S:.0f}s); "
+            "not starting a second one",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    except KeyboardInterrupt:
+        typer.echo("\ndoberman monitor: stopped.")
+
+
+@monitor_app.command("status")
+def monitor_status_cmd(
+    path: str = typer.Option(".", "--path", "-p", help="Repository root to report on."),
+) -> None:
+    """Report whether the ambient monitor daemon (FM.2) appears to be running.
+
+    Shows the last heartbeat age, the daemon's saved bus cursor, and how many
+    activity-bus events are still waiting to be drained -- a growing pending
+    count with no running daemon usually means the daemon isn't started; a
+    growing count WITH one running usually means a collector is producing
+    events faster than the daemon can score them.
+    """
+    import asyncio
+
+    from doberman.monitor.daemon import monitor_status
+
+    status = asyncio.run(monitor_status(path))
+    state = "RUNNING" if status["running"] else "NOT RUNNING"
+    typer.echo(f"doberman monitor: {state}")
+    if status["heartbeat_age_s"] is not None:
+        typer.echo(f"  last heartbeat: {status['heartbeat_age_s']:.1f}s ago")
+    else:
+        typer.echo("  last heartbeat: never")
+    typer.echo(f"  cursor: {status['cursor']}")
+    typer.echo(f"  pending events: {status['pending_events']}")
 
 
 @memory_app.callback(invoke_without_command=True, rich_help_panel="Policy internals")

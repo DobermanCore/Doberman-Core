@@ -547,14 +547,18 @@ async def test_subtitle_reports_showing_n_of_m(tmp_path):
         # verdict breakdown (round 6 design critique item 4) is over the
         # LOADED rows, not the filtered ones - all 3 PASS here. Round 8
         # design critique item 3: "loaded" names that scope explicitly.
-        assert app.sub_title == f"showing 3 of 3 - 0 BLOCK / 0 AUTH / 3 PASS loaded - {root}"
+        assert (
+            app.sub_title == f"showing 3 of 3 - 0 BLOCK / 0 AUTH / 3 PASS / 0 ALERT loaded - {root}"
+        )
         app.query_one("#filter").value = "block"
         # round 5 design critique item 11: poll - `on_input_changed` ->
         # `_apply_filter` -> `_update_subtitle` can legitimately land a tick
         # late under load, same race class as the two named tests.
         # "(filtered)" (round 8 item 3) marks that the count differs BECAUSE
         # a filter narrowed it, not just "0 happen to match 3".
-        expected_filtered = f"showing 0 of 3 (filtered) - 0 BLOCK / 0 AUTH / 3 PASS loaded - {root}"
+        expected_filtered = (
+            f"showing 0 of 3 (filtered) - 0 BLOCK / 0 AUTH / 3 PASS / 0 ALERT loaded - {root}"
+        )
         await _wait_for(pilot, lambda: app.sub_title, lambda t: t == expected_filtered)
         assert app.sub_title == expected_filtered
 
@@ -573,7 +577,7 @@ async def test_last_bounds_how_many_rows_load(tmp_path):
         # verdict breakdown (round 6 item 4) counts only the 2 LOADED rows.
         assert (
             app.sub_title
-            == f"showing 2 of 2 (last 2; --last for more) - 0 BLOCK / 0 AUTH / 2 PASS loaded - {root}"
+            == f"showing 2 of 2 (last 2; --last for more) - 0 BLOCK / 0 AUTH / 2 PASS / 0 ALERT loaded - {root}"
         )
 
 
@@ -2450,11 +2454,16 @@ async def test_subtitle_shows_verdict_breakdown_over_loaded_rows(tmp_path):
     app = DecisionExplainerApp(root, last=500)
     async with app.run_test() as pilot:
         await _wait_loaded(pilot, app)
-        assert app.sub_title == f"showing 45 of 45 - 22 BLOCK / 1 AUTH / 22 PASS loaded - {root}"
+        assert (
+            app.sub_title
+            == f"showing 45 of 45 - 22 BLOCK / 1 AUTH / 22 PASS / 0 ALERT loaded - {root}"
+        )
         # The filter narrows N (how many are SHOWN); the verdict breakdown is
         # always over the loaded window, never the filtered one.
         app.query_one("#filter").value = "block"
-        expected = f"showing 22 of 45 (filtered) - 22 BLOCK / 1 AUTH / 22 PASS loaded - {root}"
+        expected = (
+            f"showing 22 of 45 (filtered) - 22 BLOCK / 1 AUTH / 22 PASS / 0 ALERT loaded - {root}"
+        )
         await _wait_for(pilot, lambda: app.sub_title, lambda t: t == expected)
         assert app.sub_title == expected
 

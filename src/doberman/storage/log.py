@@ -215,6 +215,7 @@ def build_record(
     session_id: str | None = None,
     auth_path: str | None = None,
     human_confirmed: bool | None = None,
+    source_context_override: str | None = None,
 ) -> dict:
     """Build the single redacted record persisted and handed to every sink.
 
@@ -231,6 +232,14 @@ def build_record(
     records "not recorded" rather than a guess, and a caller that knows no auth
     was involved passes ``AuthPath.none``. Neither field ever carries command
     text: ``auth_path`` is a closed enum and ``human_confirmed`` is a bool.
+
+    ``source_context_override``, when given, replaces ``action.source_context``
+    in the persisted row verbatim instead of a ``SourceContext`` enum value.
+    The only current writer of this is the ambient monitor (FM.2,
+    ``doberman.monitor.daemon``), which tags its rows ``"ambient:<collector_id>"``
+    — a shape the fixed enum has no room for, and that ``doberman.explain``
+    keys off to keep every rendered explanation honest about never having
+    enforced anything.
     """
     record = {
         "ts": now.isoformat(),
@@ -239,7 +248,7 @@ def build_record(
         "action_type": action.action_type.value,
         "target_path_class": path_class(action),
         "risk": decision.final_risk.value,
-        "source_context": action.source_context.value,
+        "source_context": source_context_override or action.source_context.value,
         "final_verdict": decision.final_verdict.value,
         "decided_layer": _decided_layer(decision),
         "reason_codes": [rc.value for rc in decision.reason_codes],
@@ -267,6 +276,7 @@ async def record_decision(
     session_id: str | None = None,
     auth_path: str | None = None,
     human_confirmed: bool | None = None,
+    source_context_override: str | None = None,
 ) -> None:
     """Persist one redacted decision row and fan it out to sinks (best-effort).
 
@@ -285,6 +295,7 @@ async def record_decision(
             session_id=session_id,
             auth_path=auth_path,
             human_confirmed=human_confirmed,
+            source_context_override=source_context_override,
         )
     except Exception:  # noqa: BLE001 — the decision log must never break execution
         logger.warning("decision log: could not build record for action %s", decision.action_id)

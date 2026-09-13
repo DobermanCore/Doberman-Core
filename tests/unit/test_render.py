@@ -324,3 +324,52 @@ def test_next_step_line_known_verdicts_and_pass_has_none():
     assert render.next_step_line("PASS") is None
     assert render.next_step_line(None) is None
     assert render.next_step_line("ALLOW") is None  # unrecognized - never raises
+
+
+# --- FM.2: ambient monitor rows must never render as if enforced -----------
+
+
+def test_is_ambient_source_context():
+    assert render.is_ambient_source_context("ambient:stub.collector") is True
+    assert render.is_ambient_source_context("ambient:") is True
+    assert render.is_ambient_source_context("user") is False
+    assert render.is_ambient_source_context(None) is False
+    assert render.is_ambient_source_context(123) is False
+
+
+def test_verdict_label_str_ambient_shows_alert_for_block_and_auth_only():
+    for value in ("BLOCK", "AUTH"):
+        label = render.verdict_label_str(value, ambient=True)
+        assert render.AMBIENT_ALERT_WORD in label
+        assert value not in label
+
+    # PASS is not an alert - ambient=True must not touch it.
+    assert render.verdict_label_str("PASS", ambient=True) == render.verdict_label_str("PASS")
+
+
+def test_verdict_label_str_non_ambient_is_unaffected():
+    assert render.verdict_label_str("BLOCK", ambient=False) == render.verdict_label_str("BLOCK")
+    assert render.verdict_label_str("BLOCK") == render.verdict_label_str("BLOCK", ambient=False)
+
+
+def test_next_step_line_ambient_is_always_none_regardless_of_verdict():
+    # FM.2 hard rule: nothing was enforced, so there is no remedy to point at
+    # - inventing one would itself read as "this was enforced".
+    for verdict in ("BLOCK", "AUTH", "PASS", None):
+        assert render.next_step_line(verdict, ambient=True) is None
+
+
+def test_verdict_rich_style_ambient_differs_from_the_real_block_and_auth_styles():
+    real_block = render.verdict_rich_style(Verdict.BLOCK, chip=True)
+    real_auth = render.verdict_rich_style(Verdict.AUTH, chip=True)
+    ambient_block = render.verdict_rich_style(Verdict.BLOCK, chip=True, ambient=True)
+    ambient_auth = render.verdict_rich_style(Verdict.AUTH, chip=True, ambient=True)
+
+    assert ambient_block != real_block
+    assert ambient_auth != real_auth
+    assert ambient_block == ambient_auth  # one shared "alert" style, not two
+
+    # PASS is never an alert - ambient=True must not change its style.
+    assert render.verdict_rich_style(Verdict.PASS, ambient=True) == render.verdict_rich_style(
+        Verdict.PASS
+    )

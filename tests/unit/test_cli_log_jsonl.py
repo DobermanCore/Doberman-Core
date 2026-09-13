@@ -187,7 +187,11 @@ def test_log_jsonl_omits_columns_outside_the_allowlist(tmp_path):
     assert "should-not-appear" not in result.stdout
     obj = json.loads(result.stdout.splitlines()[0])
     assert "future_raw_column" not in obj
-    assert "source_context" not in obj
+    # source_context IS allowlisted (FM.2 needs it to tell an ambient alert
+    # row from a live one downstream) - the true, unmodified value from the
+    # row, same "structured output keeps ground truth" split doberman.render
+    # makes for human-facing text.
+    assert obj["source_context"] == "user"
 
 
 def test_log_last_zero_prints_no_rows(tmp_path):
@@ -392,3 +396,96 @@ def test_log_without_why_never_prints_the_extra_lines(tmp_path):
     assert result.exit_code == 0
     assert "Doberman decided" not in result.stdout
     assert "Next:" not in result.stdout
+
+
+# --- FM.2: an ambient monitor row must never read as if it was enforced ----
+
+
+def _ambient_row(**overrides) -> dict:
+    """A decision row shaped like one the ambient monitor (FM.2) would write:
+    `source_context="ambient:<collector>"`, no real `auth_result` (it was
+    never actually challenged)."""
+    row = {
+        "id": 9,
+        "ts": "2026-07-30T00:00:09Z",
+        "action_id": "act-9",
+        "agent_role": "backend",
+        "action_type": "shell_exec",
+        "target_path_class": None,
+        "risk": "critical",
+        "source_context": "ambient:stub.collector",
+        "final_verdict": "BLOCK",
+        "decided_layer": "objective",
+        "reason_codes_json": '["destructive_command"]',
+        "auth_required": 0,
+        "auth_result": None,
+        "elevation_id": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_log_default_view_never_prints_block_for_an_ambient_row(tmp_path):
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return [_ambient_row()]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "BLOCK" not in result.stdout
+    assert "ALERT" in result.stdout
+    # No fabricated "auth=..." suffix either - nothing was ever challenged.
+    assert "auth=" not in result.stdout
+
+
+def test_log_default_view_never_prints_auth_for_an_ambient_auth_row(tmp_path):
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return [
+            _ambient_row(final_verdict="AUTH", reason_codes_json='["unknown_external_destination"]')
+        ]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "AUTH" not in result.stdout
+    assert "ALERT" in result.stdout
+    # Must never look like a pending, still-answerable challenge.
+    assert "pending" not in result.stdout.lower()
+    assert "auth=" not in result.stdout
+
+
+def test_log_why_on_an_ambient_block_row_never_offers_a_next_step(tmp_path):
+    """No prompter/executor/challenge means there is no remedy to point at -
+    the 'Next: only a policy or role change...' line must not appear."""
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return [_ambient_row()]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path), "--why"])
+    assert result.exit_code == 0
+    normalized = " ".join(result.stdout.split())
+    assert "observed (not enforced):" in normalized
+    assert "Next:" not in normalized
+    assert "hard block" not in normalized.lower()
+
+
+def test_log_jsonl_keeps_the_true_verdict_for_an_ambient_row(tmp_path):
+    """Structured output is for scripts/SIEMs and must keep ground truth -
+    only the human-facing render is softened for an ambient row."""
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return [_ambient_row()]
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path), "--jsonl"])
+    assert result.exit_code == 0
+    obj = json.loads(result.stdout.splitlines()[0])
+    assert obj["final_verdict"] == "BLOCK"
+    assert obj["source_context"] == "ambient:stub.collector"
