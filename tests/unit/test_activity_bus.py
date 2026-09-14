@@ -567,6 +567,72 @@ def test_raw_relative_path_with_extension_is_rejected():
         _make_event(target_path_class="backend/auth/session.ts")
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [".ssh/id_rsa", "etc/passwd", "config/credentials", "a/b/secret"],
+)
+def test_raw_relative_path_without_extension_is_rejected(raw):
+    """An extensionless filename under a directory is still a leaked raw path.
+
+    ``storage.log.path_class`` leaves a name unwildcarded only when it has no
+    directory component (the bare ``.env`` shape); under a directory it always
+    wildcards the final segment. So ``.ssh/id_rsa`` can never be a path class,
+    and accepting it would record exactly which file was touched.
+    """
+    with pytest.raises(ValidationError):
+        _make_event(target_path_class=raw)
+
+
+def test_path_class_output_is_always_accepted():
+    """Whatever ``path_class`` produces must satisfy the validator.
+
+    Guards against the validator and its blessed producer drifting apart: a
+    tightened rule must never reject a class the collector API can derive.
+    """
+    from doberman.models import (
+        ActionType,
+        Algebra,
+        Reversibility,
+        Risk,
+        SecurityObject,
+        SourceContext,
+    )
+    from doberman.storage.log import path_class
+
+    targets = [
+        "backend/auth/session.ts",
+        ".ssh/id_rsa",
+        "etc/passwd",
+        "config/credentials",
+        "notes.md",
+        ".env",
+        "a/b/c/deep_file",
+        r"backend\auth\session.ts",
+    ]
+    for target in targets:
+        action = SecurityObject(
+            id="act-corpus",
+            ts=_NOW,
+            agent_role="backend",
+            action_type=ActionType.file_read,
+            tool_name="read_file",
+            risk=Risk.low,
+            source_context=SourceContext.unknown,
+            reversibility=Reversibility.low,
+            algebra=Algebra(),
+            target=target,
+        )
+        derived = path_class(action)
+        if derived is None or derived.startswith("/"):
+            # Absolute-target classes are rejected by the pre-existing ``^/``
+            # branch; that behaviour is unchanged by this fix.
+            continue
+        event = _make_event(target_path_class=derived)
+        assert event.target_path_class == derived
+        leaked = target.replace("\\", "/").rsplit("/", 1)[-1]
+        assert "/" not in derived or leaked not in derived
+
+
 def test_valid_path_class_with_wildcard_is_accepted():
     """A proper path class (dir/*.ext) must be accepted."""
     event = _make_event(target_path_class="backend/auth/*.ts")

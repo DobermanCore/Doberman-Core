@@ -652,14 +652,17 @@ class CostEvent(BaseModel):
 # Raw paths that are rejected:
 #   - absolute POSIX paths  (``/home/user/.ssh/id_rsa``)
 #   - Windows drive paths   (``C:\Users\...``)
-#   - relative paths with a real filename component (``backend/auth/session.ts``)
-#     i.e. a ``/`` followed by a segment that has an extension but no ``*``.
+#   - relative paths with a real filename component (``backend/auth/session.ts``,
+#     ``.ssh/id_rsa``) i.e. a ``/`` followed by a final segment with no ``*``.
+#     The filename need not have an extension: ``storage.log.path_class`` only
+#     leaves a name unwildcarded when it has no directory component at all, so
+#     under a directory an extensionless segment is a leaked raw filename.
 _RAW_PATH_RE = _re.compile(
     r"""
     (?:
         ^/              # absolute POSIX path
       | ^[A-Za-z]:\\   # Windows drive path (C:\...)
-      | /[^*/]+\.[^/]+$  # relative dir/filename.ext — no wildcard
+      | /[^*/]+$        # relative dir/filename - final segment has no wildcard
     )
     """,
     _re.VERBOSE,
