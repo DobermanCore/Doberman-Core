@@ -4020,10 +4020,10 @@ def setup(
     # count - `--yes` prompts for nothing, so it never shows one. A stage
     # applies only if this run's flags mean it will actually show a prompt;
     # "Preference tuning"/"Telemetry"/"Doctor"/"Demo" are counted whenever
-    # reached even on the rare path where a refused mode lowering skips the
-    # tuning body - ponytail: an exactly precise dynamic denominator isn't
-    # worth the complexity for that edge case. "Demo" (item 7) covers the
-    # closing "see it work?" offer. item 4 (round 5): each host actually
+    # reached. If a refused mode lowering later skips preference tuning, that
+    # stage is removed from the counter before the next section prints.
+    # "Demo" (item 7) covers the closing "see it work?" offer.
+    # item 4 (round 5): each host actually
     # being wired gets its OWN step number instead of one shared "Wiring"
     # slot - a `--host all` run used to show the identical "[N of M]" four
     # times in a row. The real host list is only known once section b below
@@ -4295,6 +4295,14 @@ def setup(
             mode_applied = False
 
     persisted_mode = chosen_mode if mode_applied else current_mode
+
+    # A refused mode lowering skips the preference-tuning section entirely.
+    # Keep the remaining step numbers and denominator aligned with the
+    # sections this run will actually print.
+    if not mode_applied and "Preference tuning" in step_names:
+        step_names.remove("Preference tuning")
+        step_total = len(step_names)
+        step_index = {name: i + 1 for i, name in enumerate(step_names)}
 
     # ------------------------------------------------------------------
     # d. Guardrails / preferences - also GATE ONLY (round 5 item P1; round 6
