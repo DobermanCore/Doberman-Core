@@ -3,6 +3,8 @@
 import asyncio
 import contextvars
 
+import pytest
+
 from doberman.auth.challenge import _run_with_deadline
 from doberman.storage.db import open_db
 
@@ -72,3 +74,55 @@ async def test_copied_context_outliving_outer_connection_opens_fresh(tmp_path):
             assert await cursor.fetchone() == (1,)
 
     await asyncio.to_thread(copied.run, asyncio.run, late_query())
+
+
+@pytest.mark.parametrize("open_before_parent_exit", [True, False])
+@pytest.mark.timeout(10)
+async def test_child_connection_outlives_parent_scope(tmp_path, open_before_parent_exit):
+    child_open = asyncio.Event()
+    parent_closed = asyncio.Event()
+
+    async def child_query():
+        if not open_before_parent_exit:
+            await parent_closed.wait()
+        async with open_db(str(tmp_path)) as child_connection:
+            child_open.set()
+            await parent_closed.wait()
+            # Query first to reproduce the reported closed-connection failure.
+            async with child_connection.execute("SELECT 1") as cursor:
+                assert await cursor.fetchone() == (1,)
+            assert child_connection is not parent_connection
+            async with open_db(str(tmp_path)) as nested:
+                assert nested is child_connection
+
+    async with open_db(str(tmp_path)) as parent_connection:
+        child = asyncio.create_task(child_query())
+        if open_before_parent_exit:
+            await child_open.wait()
+    parent_closed.set()
+    await child
+
+
+@pytest.mark.timeout(10)
+async def test_cancelled_child_closes_its_connection_without_closing_parent(tmp_path):
+    child_open = asyncio.Event()
+    connections = []
+
+    async def child_query():
+        async with open_db(str(tmp_path)) as child_connection:
+            connections.append(child_connection)
+            child_open.set()
+            await asyncio.Event().wait()
+
+    async with open_db(str(tmp_path)) as parent_connection:
+        child = asyncio.create_task(child_query())
+        await child_open.wait()
+        child.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await child
+        with pytest.raises(ValueError, match="no active connection"):
+            await connections[0].execute("SELECT 1")
+        async with open_db(str(tmp_path)) as restored:
+            assert restored is parent_connection
+            async with restored.execute("SELECT 1") as cursor:
+                assert await cursor.fetchone() == (1,)

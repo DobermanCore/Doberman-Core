@@ -46,10 +46,10 @@ DB_FILE = "doberman.db"
 # A proxy decision calls several storage helpers in sequence. Each helper keeps
 # using ``open_db`` so it remains safe as a standalone API, while this task-local
 # slot lets nested calls for the same repository share the outer connection.
-# ContextVar isolation prevents concurrent decisions from sharing a connection.
-_ACTIVE_DB: ContextVar[tuple[Path, aiosqlite.Connection, asyncio.AbstractEventLoop] | None] = (
-    ContextVar("doberman_active_db", default=None)
-)
+# Child tasks inherit ContextVars, so reuse also requires the owning task and loop.
+_ACTIVE_DB: ContextVar[
+    tuple[Path, aiosqlite.Connection, asyncio.AbstractEventLoop, asyncio.Task | None] | None
+] = ContextVar("doberman_active_db", default=None)
 
 #: Current schema version. Bumped to 2 in Feature 8 (decision log + stores), to 3
 #: for the universal subjective layer (SL4/SL6/SL8: baselines re-keyed by entity,
@@ -520,15 +520,22 @@ async def open_db(repo_root: str = ".") -> AsyncIterator[aiosqlite.Connection]:
 
     Creates ``.doberman/`` ``0700`` and the DB file ``0600`` on first use.
     The migration runs only when the version row is not current. Nested calls
-    for the same repository and event loop reuse the task-local connection, so a complete
-    proxy decision performs one physical open and one schema check. Calls made
-    outside that scope keep the standalone open/close behavior.
+    for the same repository, event loop, and task reuse the task-local connection,
+    so a complete proxy decision performs one physical open and one schema check.
+    Child tasks and calls outside that scope keep the standalone open/close behavior.
     """
     path = db_path(repo_root)
     key = path.resolve()
     active = _ACTIVE_DB.get()
     loop = asyncio.get_running_loop()
-    if active is not None and active[0] == key and active[2] is loop:
+    task = asyncio.current_task()
+    if (
+        active is not None
+        and active[0] == key
+        and active[2] is loop
+        and task is not None
+        and active[3] is task
+    ):
         yield active[1]
         return
 
@@ -540,7 +547,7 @@ async def open_db(repo_root: str = ".") -> AsyncIterator[aiosqlite.Connection]:
         if not await _schema_is_current(conn):
             await _ensure_schema(conn)
         _restrict_permissions(path)
-        token = _ACTIVE_DB.set((key, conn, loop))
+        token = _ACTIVE_DB.set((key, conn, loop, task))
         yield conn
     finally:
         if token is not None:
