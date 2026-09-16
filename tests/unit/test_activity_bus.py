@@ -561,6 +561,17 @@ def test_raw_windows_path_is_rejected():
         _make_event(target_path_class=r"C:\Users\user\secret.txt")
 
 
+def test_raw_windows_path_with_forward_slashes_is_rejected():
+    """A Windows drive path written with forward slashes is still a drive path.
+
+    ``C:/Users/x/.aws/credentials`` is the shape a path normalized with
+    ``str(...).replace("\\\\", "/")`` (as ``path_class`` does) would leave a
+    drive-letter target in — it must not slip past on the separator alone.
+    """
+    with pytest.raises(ValidationError):
+        _make_event(target_path_class="C:/Users/x/.aws/credentials")
+
+
 def test_raw_relative_path_with_extension_is_rejected():
     """A relative dir/filename.ext (no wildcard) must raise ValidationError."""
     with pytest.raises(ValidationError):
@@ -608,6 +619,7 @@ def test_path_class_output_is_always_accepted():
         ".env",
         "a/b/c/deep_file",
         r"backend\auth\session.ts",
+        "/etc/passwd",
     ]
     for target in targets:
         action = SecurityObject(
@@ -623,9 +635,7 @@ def test_path_class_output_is_always_accepted():
             target=target,
         )
         derived = path_class(action)
-        if derived is None or derived.startswith("/"):
-            # Absolute-target classes are rejected by the pre-existing ``^/``
-            # branch; that behaviour is unchanged by this fix.
+        if derived is None:
             continue
         event = _make_event(target_path_class=derived)
         assert event.target_path_class == derived
@@ -637,6 +647,16 @@ def test_valid_path_class_with_wildcard_is_accepted():
     """A proper path class (dir/*.ext) must be accepted."""
     event = _make_event(target_path_class="backend/auth/*.ts")
     assert event.target_path_class == "backend/auth/*.ts"
+
+
+def test_absolute_wildcard_path_class_is_accepted():
+    """An absolute path class like '/etc/*' is a legitimate wildcard, not a leak.
+
+    The final segment is wildcarded, so no filename is exposed; only the
+    ``^/`` presence made it look like a raw path before this fix (#650).
+    """
+    event = _make_event(target_path_class="/etc/*")
+    assert event.target_path_class == "/etc/*"
 
 
 def test_dotfile_path_class_is_accepted():

@@ -647,11 +647,13 @@ class CostEvent(BaseModel):
 # --- Feature FM — ambient activity bus (FM.1) models -------------------------
 
 # Matches strings that look like raw filesystem paths rather than path classes.
-# A valid path class always contains a ``*`` wildcard (e.g. ``backend/auth/*.ts``)
-# or is a dotfile/extensionless name that is itself the class (e.g. ``.env``).
-# Raw paths that are rejected:
-#   - absolute POSIX paths  (``/home/user/.ssh/id_rsa``)
-#   - Windows drive paths   (``C:\Users\...``)
+# A valid path class always contains a ``*`` wildcard (e.g. ``backend/auth/*.ts``,
+# ``/etc/*``) or is a dotfile/extensionless name that is itself the class (e.g.
+# ``.env``). Raw paths that are rejected:
+#   - absolute POSIX paths with no wildcard final segment (``/home/user/.ssh/id_rsa``)
+#     — ``/etc/*`` is a legitimate wildcard class and must stay accepted (#650).
+#   - Windows drive paths, backslash or forward-slash (``C:\Users\...``,
+#     ``C:/Users/x/.aws/credentials``) — a drive path is never a path class.
 #   - relative paths with a real filename component (``backend/auth/session.ts``,
 #     ``.ssh/id_rsa``) i.e. a ``/`` followed by a final segment with no ``*``.
 #     The filename need not have an extension: ``storage.log.path_class`` only
@@ -660,9 +662,11 @@ class CostEvent(BaseModel):
 _RAW_PATH_RE = _re.compile(
     r"""
     (?:
-        ^/              # absolute POSIX path
-      | ^[A-Za-z]:\\   # Windows drive path (C:\...)
-      | /[^*/]+$        # relative dir/filename - final segment has no wildcard
+        ^[A-Za-z]:[\\/]  # Windows drive path (C:\... or C:/...)
+      | /[^*/]+$          # dir/filename — final segment has no wildcard.
+                          # Covers absolute POSIX paths too: an absolute path
+                          # with a wildcarded final segment (e.g. "/etc/*") does
+                          # not match this branch and is correctly accepted.
     )
     """,
     _re.VERBOSE,
