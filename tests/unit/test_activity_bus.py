@@ -620,6 +620,8 @@ def test_path_class_output_is_always_accepted():
         "a/b/c/deep_file",
         r"backend\auth\session.ts",
         "/etc/passwd",
+        r"C:\Users\x\.aws\credentials",
+        "C:/Users/x/.aws/credentials",
     ]
     for target in targets:
         action = SecurityObject(
@@ -657,6 +659,15 @@ def test_absolute_wildcard_path_class_is_accepted():
     """
     event = _make_event(target_path_class="/etc/*")
     assert event.target_path_class == "/etc/*"
+
+
+def test_windows_wildcard_path_class_is_accepted():
+    """A Windows drive path with a wildcarded final segment is a legitimate class (#704)."""
+    event_slash = _make_event(target_path_class="C:/Users/x/.aws/*")
+    assert event_slash.target_path_class == "C:/Users/x/.aws/*"
+
+    event_backslash = _make_event(target_path_class=r"C:\Users\x\.aws\*")
+    assert event_backslash.target_path_class == r"C:\Users\x\.aws\*"
 
 
 def test_dotfile_path_class_is_accepted():

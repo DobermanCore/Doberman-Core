@@ -670,13 +670,11 @@ class CostEvent(BaseModel):
 #     under a directory an extensionless segment is a leaked raw filename.
 _RAW_PATH_RE = _re.compile(
     r"""
-    (?:
-        ^[A-Za-z]:[\\/]  # Windows drive path (C:\... or C:/...)
-      | /[^*/]+$          # dir/filename — final segment has no wildcard.
-                          # Covers absolute POSIX paths too: an absolute path
-                          # with a wildcarded final segment (e.g. "/etc/*") does
-                          # not match this branch and is correctly accepted.
-    )
+    [\\/][^*/\\]+$  # dir/filename or drive:\filename — final segment has no wildcard.
+                    # Covers relative, POSIX absolute and Windows drive paths:
+                    # any path whose final segment contains a wildcard
+                    # (e.g. "/etc/*", "C:/Users/x/.aws/*", r"C:\Users\x\.aws\*")
+                    # does not match and is correctly accepted as a path class.
     """,
     _re.VERBOSE,
 )
