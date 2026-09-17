@@ -26,7 +26,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -64,6 +64,8 @@ class IntegrityStatus:
     critical: bool = False
     #: ISO timestamp of the last divergence noted for this entry, if any.
     divergence_seen: str | None = None
+    #: True when an applicable Claude settings file disables all hooks.
+    disabled: bool = False
 
 
 def manifest_path() -> Path:
@@ -279,19 +281,47 @@ def _live_groups(
     return path, codex_doberman_groups(load_settings(path))
 
 
+def _claude_hooks_disabled(settings_path: Path) -> bool:
+    """Return whether this Claude settings file disables all hooks.
+
+    The setting is intentionally matched as the JSON boolean ``true`` only.
+    Reading is best effort so a malformed or unreadable settings file retains
+    the existing integrity behavior and never breaks ``doctor``.
+    """
+    try:
+        from doberman.hosthooks.install import load_settings
+
+        return load_settings(settings_path).get("disableAllHooks") is True
+    except Exception:  # noqa: BLE001 - diagnostics must never raise on bad settings
+        return False
+
+
 def check_all(project_root: str) -> list[IntegrityStatus]:
     """Verify every tracked scope for *project_root*. Never raises.
 
     One status per ``(host, scope)`` in :data:`_SCOPES`; a scope whose settings
-    file is unreadable yields ``absent`` rather than raising.
+    file is unreadable yields ``absent`` rather than raising. A true Claude
+    ``disableAllHooks`` setting is reported separately through ``disabled``
+    without changing the registration state.
     """
     out: list[IntegrityStatus] = []
+    active_claude_indexes: list[int] = []
+    claude_hooks_disabled = False
     for host, scope in _SCOPES:
         try:
             path, groups = _live_groups(host, scope, project_root)
             out.append(verify_install(host, scope, path, groups))
+            if host == "claude":
+                if groups:
+                    active_claude_indexes.append(len(out) - 1)
+                claude_hooks_disabled = claude_hooks_disabled or _claude_hooks_disabled(path)
         except Exception:  # noqa: BLE001 - an unreadable settings file is "absent", never a crash
             out.append(IntegrityStatus(host, scope, "absent"))
+    if claude_hooks_disabled:
+        out = [
+            replace(status, disabled=True) if index in active_claude_indexes else status
+            for index, status in enumerate(out)
+        ]
     return out
 
 

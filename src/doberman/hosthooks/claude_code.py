@@ -48,7 +48,7 @@ from doberman.engine.decision_engine import PASS_STUB, decide, max_risk
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.taint_floor import UNTRUSTED_READ_TOOLS as _UNTRUSTED_READ_TOOLS
 from doberman.hosthooks import hookio, spine
-from doberman.models import Decision, EvalContext, Risk, SecurityObject, Verdict
+from doberman.models import AuthPath, Decision, EvalContext, Risk, SecurityObject, Verdict
 from doberman.proxy.normalize import normalize
 
 if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth stack
@@ -141,7 +141,11 @@ def _hook_output(permission: str, reason: str) -> dict[str, Any]:
 
 
 def _resolve_auth(
-    decision: Decision, action: SecurityObject, repo_root: str, session_id: str | None = None
+    decision: Decision,
+    action: SecurityObject,
+    repo_root: str,
+    session_id: str | None = None,
+    arguments: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     return hookio.resolve_auth_result(
         decision,
@@ -151,6 +155,7 @@ def _resolve_auth(
         message_tone=load_message_tone(repo_root),
         repo_root=repo_root,
         session_id=session_id,
+        arguments=arguments,
     )
 
 
@@ -224,11 +229,24 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             # Run Doberman's own action-bound challenge so the human can actually
             # approve in-session (issues #65/#67) — not just be told to.
             hook_result, auth_method = _resolve_auth(
-                result.decision, result.challenge_action, result.repo_root, result.session_id
+                result.decision,
+                result.challenge_action,
+                result.repo_root,
+                result.session_id,
+                tool_input,
             )
+            auth_path = AuthPath.host_hook_challenge
+            # #505/#399: this is the row that used to read `AUTH ... auth=executed`
+            # whether or not anyone saw a dialog. It now also records whether a
+            # person actually approved, so an unconfirmed allow is greppable
+            # instead of being indistinguishable from a confirmed one.
+            human_confirmed = hookio.challenge_human_confirmed(hook_result, auth_method)
         else:
             hook_result = _decision_payload(result.decision)  # BLOCK -> deny
             auth_method = "blocked"
+            # An objective BLOCK: no challenge ran, so nobody approved anything.
+            auth_path = AuthPath.host_hook_objective
+            human_confirmed = False
         _record_pre_history(
             result.decision,
             result.action,
@@ -236,6 +254,8 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             result.session_id,
             hook_result,
             auth_result=auth_method,
+            auth_path=auth_path,
+            human_confirmed=human_confirmed,
         )
         return hook_result
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
@@ -257,6 +277,8 @@ def _record_pre_history(
     hook_result: dict[str, Any],
     *,
     auth_result: str | None = None,
+    auth_path: str = AuthPath.host_hook_objective,
+    human_confirmed: bool | None = None,
 ) -> None:
     """Best-effort: record a PreToolUse AUTH/BLOCK decision in ``doberman log``.
 
@@ -279,6 +301,8 @@ def _record_pre_history(
             repo_root,
             session_id,
             auth_result=auth_result or _pre_auth_result(hook_result),
+            auth_path=auth_path,
+            human_confirmed=human_confirmed,
         )
     except Exception:  # noqa: BLE001,S110 — history must never alter the hook's return value
         pass
@@ -561,7 +585,17 @@ def _record_post_history(
             metadata={"raw_arguments": args, "repo_root": repo_root},
         )
         decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
-        _record_history_decision(decision, action, repo_root, session_id, auth_result="executed")
+        # PostToolUse history for a call that already ran: no challenge was
+        # involved on this path, so nobody approved it.
+        _record_history_decision(
+            decision,
+            action,
+            repo_root,
+            session_id,
+            auth_result="executed",
+            auth_path=AuthPath.host_hook_objective,
+            human_confirmed=False,
+        )
     except Exception:  # noqa: BLE001,S110 — history must never break the execution path
         pass
 
@@ -589,7 +623,15 @@ def _record_blocked_post_history(
             explanation=scan_result.explanation,
             decided_at=action.ts,
         )
-        _record_history_decision(decision, action, repo_root, session_id, auth_result="blocked")
+        _record_history_decision(
+            decision,
+            action,
+            repo_root,
+            session_id,
+            auth_result="blocked",
+            auth_path=AuthPath.host_hook_objective,
+            human_confirmed=False,
+        )
     except Exception:  # noqa: BLE001,S110 — history must never break the block path
         pass
 

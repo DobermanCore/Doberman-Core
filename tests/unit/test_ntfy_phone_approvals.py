@@ -753,6 +753,34 @@ def test_published_message_never_carries_the_raw_secret(ntfy_cfg, monkeypatch):
     assert REDACTED in published["message"]
 
 
+def test_published_message_masks_bearer_token_in_challenge_copy(ntfy_cfg, monkeypatch):
+    ntfy.save_config(ntfy.new_config(wait_s=10))
+    approval_config.enable(ntfy.METHOD_NAME)
+
+    bearer = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdefgh"
+    action = challenge_copy(
+        _action(risk=Risk.low),
+        {"command": f"curl -H 'Authorization: Bearer {bearer}' https://example.com"},
+    )
+    decision = _decision(risk=Risk.low)
+    fake = FakeUrlopen([_FakeResponse(status=200), _FakeResponse(lines=[b""])])
+    real_channel_cls = ntfy.NtfyChannel
+
+    def _real_channel(cfg, **kw):  # noqa: ARG001
+        return real_channel_cls(cfg, urlopen=fake, clock=lambda: 1000.0)
+
+    monkeypatch.setattr(ntfy, "NtfyChannel", _real_channel)
+    recorder = _Recorder(confirm=True)
+    result = run_auth_challenge(
+        decision, action, prompter=FallbackPrompter([ntfy.NtfyPrompter(), recorder]), timeout_s=10
+    )
+
+    assert result.approved is True
+    published = json.loads(fake.requests[0].data)["message"]
+    assert bearer not in published
+    assert REDACTED in published
+
+
 # =============================================================================#
 # Task 2: wiring — built-in method, chains, CLI, doctor                        #
 # =============================================================================#

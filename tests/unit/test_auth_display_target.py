@@ -104,6 +104,25 @@ def test_secret_shaped_token_is_masked_and_the_rest_kept():
     assert "https://api.example.com/repos" in shown
 
 
+def test_credential_flags_headers_and_long_blobs_are_masked():
+    bearer = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdefgh"
+    hex_blob = "a" * 48
+    command = (
+        "curl -H 'Authorization: Bearer "
+        + bearer
+        + "' -H 'X-Api-Key: header-secret' https://example.com "
+        "mysql -phunter2Secret curl -u admin:S3cretP4ssw0rd " + hex_blob
+    )
+    shown = display_target(ActionType.shell_exec, {"command": command})
+    assert shown is not None
+    assert bearer not in shown
+    assert "Authorization: Bearer <redacted>" in shown
+    assert "X-Api-Key: <redacted>" in shown
+    assert "-p<redacted>" in shown
+    assert "admin:<redacted>" in shown
+    assert hex_blob not in shown
+
+
 def test_sensitive_key_value_is_masked():
     shown = display_target(
         ActionType.shell_exec,
@@ -133,6 +152,11 @@ def test_argv_shape_and_file_actions_render_too():
     )
     assert display_target(ActionType.file_write, {"path": _LONG_PATH, "content": "x"}) == _LONG_PATH
     assert display_target(ActionType.file_write, {}) is None
+
+
+def test_nested_path_with_long_components_is_still_shown_in_full():
+    path = "/".join(("nested", "x" * 30, "y" * 30, "file.txt"))
+    assert display_target(ActionType.shell_exec, {"command": f"cat {path}"}) == f"cat {path}"
 
 
 # --- prompt-only plumbing ---------------------------------------------------------

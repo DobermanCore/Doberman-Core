@@ -17,7 +17,7 @@ Doberman sits between the agent and its tools. Every tool call passes through it
 
 Every item below is judged against these two. A feature that would need either promise to bend does not ship.
 
-## Where it is now (v0.18.6)
+## Where it is now (v0.18.7)
 
 - Hosts: Claude Code, OpenClaw, and the MCP proxy, plus Codex and Cursor, both still marked experimental. The [parity matrix](docs/PARITY.md) shows which protection is proven on which host, with a link to the test behind each cell.
 - Engine: rules for destructive commands, secret reads, data leaving the machine, protected branches, and hidden Unicode tricks in text. A session memory also judges a command differently once the agent has touched a secret.
@@ -31,7 +31,7 @@ Every item below is judged against these two. A feature that would need either p
 ### Now
 
 - Promise bugs first. Two open reports say a promise bent: an AUTH that resolved without a human on Claude Code (#399), and the rule layer having no enforced authority ceiling (#630). Those are checked and fixed before anything below.
-- Ambient monitoring. Today Doberman sees only the tool calls that pass through it. The ambient layer adds three pieces: an activity bus (#236, merged, ships in the next release), a warm daemon that scores activity from other sources in observe-only mode (#237), and basic collectors with a documented drop-in format (#238). Later, the same warm process should run the adaptive layer for the host hooks too (#639). The goal is one place that sees what every agent on the machine is doing.
+- Ambient monitoring. Today Doberman sees only the tool calls that pass through it. The ambient layer adds three pieces: an activity bus (#236, shipped in v0.18.7), a warm daemon that scores activity from other sources in observe-only mode (#237), and basic collectors with a documented drop-in format (#238). Later, the same warm process should run the adaptive layer for the host hooks too (#639). The goal is one place that sees what every agent on the machine is doing.
 - External benchmarks. Three third-party attack suites (RedCode-Exec, MSB, LLMail-Inject) already run through the harness next to my own corpus, so some of the numbers come from tests I did not write. The gaps those runs found are listed in [docs/BENCHMARKS.md](docs/BENCHMARKS.md), and closing them is on the board (#644).
 - Host containment. When a host's own hook layer crashes, the agent must not run unguarded. Codex has shown this failure once (#335). After that come deeper parsing of shell commands (#634, #641), escalation when high-entropy data leaves the machine (#641), a honeytoken tripwire (#642), a per-session circuit breaker (#643), and a health check that cannot be fooled into saying hooks are on when they are off (#635, #636).
 

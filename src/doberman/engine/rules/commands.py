@@ -35,7 +35,12 @@ import re
 import shlex
 from collections.abc import Iterable
 
-from doberman.engine.rules.paths import names_control_plane, needs_filesystem_resolution
+from doberman.canonical import canonicalize
+from doberman.engine.rules.paths import (
+    is_test_file,
+    names_control_plane,
+    needs_filesystem_resolution,
+)
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -139,11 +144,21 @@ _GIT_FALSY_CONFIG_VALUES = {"false", "no", "off", "0"}
 #: (``-C <path>``, ``-c <k=v>``, and every long option below in its bare —
 #: i.e. no ``=`` — form) — both the option and its value token must be
 #: skipped when hunting for the actual subcommand. Verified against installed
-#: ``git 2.54.0.windows.1``: each of these accepts BOTH ``--opt <value>`` and
-#: ``--opt=<value>`` identically (issue #550 review — the space-separated
-#: form previously desynced the verb walk: ``/repo`` in
+#: ``git 2.54.0.windows.1``: ``--git-dir``/``--work-tree``/``--namespace``/
+#: ``--config-env``/``--attr-source`` genuinely accept BOTH
+#: ``--opt <value>`` and ``--opt=<value>`` (issue #550 review — the
+#: space-separated form previously desynced the verb walk: ``/repo`` in
 #: ``git --git-dir /repo push --force`` was read as the verb, so a real
-#: force-push silently PASSed). Every other long global option
+#: force-push silently PASSed; ``--attr-source`` had the identical gap, #690:
+#: ``HEAD`` in ``git --attr-source HEAD push --force`` was read as the verb).
+#: ``--exec-path`` and ``--super-prefix`` do NOT actually behave the same
+#: across the two forms — a bare ``--exec-path`` (no ``=``) takes no argument
+#: at all: real git prints its exec path and exits before running anything
+#: that follows, and ``--super-prefix`` no longer exists in git 2.54 — but
+#: both STAY in this set anyway (#690 review): raise-only forbids removing an
+#: entry that currently desyncs a (harmless-in-real-git, but currently
+#: BLOCKed/AUTHed here) spelling toward the correct verb; dropping either
+#: would flip that verdict to PASS instead. Every other long global option
 #: (``--no-pager``, ``--bare``, ...) either carries its value in the same
 #: token (``=``) or takes none at all (``--html-path``/``--man-path``/
 #: ``--info-path`` — confirmed these ignore any following token, ``=``-joined
@@ -158,6 +173,7 @@ _GIT_GLOBAL_OPTIONS_WITH_VALUE = {
     "--exec-path",
     "--super-prefix",
     "--config-env",
+    "--attr-source",
 }
 
 #: git commit short options that take a MANDATORY value — either as the rest
@@ -783,12 +799,24 @@ def _normalize_windows_backslashes(command: str) -> str:
     return command
 
 
+#: Windows executable suffixes stripped by :func:`_wrapper_name` — resolved
+#: case-insensitively (the token is lower-cased first), one at most.
+_EXECUTABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".com")
+
+
 def _wrapper_name(token: str) -> str:
-    """Wrapper-recognition basename: strip a ``/`` or ``\\`` directory prefix
-    and a trailing ``.exe``, lower-cased — so ``/usr/bin/sudo`` and
-    ``SUDO.EXE`` are both recognized as ``sudo``."""
+    """Command-verb basename: strip a ``/`` or ``\\`` directory prefix and a
+    trailing Windows executable suffix (``.exe``/``.cmd``/``.bat``/``.com``),
+    lower-cased — so ``/usr/bin/sudo``, ``SUDO.EXE``, ``/bin/rm``, and
+    ``RM.EXE`` all resolve to their bare verb (``sudo``, ``rm``). Shared by
+    wrapper recognition (``argv_from_tokens``) and, #690, the destructive-
+    command verb comparisons in :func:`_segment_verdict` — one basename
+    helper so both always agree on what a path-qualified or `.exe`-suffixed
+    spelling actually is."""
     name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return name.removesuffix(".exe")
+    for suffix in _EXECUTABLE_SUFFIXES:
+        name = name.removesuffix(suffix)
+    return name
 
 
 def _wrapper_opaque_option_ahead(tokens: list[str], name: str) -> bool:
@@ -1730,6 +1758,18 @@ def _segment_verdict(
     """Classify one parsed segment; ``None`` means this segment is benign."""
     if not tokens:
         return None
+    # #690: canonicalise the verb ONCE, here, and rebind `tokens` itself (not
+    # just `cmd`) — every downstream helper below keys off `tokens[0]`
+    # directly (`_git_leading_globals`, `_windows_delete_verdict`,
+    # `_raw_socket_exec_on_connect`, `_raw_socket_channel_explanation`,
+    # `_is_pipe_to_shell`, `_process_kill_verdict`), so a path-qualified
+    # (``/bin/rm``), `.exe`-suffixed (``rm.exe``, ``RM.EXE``), or
+    # wrapper-stripped (``sudo /bin/rm`` -> ``argv_from_tokens`` already
+    # popped ``sudo``, leaving ``/bin/rm`` here) spelling reaches every table
+    # exactly like the bare verb does. Uses the same basename helper
+    # ``argv_from_tokens`` already relies on for wrapper recognition — one
+    # choke point, not a second one.
+    tokens = [_wrapper_name(tokens[0]), *tokens[1:]]
     cmd = tokens[0]
 
     # --- Control-plane tamper → BLOCK (HK.5.0b) ---
@@ -1787,6 +1827,12 @@ def _segment_verdict(
         return windows_delete
 
     # --- Risky but recoverable → AUTH ---
+    mv_source = _mv_rename_source(tokens)
+    if mv_source is not None and is_test_file(canonicalize(mv_source, root=root).relposix):
+        return _auth(
+            ReasonCode.test_file_removal,
+            "Command moves/renames a test file; authentication required.",
+        )
     if cmd == "rm" and _count_delete_operands(tokens) >= bulk_threshold:
         return _auth(
             ReasonCode.bulk_operation,
@@ -1845,6 +1891,27 @@ _FORK_BOMB_RE = re.compile(r":\s*[(]\s*[)]\s*[{][^}]*[|&;]\s*:")
 def _looks_like_fork_bomb(tokens: list[str]) -> bool:
     joined = " ".join(tokens)
     return bool(_FORK_BOMB_RE.search(joined))
+
+
+def _mv_rename_source(tokens: list[str]) -> str | None:
+    """SOURCE operand of a plain ``mv SRC DST`` / ``git mv SRC DST`` segment,
+    or ``None`` (#648: "A `git mv` or shell `mv` is a command ... and
+    `DestructiveCommandRule` doesn't special-case it either") — leading ``-``
+    flags are skipped; a DEST
+    must also be present, so a bare ``mv --help``/``git mv`` with nothing to
+    move to is never mistaken for a rename in progress. Keys the git case on
+    the actual verb (:func:`_git_leading_globals`), so ``git log --grep mv``
+    is never misread as ``git mv``.
+    """
+    if tokens[:1] == ["mv"]:
+        operands = tokens[1:]
+    else:
+        argv, _ = _git_leading_globals(tokens)
+        if not argv or argv[0] != "mv":
+            return None
+        operands = argv[1:]
+    positional = [t for t in operands if not t.startswith("-")]
+    return positional[0] if len(positional) >= 2 else None
 
 
 def _git_is_history_rewrite(tokens: list[str]) -> bool:
