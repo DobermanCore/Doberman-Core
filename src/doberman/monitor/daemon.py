@@ -9,11 +9,14 @@ whether this daemon is running, crashed, or was never started at all.
 
 Each tick:
 
-1. **Poll** every collector ``discover_collectors()`` returns and
-   ``emit_activity_event`` whatever they ``collect()`` onto the FM.1 bus.
-   Per-collector *and* per-event isolation (:func:`_poll_collectors`): a
-   raising collector, or one bad event among good ones from the SAME
-   collector, only ever costs that collector's own events for this tick.
+1. **Poll** every collector in the list ``run_forever`` discovered ONCE at
+   startup (:func:`_poll_collectors`) and ``emit_activity_event`` whatever
+   they ``collect()`` onto the FM.1 bus. Collector instances are retained
+   across ticks, not rebuilt each time — a collector that keeps internal
+   state (an open connection, a "last scanned" position) needs that state to
+   survive between ticks. Per-collector *and* per-event isolation: a raising
+   collector, or one bad event among good ones from the SAME collector, only
+   ever costs that collector's own events for this tick.
 2. **Drain** the bus from the daemon's own saved cursor
    (``reader_id="monitor"``) — not from step 1's transient in-memory
    results. This is why FM.1 built cursor persistence: draining the
@@ -28,11 +31,13 @@ Each tick:
    instead of raising or dropping the event silently.
 4. **Record** every scored event via ``storage.log.record_decision`` with
    ``source_context_override=f"ambient:{collector_id}"`` — a shape no live
-   writer produces, which ``doberman.explain`` keys off to prefix every
-   rendered explanation with "observed (not enforced): " and to make sure no
-   AUTH/BLOCK-grade ambient row is ever rendered as if it were actually
-   blocked or challenged. An ambient AUTH/BLOCK-grade verdict is an alert
-   row, nothing more.
+   writer produces, which ``doberman.explain``/``doberman.render``/``doberman.tui``/
+   ``doberman.dash`` all key off to prefix every rendered explanation with
+   "observed (not enforced): " and keep every verdict badge and aggregate
+   count from ever reading as if this were actually blocked or challenged.
+   An ambient AUTH/BLOCK-grade verdict is an alert row, nothing more. A
+   *write* failure here (the row did not durably land) holds the bus cursor
+   back rather than losing the alert — see :func:`run_tick`.
 
 Hard rules (each one has a dedicated test in ``test_monitor_daemon.py``):
 
@@ -52,16 +57,24 @@ Hard rules (each one has a dedicated test in ``test_monitor_daemon.py``):
 * **A dead daemon changes nothing about inline protection.** Every tick body
   is wrapped in its own failure boundary (:func:`run_tick`); an unexpected
   bug here can cost this tick's alerts, never the live gate's next decision.
+* **Single-instance admission is atomic.** :func:`_acquire_lock` claims a
+  dedicated lock file with ``O_CREAT | O_EXCL`` — a single OS-level syscall,
+  so two processes racing to start at the same instant can never both win
+  (a plain heartbeat-freshness check has exactly this gap; the lock file
+  closes it). A stale lock (owner crashed) is detected via heartbeat
+  freshness and reclaimed rather than blocking every future start forever.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from doberman.engine.decision_engine import Guardrail, decide
 from doberman.engine.objective import ObjectiveGuardrail
@@ -85,6 +98,7 @@ from doberman.storage.activity import (
     read_activity_events,
     save_cursor,
 )
+from doberman.storage.db import CONFIG_DIR
 from doberman.storage.heartbeat import (
     MONITOR_HEARTBEAT_FILE,
     heartbeat_is_fresh,
@@ -154,8 +168,16 @@ class MonitorTickResult:
 # ---------------------------------------------------------------------------
 
 
-def _poll_collectors() -> list[ActivityEvent]:
-    """Call ``collect()`` on every discovered collector, isolating failures.
+def _poll_collectors(collectors: Sequence[object]) -> list[ActivityEvent]:
+    """Call ``collect()`` on every collector in ``collectors``, isolating failures.
+
+    ``collectors`` are discovered ONCE, by :func:`run_forever`, and the SAME
+    instances are passed to every tick — this function never calls
+    ``discover_collectors()`` itself. A collector that keeps internal state
+    across calls (an open connection, a "last scanned" position so it doesn't
+    rescan everything every tick) needs that state to survive between ticks;
+    re-instantiating fresh objects each tick (the previous design) silently
+    discarded it every time.
 
     A collector that raises during ``collect()`` only costs ITS OWN events
     for this tick — events already yielded by an earlier collector (or
@@ -167,7 +189,7 @@ def _poll_collectors() -> list[ActivityEvent]:
     right collector).
     """
     events: list[ActivityEvent] = []
-    for collector in discover_collectors():
+    for collector in collectors:
         collector_name = type(collector).__name__
         try:
             for event in collector.collect():
@@ -179,10 +201,12 @@ def _poll_collectors() -> list[ActivityEvent]:
                         collector_name,
                         type(event).__name__,
                     )
-        except Exception:  # noqa: BLE001 — one bad collector must never break the tick
+        except Exception as exc:  # noqa: BLE001 — one bad collector must never break the tick
             logger.warning(
-                "monitor: collector %s raised during collect(); skipping its events for this tick",
+                "monitor: collector %s raised during collect() (%s); skipping its events "
+                "for this tick",
                 collector_name,
+                type(exc).__name__,
             )
     return events
 
@@ -305,29 +329,41 @@ async def _score_event(
     *,
     mode: str,
     repo_root: str,
-) -> bool:
+) -> tuple[bool, bool]:
     """Score one drained event and record it as an ambient decision row.
 
-    Returns ``True`` on a clean score, ``False`` when the conservative
-    fallback row was recorded instead. Never raises: reconstruction and
-    scoring are isolated in their own try/except (:func:`_conservative_fallback`
-    is the recovery path); ``record_decision`` is already unconditionally
-    safe (storage.log's own contract).
+    Returns ``(clean, written)``:
+
+    * ``clean`` — ``True`` on a clean score, ``False`` when the conservative
+      fallback row was recorded instead of a real score. Reconstruction and
+      scoring are isolated in their own try/except (:func:`_conservative_fallback`
+      is the recovery path) — a poisoned event becomes an alert, never a crash.
+    * ``written`` — whether the row actually landed durably
+      (``storage.log.record_decision``'s return value). ``run_tick`` uses
+      this, not ``clean``, to decide whether it's safe to advance the bus
+      cursor past this event: a *scoring* failure still produces a row (the
+      conservative fallback) that itself might or might not persist, and a
+      *write* failure can happen to an otherwise cleanly-scored event too —
+      the two failure modes are independent, so collapsing them into one
+      bool would let a clean score with a failed write look identical to a
+      genuinely durable one, and the cursor would wrongly move past it.
     """
     try:
         action = _security_object_from_event(event)
         ctx = _build_eval_context(event, mode=mode, repo_root=repo_root)
         decision = decide(action, objective, subjective, ctx)
         clean = True
-    except Exception:  # noqa: BLE001 — a poisoned event must become an alert, not a crash
+    except Exception as exc:  # noqa: BLE001 — a poisoned event must become an alert, not a crash
         logger.warning(
-            "monitor: scoring failed for event from collector %s; recording a conservative alert",
+            "monitor: scoring failed for event from collector %s (%s); recording a "
+            "conservative alert",
             event.collector_id,
+            type(exc).__name__,
         )
         action, decision = _conservative_fallback(event)
         clean = False
 
-    await record_decision(
+    written = await record_decision(
         decision,
         action,
         repo_root=repo_root,
@@ -335,7 +371,13 @@ async def _score_event(
         session_id=event.session_fingerprint,
         source_context_override=f"ambient:{event.collector_id}",
     )
-    return clean
+    if not written:
+        logger.warning(
+            "monitor: could not record a decision row for event from collector %s; "
+            "will retry next tick",
+            event.collector_id,
+        )
+    return clean, written
 
 
 # ---------------------------------------------------------------------------
@@ -357,12 +399,30 @@ async def run_tick(
     repo_root: str,
     objective: Guardrail,
     subjective: Guardrail,
+    collectors: Sequence[object],
     *,
     mode: str = "balanced",
     reader_id: str = DEFAULT_READER_ID,
     batch_limit: int = DEFAULT_BATCH_LIMIT,
 ) -> MonitorTickResult:
     """One full monitor tick: poll -> emit -> drain -> score -> save cursor.
+
+    ``collectors`` are discovered ONCE by the caller (:func:`run_forever`)
+    and passed in unchanged every tick — see :func:`_poll_collectors`.
+
+    The cursor only ever advances past a fully-durable batch: if EVERY event
+    drained this tick was written successfully (:func:`_score_event`'s
+    ``written``), the cursor moves to ``new_cursor`` as before. If ANY write
+    in the batch failed, the cursor does not move at all this tick, and
+    scoring for the rest of the batch stops — a struggling storage layer
+    rarely recovers mid-batch, and every event in an unmoved batch is
+    retried next tick regardless, so continuing to hammer it serves nothing.
+    The trade-off is deliberate and documented at the call site: an event
+    already-written earlier in the SAME failed batch gets re-scored and
+    re-recorded on retry (a duplicate alert row) rather than risking the
+    alternative — advancing past a gap and losing the failed event forever.
+    Duplicates are visible and harmless; silent loss of a BLOCK-grade alert
+    is not.
 
     Never raises. Every step above already isolates its own failures; this
     function's own try/except is the last-resort boundary for anything
@@ -372,7 +432,7 @@ async def run_tick(
     in THIS module is momentarily just as dead as one that was never started.
     """
     try:
-        collected = _poll_collectors()
+        collected = _poll_collectors(collectors)
         emitted = await _emit_events(collected, repo_root=repo_root)
 
         cursor = await load_cursor(repo_root, reader_id=reader_id)
@@ -380,14 +440,20 @@ async def run_tick(
 
         scored = 0
         fallback = 0
+        all_written = True
         for event in events:
-            clean = await _score_event(event, objective, subjective, mode=mode, repo_root=repo_root)
+            clean, written = await _score_event(
+                event, objective, subjective, mode=mode, repo_root=repo_root
+            )
             if clean:
                 scored += 1
             else:
                 fallback += 1
+            if not written:
+                all_written = False
+                break  # retry the whole batch next tick rather than hammer a broken write path
 
-        if new_cursor != cursor:
+        if all_written and new_cursor != cursor:
             await save_cursor(repo_root, reader_id=reader_id, cursor=new_cursor)
 
         return MonitorTickResult(
@@ -396,11 +462,17 @@ async def run_tick(
             drained=len(events),
             scored=scored,
             fallback=fallback,
-            cursor=new_cursor,
+            cursor=new_cursor if all_written else cursor,
         )
-    except Exception:  # noqa: BLE001 — see the docstring: nothing may escape a tick
+    except Exception as exc:  # noqa: BLE001 — see the docstring: nothing may escape a tick
+        # Error CLASS only, never the message/args/traceback (exc_info=True
+        # would attach those) — a future bug elsewhere in the call stack
+        # could raise with raw data (a path, an env value) in its message,
+        # and this log line must never become the leak that undoes every
+        # other redaction in this module.
         logger.warning(
-            "monitor: tick failed unexpectedly; continuing to the next tick", exc_info=True
+            "monitor: tick failed unexpectedly (%s); continuing to the next tick",
+            type(exc).__name__,
         )
         return MonitorTickResult(collected=0, emitted=0, drained=0, scored=0, fallback=0, cursor=-1)
 
@@ -417,12 +489,102 @@ def is_already_running(
 ) -> bool:
     """Whether a monitor daemon's heartbeat for ``repo_root`` is still fresh.
 
-    The single-instance guard's pure, easily-tested check: ``True`` means a
-    sibling is already alive for this repo and a second daemon must not
-    start. Fails closed to ``False`` (storage.heartbeat's own contract) — a
-    missing or unreadable heartbeat is never mistaken for a live sibling.
+    A best-effort liveness signal for humans (``doberman monitor status``)
+    and for deciding whether a leftover lock file (see :func:`_acquire_lock`)
+    is stale or belongs to a genuinely running sibling. NOT itself the
+    admission guard — checking freshness and then separately touching the
+    heartbeat has a gap a second process starting at the same instant can
+    fall through (this is exactly the "duplicate admission during
+    simultaneous starts" the lock file below closes). Fails closed to
+    ``False`` (storage.heartbeat's own contract) — a missing or unreadable
+    heartbeat is never mistaken for a live sibling.
     """
     return heartbeat_is_fresh(repo_root, max_age_s=max_age_s, filename=MONITOR_HEARTBEAT_FILE)
+
+
+#: The lock file's name, in the same gitignored ``.doberman/`` dir as the
+#: heartbeat and the DB. Deliberately a *different* file from the heartbeat:
+#: the lock's existence is the admission decision (an atomic OS-level
+#: create), the heartbeat's freshness is only ever consulted to tell a
+#: stale lock (owner crashed) from a live one.
+_MONITOR_LOCK_FILE = "monitor.lock"
+
+
+def _lock_path(repo_root: str) -> Path:
+    return Path(repo_root) / CONFIG_DIR / _MONITOR_LOCK_FILE
+
+
+def _try_create_lock(repo_root: str) -> bool:
+    """Attempt to atomically claim the lock file. ``True`` iff this call won.
+
+    ``O_CREAT | O_EXCL`` is a single OS-level syscall: the filesystem itself
+    guarantees that when two processes race this call at the same instant,
+    exactly one gets ``True`` and the other gets ``FileExistsError`` — the
+    same portable atomic-create primitive ``storage/fingerprint.py`` already
+    uses for its key file, chosen for the same reason: no TOCTOU gap, and no
+    platform-specific locking API (``fcntl``/``msvcrt``) needed, so this
+    works identically on the Linux/macOS and Windows CI runners.
+
+    Touches the heartbeat *inside* this same call, immediately on winning —
+    not as a separate later step — so a rival process racing a moment behind
+    the winner (see :func:`_acquire_lock`'s stale-lock retry) sees a fresh
+    heartbeat right away rather than a narrow window where the lock exists
+    but nothing has claimed it as live yet.
+    """
+    path = _lock_path(repo_root)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+    except OSError:
+        return False
+    touch_heartbeat(repo_root, filename=MONITOR_HEARTBEAT_FILE)
+    return True
+
+
+def _acquire_lock(repo_root: str) -> None:
+    """Win the single-instance lock or raise :class:`MonitorAlreadyRunning`.
+
+    First attempt: atomic create (see :func:`_try_create_lock`) — this alone
+    is what makes admission correct under simultaneous starts, closing the
+    race a plain heartbeat-freshness check cannot. If the lock file already
+    exists, distinguish stale (its owner crashed without cleaning up — the
+    heartbeat is no longer fresh) from live (heartbeat still fresh) using
+    :func:`is_already_running`: a live lock means refuse outright; a stale
+    one means best-effort steal it (unlink + retry the atomic create once)
+    rather than let one crashed process block every future daemon start for
+    this repo forever. If the retry also loses — another process won the
+    steal race, or a genuine sibling reappeared between the check and the
+    retry — refuse; a lock file is only ever removed by its own winner
+    below, in :func:`run_forever`'s ``finally``, or by this steal path, so
+    there is no unbounded retry loop to worry about.
+    """
+    if _try_create_lock(repo_root):
+        return
+    if is_already_running(repo_root):
+        raise MonitorAlreadyRunning(
+            f"a doberman monitor daemon already appears to be running for "
+            f"{repo_root!r} (heartbeat fresher than {MONITOR_HEARTBEAT_MAX_AGE_S:.0f}s)"
+        )
+    try:
+        _lock_path(repo_root).unlink(missing_ok=True)
+    except OSError:
+        pass
+    if not _try_create_lock(repo_root):
+        raise MonitorAlreadyRunning(
+            f"a doberman monitor daemon already appears to be running for {repo_root!r} "
+            "(lost the race to start after a stale lock was cleared)"
+        )
+
+
+def _release_lock(repo_root: str) -> None:
+    """Best-effort cleanup on a clean stop — a missed unlink just means the
+    next start pays the one-tick stale-lock detour in :func:`_acquire_lock`,
+    never a permanently stuck lock (that path always recovers)."""
+    try:
+        _lock_path(repo_root).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def run_forever(
@@ -444,9 +606,9 @@ def run_forever(
     interval (mirrors ``doberman dash``'s own heartbeat thread).
 
     Raises :class:`MonitorAlreadyRunning` immediately — before building
-    anything — if a sibling daemon's heartbeat for this repo is still fresh:
-    the single-instance guard belongs to the daemon, not just to the CLI's
-    convenience wrapper around it.
+    anything — via :func:`_acquire_lock`'s atomic lock file, if a sibling
+    daemon already holds it for this repo: the single-instance guard belongs
+    to the daemon, not just to the CLI's convenience wrapper around it.
 
     ``stop_event``/``max_ticks`` exist for tests and programmatic embedding:
     ``stop_event`` lets a caller request a prompt stop between ticks;
@@ -454,13 +616,17 @@ def run_forever(
     exposed on the CLI — Ctrl+C (``KeyboardInterrupt``) is the real stop
     signal there.
     """
-    if is_already_running(repo_root):
-        raise MonitorAlreadyRunning(
-            f"a doberman monitor daemon already appears to be running for "
-            f"{repo_root!r} (heartbeat fresher than {MONITOR_HEARTBEAT_MAX_AGE_S:.0f}s)"
-        )
+    _acquire_lock(repo_root)
 
     objective, subjective = build_engine_stack()
+    try:
+        collectors = discover_collectors()
+    except Exception as exc:  # noqa: BLE001 — a discovery bug must not block the daemon
+        logger.warning(
+            "monitor: collector discovery failed at startup (%s); starting with none",
+            type(exc).__name__,
+        )
+        collectors = []
     stop_event = stop_event if stop_event is not None else threading.Event()
 
     def _heartbeat_loop() -> None:
@@ -468,10 +634,6 @@ def run_forever(
             touch_heartbeat(repo_root, filename=MONITOR_HEARTBEAT_FILE)
             stop_event.wait(HEARTBEAT_TOUCH_INTERVAL_S)
 
-    # Touch once synchronously before the background thread starts, so a
-    # status check (or a second is_already_running()) immediately after
-    # start-up sees a fresh heartbeat rather than a race against the thread.
-    touch_heartbeat(repo_root, filename=MONITOR_HEARTBEAT_FILE)
     heartbeat_thread = threading.Thread(
         target=_heartbeat_loop, name="doberman-monitor-heartbeat", daemon=True
     )
@@ -481,7 +643,9 @@ def run_forever(
     try:
         while not stop_event.is_set():
             result = asyncio.run(
-                run_tick(repo_root, objective, subjective, mode=mode, reader_id=reader_id)
+                run_tick(
+                    repo_root, objective, subjective, collectors, mode=mode, reader_id=reader_id
+                )
             )
             if on_tick is not None:
                 on_tick(result)
@@ -492,6 +656,7 @@ def run_forever(
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=HEARTBEAT_TOUCH_INTERVAL_S * 2)
+        _release_lock(repo_root)
 
 
 async def monitor_status(repo_root: str = ".") -> dict:

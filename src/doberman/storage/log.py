@@ -277,12 +277,22 @@ async def record_decision(
     auth_path: str | None = None,
     human_confirmed: bool | None = None,
     source_context_override: str | None = None,
-) -> None:
+) -> bool:
     """Persist one redacted decision row and fan it out to sinks (best-effort).
 
     Never raises: building the record, the storage write, and the sink fan-out
     are all inside the failure boundary, so nothing here can alter or block the
     decision (which has already been enforced).
+
+    Returns whether the row was durably written to the local decision log —
+    ``True`` only if both building the record and the SQL INSERT succeeded.
+    Existing callers on the live enforcement path correctly ignore this (the
+    decision has already been enforced regardless of whether logging it
+    worked), but a caller that needs to know whether an observation actually
+    landed — the ambient monitor (FM.2), to decide whether it's safe to
+    advance its bus cursor rather than silently losing the alert — can check
+    it. Sink fan-out and the device-metrics rollup stay best-effort and do
+    not affect this return value: the local row is what matters for retry.
     """
     try:
         record = build_record(
@@ -299,7 +309,7 @@ async def record_decision(
         )
     except Exception:  # noqa: BLE001 — the decision log must never break execution
         logger.warning("decision log: could not build record for action %s", decision.action_id)
-        return
+        return False
 
     try:
         async with open_db(repo_root) as conn:
@@ -341,6 +351,7 @@ async def record_decision(
             await conn.commit()
     except Exception:  # noqa: BLE001 — the decision log must never break execution
         logger.warning("decision log write failed for action %s; continuing", decision.action_id)
+        return False
 
     # Fan-out is best-effort and isolated; never let it raise either.
     try:
@@ -350,13 +361,27 @@ async def record_decision(
 
     # Device-global rollup for `doberman dashboard` (best-effort, defense in
     # depth — record_decision_metric already swallows its own failures).
-    try:
-        record_decision_metric(record["final_verdict"])
-        if record["final_verdict"] == "AUTH" and record["auth_result"]:
-            denied = record["auth_result"] in _AUTH_DENIED_RESULTS
-            record_decision_metric(AUTH_DENIED if denied else AUTH_APPROVED)
-    except Exception:  # noqa: BLE001 — the device rollup must never break execution
-        logger.warning("device metrics rollup failed for action %s; continuing", decision.action_id)
+    # An ambient-monitor alert (FM.2) never counts here: this rollup's whole
+    # purpose is "how many times has Doberman stepped in" for the SessionStart
+    # summary, and an ambient row was never actually stepped in on — counting
+    # it would inflate that summary with things that were only observed, not
+    # enforced (the same "no output may read as blocked" rule every other
+    # verdict-rendering surface follows).
+    is_ambient = isinstance(source_context_override, str) and source_context_override.startswith(
+        "ambient:"
+    )
+    if not is_ambient:
+        try:
+            record_decision_metric(record["final_verdict"])
+            if record["final_verdict"] == "AUTH" and record["auth_result"]:
+                denied = record["auth_result"] in _AUTH_DENIED_RESULTS
+                record_decision_metric(AUTH_DENIED if denied else AUTH_APPROVED)
+        except Exception:  # noqa: BLE001 — the device rollup must never break execution
+            logger.warning(
+                "device metrics rollup failed for action %s; continuing", decision.action_id
+            )
+
+    return True
 
 
 async def record_shadow(
