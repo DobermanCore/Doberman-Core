@@ -421,6 +421,15 @@ class ReasonCode(StrEnum):
     # a previously-known count became unknown. Synthetic BLOCK, never released.
     effect_set_diverged = "effect_set_diverged"
 
+    # FM.2 — the warm observe-only ambient daemon (doberman.monitor.daemon):
+    # reconstructing a SecurityObject from a redacted ActivityEvent, or
+    # scoring it through decide(), raised. Per-event isolation records this
+    # conservative alert row instead of dropping the event silently or
+    # letting one poisoned event kill the tick loop. Never produced on the
+    # live/inline decision path — only by the ambient monitor's own
+    # best-effort scoring loop.
+    ambient_scoring_error = "ambient_scoring_error"
+
 
 class GuardrailResult(BaseModel):
     """A single guardrail's answer for one action (immutable).

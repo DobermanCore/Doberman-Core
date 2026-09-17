@@ -144,6 +144,10 @@ REASON_DESCRIPTIONS: dict[str, str] = {
         "the recomputed blast radius for this delete no longer matches what was shown "
         "at approval time"
     ),
+    "ambient_scoring_error": (
+        "the ambient monitor could not score this observation cleanly, so it recorded "
+        "a conservative alert row instead of dropping it silently"
+    ),
     "correlated_trifecta": (
         "this action, combined with earlier ones in the session, adds up to the "
         "lethal-trifecta pattern"
@@ -248,6 +252,26 @@ def _describe_reason(code: str) -> str:
     return REASON_DESCRIPTIONS.get(code, code.replace("_", " "))
 
 
+#: FM.2: the ambient monitor (doberman.monitor.daemon) tags every row it
+#: writes via `storage.log.record_decision`'s `source_context_override` as
+#: `"ambient:<collector_id>"` - a shape no other writer produces (the live
+#: gate always writes a real `SourceContext` enum value: "user",
+#: "tool_output", "unknown", ...). Detecting on this column, rather than a
+#: new one, keeps the ambient/inline distinction visible everywhere a row's
+#: `source_context` already flows (the dash feed, the LLM narrator's
+#: allowlisted payload, `doberman log --jsonl`) with no schema change.
+_AMBIENT_SOURCE_PREFIX = "ambient:"
+#: FM.2 hard rule: every rendered explanation for an ambient row leads with
+#: this, so it can never be mistaken for a live enforcement outcome.
+_AMBIENT_EXPLANATION_PREFIX = "observed (not enforced): "
+
+
+def _is_ambient_row(row: dict) -> bool:
+    """Whether `row` was produced by the ambient monitor (FM.2), not the live gate."""
+    source_context = row.get("source_context")
+    return isinstance(source_context, str) and source_context.startswith(_AMBIENT_SOURCE_PREFIX)
+
+
 def _layer_checked_clause(layer: str) -> str:
     """What Doberman checked, in plain words (round 4 design critique item 6):
     "checking the rules" for the objective layer alone, or "...and the
@@ -267,7 +291,8 @@ def first_sentence(row: dict) -> str:
     """
     verdict = row.get("final_verdict") or "UNKNOWN"
     layer = row.get("decided_layer") or "objective"
-    return f"Doberman decided {verdict} after {_layer_checked_clause(layer)}."
+    sentence = f"Doberman decided {verdict} after {_layer_checked_clause(layer)}."
+    return f"{_AMBIENT_EXPLANATION_PREFIX}{sentence}" if _is_ambient_row(row) else sentence
 
 
 def _body_sentences(row: dict, *, with_reasons: bool = True) -> list[str]:
@@ -313,7 +338,16 @@ def _body_sentences(row: dict, *, with_reasons: bool = True) -> list[str]:
         else:
             sentences.append("No specific reason codes were recorded for this decision.")
 
-    if verdict == "AUTH":
+    if _is_ambient_row(row) and verdict in ("AUTH", "BLOCK"):
+        # FM.2 hard rule: an ambient AUTH/BLOCK-grade verdict is an alert
+        # row, nothing more - no output may read as if this action was
+        # actually blocked or challenged. The inline gate (not this daemon)
+        # remains the only enforcement point, dead or alive.
+        sentences.append(
+            "This is an ambient observation only - nothing was blocked or challenged; "
+            "the inline gate remains the sole enforcement point."
+        )
+    elif verdict == "AUTH":
         sentences.append(
             "Completing the authentication challenge (or an approved role elevation) "
             "would let this action proceed."
@@ -340,7 +374,8 @@ def template_explanation(row: dict, *, with_reasons: bool = True) -> str:
         *_body_sentences(row, with_reasons=with_reasons),
         f"(Checked by: {_describe_checked_by(layer)}.)",
     ]
-    return " ".join(sentences)
+    text = " ".join(sentences)
+    return f"{_AMBIENT_EXPLANATION_PREFIX}{text}" if _is_ambient_row(row) else text
 
 
 def why_body(row: dict) -> str:
@@ -352,7 +387,8 @@ def why_body(row: dict) -> str:
     what was already on screen; this adds the "what was attempted" and
     "Reasons: ..." sentences too, so `--why` earns its name.
     """
-    return " ".join(_body_sentences(row))
+    text = " ".join(_body_sentences(row))
+    return f"{_AMBIENT_EXPLANATION_PREFIX}{text}" if _is_ambient_row(row) else text
 
 
 #: Verdict -> the word :func:`headline` uses for what happened. Deliberately
@@ -461,7 +497,12 @@ def headline(row: dict) -> str:
     """
     reason_codes = _parse_reason_codes(row.get("reason_codes_json"))
     verdict = row.get("final_verdict") or "UNKNOWN"
-    verdict_word = _HEADLINE_VERDICT_WORD.get(verdict, verdict.lower())
+    if _is_ambient_row(row) and verdict in ("AUTH", "BLOCK"):
+        # FM.2: an ambient AUTH/BLOCK-grade verdict is an alert, never a
+        # claim that the action was actually stopped or challenged.
+        verdict_word = "flagged (not enforced)"
+    else:
+        verdict_word = _HEADLINE_VERDICT_WORD.get(verdict, verdict.lower())
     action_type = row.get("action_type") or "action"
     target = row.get("target_path_class")
 

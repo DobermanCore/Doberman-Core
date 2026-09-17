@@ -134,6 +134,11 @@ _TIME_WIDTH_MULTI_DAY = 11
 #: glyph that collides with a keybinding is a trap, not a shortcut.
 _VERDICT_GLYPHS: dict[str, str] = {"BLOCK": "X", "AUTH": "!", "PASS": "."}
 
+#: Glyph for an ambient (FM.2) AUTH/BLOCK-grade row - deliberately distinct
+#: from "X"/"!" above, which read as "this was actually enforced." Paired
+#: with `render.AMBIENT_ALERT_WORD` wherever a verdict is rendered.
+_AMBIENT_GLYPH = "*"
+
 #: Per-column cell padding DataTable adds around content (one space each side).
 _CELL_PADDING = 2
 
@@ -420,14 +425,36 @@ def _abs_utc_and_age(row: dict, *, now: datetime | None = None) -> str:
 
 
 def _verdict_counts_text(rows: list[dict]) -> str:
-    """ "22 BLOCK / 1 AUTH / 22 PASS" - a verdict breakdown over ``rows`` (round
-    6 design critique item 4), always all three verdicts in this fixed order
-    even when a count is zero, so a reviewer can see at a glance how many of
-    the LOADED rows actually need attention without opening the filter."""
-    counts = Counter(str(row.get("final_verdict")) for row in rows)
-    return " / ".join(
-        f"{counts.get(v.value, 0)} {v.value}" for v in (Verdict.BLOCK, Verdict.AUTH, Verdict.PASS)
-    )
+    """ "22 BLOCK / 1 AUTH / 22 PASS / 3 ALERT" - a verdict breakdown over
+    ``rows`` (round 6 design critique item 4), always all three real verdicts
+    in this fixed order even when a count is zero, so a reviewer can see at a
+    glance how many of the LOADED rows actually need attention without
+    opening the filter.
+
+    An ambient AUTH/BLOCK-grade row (FM.2) is counted separately, under
+    `render.AMBIENT_ALERT_WORD` - folding it into the real BLOCK/AUTH counts
+    would make this summary itself read as "N things were blocked" when N of
+    them never were (issue #237's hard rule). An ambient PASS row needs no
+    such split - PASS was never a claim of enforcement in the first place -
+    so it folds into the ordinary PASS count.
+    """
+    live_counts: Counter[str] = Counter()
+    ambient_alerts = 0
+    for row in rows:
+        verdict_str = str(row.get("final_verdict"))
+        if verdict_str in (
+            Verdict.AUTH.value,
+            Verdict.BLOCK.value,
+        ) and render.is_ambient_source_context(row.get("source_context")):
+            ambient_alerts += 1
+        else:
+            live_counts[verdict_str] += 1
+    parts = [
+        f"{live_counts.get(v.value, 0)} {v.value}"
+        for v in (Verdict.BLOCK, Verdict.AUTH, Verdict.PASS)
+    ]
+    parts.append(f"{ambient_alerts} {render.AMBIENT_ALERT_WORD}")
+    return " / ".join(parts)
 
 
 def _date_bar_text(row: dict | None) -> Text:
@@ -543,7 +570,12 @@ def _initial_landing_index(rows: list[dict]) -> int:
     return 0
 
 
-def _verdict_cell(verdict_str: str) -> Text:
+def _verdict_cell(verdict_str: str, *, ambient: bool = False) -> Text:
+    if ambient and verdict_str in (Verdict.AUTH.value, Verdict.BLOCK.value):
+        label = _truncate(f"{_AMBIENT_GLYPH} {render.AMBIENT_ALERT_WORD}", _WIDTHS["verdict"])
+        return Text(
+            label, style=render.verdict_rich_style(Verdict(verdict_str), chip=True, ambient=True)
+        )
     glyph = _VERDICT_GLYPHS.get(verdict_str, "?")
     label = _truncate(f"{glyph} {verdict_str}", _WIDTHS["verdict"])
     try:
@@ -564,11 +596,15 @@ def _row_cells(
     widths = widths or _WIDTHS
     verdict_str = str(row.get("final_verdict") or "-")
     risk_str = str(row.get("risk") or "-")
+    # FM.2: an ambient monitor alert row (source_context="ambient:<collector>")
+    # must never render as if it were actually blocked/challenged - see
+    # doberman.render.is_ambient_source_context and the hard rule in issue #237.
+    ambient = render.is_ambient_source_context(row.get("source_context"))
     cells: dict[str, Text] = {
         # Gutter: blank by default - `_update_gutter` marks the cursor row
         # with ">" (round 3 design critique item 2).
         "": Text(""),
-        "verdict": _verdict_cell(verdict_str),
+        "verdict": _verdict_cell(verdict_str, ambient=ambient),
         "time": Text(_time_cell(row, multi_day=multi_day)),
         "action": Text(_truncate(str(row.get("action_type") or "-"), widths["action"])),
         "why": Text(_truncate(_reason_codes_words(row), widths["why"])),
@@ -579,7 +615,9 @@ def _row_cells(
         )
         cells["auth"] = Text(
             _truncate(
-                render.humanize_auth_result(
+                "-"
+                if ambient
+                else render.humanize_auth_result(
                     row.get("auth_result"), short=True, verdict=verdict_str
                 ),
                 widths["auth"],
@@ -601,9 +639,18 @@ def _why_header_line(row: dict, time_line: str) -> str:
     target class - so paging through BLOCK/AUTH rows with b/B/a never loses
     track of which row is on screen (round 3 design critique item 4). `time_line`
     is `_abs_utc_and_age(row)` (round 7 design critique item 2) - passed in
-    rather than computed here so every caller shares one "now" per render."""
+    rather than computed here so every caller shares one "now" per render.
+
+    An ambient row (FM.2) shows `render.AMBIENT_ALERT_WORD` and
+    `_AMBIENT_GLYPH` instead of the real BLOCK/AUTH word/glyph - same "no
+    output may read as blocked" rule `_verdict_cell` follows.
+    """
     verdict_str = str(row.get("final_verdict") or "-")
-    glyph = _VERDICT_GLYPHS.get(verdict_str, "?")
+    ambient = render.is_ambient_source_context(row.get("source_context"))
+    if ambient and verdict_str in (Verdict.AUTH.value, Verdict.BLOCK.value):
+        glyph, verdict_str = _AMBIENT_GLYPH, render.AMBIENT_ALERT_WORD
+    else:
+        glyph = _VERDICT_GLYPHS.get(verdict_str, "?")
     risk_str = str(row.get("risk") or "-")
     action_str = str(row.get("action_type") or "-")
     target_str = str(row.get("target_path_class") or "-")
@@ -1643,7 +1690,14 @@ class DecisionExplainerApp(App[None]):
         # tui_hint stays True here (the default) - this IS the "press w for
         # detail" affordance; the full-screen why (`full_why_text`) is the
         # detail itself and must not repeat it (round 5 design critique item 1).
-        next_line = render.next_step_line(row.get("final_verdict")) if row is not None else None
+        next_line = (
+            render.next_step_line(
+                row.get("final_verdict"),
+                ambient=render.is_ambient_source_context(row.get("source_context")),
+            )
+            if row is not None
+            else None
+        )
         try:
             widget = self.query_one("#next-line", Static)  # same race, see `_update_date_bar`
         except NoMatches:
@@ -1764,7 +1818,11 @@ class DecisionExplainerApp(App[None]):
         # tui_hint=False (round 5 design critique item 1): this full-screen
         # why IS the detail "press w for detail" points at - it must not tell
         # the reader to press w again to see itself.
-        next_line = render.next_step_line(row.get("final_verdict"), tui_hint=False)
+        next_line = render.next_step_line(
+            row.get("final_verdict"),
+            tui_hint=False,
+            ambient=render.is_ambient_source_context(row.get("source_context")),
+        )
         return f"{text}\n\n{next_line}" if next_line else text
 
     def current_row(self) -> dict | None:

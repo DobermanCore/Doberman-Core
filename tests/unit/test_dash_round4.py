@@ -111,7 +111,9 @@ def test_feed_rows_use_real_roving_focus_not_activedescendant(tmp_path):
 def test_feed_row_has_an_accessible_name(tmp_path):
     html = _index_html(tmp_path)
     assert 'li.setAttribute(\n            "aria-label",' in html
-    assert 'row.verdict + " " + row.action_type + " " +' in html
+    # FM.2: the aria-label uses displayVerdict(row), not the raw row.verdict,
+    # so an ambient alert's accessible name also never reads as "BLOCK"/"AUTH".
+    assert 'displayVerdict(row) + " " + row.action_type + " " +' in html
 
 
 # --------------------------------------------------------------------------

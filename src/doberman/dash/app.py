@@ -131,6 +131,12 @@ _HTML_SHELL = """<!doctype html>
     --block-bg: oklch(66% 0.205 26 / 10%);
     --neutral: var(--fg-3);
     --neutral-bg: oklch(64% 0.006 55 / 10%);
+    /* FM.2: a dedicated color for an ambient-monitor alert badge - distinct
+       from pass/auth/block so it can never be mistaken for a live
+       enforcement outcome (see doberman.render.AMBIENT_ALERT_WORD, the same
+       "no output may read as blocked" rule this mirrors). */
+    --ambient: oklch(74% 0.19 328);
+    --ambient-bg: oklch(74% 0.19 328 / 10%);
     --r-sm: 8px;
     --r: 10px;
     --r-lg: 12px;
@@ -154,6 +160,7 @@ _HTML_SHELL = """<!doctype html>
       --auth: #7d5200;  --auth-bg: rgba(125, 82, 0, .12);
       --block: #a40e26; --block-bg: rgba(164, 14, 38, .12);
       --neutral: #424a53; --neutral-bg: rgba(66, 74, 83, .12);
+      --ambient: #9c1f7a; --ambient-bg: rgba(156, 31, 122, .12);
       --shadow-card: 0 6px 20px -10px oklch(0% 0 0 / 18%);
     }
   }
@@ -171,6 +178,7 @@ _HTML_SHELL = """<!doctype html>
     --auth: #7d5200;  --auth-bg: rgba(125, 82, 0, .12);
     --block: #a40e26; --block-bg: rgba(164, 14, 38, .12);
     --neutral: #424a53; --neutral-bg: rgba(66, 74, 83, .12);
+    --ambient: #9c1f7a; --ambient-bg: rgba(156, 31, 122, .12);
     --shadow-card: 0 6px 20px -10px oklch(0% 0 0 / 18%);
   }
   :root[data-theme="dark"] {
@@ -184,6 +192,7 @@ _HTML_SHELL = """<!doctype html>
     --auth: oklch(82% 0.155 78); --auth-bg: oklch(82% 0.155 78 / 10%);
     --block: oklch(66% 0.205 26); --block-bg: oklch(66% 0.205 26 / 10%);
     --neutral: var(--fg-3); --neutral-bg: oklch(64% 0.006 55 / 10%);
+    --ambient: oklch(74% 0.19 328); --ambient-bg: oklch(74% 0.19 328 / 10%);
     --shadow-card: 0 6px 20px -10px oklch(0% 0 0 / 55%);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -323,6 +332,9 @@ _HTML_SHELL = """<!doctype html>
   .badge-auth { color: var(--auth); background: var(--auth-bg); }
   .badge-block { color: var(--block); background: var(--block-bg); }
   .badge-neutral { color: var(--neutral); background: var(--neutral-bg); }
+  /* FM.2: an ambient-monitor alert (never actually enforced) - deliberately
+     not pass/auth/block, so it can't be mistaken for a live outcome. */
+  .badge-ambient { color: var(--ambient); background: var(--ambient-bg); }
   .badge-risk-low { color: var(--pass); background: var(--pass-bg); }
   .badge-risk-medium { color: var(--auth); background: var(--auth-bg); }
   .badge-risk-high, .badge-risk-critical { color: var(--block); background: var(--block-bg); }
@@ -979,6 +991,26 @@ _HTML_SHELL = """<!doctype html>
         AUTH: "badge badge-auth",
         BLOCK: "badge badge-block"
       };
+      // FM.2: an ambient-monitor alert row (source_context starts
+      // "ambient:") must never badge as if it were actually enforced - one
+      // shared "alert" word/class for both AUTH- and BLOCK-grade ambient
+      // rows, distinct from all three real verdicts. PASS is unaffected (it
+      // was never a claim of enforcement in the first place). Mirrors
+      // doberman.render.AMBIENT_ALERT_WORD / doberman.tui's verdict cell.
+      var AMBIENT_ALERT_LABEL = "ALERT";
+      var AMBIENT_BADGE_CLASS = "badge badge-ambient";
+      function isAmbientRow(row) {
+        return Boolean(row.source_context) && row.source_context.indexOf("ambient:") === 0;
+      }
+      function isAmbientAlert(row) {
+        return isAmbientRow(row) && (row.verdict === "AUTH" || row.verdict === "BLOCK");
+      }
+      function displayVerdict(row) {
+        return isAmbientAlert(row) ? AMBIENT_ALERT_LABEL : row.verdict;
+      }
+      function verdictBadgeClass(row) {
+        return isAmbientAlert(row) ? AMBIENT_BADGE_CLASS : (VERDICT_BADGE_CLASS[row.verdict] || "badge badge-neutral");
+      }
       var RISK_BADGE_CLASS = {
         low: "badge badge-risk-low",
         medium: "badge badge-risk-medium",
@@ -1358,6 +1390,14 @@ _HTML_SHELL = """<!doctype html>
           b.textContent = verdict + ": " + n;
           verdictsGroup.appendChild(b);
         });
+        // FM.2: ambient-monitor AUTH/BLOCK-grade alerts are counted
+        // separately from the three real verdicts above (build_stats splits
+        // them out) - folding them in would make "BLOCK: N" read as "N
+        // things were blocked" when some of them never were.
+        var ambientBadge = document.createElement("span");
+        ambientBadge.className = AMBIENT_BADGE_CLASS;
+        ambientBadge.textContent = AMBIENT_ALERT_LABEL + ": " + (s.ambient_alert_total || 0);
+        verdictsGroup.appendChild(ambientBadge);
         var totalDecisions = s.total_decisions != null ? s.total_decisions : s.total;
         // The recent line only earns its place when it says something the
         // all-time badges above it don't (a window smaller than the log).
@@ -1367,6 +1407,7 @@ _HTML_SHELL = """<!doctype html>
           var recentParts = ["PASS", "AUTH", "BLOCK"].map(function (verdict) {
             return verdict + " " + (s.recent_verdict_counts[verdict] || 0);
           });
+          recentParts.push(AMBIENT_ALERT_LABEL + " " + (s.recent_ambient_alert_count || 0));
           recent.textContent = "recent " + s.recent_window + ": " + recentParts.join(" / ");
           verdictsGroup.appendChild(recent);
         }
@@ -2790,8 +2831,8 @@ _HTML_SHELL = """<!doctype html>
           rowMain.className = "row-main";
 
           var badge = document.createElement("span");
-          badge.className = VERDICT_BADGE_CLASS[row.verdict] || "badge badge-neutral";
-          badge.textContent = row.verdict;
+          badge.className = verdictBadgeClass(row);
+          badge.textContent = displayVerdict(row);
           rowMain.appendChild(badge);
 
           // The detail line always names something concrete now (a target
@@ -2899,7 +2940,7 @@ _HTML_SHELL = """<!doctype html>
           li.setAttribute(
             "aria-label",
             (row.headline ? row.headline + ". " : "") +
-            row.verdict + " " + row.action_type + " " +
+            displayVerdict(row) + " " + row.action_type + " " +
             (row.target_path_class || "no target") + " - " +
             (row.explanation || accessibleReasons)
           );

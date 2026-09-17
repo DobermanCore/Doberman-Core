@@ -33,7 +33,20 @@ SECRET_TAINT_REASON_CODES = frozenset(
     }
 )
 
+#: An ambient-monitor row (FM.2, ``doberman.monitor.daemon``) tags its
+#: ``source_context`` this way — see ``doberman.render.is_ambient_source_context``,
+#: duplicated here (not imported) for the same reason ``doberman.render``
+#: duplicates it rather than importing ``doberman.explain``: this module is
+#: a presentation-layer leaf and the check is a two-line string test, not
+#: worth a cross-module dependency.
+_AMBIENT_SOURCE_PREFIX = "ambient:"
+
 _DEFAULT_RECENT_WINDOW = 50
+
+
+def _is_ambient(row: dict) -> bool:
+    source_context = row.get("source_context")
+    return isinstance(source_context, str) and source_context.startswith(_AMBIENT_SOURCE_PREFIX)
 
 
 def reason_codes(row: dict) -> list[str]:
@@ -78,11 +91,29 @@ async def build_stats(repo_root: str, *, recent_window: int = _DEFAULT_RECENT_WI
     of secret/taint-related events, and the current mode + effective
     enforcement dial. Fails closed: a missing/empty DB (``read_decisions``
     already returns ``[]``) yields all-zero stats, never an error.
+
+    An ambient-monitor AUTH/BLOCK-grade row (FM.2) is counted separately, under
+    ``ambient_alert_counts``/``recent_ambient_alert_count`` — folding it into
+    ``verdict_counts``/``recent_verdict_counts`` would make the dashboard's own
+    "N BLOCK" badge (and the focal "recent BLOCK" number) read as "N things
+    were blocked" when some of them never were, exactly the hard rule issue
+    #237 sets for every OTHER surface that renders a verdict. An ambient PASS
+    row needs no such split — PASS was never a claim of enforcement — so it
+    stays in the ordinary PASS count.
     """
     rows = await read_decisions(repo_root)  # newest first
-    verdict_counts = Counter(row["final_verdict"] for row in rows)
+    live_rows = [row for row in rows if not _is_ambient(row)]
+    verdict_counts = Counter(row["final_verdict"] for row in live_rows)
+    ambient_alert_counts = Counter(
+        row["final_verdict"] for row in rows if _is_ambient(row) and row["final_verdict"] != "PASS"
+    )
+
     recent_rows = rows[:recent_window]
-    recent_verdict_counts = Counter(row["final_verdict"] for row in recent_rows)
+    recent_live_rows = [row for row in recent_rows if not _is_ambient(row)]
+    recent_verdict_counts = Counter(row["final_verdict"] for row in recent_live_rows)
+    recent_ambient_alert_count = sum(
+        1 for row in recent_rows if _is_ambient(row) and row["final_verdict"] != "PASS"
+    )
 
     reason_counts: Counter[str] = Counter()
     secret_taint_events = 0
@@ -95,8 +126,11 @@ async def build_stats(repo_root: str, *, recent_window: int = _DEFAULT_RECENT_WI
     return {
         "total_decisions": len(rows),
         "verdict_counts": dict(verdict_counts),
+        "ambient_alert_counts": dict(ambient_alert_counts),
+        "ambient_alert_total": sum(ambient_alert_counts.values()),
         "recent_window": recent_window,
         "recent_verdict_counts": dict(recent_verdict_counts),
+        "recent_ambient_alert_count": recent_ambient_alert_count,
         "top_reason_codes": reason_counts.most_common(5),
         "secret_taint_events": secret_taint_events,
         "mode": load_mode(repo_root),
