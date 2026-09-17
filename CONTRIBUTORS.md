@@ -30,6 +30,7 @@ In alphabetical order by handle (ordering is not a ranking):
 - [@slegarraga](https://github.com/slegarraga)
 - [@snowyukitty](https://github.com/snowyukitty)
 - [@Som0111](https://github.com/Som0111)
+- [@Souptik96](https://github.com/Souptik96)
 - [@stevenmini2019](https://github.com/stevenmini2019)
 - [@thesageak](https://github.com/thesageak)
 - [@Tian-Tan](https://github.com/Tian-Tan)
