@@ -572,6 +572,21 @@ def test_raw_windows_path_with_forward_slashes_is_rejected():
         _make_event(target_path_class="C:/Users/x/.aws/credentials")
 
 
+@pytest.mark.parametrize(
+    "raw",
+    ["C:/Users/x/.aws/credentials", r"C:\Users\x\.aws\credentials"],
+)
+def test_raw_drive_filename_is_rejected_in_both_spellings(raw):
+    """A drive path ending in a real filename stays rejected, either separator.
+
+    The counterpart to ``test_drive_wildcard_path_class_is_accepted``: widening
+    the drive branch to accept wildcard classes (#704) must not let the concrete
+    filename through, in either the normalized or the native spelling.
+    """
+    with pytest.raises(ValidationError):
+        _make_event(target_path_class=raw)
+
+
 def test_raw_relative_path_with_extension_is_rejected():
     """A relative dir/filename.ext (no wildcard) must raise ValidationError."""
     with pytest.raises(ValidationError):
@@ -620,6 +635,7 @@ def test_path_class_output_is_always_accepted():
         "a/b/c/deep_file",
         r"backend\auth\session.ts",
         "/etc/passwd",
+        r"C:\Users\x\.aws\credentials",
     ]
     for target in targets:
         action = SecurityObject(
@@ -657,6 +673,22 @@ def test_absolute_wildcard_path_class_is_accepted():
     """
     event = _make_event(target_path_class="/etc/*")
     assert event.target_path_class == "/etc/*"
+
+
+@pytest.mark.parametrize(
+    "path_class_value",
+    ["C:/Users/x/.aws/*", r"C:\Users\x\.aws\*"],
+)
+def test_drive_wildcard_path_class_is_accepted(path_class_value):
+    """A drive-letter path class like 'C:/Users/x/.aws/*' is a class, not a leak.
+
+    ``path_class`` normalizes separators, so on Windows an absolute-target file
+    action arrives as ``C:/Users/x/.aws/*``. The final segment is wildcarded, so
+    no filename is exposed; only the drive-letter prefix made it look like a raw
+    path before this fix (#704). The backslash spelling is the same class.
+    """
+    event = _make_event(target_path_class=path_class_value)
+    assert event.target_path_class == path_class_value
 
 
 def test_dotfile_path_class_is_accepted():
