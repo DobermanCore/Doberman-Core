@@ -661,8 +661,13 @@ class CostEvent(BaseModel):
 # ``.env``). Raw paths that are rejected:
 #   - absolute POSIX paths with no wildcard final segment (``/home/user/.ssh/id_rsa``)
 #     — ``/etc/*`` is a legitimate wildcard class and must stay accepted (#650).
-#   - Windows drive paths, backslash or forward-slash (``C:\Users\...``,
-#     ``C:/Users/x/.aws/credentials``) — a drive path is never a path class.
+#   - Windows drive paths with no wildcard final segment, backslash or
+#     forward-slash (``C:\Users\x\.aws\credentials``,
+#     ``C:/Users/x/.aws/credentials``) — ``C:/Users/x/.aws/*`` and its backslash
+#     spelling are legitimate wildcard classes and must stay accepted (#704).
+#     ``path_class`` normalizes separators, so a drive-letter target on Windows
+#     arrives here as ``C:/dir/*``; rejecting every drive-prefixed string made
+#     the bus refuse every absolute-target file action on Windows.
 #   - relative paths with a real filename component (``backend/auth/session.ts``,
 #     ``.ssh/id_rsa``) i.e. a ``/`` followed by a final segment with no ``*``.
 #     The filename need not have an extension: ``storage.log.path_class`` only
@@ -671,7 +676,12 @@ class CostEvent(BaseModel):
 _RAW_PATH_RE = _re.compile(
     r"""
     (?:
-        ^[A-Za-z]:[\\/]  # Windows drive path (C:\... or C:/...)
+        # Windows drive path (C:\... or C:/...) whose final segment carries no
+        # wildcard. The final-segment test is the same rule the branch below
+        # applies to POSIX paths, extended to the backslash separator, so a
+        # drive-letter wildcard class (``C:/Users/x/.aws/*``) is accepted while
+        # a drive-letter filename (``C:/Users/x/.aws/credentials``) is rejected.
+        ^[A-Za-z]:[\\/](?:.*[\\/])?[^*\\/]*$
       | /[^*/]+$          # dir/filename — final segment has no wildcard.
                           # Covers absolute POSIX paths too: an absolute path
                           # with a wildcarded final segment (e.g. "/etc/*") does
