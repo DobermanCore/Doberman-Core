@@ -50,6 +50,35 @@ PROPOSABLE_REASON_CODES = frozenset({ReasonCode.role_out_of_scope.value})
 #: Default proposal lifetime, plumbed straight into `apply_standing_elevation`.
 _DEFAULT_TTL_DAYS = 7
 
+#: The ambient monitor (FM.2, `doberman.monitor.daemon`) tags its rows this
+#: way (see `doberman.render.is_ambient_source_context`, duplicated here —
+#: not imported — for the same reason `doberman.render`/`doberman.dash.stats`
+#: duplicate it rather than each other: every module that needs this two-line
+#: string check stays a self-contained leaf rather than growing a cross-import
+#: for it). An ambient row was observed, never enforced — nobody was
+#: interrupted by it, so it must never inflate a friction rate or push a
+#: proposal past `min_occurrences` on its own (#703).
+_AMBIENT_SOURCE_PREFIX = "ambient:"
+
+
+def _exclude_ambient(rows: list[dict]) -> list[dict]:
+    """Drop ambient-monitor rows before either entry point sees them (#703).
+
+    The single filter point: both :func:`build_friction_report` and
+    :func:`generate_proposals` call this first, so a row tagged
+    ``source_context="ambient:<collector_id>"`` can never reach either one's
+    aggregation — not the decision/session counts, not the AUTH reason
+    tally, not a proposal's occurrence count.
+    """
+    return [
+        row
+        for row in rows
+        if not (
+            isinstance(row.get("source_context"), str)
+            and row["source_context"].startswith(_AMBIENT_SOURCE_PREFIX)
+        )
+    ]
+
 
 def _parse_reason_codes(raw: str | None) -> list[str]:
     """Best-effort parse of a row's ``reason_codes_json``; never raises."""
@@ -91,8 +120,12 @@ def build_friction_report(rows: list[dict]) -> dict:
     Pure and total: never raises on malformed input (malformed
     ``reason_codes_json`` drops just that row's codes; an unparsable ``ts``
     drops just that row from ``trend``) - matching the redacted-log's own
-    fail-closed-to-empty read contract.
+    fail-closed-to-empty read contract. Ambient-monitor rows are dropped
+    before anything else (see :func:`_exclude_ambient`) — they were
+    observed, never enforced, so they must never count as a decision, an
+    intervention, or a data point in any rate below.
     """
+    rows = _exclude_ambient(rows)
     decisions = len(rows)
     session_ids = {r["session_id"] for r in rows if r.get("session_id")}
     sessions = len(session_ids)
@@ -180,6 +213,11 @@ def _proposal_id(action_type: str, target_path_class: str, codes: set[str]) -> s
 def generate_proposals(rows: list[dict], *, min_occurrences: int = 5) -> list[dict]:
     """Standing-elevation proposals for AUTH classes approved every single time.
 
+    Ambient-monitor rows are dropped before grouping (see
+    :func:`_exclude_ambient`) — an ambient AUTH-grade alert was never
+    actually challenged or approved, so it must never count toward
+    ``min_occurrences`` or an approval rate.
+
     Allowlist semantics throughout - anything not affirmatively satisfying
     every condition below fails closed to "no proposal" for that group:
 
@@ -202,6 +240,7 @@ def generate_proposals(rows: list[dict], *, min_occurrences: int = 5) -> list[di
     # their own consumable mechanism before they can grow a proposal `kind`
     # here; add one only when that lever exists.
     """
+    rows = _exclude_ambient(rows)
     groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for row in rows:
         if row.get("final_verdict") != "AUTH":

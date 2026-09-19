@@ -78,6 +78,7 @@ def _row(
     auth_result="approved",
     session_id="s1",
     entity_id="e1",
+    source_context="user",
 ):
     """A hand-built row in the exact shape `read_decisions` returns."""
     return {
@@ -88,7 +89,7 @@ def _row(
         "action_type": action_type,
         "target_path_class": target_path_class,
         "risk": "medium",
-        "source_context": "user",
+        "source_context": source_context,
         "final_verdict": final_verdict,
         "decided_layer": "objective",
         "reason_codes_json": reason_codes_json,
@@ -275,6 +276,52 @@ def test_build_friction_report_empty_rows_never_raises():
     assert report["trend"] == {}
 
 
+def test_build_friction_report_ignores_ambient_rows():
+    """#703: a report built from real rows PLUS a pile of ambient-monitor
+    AUTH/BLOCK rows must be byte-identical to one built from the real rows
+    alone - ambient rows were observed, never enforced, and must not move
+    the decision/session/intervention counts, the reason tally, any
+    approval-rate table, or the weekly trend."""
+    live_rows = [
+        _row(id=1, ts="2026-07-06T10:00:00+00:00", target_path_class=".env", session_id="s1"),
+        _row(
+            id=2,
+            ts="2026-07-06T11:00:00+00:00",
+            target_path_class="migrations/*.py",
+            session_id="s1",
+        ),
+        _row(
+            id=3,
+            ts="2026-07-07T09:00:00+00:00",
+            action_type="file_read",
+            target_path_class=None,
+            final_verdict="PASS",
+            reason_codes_json="[]",
+            auth_result=None,
+            session_id="s1",
+        ),
+    ]
+    ambient_rows = [
+        _row(
+            id=100 + i,
+            ts="2026-07-06T12:00:00+00:00",
+            action_type="shell_exec",
+            target_path_class="scripts/deploy.sh",
+            final_verdict="BLOCK",
+            reason_codes_json='["destructive_command"]',
+            auth_result=None,
+            session_id=f"ambient-s{i}",
+            source_context="ambient:stub.collector",
+        )
+        for i in range(5)
+    ]
+
+    baseline = build_friction_report(live_rows)
+    with_ambient = build_friction_report(live_rows + ambient_rows)
+
+    assert with_ambient == baseline
+
+
 # --- 2. Proposal emitted --------------------------------------------------
 
 
@@ -300,6 +347,44 @@ def test_proposal_emitted_for_five_approved_role_out_of_scope_auths():
     # id determinism: same input -> same id.
     proposals2 = generate_proposals(rows, min_occurrences=5)
     assert proposals2[0]["id"] == p["id"]
+
+
+def test_no_proposal_for_five_ambient_role_out_of_scope_auths():
+    """#703: an ambient-monitor row was observed, never enforced - the SAME
+    five rows that emit a proposal above (test_proposal_emitted_for_five_
+    approved_role_out_of_scope_auths) must emit nothing once tagged as
+    ambient, even though every other condition (action type, path class,
+    occurrence count, approval, reason code) is identical."""
+    rows = [
+        _row(
+            id=i,
+            ts=f"2026-07-{6 + i:02d}T10:00:00+00:00",
+            session_id=f"s{i}",
+            source_context=f"ambient:stub.collector-{i}",
+        )
+        for i in range(1, 6)
+    ]
+    assert generate_proposals(rows, min_occurrences=5) == []
+
+
+def test_ambient_rows_cannot_push_a_group_past_min_occurrences():
+    """The exact failure mode #703 names: 3 real approved rows plus 2
+    ambient ones of the SAME group must not reach min_occurrences=5 - only
+    the 3 real rows may ever count toward the threshold."""
+    real_rows = [
+        _row(id=i, ts=f"2026-07-{6 + i:02d}T10:00:00+00:00", session_id=f"s{i}")
+        for i in range(1, 4)
+    ]
+    ambient_rows = [
+        _row(
+            id=100 + i,
+            ts=f"2026-07-{6 + i:02d}T10:00:00+00:00",
+            session_id=f"amb-s{i}",
+            source_context="ambient:stub.collector",
+        )
+        for i in range(1, 3)
+    ]
+    assert generate_proposals(real_rows + ambient_rows, min_occurrences=5) == []
 
 
 # --- 3. NO proposal cases -------------------------------------------------
