@@ -322,6 +322,34 @@ def test_build_friction_report_ignores_ambient_rows():
     assert with_ambient == baseline
 
 
+def test_build_friction_report_ignores_ambient_pass_rows_session_count_too():
+    """The exclusion is unconditional on source_context, not gated on
+    final_verdict == AUTH/BLOCK - an ambient PASS row is just as much "never
+    enforced, nobody interrupted" as an ambient AUTH/BLOCK one. Without this,
+    an ambient PASS row could sneak a brand-new session_id past the filter
+    and silently dilute interventions_per_session (more sessions, same
+    interventions) even though generate_proposals only ever looks at AUTH
+    rows and would never notice the leak."""
+    live_rows = [_row(id=1, session_id="s1")]
+    ambient_pass = _row(
+        id=2,
+        ts="2026-07-06T11:00:00+00:00",
+        action_type="file_read",
+        target_path_class="src/*.py",
+        final_verdict="PASS",
+        reason_codes_json="[]",
+        auth_result=None,
+        session_id="ambient-session-should-not-count",
+        source_context="ambient:stub.collector",
+    )
+
+    baseline = build_friction_report(live_rows)
+    with_ambient_pass = build_friction_report([*live_rows, ambient_pass])
+
+    assert with_ambient_pass == baseline
+    assert with_ambient_pass["sessions"] == 1
+
+
 # --- 2. Proposal emitted --------------------------------------------------
 
 
