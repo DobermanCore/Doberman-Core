@@ -1449,6 +1449,29 @@ def test_interactive_step_counter_appears_in_section_titles(tmp_path: Path) -> N
     assert "[7 of 7]" in result.output  # the demo offer, item 7
 
 
+def test_refused_mode_lowering_removes_skipped_tuning_from_step_counter(
+    tmp_path: Path,
+) -> None:
+    """A refused lowering skips preference tuning, so it must not leave a
+    phantom step in the denominator or a gap in the remaining step numbers."""
+    first = runner.invoke(app, ["setup", "--yes", "--path", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+
+    result = runner.invoke(
+        app,
+        ["setup", "--mode", "light", "--host", "claude", "--path", str(tmp_path)],
+        input="n\nn\nn\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Preference tuning [" not in result.output
+    assert re.findall(r"\[(\d+) of (\d+)\]", result.output) == [
+        ("1", "4"),
+        ("2", "4"),
+        ("3", "4"),
+        ("4", "4"),
+    ]
+
+
 def test_yes_run_shows_no_step_counters(tmp_path: Path) -> None:
     """item 3: `--yes` prompts for nothing, so it never shows a step counter."""
     import re

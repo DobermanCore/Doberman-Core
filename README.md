@@ -134,6 +134,9 @@ Anonymous usage counts are on by default: command names and daily totals, never 
 secrets. The first command prints a notice, and `doberman telemetry off` or `DO_NOT_TRACK=1` turns
 them off. See [Telemetry](docs/TELEMETRY.md).
 
+Interactive setup step counters include only the sections that the current run actually shows,
+including when a refused mode lowering skips preference tuning.
+
 Doberman now reviews every tool call your agent makes. Confirm it with `doberman doctor`, or watch
 real verdicts with `doberman demo`. MCP-proxy wiring, the dashboard, the TUI, scan, and 2FA
 (two-factor authentication) are in the [Setup guide](docs/SETUP.md). Pending-approval cards in the
