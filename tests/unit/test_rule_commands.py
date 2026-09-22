@@ -136,6 +136,49 @@ def test_non_force_push_to_feature_branch_is_not_blocked():
     assert result.verdict is not Verdict.BLOCK
 
 
+# --- #629: deleting a protected branch gets the same treatment as force-pushing to it ---
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --delete origin main",
+        "git push -d origin master",
+        "git push origin :main",  # empty-source refspec delete
+        "git push origin :refs/heads/develop",
+    ],
+)
+def test_push_delete_of_protected_branch_blocks(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --delete origin my-feature",
+        "git push -d origin my-feature",
+        "git push origin :my-feature",
+    ],
+)
+def test_push_delete_of_feature_branch_is_not_blocked(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_ordinary_push_to_protected_branch_is_not_classified_as_delete():
+    # No --delete/-d and no empty-source refspec: an ordinary update, not a delete.
+    result = _cmd("git push origin main", action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_push_delete_respects_configured_extra_protected_branch():
+    role = RoleDefinition(name="x", protected_branches=("staging",))
+    result = _cmd("git push --delete origin staging", action_type=ActionType.git_op, role=role)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
 # --- #199: protected_branches role.yaml key widens force-push protection ---
 # (config.py parses the key; DestructiveCommandRule.evaluate unions ctx.role's
 # protected_branches into its own set -- see _effective_protected).

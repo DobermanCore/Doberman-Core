@@ -1178,6 +1178,38 @@ def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) ->
     return not explicit_refs
 
 
+def _git_push_deletes_protected_branch(tokens: list[str], protected: Iterable[str]) -> bool:
+    """``git push`` deleting a protected branch, via ``--delete``/``-d`` or an
+    empty-source refspec (``:branch``).
+
+    Independent of :func:`_git_force_push_to_protected`: a delete rewrites no
+    history, so it doesn't set ``has_force`` there and falls through
+    unclassified. Keys on the same verb (:func:`_git_leading_globals`); unlike
+    a force-push, ``git push --delete`` always names its target explicitly, so
+    there's no bare/current-branch case to fail safe on.
+    """
+    argv, _ = _git_leading_globals(tokens)
+    if not argv or argv[0] != "push":
+        return False
+    push_args = argv[1:]
+    is_delete_flag = any(t in ("--delete", "-d") for t in push_args)
+    positional = [t for t in push_args if not t.startswith("-")]
+    explicit_refs = positional[1:]  # the first positional is the remote
+    if not is_delete_flag:
+        # Without --delete/-d, only an empty-source refspec (``:branch``) is a
+        # delete; a plain ``branch`` token here is an ordinary push/update.
+        explicit_refs = [t for t in explicit_refs if t.startswith(":")]
+        if not explicit_refs:
+            return False
+    protected_set = {b.lower() for b in protected}
+    for token in explicit_refs:
+        ref = token.split(":")[-1].lower()
+        ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
+        if ref in protected_set:
+            return True
+    return False
+
+
 # Catastrophic non-rm commands (whole-disk wipes, fork bombs). IGNORECASE covers
 # the Windows disk-wipe names (Format-Volume, Clear-Disk, format).
 _DISK_WIPE = re.compile(
@@ -1803,6 +1835,10 @@ def _segment_verdict(
         return _block("Raw write to a block device (data-destroying dd).")
     if cmd == "git" and _git_force_push_to_protected(tokens, protected_branches):
         return _block("Force-push to a protected branch (rewrites shared history).")
+    if cmd == "git" and _git_push_deletes_protected_branch(tokens, protected_branches):
+        return _block(
+            "Deletes a protected branch (the ref, and anything that pointed only at it, is gone)."
+        )
     # N2: the M1 false-positive fix removed the equivalent bare substring
     # check from _classify_line's RAW-command pre-check but left this
     # per-segment twin in place — it fires on ANY ":(){"-shaped substring
