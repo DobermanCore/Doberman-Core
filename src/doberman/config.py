@@ -426,7 +426,9 @@ def save_message_tone(tone: str, repo_root: str = ".") -> str:
     directly, with NO drift/possession-factor gate (see doberman.policy.drift).
     """
     if tone not in MESSAGE_TONES:
-        raise ValueError(f"unknown message tone {tone!r}; choose one of {MESSAGE_TONES}")
+        raise ValueError(
+            f"unknown message tone {tone!r}; choose one of: {', '.join(MESSAGE_TONES)}"
+        )
     doc = load_policy(repo_root) or recommend_policy()
     save_policy(doc.with_message_tone(tone), repo_root)
     return tone
