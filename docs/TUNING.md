@@ -85,9 +85,10 @@ root are always a hard block, for every role. An explicit `.doberman/role.yaml` 
 precedence over the opt-in default. Turning the opt-in off (`doberman role disable-default`) is a
 weaken, gated behind the same possession-factor confirmation as lowering mode or enforcement.
 
-## Protecting extra branches from force-push, `protected_branches`
+## Protecting extra branches from force-push and delete, `protected_branches`
 
-Force-pushing to `main`, `master`, `release`, or `develop` always blocks, no configuration needed.
+Force-pushing to, or pushing a delete of, `main`, `master`, `release`, or `develop` always blocks,
+no configuration needed.
 To protect additional branches for a repo, such as `staging` or a release train branch, add a
 `protected_branches` list to `.doberman/role.yaml`:
 
