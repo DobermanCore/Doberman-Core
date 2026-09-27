@@ -113,8 +113,15 @@ def test_save_and_load_round_trip(tmp_path):
 def test_save_rejects_an_unknown_tone(tmp_path):
     import pytest
 
-    with pytest.raises(ValueError, match="unknown message tone"):
+    with pytest.raises(
+        ValueError,
+        match=r"^unknown message tone 'sarcastic'; choose one of: human, technical$",
+    ) as exc_info:
         config.save_message_tone("sarcastic", str(tmp_path))
+    # The error lists both tones and doesn't contain a Python tuple ('
+    err_msg = str(exc_info.value)
+    assert "choose one of: human, technical" in err_msg
+    assert "('" not in err_msg
     # Rejected — nothing was written.
     assert config.load_message_tone(str(tmp_path)) == "human"
 
@@ -157,6 +164,9 @@ def test_cli_sets_the_tone_with_no_gate(tmp_path):
 def test_cli_rejects_an_invalid_tone(tmp_path):
     result = runner.invoke(app, ["message-tone", "loud", "--path", str(tmp_path)])
     assert result.exit_code == 2
+    combined_output = result.stdout + result.stderr
+    assert "error: unknown message tone 'loud'; choose one of: human, technical" in combined_output
+    assert "('" not in combined_output
     assert config.load_message_tone(str(tmp_path)) == "human"  # unchanged
 
 
