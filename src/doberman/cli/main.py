@@ -2983,7 +2983,7 @@ def policy_versions(
     )
 
     if show is not None:
-        _policy_versions_show(show, path)
+        _policy_versions_show(show, path, as_json=as_json)
         return
     if verify:
         report = verify_catalogue(path)
@@ -3031,7 +3031,7 @@ def policy_versions(
         )
 
 
-def _policy_versions_show(show: str, path: str) -> None:
+def _policy_versions_show(show: str, path: str, as_json: bool = False) -> None:
     from doberman.storage.policy_catalogue import VERSION_PREFIX, find_versions, read_snapshot
 
     needle = show[len(VERSION_PREFIX) :] if show.startswith(VERSION_PREFIX) else show
@@ -3049,7 +3049,11 @@ def _policy_versions_show(show: str, path: str) -> None:
     if snapshot is None:
         typer.echo(f"error: could not read the snapshot for {matches[0]}", err=True)
         raise typer.Exit(code=1)
-    typer.echo(json.dumps({"version": matches[0], "snapshot": snapshot}, indent=2, sort_keys=True))
+    payload = {"snapshot": snapshot, "version": matches[0]}
+    if as_json:
+        typer.echo(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    else:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
 @app.command("decision-log-prune", rich_help_panel="Daily")
