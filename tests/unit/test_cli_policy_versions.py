@@ -55,10 +55,32 @@ def test_show_resolves_a_prefix_and_prints_the_snapshot(tmp_path):
     assert data["version"] == v
     assert data["snapshot"]["schema"] == 1
     assert "mode" in data["snapshot"]["doc"]
+    assert "\n  " in result.stdout
 
     full = runner.invoke(app, ["policy-versions", "--path", str(tmp_path), "--show", v])
     assert full.exit_code == 0
     assert json.loads(full.stdout)["version"] == v
+    assert "\n  " in full.stdout
+
+
+def test_show_json_is_compact_and_deterministic(tmp_path):
+    (v, *_) = _two_versions(tmp_path)
+    prefix = v[len(VERSION_PREFIX) :][:8]
+    result = runner.invoke(
+        app, ["policy-versions", "--path", str(tmp_path), "--show", prefix, "--json"]
+    )
+    assert result.exit_code == 0
+    assert len(result.stdout.strip().splitlines()) == 1
+    data = json.loads(result.stdout)
+    assert data["version"] == v
+    assert data["snapshot"]["schema"] == 1
+    assert '", "' not in result.stdout
+    assert '": "' not in result.stdout
+
+    second = runner.invoke(
+        app, ["policy-versions", "--path", str(tmp_path), "--show", prefix, "--json"]
+    )
+    assert result.stdout == second.stdout
 
 
 def test_show_exit_codes(tmp_path):
