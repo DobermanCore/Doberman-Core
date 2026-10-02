@@ -1,7 +1,7 @@
 """Slice 8.3 — `doberman log` and `doberman memory` views (redaction-safe)."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from typer.testing import CliRunner
 
@@ -93,6 +93,26 @@ def test_decision_log_prune_reports_count_only(tmp_path):
     assert "Decision log pruned: 0 row(s)." in result.output
     assert "hmac:abc123" not in result.output  # no fingerprint value
     assert _SECRET not in result.stdout
+
+
+def test_decision_log_prune_dry_run_previews_without_deleting(tmp_path):
+    root = str(tmp_path)
+    now = datetime.now(timezone.utc)
+    _seed_auth_secret_read(root, ts=now - timedelta(minutes=2))
+    _seed_auth_secret_read(root, ts=now - timedelta(minutes=1))
+
+    result = runner.invoke(
+        app,
+        ["decision-log-prune", "--max-rows", "1", "--dry-run", "--path", root],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Would prune 1 row(s) (0 by age, 1 over --max-rows)." in result.output
+    assert _SECRET not in result.stdout
+
+    mem_result = runner.invoke(app, ["memory", "--path", root])
+    assert mem_result.exit_code == 0
+    assert "Decisions recorded: 2" in mem_result.stdout
 
 
 def test_memory_shows_classes_and_counts_only(tmp_path):
