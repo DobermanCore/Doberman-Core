@@ -80,6 +80,25 @@ async def test_block_returns_error_and_nothing_recorded(monkeypatch):
         assert fake.calls == []
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("fs_write", {"path": ".doberman/policies.yaml", "content": "tamper"}),
+        ("fs_delete", {"path": ".doberman/policies.yaml"}),
+    ],
+)
+@pytest.mark.guarantee("control-plane-self-protection", host="mcp-proxy")
+async def test_control_plane_mutation_is_blocked_before_downstream(tool_name, arguments):
+    """The proxy's real objective engine protects Doberman's own state."""
+    async with proxied_session() as (fake, agent):
+        result = await agent.call_tool(tool_name, arguments)
+        assert result.isError
+        text = result.content[0].text
+        assert "protected_path_blocked" in text
+        assert "Target is a protected path" in text
+        assert fake.calls == []
+
+
 async def test_auth_returns_error_and_nothing_recorded(monkeypatch):
     monkeypatch.setattr(executor, "DEFAULT_OBJECTIVE", AUTHING)
     monkeypatch.setattr(executor, "run_auth_challenge", _deny_challenge)
