@@ -30,7 +30,7 @@ Day-to-day posture, status, and review commands.
 | `doberman monitor run` | Warm, observe-only ambient daemon (FM.2): scores non-inline activity through the same engine, never enforces. Refuses to start a second instance for the same repo. | `--path`/`-p`, `--interval`, `--mode` |
 | `doberman monitor status` | Whether the ambient monitor daemon appears to be running, plus its bus cursor and pending-event backlog. | `--path`/`-p` |
 | `doberman revoke ELEVATION_ID` | Revoke an active role elevation by id (see `doberman status`). | `--path`/`-p` |
-| `doberman tune` | Friction report (interventions per session, top AUTH reasons) plus gated standing-elevation proposals. | `--path`/`-p`, `--json`, `--last`, `--min-occurrences`, `--accept` |
+| `doberman tune` | Friction report (interventions per session, top AUTH reasons) plus gated standing-elevation proposals. | `--path`/`-p`, `--json`, `--last`/`-n`, `--min-occurrences`, `--accept` |
 | `doberman memory` | Learned-memory profile: decision counts, verdict mix, most-touched path classes. Never shows a fingerprint value or raw secret. | `--path`/`-p`, `--json` |
 | `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
@@ -219,6 +219,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `policy-versions` | `2` | `--show` given something that is not a `pv1:` id or at least 8 hex characters. |
 | `policy-versions` | `1` | `--show` matched nothing or was ambiguous; `--verify` found `mismatch` or `drift`. |
 | `tui` | `2` | `--path` does not exist, exists but is not a directory, or `--last` is less than 1. |
+| `log`, `tune`, `policy-history` | `2` | `--last` is negative. `0` is allowed and means zero rows. |
 | `tui` | `1` | The optional `textual` extra is not installed. |
 | `dash` | `1` | The optional `dash` extra is not installed. |
 | `demo` | `1` | Invalid mode name, or a scenario did not match its expected outcome. |
@@ -229,7 +230,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `uninstall` | `1` | No possession factor enrolled, confirmation declined, name mismatch, gate denied, or some items were not removed. |
 | `hook cursor` | `2` | The gated Cursor event was denied. The JSON document says `deny` as well; Cursor treats either signal as a block, so a lost document still blocks. |
 
-Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.
+Commands not listed (`scan`, `review`, `status`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.
 
 ### Collision audit
 

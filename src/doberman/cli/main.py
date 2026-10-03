@@ -2218,7 +2218,9 @@ def tune(
     json_out: bool = typer.Option(
         False, "--json", help="Emit the report + proposals as one JSON document."
     ),
-    last: int = typer.Option(2000, "--last", help="Consider the most recent N decisions."),
+    last: int = typer.Option(
+        2000, "--last", "-n", min=0, help="Consider the most recent N decisions."
+    ),
     min_occurrences: int = typer.Option(
         5,
         "--min-occurrences",
@@ -2357,7 +2359,7 @@ _ACTION_WIDTH = max(len(action.value) for action in ActionType)
 
 @app.command(rich_help_panel="Daily")
 def log(
-    last: int = typer.Option(20, "--last", "-n", help="Show the most recent N decisions."),
+    last: int = typer.Option(20, "--last", "-n", min=0, help="Show the most recent N decisions."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
     jsonl: bool = typer.Option(
         False,
@@ -2920,7 +2922,7 @@ def memory_seed(
 
 @app.command("policy-history", rich_help_panel="Policy internals")
 def policy_history(
-    last: int = typer.Option(20, "--last", "-n", help="Show the most recent N changes."),
+    last: int = typer.Option(20, "--last", "-n", min=0, help="Show the most recent N changes."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
     as_json: bool = typer.Option(
         False,
