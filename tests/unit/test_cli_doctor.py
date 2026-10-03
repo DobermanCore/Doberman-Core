@@ -788,3 +788,28 @@ def test_doctor_hook_timeout_ok_when_strictly_above_the_ceiling(tmp_path):
     _write_claude_hooks(root, timeout=660)
     r = _hook_timeout(run_checks(root))
     assert r.status is CheckStatus.OK
+
+
+# ---------------------------------------------------------------------------
+# --path to a missing directory (#715): refuse it, create nothing
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_refuses_a_missing_path_and_creates_nothing(tmp_path):
+    missing = tmp_path / "typo"
+
+    result = runner.invoke(app, ["doctor", "--path", str(missing)])
+
+    assert result.exit_code == 2
+    assert f"error: --path {missing} does not exist" in result.output
+    assert not missing.exists()
+
+
+def test_doctor_refuses_a_file_path(tmp_path):
+    a_file = tmp_path / "not-a-dir"
+    a_file.write_text("x", encoding="utf-8")
+
+    result = runner.invoke(app, ["doctor", "--path", str(a_file)])
+
+    assert result.exit_code == 2
+    assert f"error: --path {a_file} is not a directory" in result.output
