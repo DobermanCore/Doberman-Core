@@ -1506,6 +1506,22 @@ def update() -> None:
         typer.echo(f"You're on the latest version ({__version__}).")
 
 
+def _require_existing_dir(path: str) -> None:
+    """Exit 2 unless ``--path`` names an existing directory.
+
+    For the commands that read a repo's ``.doberman`` state: without it, a
+    mistyped path is created on the spot (the DBs ``mkdir(parents=True)``) and
+    the command reports on an empty repo instead of failing.
+    """
+    target = Path(path)
+    if not target.exists():
+        typer.echo(f"error: --path {path} does not exist", err=True)
+        raise typer.Exit(code=2)
+    if not target.is_dir():
+        typer.echo(f"error: --path {path} is not a directory", err=True)
+        raise typer.Exit(code=2)
+
+
 @app.command(rich_help_panel="Getting started")
 def doctor(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
@@ -1526,6 +1542,7 @@ def doctor(
     (hooks / hook command on PATH / config / DB) is not healthy, so it is
     script-friendly (`doberman doctor && ...`).
     """
+    _require_existing_dir(path)
     from doberman.cli.doctor import CheckStatus, critical_failures, run_checks
 
     # ASCII marks only: CLI output must survive a cp1252 console (see setup wizard).
@@ -2161,6 +2178,7 @@ def approvals_status(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
     """Show live count and policy TTL without exposing fingerprints."""
+    _require_existing_dir(path)
     seconds = load_approval_memory_seconds(path)
     live = asyncio.run(count_live_approval_memory(datetime.now(timezone.utc), repo_root=path))
     state = "enabled" if seconds else "disabled"
@@ -2469,13 +2487,7 @@ def tui(
     `doberman log --last`); the header shows how many rows are loaded versus how
     many currently match the in-app filter.
     """
-    target = Path(path)
-    if not target.exists():
-        typer.echo(f"error: --path {path} does not exist", err=True)
-        raise typer.Exit(code=2)
-    if not target.is_dir():
-        typer.echo(f"error: --path {path} is not a directory", err=True)
-        raise typer.Exit(code=2)
+    _require_existing_dir(path)
     if importlib.util.find_spec("textual") is None:
         typer.echo(
             "error: The TUI requires the optional 'textual' extra: "
