@@ -2492,9 +2492,32 @@ _DASH_HOST = "127.0.0.1"
 _DASH_DEFAULT_PORT = 8642
 
 
+def _dash_port_is_free(port: int) -> bool:
+    """Whether ``port`` on the dashboard host can be bound right now.
+
+    A throwaway bind, closed straight away. Off Windows it sets SO_REUSEADDR as
+    uvicorn does, so a port only lingering in TIME_WAIT is not reported busy;
+    on Windows that option would let the bind succeed on a port in use.
+    """
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if sys.platform != "win32":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind((_DASH_HOST, port))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
 @app.command(rich_help_panel="Daily")
 def dash(
-    port: int = typer.Option(_DASH_DEFAULT_PORT, "--port", help="Port to bind the dashboard to."),
+    port: int = typer.Option(
+        _DASH_DEFAULT_PORT, "--port", min=1, max=65535, help="Port to bind the dashboard to."
+    ),
     path: str = typer.Option(".", "--path", "-p", help="Repository root to report on."),
 ) -> None:
     """Launch the local dashboard (preview) - a localhost-only control surface.
@@ -2519,6 +2542,13 @@ def dash(
             err=True,
         )
         raise typer.Exit(code=1) from exc
+
+    if not _dash_port_is_free(port):
+        # Checked before the URL is printed and before the heartbeat starts, so
+        # a busy port neither prints a link that never comes up nor briefly
+        # routes AUTH challenges to a dashboard that is not there.
+        typer.echo(f"error: port {port} is already in use, try --port <another>", err=True)
+        raise typer.Exit(code=1)
 
     import threading
 

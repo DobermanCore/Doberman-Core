@@ -144,10 +144,59 @@ def test_dash_disables_uvicorn_access_log(monkeypatch, tmp_path):
     monkeypatch.setattr(uvicorn, "run", lambda _app, **kwargs: captured.update(kwargs))
     monkeypatch.setattr("doberman.storage.heartbeat.touch_heartbeat", lambda _path: None)
 
-    result = runner.invoke(cli_app, ["dash", "--port", "0", "--path", str(tmp_path)])
+    result = runner.invoke(cli_app, ["dash", "--port", str(_free_port()), "--path", str(tmp_path)])
 
     assert result.exit_code == 0
     assert captured.get("access_log") is False
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_dash_refuses_a_busy_port_before_printing_the_url(monkeypatch, tmp_path):
+    import socket
+
+    import uvicorn
+
+    from doberman.cli.main import app as cli_app
+
+    calls: list = []
+    heartbeats: list = []
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr("doberman.storage.heartbeat.touch_heartbeat", heartbeats.append)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        port = held.getsockname()[1]
+        result = runner.invoke(cli_app, ["dash", "--port", str(port), "--path", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert f"error: port {port} is already in use, try --port <another>" in result.output
+    assert "Dashboard:" not in result.output
+    assert calls == []
+    assert heartbeats == []
+
+
+@pytest.mark.parametrize("port", ["0", "70000", "-1"])
+def test_dash_out_of_range_port_is_a_usage_error(monkeypatch, tmp_path, port):
+    import uvicorn
+
+    from doberman.cli.main import app as cli_app
+
+    calls: list = []
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: calls.append(args))
+
+    result = runner.invoke(cli_app, ["dash", "--port", port, "--path", str(tmp_path)])
+
+    assert result.exit_code == 2
+    assert "Dashboard:" not in result.output
+    assert calls == []
 
 
 def test_shell_pending_arrivals_are_announced_once():
