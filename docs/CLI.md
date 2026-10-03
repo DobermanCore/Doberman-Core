@@ -220,7 +220,8 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `policy-versions` | `1` | `--show` matched nothing or was ambiguous; `--verify` found `mismatch` or `drift`. |
 | `tui` | `2` | `--path` does not exist, exists but is not a directory, or `--last` is less than 1. |
 | `tui` | `1` | The optional `textual` extra is not installed. |
-| `dash` | `1` | The optional `dash` extra is not installed. |
+| `dash` | `2` | `--port` is outside `1..65535`. |
+| `dash` | `1` | The optional `dash` extra is not installed, or `--port` is already in use (`error: port N is already in use, try --port <another>`, printed instead of the dashboard URL). |
 | `demo` | `1` | Invalid mode name, or a scenario did not match its expected outcome. |
 | `memory reset` | `1` | No possession factor enrolled, gate denied, or the DB reset failed. |
 | `memory prune` | `1` | The DB prune operation failed. |
