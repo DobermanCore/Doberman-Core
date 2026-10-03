@@ -416,6 +416,37 @@ def _check_tui_extra() -> CheckResult:
     return _check_optional_extra("TUI extra", "textual", "tui")
 
 
+def installed_plugin_names() -> set[str]:
+    """Every entry-point name installed under a Doberman group, without loading any.
+
+    Names only, through the unfiltered :func:`~doberman.engine.registry._iter_entry_points`:
+    diagnosing an enabled-but-missing plugin must never import plugin code.
+    """
+    from doberman.engine.registry import ALL_GROUPS, _iter_entry_points
+
+    return {
+        name
+        for group in ALL_GROUPS
+        for entry_point in _iter_entry_points(group)
+        if isinstance(name := getattr(entry_point, "name", None), str)
+    }
+
+
+def _check_plugins() -> CheckResult:
+    from doberman.engine import plugin_config
+
+    enabled = plugin_config.enabled_plugins()
+    if not enabled:
+        return CheckResult("Plugins", CheckStatus.OK, "none enabled")
+    installed = installed_plugin_names()
+    missing = [name for name in enabled if name not in installed]
+    if missing:
+        return CheckResult(
+            "Plugins", CheckStatus.WARN, f"enabled but not installed: {', '.join(missing)}"
+        )
+    return CheckResult("Plugins", CheckStatus.OK, f"{len(enabled)} enabled, all installed")
+
+
 def _check_config(path: str) -> CheckResult:
     from doberman.config import CONFIG_DIR, POLICY_FILE, load_policy
 
@@ -598,6 +629,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("Codex CLI", False, _check_codex_version),
         _safe_check("Dash extra", False, _check_dash_extra),
         _safe_check("TUI extra", False, _check_tui_extra),
+        _safe_check("Plugins", False, _check_plugins),
     ]
 
 

@@ -1997,6 +1997,14 @@ def plugins_enable(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Enabled {name!r}. Enabled plugins: {', '.join(names)}")
+    from doberman.cli.doctor import installed_plugin_names
+
+    if name not in installed_plugin_names():
+        typer.echo(
+            f"warning: no installed package provides a plugin named {name!r}; "
+            "it stays enabled but nothing loads until one is installed",
+            err=True,
+        )
 
 
 @plugins_app.command("disable")
