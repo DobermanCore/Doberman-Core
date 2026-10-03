@@ -1,6 +1,7 @@
 """Smoke-test help rendering for every public CLI command and group."""
 
 import re
+from pathlib import Path
 
 import pytest
 from typer.main import get_command
@@ -227,3 +228,29 @@ def test_root_help_shows_both_policy_panels_with_getting_started_still_first():
     # The plain "Policy" panel heading, not just its "Policy internals" cousin.
     policy_heading_idx = root_output.index("Policy ─")
     assert getting_started_idx < policy_heading_idx
+
+
+def _visible_command_paths(command, prefix=()):
+    for name, child in getattr(command, "commands", {}).items():
+        if getattr(child, "hidden", False):
+            continue
+        yield (*prefix, name)
+        yield from _visible_command_paths(child, (*prefix, name))
+
+
+def test_cli_md_documents_every_visible_command():
+    """`docs/CLI.md` names every non-hidden command and group (#721).
+
+    A command counts as documented when the doc contains `` `doberman <path>``
+    followed by anything (arguments such as ``NAME`` or ``[NAME]``), the way
+    every table row already spells it.
+    """
+    doc = (Path(__file__).resolve().parents[2] / "docs" / "CLI.md").read_text(encoding="utf-8")
+
+    missing = [
+        " ".join(path)
+        for path in _visible_command_paths(get_command(app))
+        if f"`doberman {' '.join(path)}" not in doc
+    ]
+
+    assert missing == [], f"docs/CLI.md does not mention: {', '.join(missing)}"
