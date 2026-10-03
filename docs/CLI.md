@@ -21,6 +21,7 @@ Day-to-day posture, status, and review commands.
 | `doberman doctor` | Read-only health self-check, grouped into the same Hooks/Policy/Auth/Health sections `status` uses. Exits non-zero if a critical check fails, naming every failing check on the closing line. | `--path`/`-p`, `--json` |
 | `doberman update` | Check PyPI for a newer Doberman and print the upgrade command (never installs). Off under `DO_NOT_TRACK`/`CI`/`DOBERMAN_UPDATE_CHECK=off`. | none |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
+| `doberman policy-file` | Show the status of the team-committed `doberman.policy.yaml` at the repo root: present or absent, how many `blocked`/`sensitive` globs it applies, or why it was rejected, and any glob the last approval still enforces that the file has dropped. `--accept` approves a pending drop behind a confirmation of the diff plus the strongest enrolled possession factor; there is no `--yes` bypass. | `--accept`, `--path`/`-p` |
 | `doberman policy-versions` | Every policy version that has been in force (newest first); `--show` prints one snapshot, `--verify` checks the catalogue. | `--show`, `--verify`, `--path`/`-p`, `--json` |
 | `doberman log` | Recent redacted decision log, newest first. Its timestamp column reads `YYYY-MM-DD HH:MM:SS UTC` (no microseconds, matching the `tui`'s why panel); `--jsonl` keeps the raw stored `ts` value unchanged. | `--last`/`-n`, `--path`/`-p`, `--jsonl`, `--why` |
 | `doberman decision-log-prune` | Delete resolved decisions by age and/or retained-row budget. Never touches pending AUTH rows or the policy-change ledger. | `--older-than-days`, `--max-rows`, `--path`/`-p` |
@@ -35,6 +36,9 @@ Day-to-day posture, status, and review commands.
 | `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
 | `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
+| `doberman plugins list` | Show the enabled plugin names, then every installed entry point across all plugin seams with its enabled/disabled state. Lists names only and never loads a plugin to show it. | none |
+| `doberman plugins enable NAME` | Opt a plugin in by entry-point name. Plugins are opt-in by name: being installed is never enough for one to run in-process. | none |
+| `doberman plugins disable NAME` | Stop trusting a plugin by name; no seam imports it again. Disabling a name that was never enabled is a no-op. | none |
 | `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host and ask for telemetry consent (its default mirrors the current on-disk state, so a prior opt-out isn't silently reversed by a bare Enter). Every menu prompt (hosts, mode, weight tuning) and every yes/no confirm (telemetry, global scope, weight tuning, the closing demo offer) accepts `q`/`quit` to abort cleanly, except the closing demo offer, where `q` only declines the demo since setup has already succeeded by then. Exits non-zero (`!! Setup incomplete !!`) if the closing doctor pass finds a critical. A host-kind-free run (mcp/openclaw only) prints `!! Setup pending !!`, and a MIXED run (some hooks-kind host wired, some still manual) prints `!! Setup partly pending !!`; both exit `3`. A refused `--mode <lower>` request still exits `0`: the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`). Exit `0` means the run completed, not that the requested mode was applied. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable; also accepts `all`), `--path`/`-p`, `--dry-run`, `--no-telemetry` |
 | `doberman telemetry` | With no subcommand, prints the same status line `telemetry status` does (symmetric with bare `doberman mode`). | none |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
@@ -74,6 +78,7 @@ Gated recovery actions for a stuck or compromised state. Each requires an enroll
 | `doberman taint clear` | Clear this repo's sticky session taint. No timer; this is the only escape hatch. | `--path`/`-p` |
 | `doberman tools approve TOOL_NAME` | Approve a changed MCP tool fingerprint after possession-factor verification. | `--path`/`-p` |
 | `doberman memory reset` | Wipe learned behavioral memory for this repo. Raise-safe by construction: a colder baseline scores everything as more novel, never less protected. | `--entity`, `--path`/`-p` |
+| `doberman memory seed` | Warm the per-entity streaming baseline from a JSONL file of allowed-action traces (see [BASELINE_SEEDING.md](BASELINE_SEEDING.md)). Every line is validated first and one bad line refuses the whole file. It can only warm the surprise baseline; it never changes a verdict, the mode, or the policy. | `--from` (required), `--now`, `--json`, `--path`/`-p` |
 | `doberman memory prune` | Drop stale entities' learned memory past a retention window. A maintenance operation, so it is not gated. | `--older-than-days` (required), `--path`/`-p` |
 | `doberman uninstall` | Remove Doberman from one project, or use `--global` for ordered machine-wide removal: all writable hooks, project and device state, enrolled factors, then the pip/pipx package. Codex plugin hooks remain under `codex plugin` control. | `--path`/`-p`, `--yes`/`-y`, `--dry-run`, `--global`/`-g`, `--keep-package` |
 
@@ -245,6 +250,9 @@ doberman doctor --json | jq .ok
 doberman policy-history --json | jq 'length'
 doberman log --jsonl | jq -c 'select(.final_verdict=="block")'
 doberman tune --json | jq '.proposals'
+doberman policy-file
+doberman plugins list
+doberman plugins enable my_rule
 doberman 2fa setup
 doberman password set
 doberman setup
