@@ -148,7 +148,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     effects_capped             INTEGER,
     effects_hits_git           INTEGER,
     effects_hits_outside_repo  INTEGER,
-    effects_digest_fp          TEXT
+    effects_digest_fp          TEXT,
+    policy_version    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS secret_fingerprints (
@@ -533,6 +534,10 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
     pending_cols = await _table_columns(conn, "pending_approvals")
     if pending_cols and "session_id" not in pending_cols:
         await _add_column_if_missing(conn, "pending_approvals", "session_id TEXT")
+
+    decision_cols = await _table_columns(conn, "decisions")
+    if decision_cols and "policy_version" not in decision_cols:
+        await _add_column_if_missing(conn, "decisions", "policy_version TEXT")
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

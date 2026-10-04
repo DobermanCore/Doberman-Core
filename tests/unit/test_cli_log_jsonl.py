@@ -48,6 +48,7 @@ _ROWS = [
         "auth_required": 1,
         "auth_result": "denied",
         "elevation_id": None,
+        "policy_version": "pv1:" + "a" * 64,
     },
     {
         "id": 1,
@@ -64,6 +65,7 @@ _ROWS = [
         "auth_required": 0,
         "auth_result": None,
         "elevation_id": None,
+        "policy_version": "pv1:" + "b" * 64,
     },
 ]
 
@@ -489,3 +491,21 @@ def test_log_jsonl_keeps_the_true_verdict_for_an_ambient_row(tmp_path):
     obj = json.loads(result.stdout.splitlines()[0])
     assert obj["final_verdict"] == "BLOCK"
     assert obj["source_context"] == "ambient:stub.collector"
+
+
+def test_log_jsonl_emits_policy_version_without_canonical(tmp_path):
+    import doberman.cli.main as main_mod
+
+    async def _rows(*_a, **_k):
+        return list(_ROWS)
+
+    with patch.object(main_mod, "read_decisions", _rows):
+        result = runner.invoke(app, ["log", "--path", str(tmp_path), "--jsonl"])
+
+    assert result.exit_code == 0
+
+    objs = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+
+    assert objs[0]["policy_version"] == "pv1:" + "a" * 64
+    assert objs[1]["policy_version"] == "pv1:" + "b" * 64
+    assert "canonical" not in result.stdout

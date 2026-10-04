@@ -2442,6 +2442,7 @@ _JSONL_EXTRA_COLUMNS = (
     "human_confirmed",
     "source_context",
     "session_id",
+    "policy_version",
 )
 
 # Keep every action type in one column even when a new enum member outgrows the
