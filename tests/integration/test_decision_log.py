@@ -174,7 +174,65 @@ async def test_decision_without_effect_set_persists_null_not_zero(tmp_path):
         assert row[column] is None  # "unknown/no preview", never a fabricated 0/False
 
 
-async def test_effect_set_from_real_walk_never_leaks_secret_or_raw_path(tmp_path):
+async def test_decision_persists_policy_version(tmp_path):
+    root = str(tmp_path)
+    decision, action = _decision_and_action(Verdict.PASS, "policy-version")
+
+    await record_decision(decision, action, repo_root=root)
+
+    rows = await read_decisions(root)
+
+    assert len(rows) == 1
+    assert rows[0]["policy_version"].startswith("pv1:")
+
+
+async def test_policy_version_failure_keeps_decision_row(tmp_path, monkeypatch):
+    import doberman.storage.log as log_module
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("failed to determine policy version")
+
+    monkeypatch.setattr(log_module, "observe_current", boom)
+
+    root = str(tmp_path)
+    decision, action = _decision_and_action(Verdict.PASS, "policy-version-failure")
+
+    result = await record_decision(decision, action, repo_root=root)
+
+    assert result is True
+
+    rows = await read_decisions(root)
+
+    assert len(rows) == 1
+    assert rows[0]["action_id"] == "policy-version-failure"
+    assert rows[0]["final_verdict"] == "PASS"
+    assert rows[0]["policy_version"] is None
+
+async def test_decision_after_policy_change_gets_new_policy_version(tmp_path):
+    from doberman.config import save_policy
+    from doberman.policy.checklist import recommend_policy
+    
+    root = str(tmp_path)
+
+    save_policy(recommend_policy().with_mode("balanced"), root)
+
+    decision1, action1 = _decision_and_action(Verdict.PASS, "policy-version-before")
+    assert await record_decision(decision1, action1, repo_root=root)
+
+    save_policy(recommend_policy().with_mode("strict"), root)
+
+    decision2, action2 = _decision_and_action(Verdict.PASS, "policy-version-after")
+    assert await record_decision(decision2, action2, repo_root=root)
+
+    rows = await read_decisions(root)
+
+    assert len(rows) == 2
+    assert rows[0]["policy_version"].startswith("pv1:")
+    assert rows[1]["policy_version"].startswith("pv1:")
+    assert rows[0]["policy_version"] != rows[1]["policy_version"]
+
+
+async def test_effect_set_from_real_walk_never_leaboomks_secret_or_raw_path(tmp_path):
     # A synthetic secret AND a raw absolute path both live in the delete-class
     # operand this EffectSet was computed from. Neither may reach any column.
     secret = "AKIA-FAKE-EFFECTSET-SECRET-9999"  # noqa: S105 — synthetic test value

@@ -165,6 +165,7 @@ CATALOGUE_SCHEMA_VERSION = 1
 
 ORIGIN_CHANGE = "change"  # written by save_policy right after a gated/ledgered write
 ORIGIN_OBSERVED = "observed"  # doctor / policy-versions saw this version in force
+ORIGIN_DECISION = "decision"  
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);

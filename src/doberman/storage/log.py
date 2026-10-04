@@ -29,6 +29,7 @@ from doberman.storage.db import open_db
 from doberman.storage.device_metrics import AUTH_APPROVED, AUTH_DENIED, record_decision_metric
 from doberman.storage.fingerprint import fingerprint
 from doberman.storage.sinks import emit_to_sinks
+from doberman.storage.policy_catalogue import ORIGIN_DECISION, observe_current
 
 logger = logging.getLogger("doberman.storage.log")
 
@@ -40,8 +41,8 @@ _INSERT_DECISION = (
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, "
     "auth_path, human_confirmed, elevation_id, "
     "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
-    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp, policy_version) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _INSERT_SHADOW = (
@@ -61,7 +62,7 @@ _SELECT_DECISIONS = (
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, "
     "auth_path, human_confirmed, elevation_id, "
     "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
-    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp "
+    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp, policy_version "
     "FROM decisions ORDER BY id DESC"
 )
 
@@ -72,7 +73,7 @@ _SELECT_DECISIONS_SINCE = (
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, "
     "auth_path, human_confirmed, elevation_id, "
     "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
-    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp "
+    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp, policy_version "
     "FROM decisions WHERE id > ? ORDER BY id ASC"
 )
 
@@ -133,6 +134,7 @@ _DECISION_COLUMNS = [
     "effects_hits_git",
     "effects_hits_outside_repo",
     "effects_digest_fp",
+    "policy_version",
 ]
 
 
@@ -216,6 +218,7 @@ def build_record(
     auth_path: str | None = None,
     human_confirmed: bool | None = None,
     source_context_override: str | None = None,
+    policy_version: str | None = None
 ) -> dict:
     """Build the single redacted record persisted and handed to every sink.
 
@@ -259,6 +262,7 @@ def build_record(
         "elevation_id": elevation_id,
         "entity_id": entity_id,
         "session_id": session_id,
+        "policy_version": policy_version,
     }
     record.update(_effects_fields(decision.effects))
     return record
@@ -294,18 +298,35 @@ async def record_decision(
     it. Sink fan-out and the device-metrics rollup stay best-effort and do
     not affect this return value: the local row is what matters for retry.
     """
+
+    decision_now = now or datetime.now(timezone.utc)
+    
+    try:
+        policy_version = observe_current(
+            repo_root,
+            origin=ORIGIN_DECISION,
+            now=decision_now,
+        )
+    except Exception:  # noqa: BLE001 — policy stamping must never block logging
+        logger.warning(
+            "decision log: could not determine policy version for action %s; continuing",
+            decision.action_id,
+        )
+        policy_version = None
+
     try:
         record = build_record(
             decision,
             action,
             auth_result=auth_result,
             elevation_id=elevation_id,
-            now=now or datetime.now(timezone.utc),
+            now=decision_now,
             entity_id=entity_id,
             session_id=session_id,
             auth_path=auth_path,
             human_confirmed=human_confirmed,
             source_context_override=source_context_override,
+            policy_version=policy_version,
         )
     except Exception:  # noqa: BLE001 — the decision log must never break execution
         logger.warning("decision log: could not build record for action %s", decision.action_id)
@@ -341,6 +362,7 @@ async def record_decision(
                     record["effects_hits_git"],
                     record["effects_hits_outside_repo"],
                     record["effects_digest_fp"],
+                    record["policy_version"],
                 ),
             )
             for fp in action.payload_fingerprints:
