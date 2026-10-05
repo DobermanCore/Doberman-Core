@@ -29,7 +29,6 @@ from doberman.storage.db import open_db
 from doberman.storage.device_metrics import AUTH_APPROVED, AUTH_DENIED, record_decision_metric
 from doberman.storage.fingerprint import fingerprint
 from doberman.storage.sinks import emit_to_sinks
-from doberman.storage.policy_catalogue import ORIGIN_DECISION, VERSION_PREFIX, observe_current
 
 logger = logging.getLogger("doberman.storage.log")
 
@@ -218,7 +217,7 @@ def build_record(
     auth_path: str | None = None,
     human_confirmed: bool | None = None,
     source_context_override: str | None = None,
-    policy_version: str | None = None
+    policy_version: str | None = None,
 ) -> dict:
     """Build the single redacted record persisted and handed to every sink.
 
@@ -303,6 +302,12 @@ async def record_decision(
     decision_now = now or datetime.now(timezone.utc)
 
     try:
+        from doberman.storage.policy_catalogue import (
+            ORIGIN_DECISION,
+            VERSION_PREFIX,
+            observe_current,
+        )
+
         policy_version = observe_current(
             repo_root,
             origin=ORIGIN_DECISION,
@@ -310,7 +315,7 @@ async def record_decision(
             now=decision_now,
         )
         digest = (
-            policy_version[len(VERSION_PREFIX):]
+            policy_version[len(VERSION_PREFIX) :]
             if policy_version.startswith(VERSION_PREFIX)
             else ""
         )

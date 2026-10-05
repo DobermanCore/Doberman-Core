@@ -94,6 +94,7 @@ def test_policy_history_json_populated_and_deterministic(tmp_path):
 
 def test_policy_history_json_links_to_version(tmp_path):
     from doberman.storage.policy_catalogue import ORIGIN_CHANGE, observe_current
+
     root = str(tmp_path)
     asyncio.run(_seed_policy_rows(root))
     version = observe_current(root, origin=ORIGIN_CHANGE, ledger_ts="2026-01-02T00:00:00+00:00")

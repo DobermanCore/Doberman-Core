@@ -15,8 +15,14 @@ runner = CliRunner()
 
 
 def _two_versions(tmp_path) -> list[str]:
-    save_policy(recommend_policy().with_mode("strict"), str(tmp_path), ledger_ts="2026-08-30T10:00:00+00:00")
-    save_policy(recommend_policy().with_mode("balanced"), str(tmp_path), ledger_ts="2026-08-30T10:00:00+00:00")
+    save_policy(
+        recommend_policy().with_mode("strict"), str(tmp_path), ledger_ts="2026-08-30T10:00:00+00:00"
+    )
+    save_policy(
+        recommend_policy().with_mode("balanced"),
+        str(tmp_path),
+        ledger_ts="2026-08-30T10:00:00+00:00",
+    )
     return [v["version"] for v in read_versions(str(tmp_path))]
 
 
@@ -105,6 +111,7 @@ def test_verify_is_read_only_and_reports_drift(tmp_path):
     as_json = runner.invoke(app, ["policy-versions", "--path", str(tmp_path), "--verify", "--json"])
     assert as_json.exit_code == 1
     assert json.loads(as_json.stdout)["status"] == "drift"
+
 
 def test_verify_reports_unledgered(tmp_path):
     save_policy(recommend_policy().with_mode("strict"), str(tmp_path))

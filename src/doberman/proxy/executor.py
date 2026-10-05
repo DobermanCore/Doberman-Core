@@ -751,7 +751,7 @@ async def _persist(
     eid: str | None = None,
     auth_path: str = AuthPath.none,
     human_confirmed: bool | None = None,
-    enforcement_effective: str | None = None
+    enforcement_effective: str | None = None,
 ) -> None:
     """Append one redacted row to the local decision log (best-effort).
 
@@ -791,7 +791,7 @@ async def _handle_auth(
     now: datetime,
     surprise_score: float,
     eid: str,
-    enforcement_effective: str
+    enforcement_effective: str,
 ) -> CallToolResult:
     """Run the tiered challenge for an AUTH decision and act on the outcome."""
     # C2 (ADR 0094): before the challenge is rendered, compute a bounded,
@@ -1144,7 +1144,9 @@ async def _decide_and_execute(
             "single-use elevation already spent or unclaimable (action %s); denying", action.id
         )
         denial = _single_use_unclaimable_decision(action)
-        await _persist(denial, action, auth_result="unclaimable", eid=eid, enforcement_effective=state)
+        await _persist(
+            denial, action, auth_result="unclaimable", eid=eid, enforcement_effective=state
+        )
         return _verdict_result(denial)
     result = await _forward(downstream, tool_name, arguments, action)
     # The output-secret gate runs on EVERY result — success OR error (CRIT-2): a
@@ -1168,7 +1170,9 @@ async def _decide_and_execute(
             # RB.7: a pinned artifact's fetched content disagreed with its
             # expected digest — withhold it from the agent, same shape as the
             # secret-scan gate above (one log row, the block, not a clean one).
-            await _persist(artifact_gate, action, auth_result="blocked", eid=eid, enforcement_effective=state)
+            await _persist(
+                artifact_gate, action, auth_result="blocked", eid=eid, enforcement_effective=state
+            )
             return _verdict_result(artifact_gate)
         if not softened:
             # Teach the baseline only on a GENUINE pass. A softened would-have

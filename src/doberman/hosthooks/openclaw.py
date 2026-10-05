@@ -204,7 +204,7 @@ def _record_history(
     auth_result: str,
     auth_path: str = AuthPath.host_hook_objective,
     human_confirmed: bool | None = None,
-    enforcement_effective: str | None = None
+    enforcement_effective: str | None = None,
 ) -> None:
     """Best-effort: persist one decision row to the local decision log.
 
@@ -225,7 +225,7 @@ def _record_history(
         auth_result=auth_result,
         auth_path=auth_path,
         human_confirmed=human_confirmed,
-        enforcement_effective=enforcement_effective
+        enforcement_effective=enforcement_effective,
     )
 
 

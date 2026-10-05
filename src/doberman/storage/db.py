@@ -95,6 +95,9 @@ _ACTIVE_DB: ContextVar[
 #: because its vocabulary differs per writer. Additive ALTER on an existing
 #: table; fresh DBs get both from _SCHEMA below. Pre-migration rows keep NULL
 #: in both: "not recorded" is the truth for them, and it must not be guessed.
+#: Version 18 adds ``decisions.policy_version`` (#515), storing the ``pv1:``
+#: identifier of the effective policy snapshot used for each decision.
+#: Additive ALTER on existing databases; pre-migration rows remain NULL.
 SCHEMA_VERSION = 18
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently

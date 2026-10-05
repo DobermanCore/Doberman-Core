@@ -2946,7 +2946,7 @@ def policy_history(
 
         for row in rows:
             row["to_version"] = versions_by_ledger_ts.get(row["ts"])
-        
+
         # Same redacted row dicts the human view uses (no raw paths/secrets).
         typer.echo(json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str))
         return
@@ -3008,7 +3008,8 @@ def policy_versions(
             )
         elif report["status"] == "unledgered":
             typer.echo(
-                "unledgered: policy version(s) were introduced without a ledgered policy change: " + ", ".join(report["unledgered"])
+                "unledgered: policy version(s) were introduced without a ledgered policy change: "
+                + ", ".join(report["unledgered"])
             )
         else:
             typer.echo(

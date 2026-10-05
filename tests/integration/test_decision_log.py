@@ -187,12 +187,12 @@ async def test_decision_persists_policy_version(tmp_path):
 
 
 async def test_policy_version_failure_keeps_decision_row(tmp_path, monkeypatch):
-    import doberman.storage.log as log_module
+    import doberman.storage.policy_catalogue as catalogue
 
     def boom(*args, **kwargs):
         raise RuntimeError("failed to determine policy version")
 
-    monkeypatch.setattr(log_module, "observe_current", boom)
+    monkeypatch.setattr(catalogue, "observe_current", boom)
 
     root = str(tmp_path)
     decision, action = _decision_and_action(Verdict.PASS, "policy-version-failure")
@@ -210,9 +210,11 @@ async def test_policy_version_failure_keeps_decision_row(tmp_path, monkeypatch):
 
 
 async def test_invalid_policy_version_is_not_persisted(tmp_path, monkeypatch):
-    import doberman.storage.log as log_module
+    import doberman.storage.policy_catalogue as catalogue
 
-    monkeypatch.setattr(log_module, "observe_current", lambda *args, **kwargs: "pv1:not-a-valid-digest")
+    monkeypatch.setattr(
+        catalogue, "observe_current", lambda *args, **kwargs: "pv1:not-a-valid-digest"
+    )
 
     root = str(tmp_path)
     decision, action = _decision_and_action(Verdict.PASS, "invalid-policy-version")
