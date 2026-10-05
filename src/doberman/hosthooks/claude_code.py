@@ -256,6 +256,7 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             auth_result=auth_method,
             auth_path=auth_path,
             human_confirmed=human_confirmed,
+            enforcement_effective=result.enforcement,
         )
         return hook_result
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
@@ -279,6 +280,7 @@ def _record_pre_history(
     auth_result: str | None = None,
     auth_path: str = AuthPath.host_hook_objective,
     human_confirmed: bool | None = None,
+    enforcement_effective: str | None = None
 ) -> None:
     """Best-effort: record a PreToolUse AUTH/BLOCK decision in ``doberman log``.
 
@@ -303,6 +305,7 @@ def _record_pre_history(
             auth_result=auth_result or _pre_auth_result(hook_result),
             auth_path=auth_path,
             human_confirmed=human_confirmed,
+            enforcement_effective=enforcement_effective,
         )
     except Exception:  # noqa: BLE001,S110 — history must never alter the hook's return value
         pass

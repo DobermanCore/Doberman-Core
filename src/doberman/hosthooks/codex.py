@@ -188,6 +188,7 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             auth_result=auth_method,
             auth_path=auth_path,
             human_confirmed=human_confirmed,
+            enforcement_effective=result.enforcement,
         )
         return hook_result
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
