@@ -208,10 +208,30 @@ async def test_policy_version_failure_keeps_decision_row(tmp_path, monkeypatch):
     assert rows[0]["final_verdict"] == "PASS"
     assert rows[0]["policy_version"] is None
 
+
+async def test_invalid_policy_version_is_not_persisted(tmp_path, monkeypatch):
+    import doberman.storage.log as log_module
+
+    monkeypatch.setattr(log_module, "observe_current", lambda *args, **kwargs: "pv1:not-a-valid-digest")
+
+    root = str(tmp_path)
+    decision, action = _decision_and_action(Verdict.PASS, "invalid-policy-version")
+
+    result = await record_decision(decision, action, repo_root=root)
+
+    assert result is True
+
+    rows = await read_decisions(root)
+
+    assert len(rows) == 1
+    assert rows[0]["action_id"] == "invalid-policy-version"
+    assert rows[0]["policy_version"] is None
+
+
 async def test_decision_after_policy_change_gets_new_policy_version(tmp_path):
     from doberman.config import save_policy
     from doberman.policy.checklist import recommend_policy
-    
+
     root = str(tmp_path)
 
     save_policy(recommend_policy().with_mode("balanced"), root)

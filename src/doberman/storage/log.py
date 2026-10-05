@@ -29,7 +29,7 @@ from doberman.storage.db import open_db
 from doberman.storage.device_metrics import AUTH_APPROVED, AUTH_DENIED, record_decision_metric
 from doberman.storage.fingerprint import fingerprint
 from doberman.storage.sinks import emit_to_sinks
-from doberman.storage.policy_catalogue import ORIGIN_DECISION, observe_current
+from doberman.storage.policy_catalogue import ORIGIN_DECISION, VERSION_PREFIX, observe_current
 
 logger = logging.getLogger("doberman.storage.log")
 
@@ -281,6 +281,7 @@ async def record_decision(
     auth_path: str | None = None,
     human_confirmed: bool | None = None,
     source_context_override: str | None = None,
+    enforcement_effective: str | None = None,
 ) -> bool:
     """Persist one redacted decision row and fan it out to sinks (best-effort).
 
@@ -300,13 +301,21 @@ async def record_decision(
     """
 
     decision_now = now or datetime.now(timezone.utc)
-    
+
     try:
         policy_version = observe_current(
             repo_root,
             origin=ORIGIN_DECISION,
+            enforcement_effective=enforcement_effective,
             now=decision_now,
         )
+        digest = (
+            policy_version[len(VERSION_PREFIX):]
+            if policy_version.startswith(VERSION_PREFIX)
+            else ""
+        )
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            policy_version = None
     except Exception:  # noqa: BLE001 — policy stamping must never block logging
         logger.warning(
             "decision log: could not determine policy version for action %s; continuing",

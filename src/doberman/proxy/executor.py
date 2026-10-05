@@ -751,6 +751,7 @@ async def _persist(
     eid: str | None = None,
     auth_path: str = AuthPath.none,
     human_confirmed: bool | None = None,
+    enforcement_effective: str | None = None
 ) -> None:
     """Append one redacted row to the local decision log (best-effort).
 
@@ -775,6 +776,7 @@ async def _persist(
             entity_id=eid,
             auth_path=auth_path,
             human_confirmed=human_confirmed,
+            enforcement_effective=enforcement_effective,
         )
     except Exception:  # noqa: BLE001 — logging must never break the execution path
         _engine_logger.warning("decision log persist failed (action %s); continuing", action.id)
@@ -789,6 +791,7 @@ async def _handle_auth(
     now: datetime,
     surprise_score: float,
     eid: str,
+    enforcement_effective: str
 ) -> CallToolResult:
     """Run the tiered challenge for an AUTH decision and act on the outcome."""
     # C2 (ADR 0094): before the challenge is rendered, compute a bounded,
@@ -861,6 +864,7 @@ async def _handle_auth(
             # challenge.NON_HUMAN_METHODS), and this column answers only the
             # narrower question its name asks — did a person approve this.
             human_confirmed=False,
+            enforcement_effective=enforcement_effective,
         )
         return _verdict_result(decision)
 
@@ -881,6 +885,7 @@ async def _handle_auth(
                 eid=eid,
                 auth_path=AuthPath.proxy_elevation,
                 human_confirmed=human_answered(auth_result.method),
+                enforcement_effective=enforcement_effective,
             )
             return _verdict_result(decision)
         try:
@@ -901,6 +906,7 @@ async def _handle_auth(
                 eid=eid,
                 auth_path=AuthPath.proxy_elevation,
                 human_confirmed=human_answered(auth_result.method),
+                enforcement_effective=enforcement_effective,
             )
             return _verdict_result(decision)
 
@@ -920,6 +926,7 @@ async def _handle_auth(
             eid=eid,
             auth_path=AuthPath.proxy_post_approval_gate,
             human_confirmed=human_answered(auth_result.method),
+            enforcement_effective=enforcement_effective,
         )
         return _verdict_result(redecision)
 
@@ -946,6 +953,7 @@ async def _handle_auth(
                 eid=eid,
                 auth_path=AuthPath.proxy_post_approval_gate,
                 human_confirmed=human_answered(auth_result.method),
+                enforcement_effective=enforcement_effective,
             )
             return _verdict_result(diverged)
 
@@ -968,6 +976,7 @@ async def _handle_auth(
             eid=eid,
             auth_path=AuthPath.proxy_post_approval_gate,
             human_confirmed=human_answered(auth_result.method),
+            enforcement_effective=enforcement_effective,
         )
         return _verdict_result(denial)
     result = await _forward(downstream, tool_name, arguments, action)
@@ -992,6 +1001,7 @@ async def _handle_auth(
             eid=eid,
             auth_path=AuthPath.proxy_post_approval_gate,
             human_confirmed=human_answered(auth_result.method),
+            enforcement_effective=enforcement_effective,
         )
         return _verdict_result(gate)
     if not result.isError:
@@ -1008,6 +1018,7 @@ async def _handle_auth(
                 eid=eid,
                 auth_path=AuthPath.proxy_post_approval_gate,
                 human_confirmed=human_answered(auth_result.method),
+                enforcement_effective=enforcement_effective,
             )
             return _verdict_result(artifact_gate)
         await _observe_allowed(action, eid, surprise_score)
@@ -1019,6 +1030,7 @@ async def _handle_auth(
         eid=eid,
         auth_path=AuthPath.proxy_challenge,
         human_confirmed=human_answered(auth_result.method),
+        enforcement_effective=enforcement_effective,
     )
     return result
 
@@ -1116,12 +1128,12 @@ async def _decide_and_execute(
     acted = acted_verdict(decision, state)
 
     if acted is Verdict.BLOCK:
-        await _persist(decision, action, eid=eid)
+        await _persist(decision, action, eid=eid, enforcement_effective=state)
         return _verdict_result(decision)
 
     if acted is Verdict.AUTH:
         return await _handle_auth(
-            downstream, tool_name, arguments, action, decision, now, score, eid
+            downstream, tool_name, arguments, action, decision, now, score, eid, state
         )
 
     # PASS — real, or a discretionary verdict softened by monitor/off — claim
@@ -1132,7 +1144,7 @@ async def _decide_and_execute(
             "single-use elevation already spent or unclaimable (action %s); denying", action.id
         )
         denial = _single_use_unclaimable_decision(action)
-        await _persist(denial, action, auth_result="unclaimable", eid=eid)
+        await _persist(denial, action, auth_result="unclaimable", eid=eid, enforcement_effective=state)
         return _verdict_result(denial)
     result = await _forward(downstream, tool_name, arguments, action)
     # The output-secret gate runs on EVERY result — success OR error (CRIT-2): a
@@ -1148,7 +1160,7 @@ async def _decide_and_execute(
         # the model even though the call itself was PASS. Log only the block —
         # skip the baseline "allowed" observation below, since the outcome is
         # not confirmed safe (mirrors the host-hook: one log row, the block).
-        await _persist(gate, action, auth_result="blocked", eid=eid)
+        await _persist(gate, action, auth_result="blocked", eid=eid, enforcement_effective=state)
         return _verdict_result(gate)
     if not result.isError:
         artifact_gate = await _verify_artifact_digest(action, result)
@@ -1156,7 +1168,7 @@ async def _decide_and_execute(
             # RB.7: a pinned artifact's fetched content disagreed with its
             # expected digest — withhold it from the agent, same shape as the
             # secret-scan gate above (one log row, the block, not a clean one).
-            await _persist(artifact_gate, action, auth_result="blocked", eid=eid)
+            await _persist(artifact_gate, action, auth_result="blocked", eid=eid, enforcement_effective=state)
             return _verdict_result(artifact_gate)
         if not softened:
             # Teach the baseline only on a GENUINE pass. A softened would-have
@@ -1169,5 +1181,5 @@ async def _decide_and_execute(
     # (monitor's whole value is showing what would have happened); `off` is the
     # silent, non-recording state — matching the host-hook pre path.
     if not softened or state == "monitor":
-        await _persist(decision, action, eid=eid)
+        await _persist(decision, action, eid=eid, enforcement_effective=state)
     return result
