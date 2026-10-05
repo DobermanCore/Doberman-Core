@@ -20,8 +20,8 @@ from doberman.roles.roles import RoleDefinition
 from doberman.storage.policy_catalogue import (
     CATALOGUE_SCHEMA_VERSION,
     ORIGIN_CHANGE,
-    ORIGIN_OBSERVED,
     ORIGIN_DECISION,
+    ORIGIN_OBSERVED,
     SNAPSHOT_SCHEMA,
     VERSION_PREFIX,
     PolicySnapshotV1,
@@ -240,7 +240,9 @@ def test_verify_reports_ok_drift_and_mismatch(tmp_path):
     assert report["status"] == "ok" and report["current"] == report["recorded"]
     assert report["versions"] == 1 and report["mismatched"] == []
     # A hand edit of policies.yaml (bypassing every gate) shows as drift ...
-    save_policy(recommend_policy().with_mode("paranoid"), root, ledger_ts=_T2.isoformat())  # records a change
+    save_policy(
+        recommend_policy().with_mode("paranoid"), root, ledger_ts=_T2.isoformat()
+    )  # records a change
     (tmp_path / ".doberman" / "policies.yaml").write_text(
         (tmp_path / ".doberman" / "policies.yaml").read_text().replace("paranoid", "light")
     )

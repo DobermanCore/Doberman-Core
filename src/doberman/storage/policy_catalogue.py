@@ -394,7 +394,7 @@ def verify_catalogue(repo_root: str = ".") -> dict[str, Any]:
     ``status``: ``ok`` · ``mismatch`` (a stored canonical no longer hashes to its
     id — the store was altered) · ``drift`` (the policy on disk is not the last
     recorded version — a change nobody has observed yet, or no catalogue at all).
-    ``unledgered`` (a version was introduced without a corresponding ledgered 
+    ``unledgered`` (a version was introduced without a corresponding ledgered
     policy change). Read-only: it never records anything.
     """
     rows = _read(repo_root, "SELECT version, canonical FROM policy_versions")
@@ -415,14 +415,13 @@ def verify_catalogue(repo_root: str = ".") -> dict[str, Any]:
     for observation in reversed(observations):
         version = observation["version"]
         if version in seen:
-            continue 
+            continue
         seen.add(version)
 
         if observation["origin"] in (ORIGIN_OBSERVED, ORIGIN_DECISION):
             unledgered.append(version)
         elif observation["origin"] == ORIGIN_CHANGE and observation["ledger_ts"] is None:
             unledgered.append(version)
-
 
     if mismatched:
         status = "mismatch"
@@ -438,5 +437,5 @@ def verify_catalogue(repo_root: str = ".") -> dict[str, Any]:
         "mismatched": mismatched,
         "current": current,
         "recorded": recorded,
-        "unledgered": unledgered
+        "unledgered": unledgered,
     }

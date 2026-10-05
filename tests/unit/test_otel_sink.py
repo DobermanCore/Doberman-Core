@@ -48,9 +48,9 @@ def _build_record(**overrides: Any) -> dict[str, Any]:
     log.py breaks the tests here instead of silently emptying the export.
 
     Non-exportable fields (action_id, agent_role, target_path_class,
-    source_context, auth_required, elevation_id, entity_id, and the #556
-    EffectSet fields) are included because the real producer always emits
-    them — the sink must strip them.
+    source_context, auth_required, elevation_id, entity_id, policy_version,
+    and the #556 EffectSet fields) are included because the real producer
+    always emits them — the sink must strip them.
     """
     base: dict[str, Any] = {
         # ── exported (in _ALLOWED_FIELDS) ──────────────────────────────────
@@ -83,6 +83,7 @@ def _build_record(**overrides: Any) -> dict[str, Any]:
         "effects_hits_git": None,
         "effects_hits_outside_repo": None,
         "effects_digest_fp": None,
+        "policy_version": None,
     }
     base.update(overrides)
     return base

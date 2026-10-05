@@ -280,7 +280,7 @@ def _record_pre_history(
     auth_result: str | None = None,
     auth_path: str = AuthPath.host_hook_objective,
     human_confirmed: bool | None = None,
-    enforcement_effective: str | None = None
+    enforcement_effective: str | None = None,
 ) -> None:
     """Best-effort: record a PreToolUse AUTH/BLOCK decision in ``doberman log``.
 
