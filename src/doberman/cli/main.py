@@ -2996,6 +2996,10 @@ def policy_versions(
             typer.echo(
                 "mismatch: stored content no longer hashes to " + ", ".join(report["mismatched"])
             )
+        elif report["status"] == "unledgered":
+            typer.echo(
+                "unledgered: policy version(s) were introduced without a ledgered policy change: " + ", ".join(report["unledgered"])
+            )
         else:
             typer.echo(
                 f"drift: the policy on disk is {report['current']} but the last recorded "
