@@ -122,3 +122,14 @@ def test_ttl_rejects_out_of_range(tmp_path):
 
     assert result.exit_code != 0
     assert load_approval_memory_seconds(str(tmp_path)) == 300
+
+
+def test_approvals_status_refuses_a_missing_path_and_creates_nothing(tmp_path):
+    """A mistyped --path used to be created, with a fresh decision DB in it (#715)."""
+    missing = tmp_path / "typo"
+
+    result = runner.invoke(app, ["approvals", "status", "--path", str(missing)])
+
+    assert result.exit_code == 2
+    assert f"error: --path {missing} does not exist" in result.output
+    assert not missing.exists()

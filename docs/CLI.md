@@ -208,6 +208,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `prefs` | `1` | Preference change denied by the gate. |
 | `egress-velocity` | `2` | Unknown knob, missing value, or a non-positive value. |
 | `egress-velocity` | `1` | Threshold change denied by the gate. |
+| `doctor` | `2` | `--path` does not exist or is not a directory. Nothing is created. |
 | `doctor` | `1` | One or more critical checks failed. |
 | `setup` | `0` | The run completed as designed. This is NOT the same claim as "you got the mode you asked for". A `--mode <lower>` request the raise-only gate refuses still exits `0`; the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`) and the `Mode:` line repeats the reason. |
 | `setup` | `1` | The closing doctor pass found a critical (e.g. hooks call `doberman`, which is not on PATH), printed as `!! Setup incomplete !!`, never `complete`. |
@@ -218,6 +219,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `2fa reset-lockout` | `1` | Not enrolled, no password enrolled, or an incorrect password. |
 | `taint clear` | `1` | No possession factor enrolled, gate denied, or the DB clear failed. |
 | `tools approve` | `1` | No possession factor enrolled, gate denied, storage failed, or no pin exists for that tool. |
+| `approvals status` | `2` | `--path` does not exist or is not a directory. Nothing is created. |
 | `approvals ttl` | `1` | A TTL increase was denied by the possession-factor gate. |
 | `approvals ttl` | `2` | TTL is outside `0..900`. |
 | `revoke` | `1` | Elevation id not found, or revoke failed. |
