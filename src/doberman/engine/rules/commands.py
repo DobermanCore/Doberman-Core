@@ -1142,6 +1142,206 @@ def _windows_delete_verdict(tokens: list[str], bulk_threshold: int) -> Guardrail
     return None
 
 
+#: ``git push`` short options that consume a MANDATORY following value token
+#: when they appear bare (at the end of a cluster or alone): ``-o``
+#: (``--push-option``), ``--repo`` (only long form takes ``=``). When one of
+#: these letters appears inside a combined short-flag cluster like ``-qo``,
+#: the REST of that cluster is its value; if it is the LAST character
+#: (``-qo``), the NEXT token is the value.
+_GIT_PUSH_MANDATORY_VALUE_SHORT = set("o")
+
+#: ``git push`` long options that consume a MANDATORY following value token
+#: in their ``--opt <value>`` (space-separated) form. ``=``-joined forms are
+#: self-contained and handled generically. Verified against ``git push
+#: --help`` (git 2.54): ``--push-option``, ``--receive-pack``/``--exec``,
+#: ``--repo``, ``--signed``, ``--force-with-lease`` (with ``=``), ``-t``
+#: (``--thin``, no value).
+_GIT_PUSH_LONG_VALUE_OPTIONS = frozenset(
+    {"--push-option", "--receive-pack", "--exec", "--repo", "--signed"}
+)
+
+#: Canonical long option names for ``git push`` that the abbreviated-prefix
+#: resolver recognises. Listed in the order git-push(1) documents them;
+#: entries that share a prefix (``--force`` / ``--force-with-lease``) are
+#: disambiguated by requiring the typed prefix to be unambiguous — see
+#: ``_git_push_long_option_match``.
+_GIT_PUSH_LONG_OPTIONS = (
+    "--all",
+    "--prune",
+    "--mirror",
+    "--dry-run",
+    "--porcelain",
+    "--delete",
+    "--tags",
+    "--follow-tags",
+    "--signed",
+    "--atomic",
+    "--push-option",
+    "--receive-pack",
+    "--exec",
+    "--force-with-lease",
+    "--force-if-includes",
+    "--force",
+    "--repo",
+    "--set-upstream",
+    "--thin",
+    "--no-thin",
+    "--quiet",
+    "--verbose",
+    "--progress",
+    "--no-recurse-submodules",
+    "--recurse-submodules",
+    "--verify",
+    "--no-verify",
+    "--ipv4",
+    "--ipv6",
+    "--no-signed",
+    "--no-force-with-lease",
+    "--no-force-if-includes",
+)
+
+
+def _git_push_long_option_match(token: str) -> str | None:
+    """Resolve a possibly-abbreviated ``--long`` option against
+    ``_GIT_PUSH_LONG_OPTIONS``. Returns the canonical name if the token is
+    an unambiguous prefix of exactly one entry, else ``None``. Matching is
+    case-sensitive (git is). An ``=``-joined value (``--push-option=v``) is
+    handled by testing only the key part.
+
+    #726: git allows any unambiguous prefix of a long option. This helper
+    reproduces that resolution so ``--del`` → ``--delete``, ``--force-w`` →
+    ``--force-with-lease``, but ``--force`` stays ``--force`` (not
+    ``--force-with-lease``, because it is an exact match).
+    """
+    key = token.split("=", 1)[0] if "=" in token else token
+    if not key.startswith("--") or len(key) < 3:
+        return None
+    # Exact match always wins (even when it is a prefix of longer entries).
+    if key in _GIT_PUSH_LONG_OPTIONS:
+        return key
+    matches = [opt for opt in _GIT_PUSH_LONG_OPTIONS if opt.startswith(key)]
+    return matches[0] if len(matches) == 1 else None
+
+
+class _GitPushInfo:
+    """Normalized result of parsing ``git push``'s own flags and positionals.
+
+    Produced by :func:`_parse_git_push`; consumed by the semantic checks
+    :func:`_git_force_push_to_protected` and
+    :func:`_git_push_deletes_protected_branch`, and by the new
+    :func:`_git_push_risky_config_or_bulk` AUTH check.
+    """
+
+    __slots__ = (
+        "has_force",
+        "has_delete",
+        "has_mirror",
+        "has_prune",
+        "explicit_refs",
+        "assignments",
+    )
+
+    def __init__(self) -> None:
+        self.has_force: bool = False
+        self.has_delete: bool = False
+        self.has_mirror: bool = False
+        self.has_prune: bool = False
+        self.explicit_refs: list[str] = []
+        self.assignments: list[str] = []
+
+
+def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
+    """Shared parser for ``git push`` arguments (#726).
+
+    Returns a :class:`_GitPushInfo` with normalised flag/positional data, or
+    ``None`` when ``tokens`` is not a ``git push`` invocation. All three
+    issue-#726 parsing gaps are fixed here:
+
+    1. **Combined short flags** (``-qd``, ``-fu``, ``-ud``, ...): iterated
+       character-by-character so ``-d``, ``-f``, ``-o``, etc. inside a cluster
+       are recognised.
+    2. **Abbreviated long options** (``--del``, ``--dele``, ``--force-w``):
+       resolved against the canonical ``git push`` option list via
+       :func:`_git_push_long_option_match`.
+    3. **Value-consuming options** (``-o``, ``--push-option``, ``--repo``,
+       ``--receive-pack``, ``--exec``, ``--signed``): the following token is
+       consumed as their value and never misidentified as a remote or refspec.
+
+    Positional extraction follows git's own convention: the first positional
+    is the remote; everything after is a refspec. ``+``-prefixed refspecs
+    flag ``has_force`` for that ref (handled by the semantic callers).
+
+    The ``assignments`` list holds the ``-c``/``--config-env`` values
+    collected by :func:`_git_leading_globals`, forwarded through so
+    :func:`_git_push_risky_config_or_bulk` can inspect ``remote.*.push``
+    overrides without re-calling ``_git_leading_globals``.
+    """
+    argv, assignments = _git_leading_globals(tokens)
+    if not argv or argv[0] != "push":
+        return None
+
+    info = _GitPushInfo()
+    info.assignments = assignments
+    push_args = argv[1:]
+    positionals: list[str] = []
+    i = 0
+    while i < len(push_args):
+        token = push_args[i]
+
+        # --- long options ---
+        if token.startswith("--"):
+            canonical = _git_push_long_option_match(token)
+            if canonical == "--force":
+                info.has_force = True
+            elif canonical == "--force-with-lease":
+                info.has_force = True
+            elif canonical == "--force-if-includes":
+                info.has_force = True
+            elif canonical == "--delete":
+                info.has_delete = True
+            elif canonical == "--mirror":
+                info.has_mirror = True
+            elif canonical == "--prune":
+                info.has_prune = True
+            elif canonical in _GIT_PUSH_LONG_VALUE_OPTIONS and "=" not in token:
+                # Space-separated value: skip the next token.
+                i += 2
+                continue
+            i += 1
+            continue
+
+        # --- short options (combined clusters like ``-qd``, ``-fu``) ---
+        if token.startswith("-") and len(token) > 1:
+            for ci, ch in enumerate(token[1:], start=1):
+                if ch == "f":
+                    info.has_force = True
+                elif ch == "d":
+                    info.has_delete = True
+                elif ch in _GIT_PUSH_MANDATORY_VALUE_SHORT:
+                    # ``-o``: remainder of this cluster is its value (if any);
+                    # if the option letter is the LAST char, the NEXT token is
+                    # the value.
+                    if ci == len(token) - 1:
+                        i += 1  # skip following value token
+                    break  # rest of cluster is value, stop scanning flags
+            i += 1
+            continue
+
+        # --- positional (remote / refspec) ---
+        positionals.append(token)
+        i += 1
+
+    # A refspec starting with ``+`` is a force push of that ref; the ref
+    # text itself (after the ``+``) is kept as an explicit ref so the
+    # semantic callers can match it against the protected set.
+    explicit_refs = positionals[1:]  # first positional is the remote
+    for ref_token in explicit_refs:
+        if ref_token.startswith("+"):
+            info.has_force = True
+    info.explicit_refs = explicit_refs
+    return info
+
+
 def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) -> bool:
     """``git push`` with a force flag targeting a protected branch.
 
@@ -1150,32 +1350,24 @@ def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) ->
     that ``push`` invocation's OWN argv — never the full argv, so a force flag
     or ``+ref``-shaped token that merely appears as another verb's *argument*
     (``git log --grep push --force``) is never mistaken for an actual force-push.
+
+    #726: delegates flag/positional parsing to :func:`_parse_git_push` so
+    combined short flags (``-fu``), abbreviated long options (``--force-w``),
+    and value-consuming options (``-o``) are handled correctly.
     """
-    argv, _ = _git_leading_globals(tokens)
-    if not argv or argv[0] != "push":
+    info = _parse_git_push(tokens)
+    if info is None or not info.has_force:
         return False
-    push_args = argv[1:]
-    has_force = any(
-        t in ("-f", "--force") or t.startswith("--force-with-lease") or t == "+HEAD"
-        for t in push_args
-    )
-    if not has_force:
-        # A refspec like ``+main`` is also a force push of that ref.
-        if not any(t.startswith("+") for t in push_args):
-            return False
-        has_force = True
     protected_set = {b.lower() for b in protected}
-    positional = [t for t in push_args if not t.startswith("-")]
-    explicit_refs = positional[1:]  # the first positional is the remote
     # Any token that names (or pushes to) a protected branch.
-    for token in explicit_refs:
+    for token in info.explicit_refs:
         ref = token.lstrip("+").split(":")[-1].lower()
         ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
         if ref in protected_set:
             return True
     # A bare ``git push --force`` (no explicit ref) defaults to the current
     # branch — unknown here, so treat it as protected (fail safe).
-    return not explicit_refs
+    return not info.explicit_refs
 
 
 def _git_push_deletes_protected_branch(tokens: list[str], protected: Iterable[str]) -> bool:
@@ -1187,15 +1379,16 @@ def _git_push_deletes_protected_branch(tokens: list[str], protected: Iterable[st
     unclassified. Keys on the same verb (:func:`_git_leading_globals`); unlike
     a force-push, ``git push --delete`` always names its target explicitly, so
     there's no bare/current-branch case to fail safe on.
+
+    #726: delegates flag/positional parsing to :func:`_parse_git_push` so
+    combined short flags (``-qd``), abbreviated long options (``--del``), and
+    value-consuming options (``-o``) are handled correctly.
     """
-    argv, _ = _git_leading_globals(tokens)
-    if not argv or argv[0] != "push":
+    info = _parse_git_push(tokens)
+    if info is None:
         return False
-    push_args = argv[1:]
-    is_delete_flag = any(t in ("--delete", "-d") for t in push_args)
-    positional = [t for t in push_args if not t.startswith("-")]
-    explicit_refs = positional[1:]  # the first positional is the remote
-    if not is_delete_flag:
+    explicit_refs = info.explicit_refs
+    if not info.has_delete:
         # Without --delete/-d, only an empty-source refspec (``:branch``) is a
         # delete; a plain ``branch`` token here is an ordinary push/update.
         explicit_refs = [t for t in explicit_refs if t.startswith(":")]
@@ -1208,6 +1401,45 @@ def _git_push_deletes_protected_branch(tokens: list[str], protected: Iterable[st
         if ref in protected_set:
             return True
     return False
+
+
+def _git_push_risky_config_or_bulk(tokens: list[str]) -> GuardrailResult | None:
+    """AUTH for ``git push`` shapes whose affected refs cannot be determined
+    statically: ``--mirror`` (pushes every local ref, deleting remote-only
+    ones), ``--prune`` (deletes remote refs that have no local counterpart),
+    or a ``-c remote.*.push=...`` config override that rewrites the push
+    refspec silently.
+
+    #726: these fail-open gaps were invisible before because neither
+    ``_git_force_push_to_protected`` nor ``_git_push_deletes_protected_branch``
+    had any code path for them.
+    """
+    info = _parse_git_push(tokens)
+    if info is None:
+        return None
+    if info.has_mirror:
+        return _auth(
+            ReasonCode.destructive_command,
+            "git push --mirror overwrites the remote's entire ref namespace; "
+            "authentication required.",
+        )
+    if info.has_prune:
+        return _auth(
+            ReasonCode.destructive_command,
+            "git push --prune deletes remote refs that have no local counterpart; "
+            "authentication required.",
+        )
+    for assignment in info.assignments:
+        key, sep, _value = assignment.partition("=")
+        if sep and key.strip().lower().startswith("remote.") and key.strip().lower().endswith(
+            ".push"
+        ):
+            return _auth(
+                ReasonCode.destructive_command,
+                "git push with a -c remote.*.push config override rewrites the push "
+                "refspec silently; authentication required.",
+            )
+    return None
 
 
 # Catastrophic non-rm commands (whole-disk wipes, fork bombs). IGNORECASE covers
@@ -1885,6 +2117,10 @@ def _segment_verdict(
             ReasonCode.destructive_command,
             "Git history rewrite / hard reset; authentication required.",
         )
+    if cmd == "git":
+        push_risky = _git_push_risky_config_or_bulk(tokens)
+        if push_risky is not None:
+            return push_risky
     if cmd == "git" and _git_commit_bypasses_verification(tokens):
         return _auth(
             ReasonCode.verification_bypass_flag,
