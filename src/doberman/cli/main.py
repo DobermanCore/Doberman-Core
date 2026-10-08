@@ -3070,6 +3070,9 @@ def decision_log_prune(
         min=0,
         help="Retain at most this many newest resolved decisions; delete the rest.",
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview rows that would be pruned without deleting."
+    ),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
     """Prune resolved decision rows by age and/or retained-row budget.
@@ -3082,14 +3085,24 @@ def decision_log_prune(
         raise typer.Exit(code=2)
     try:
         result = asyncio.run(
-            prune_decisions(path, older_than_days=older_than_days, max_rows=max_rows)
+            prune_decisions(
+                path,
+                older_than_days=older_than_days,
+                max_rows=max_rows,
+                dry_run=dry_run,
+            )
         )
     except Exception as exc:  # noqa: BLE001 — never report a failed prune as success
         typer.echo(f"error: decision-log prune failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
     deleted = result["age_deleted"] + result["overflow_deleted"]
-    typer.echo(f"Decision log pruned: {deleted} row(s).")
+    if dry_run:
+        typer.echo(
+            f"Would prune {deleted} row(s) ({result['age_deleted']} by age, {result['overflow_deleted']} over --max-rows)."
+        )
+    else:
+        typer.echo(f"Decision log pruned: {deleted} row(s).")
 
 
 def _record_manifest(host: str, scope: str, settings_path: Path, groups: dict) -> None:
