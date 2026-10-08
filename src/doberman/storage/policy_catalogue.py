@@ -165,6 +165,7 @@ CATALOGUE_SCHEMA_VERSION = 1
 
 ORIGIN_CHANGE = "change"  # written by save_policy right after a gated/ledgered write
 ORIGIN_OBSERVED = "observed"  # doctor / policy-versions saw this version in force
+ORIGIN_DECISION = "decision"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -393,7 +394,8 @@ def verify_catalogue(repo_root: str = ".") -> dict[str, Any]:
     ``status``: ``ok`` · ``mismatch`` (a stored canonical no longer hashes to its
     id — the store was altered) · ``drift`` (the policy on disk is not the last
     recorded version — a change nobody has observed yet, or no catalogue at all).
-    Read-only: it never records anything.
+    ``unledgered`` (a version was introduced without a corresponding ledgered
+    policy change). Read-only: it never records anything.
     """
     rows = _read(repo_root, "SELECT version, canonical FROM policy_versions")
     mismatched = [
@@ -405,10 +407,28 @@ def verify_catalogue(repo_root: str = ".") -> dict[str, Any]:
     current = policy_version(snapshot) if snapshot is not None else None
     latest = read_observations(repo_root, limit=1)
     recorded = latest[0]["version"] if latest else None
+
+    observations = read_observations(repo_root)
+    unledgered = []
+    seen = set()
+
+    for observation in reversed(observations):
+        version = observation["version"]
+        if version in seen:
+            continue
+        seen.add(version)
+
+        if observation["origin"] in (ORIGIN_OBSERVED, ORIGIN_DECISION):
+            unledgered.append(version)
+        elif observation["origin"] == ORIGIN_CHANGE and observation["ledger_ts"] is None:
+            unledgered.append(version)
+
     if mismatched:
         status = "mismatch"
     elif current is None or current != recorded:
         status = "drift"
+    elif unledgered:
+        status = "unledgered"
     else:
         status = "ok"
     return {
@@ -417,4 +437,5 @@ def verify_catalogue(repo_root: str = ".") -> dict[str, Any]:
         "mismatched": mismatched,
         "current": current,
         "recorded": recorded,
+        "unledgered": unledgered,
     }

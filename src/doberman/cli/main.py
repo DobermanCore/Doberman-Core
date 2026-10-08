@@ -2348,6 +2348,7 @@ _JSONL_EXTRA_COLUMNS = (
     "auth_path",
     "human_confirmed",
     "source_context",
+    "policy_version",
 )
 
 # Keep every action type in one column even when a new enum member outgrows the
@@ -2936,6 +2937,16 @@ def policy_history(
     """
     rows = asyncio.run(read_policy_changes(path, limit=max(0, last)))
     if as_json:
+        from doberman.storage.policy_catalogue import read_observations
+
+        versions_by_ledger_ts = {}
+        for observation in read_observations(path):
+            if observation["ledger_ts"] is not None:
+                versions_by_ledger_ts[observation["ledger_ts"]] = observation["version"]
+
+        for row in rows:
+            row["to_version"] = versions_by_ledger_ts.get(row["ts"])
+
         # Same redacted row dicts the human view uses (no raw paths/secrets).
         typer.echo(json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str))
         return
@@ -2994,6 +3005,11 @@ def policy_versions(
         elif report["status"] == "mismatch":
             typer.echo(
                 "mismatch: stored content no longer hashes to " + ", ".join(report["mismatched"])
+            )
+        elif report["status"] == "unledgered":
+            typer.echo(
+                "unledgered: policy version(s) were introduced without a ledgered policy change: "
+                + ", ".join(report["unledgered"])
             )
         else:
             typer.echo(

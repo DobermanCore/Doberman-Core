@@ -204,6 +204,7 @@ def _record_history(
     auth_result: str,
     auth_path: str = AuthPath.host_hook_objective,
     human_confirmed: bool | None = None,
+    enforcement_effective: str | None = None,
 ) -> None:
     """Best-effort: persist one decision row to the local decision log.
 
@@ -224,6 +225,7 @@ def _record_history(
         auth_result=auth_result,
         auth_path=auth_path,
         human_confirmed=human_confirmed,
+        enforcement_effective=enforcement_effective,
     )
 
 
@@ -291,6 +293,7 @@ def evaluate_before_tool_call(payload: dict[str, Any]) -> dict[str, Any]:
             # host_hook_challenge is deliberately unreachable here.
             auth_path=AuthPath.host_hook_objective,
             human_confirmed=False,
+            enforcement_effective=result.enforcement,
         )
         return out
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error

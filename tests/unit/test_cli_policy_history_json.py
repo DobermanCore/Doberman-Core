@@ -74,6 +74,9 @@ def test_policy_history_json_populated_and_deterministic(tmp_path):
     # newest first
     assert rows[0]["rule_id"] == "network"
     assert rows[1]["rule_id"] == "shell"
+    # Issue #515: ledger rows without a matching observation have no version link.
+    assert rows[0]["to_version"] is None
+    assert rows[1]["to_version"] is None
     assert set(rows[0]) >= {
         "ts",
         "rule_id",
@@ -87,3 +90,16 @@ def test_policy_history_json_populated_and_deterministic(tmp_path):
     }
     expected = json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str)
     assert first.stdout.strip() == expected
+
+
+def test_policy_history_json_links_to_version(tmp_path):
+    from doberman.storage.policy_catalogue import ORIGIN_CHANGE, observe_current
+
+    root = str(tmp_path)
+    asyncio.run(_seed_policy_rows(root))
+    version = observe_current(root, origin=ORIGIN_CHANGE, ledger_ts="2026-01-02T00:00:00+00:00")
+    result = runner.invoke(app, ["policy-history", "--path", root, "--json"])
+    assert result.exit_code == 0
+    rows = json.loads(result.stdout)
+    assert rows[0]["to_version"] == version
+    assert rows[1]["to_version"] is None

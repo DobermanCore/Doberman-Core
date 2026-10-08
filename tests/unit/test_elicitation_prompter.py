@@ -278,7 +278,12 @@ async def test_executor_runs_the_challenge_off_the_event_loop(monkeypatch, tmp_p
     # The signature gains feature-specific scores on later branches — fill any
     # extras neutrally so this contract test holds across the whole stack.
     extras: dict = {}
-    defaults = {"abnormality_score": 0.0, "surprise_score": 0.0, "eid": "entity-test"}
+    defaults = {
+        "abnormality_score": 0.0,
+        "surprise_score": 0.0,
+        "eid": "entity-test",
+        "enforcement_effective": "enforce",
+    }
     for name in inspect.signature(executor._handle_auth).parameters:
         if name in defaults:
             extras[name] = defaults[name]

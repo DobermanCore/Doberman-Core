@@ -148,6 +148,7 @@ def evaluate_action(
             auth_result="executed",
             auth_path=AuthPath.host_hook_monitor,
             human_confirmed=False,
+            enforcement_effective=enforcement,
         )
     return SpineResult(
         decision,
@@ -169,6 +170,7 @@ def record_history(
     auth_result: str,
     auth_path: str = AuthPath.host_hook_objective,
     human_confirmed: bool | None = None,
+    enforcement_effective: str | None = None,
 ) -> None:
     """Best-effort: persist one decision row to the local decision log.
 
@@ -197,6 +199,7 @@ def record_history(
                 session_id=session_id,
                 auth_path=auth_path,
                 human_confirmed=human_confirmed,
+                enforcement_effective=enforcement_effective,
             )
         )
     except Exception:  # noqa: BLE001,S110 — history must never break a hook path

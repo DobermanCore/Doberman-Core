@@ -95,7 +95,10 @@ _ACTIVE_DB: ContextVar[
 #: because its vocabulary differs per writer. Additive ALTER on an existing
 #: table; fresh DBs get both from _SCHEMA below. Pre-migration rows keep NULL
 #: in both: "not recorded" is the truth for them, and it must not be guessed.
-SCHEMA_VERSION = 17
+#: Version 18 adds ``decisions.policy_version`` (#515), storing the ``pv1:``
+#: identifier of the effective policy snapshot used for each decision.
+#: Additive ALTER on existing databases; pre-migration rows remain NULL.
+SCHEMA_VERSION = 18
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -145,7 +148,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     effects_capped             INTEGER,
     effects_hits_git           INTEGER,
     effects_hits_outside_repo  INTEGER,
-    effects_digest_fp          TEXT
+    effects_digest_fp          TEXT,
+    policy_version    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS secret_fingerprints (
@@ -519,6 +523,10 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
         await _add_column_if_missing(conn, "decisions", "auth_path TEXT")
     if auth_cols and "human_confirmed" not in auth_cols:
         await _add_column_if_missing(conn, "decisions", "human_confirmed INTEGER")
+
+    decision_cols = await _table_columns(conn, "decisions")
+    if decision_cols and "policy_version" not in decision_cols:
+        await _add_column_if_missing(conn, "decisions", "policy_version TEXT")
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

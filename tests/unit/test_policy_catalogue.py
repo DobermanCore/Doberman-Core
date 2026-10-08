@@ -20,6 +20,7 @@ from doberman.roles.roles import RoleDefinition
 from doberman.storage.policy_catalogue import (
     CATALOGUE_SCHEMA_VERSION,
     ORIGIN_CHANGE,
+    ORIGIN_DECISION,
     ORIGIN_OBSERVED,
     SNAPSHOT_SCHEMA,
     VERSION_PREFIX,
@@ -233,19 +234,23 @@ def test_find_versions_matches_hex_prefixes(tmp_path):
 def test_verify_reports_ok_drift_and_mismatch(tmp_path):
     root = str(tmp_path)
     assert verify_catalogue(root)["status"] == "drift"  # nothing recorded yet
-    observe_current(root, origin=ORIGIN_OBSERVED, now=_T1)
+    # Issue #515: an "ok" version must come from a ledgered policy change.
+    observe_current(root, origin=ORIGIN_CHANGE, ledger_ts=_T1.isoformat(), now=_T1)
     report = verify_catalogue(root)
     assert report["status"] == "ok" and report["current"] == report["recorded"]
     assert report["versions"] == 1 and report["mismatched"] == []
     # A hand edit of policies.yaml (bypassing every gate) shows as drift ...
-    save_policy(recommend_policy().with_mode("paranoid"), root)  # records a change
+    save_policy(
+        recommend_policy().with_mode("paranoid"), root, ledger_ts=_T2.isoformat()
+    )  # records a change
     (tmp_path / ".doberman" / "policies.yaml").write_text(
         (tmp_path / ".doberman" / "policies.yaml").read_text().replace("paranoid", "light")
     )
     report = verify_catalogue(root)
     assert report["status"] == "drift" and report["current"] != report["recorded"]
     # ... and re-observing clears it.
-    observe_current(root, origin=ORIGIN_OBSERVED, now=_T2)
+    # Record the changed policy through the ledger before verifying again.
+    observe_current(root, origin=ORIGIN_CHANGE, ledger_ts=_T3.isoformat(), now=_T3)
     assert verify_catalogue(root)["status"] == "ok"
     # Tampering with stored content is a mismatch naming the id.
     conn = sqlite3.connect(str(catalogue_path(root)))
@@ -255,6 +260,28 @@ def test_verify_reports_ok_drift_and_mismatch(tmp_path):
     conn.close()
     report = verify_catalogue(root)
     assert report["status"] == "mismatch" and report["mismatched"] == [victim]
+
+
+def test_verify_reports_unledgered_change_without_ledger_ts(tmp_path):
+    root = str(tmp_path)
+
+    observe_current(root, origin=ORIGIN_CHANGE, now=_T1)
+
+    report = verify_catalogue(root)
+
+    assert report["status"] == "unledgered"
+    assert report["unledgered"] == [report["current"]]
+
+
+def test_verify_reports_unledgered_version_first_seen_by_decision(tmp_path):
+    root = str(tmp_path)
+
+    observe_current(root, origin=ORIGIN_DECISION, now=_T1)
+
+    report = verify_catalogue(root)
+
+    assert report["status"] == "unledgered"
+    assert report["unledgered"] == [report["current"]]
 
 
 def test_catalogue_schema_and_permissions(tmp_path):

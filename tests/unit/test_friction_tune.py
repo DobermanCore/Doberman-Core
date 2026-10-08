@@ -626,8 +626,8 @@ def test_redaction_never_leaks_the_raw_filename(tmp_path):
 
 
 def test_decision_columns_end_with_entity_session_and_effects_fields():
-    # entity_id/session_id then the #556 EffectSet fields, in insert/select order.
-    assert _DECISION_COLUMNS[-8:] == [
+    # entity_id/session_id, the #556 EffectSet fields, then the policy version.
+    assert _DECISION_COLUMNS[-9:] == [
         "entity_id",
         "session_id",
         "effects_file_count",
@@ -636,6 +636,7 @@ def test_decision_columns_end_with_entity_session_and_effects_fields():
         "effects_hits_git",
         "effects_hits_outside_repo",
         "effects_digest_fp",
+        "policy_version",
     ]
 
 
