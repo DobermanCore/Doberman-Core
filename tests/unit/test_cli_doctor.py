@@ -788,3 +788,87 @@ def test_doctor_hook_timeout_ok_when_strictly_above_the_ceiling(tmp_path):
     _write_claude_hooks(root, timeout=660)
     r = _hook_timeout(run_checks(root))
     assert r.status is CheckStatus.OK
+
+
+# ---------------------------------------------------------------------------
+# Plugins (#719): an enabled name that nothing installed provides
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def plugins_file(tmp_path, monkeypatch):
+    from doberman.engine import plugin_config
+
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(tmp_path / "plugins.json"))
+    return plugin_config
+
+
+class _FakeEntryPoint:
+    def __init__(self, name):
+        self.name = name
+
+    def load(self):
+        raise AssertionError("doctor must never load a plugin to diagnose it")
+
+
+def _plugins_row(path):
+    return next(r for r in run_checks(str(path)) if r.name == "Plugins")
+
+
+def test_doctor_plugins_row_passes_with_nothing_enabled(tmp_path, plugins_file):
+    row = _plugins_row(tmp_path)
+    assert row.status is CheckStatus.OK
+    assert row.critical is False
+
+
+def test_doctor_warns_when_an_enabled_plugin_is_not_installed(tmp_path, plugins_file):
+    plugins_file.enable("no_such_plugin")
+
+    row = _plugins_row(tmp_path)
+
+    assert row.status is CheckStatus.WARN
+    assert row.detail == "enabled but not installed: no_such_plugin"
+    assert row.critical is False
+
+    result = runner.invoke(app, ["doctor", "--path", str(tmp_path)])
+    assert "[warn] Plugins: enabled but not installed: no_such_plugin" in result.output
+
+
+def test_doctor_plugins_row_never_loads_an_installed_plugin(tmp_path, plugins_file, monkeypatch):
+    from doberman.engine import registry
+
+    monkeypatch.setattr(
+        registry,
+        "_iter_entry_points",
+        lambda group: iter([_FakeEntryPoint("real_rule")] if group == registry.RULE_GROUP else []),
+    )
+    plugins_file.enable("real_rule")
+    plugins_file.enable("missing_rule")
+
+    row = _plugins_row(tmp_path)
+
+    assert row.status is CheckStatus.WARN
+    assert row.detail == "enabled but not installed: missing_rule"
+
+
+def test_plugins_enable_warns_when_nothing_installed_provides_the_name(plugins_file):
+    result = runner.invoke(app, ["plugins", "enable", "no_such_plugin"])
+
+    assert result.exit_code == 0, result.output
+    assert plugins_file.enabled_plugins() == ["no_such_plugin"]
+    assert "warning: no installed package provides a plugin named 'no_such_plugin'" in result.output
+
+
+def test_plugins_enable_is_quiet_for_an_installed_name(plugins_file, monkeypatch):
+    from doberman.engine import registry
+
+    monkeypatch.setattr(
+        registry,
+        "_iter_entry_points",
+        lambda group: iter([_FakeEntryPoint("real_rule")] if group == registry.RULE_GROUP else []),
+    )
+
+    result = runner.invoke(app, ["plugins", "enable", "real_rule"])
+
+    assert result.exit_code == 0, result.output
+    assert "warning:" not in result.output
