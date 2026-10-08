@@ -1431,8 +1431,10 @@ def _git_push_risky_config_or_bulk(tokens: list[str]) -> GuardrailResult | None:
         )
     for assignment in info.assignments:
         key, sep, _value = assignment.partition("=")
-        if sep and key.strip().lower().startswith("remote.") and key.strip().lower().endswith(
-            ".push"
+        if (
+            sep
+            and key.strip().lower().startswith("remote.")
+            and key.strip().lower().endswith(".push")
         ):
             return _auth(
                 ReasonCode.destructive_command,

@@ -2296,9 +2296,7 @@ def test_long_push_option_value_is_not_mistaken_for_refspec():
 
 
 def test_receive_pack_value_is_not_mistaken_for_refspec():
-    result = _cmd(
-        "git push --receive-pack main origin feature", action_type=ActionType.git_op
-    )
+    result = _cmd("git push --receive-pack main origin feature", action_type=ActionType.git_op)
     assert result.verdict is not Verdict.BLOCK
 
 
