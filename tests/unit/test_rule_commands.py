@@ -113,6 +113,12 @@ def test_force_push_to_protected_branch_blocks(command):
     assert result.verdict is Verdict.BLOCK
 
 
+def test_push_plus_first_positional_preserves_block_verdict():
+    result = _cmd("git push +main", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -2300,6 +2306,15 @@ def test_receive_pack_value_is_not_mistaken_for_refspec():
     assert result.verdict is not Verdict.BLOCK
 
 
+def test_push_option_value_does_not_hide_delete_flag():
+    result = _cmd(
+        "git push -o x --delete origin main",
+        action_type=ActionType.git_op,
+    )
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
 # --- #726: --mirror and --prune should produce AUTH ---
 
 
@@ -2357,3 +2372,25 @@ def test_push_with_non_remote_push_config_is_not_elevated():
         action_type=ActionType.git_op,
     )
     assert result.verdict is Verdict.PASS
+
+
+# --- #742: bare ``--signed`` must NOT consume the following token ----------
+# ``--signed`` takes an OPTIONAL value attached via ``=`` (``--signed=yes``);
+# a bare ``--signed`` never pops the next token.  Before the fix, the parser
+# skipped the token after ``--signed``, swallowing ``--force`` or ``origin``
+# and silently PASSing a destructive push.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # --signed followed by --force: force-push to a protected branch
+        "git push --signed --force origin main",
+        # --signed followed by a remote: delete of a protected branch
+        "git push --signed origin --delete main",
+    ],
+)
+def test_bare_signed_does_not_swallow_next_token(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
