@@ -113,6 +113,12 @@ def test_force_push_to_protected_branch_blocks(command):
     assert result.verdict is Verdict.BLOCK
 
 
+def test_push_plus_first_positional_preserves_block_verdict():
+    result = _cmd("git push +main", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -2195,3 +2201,196 @@ def test_git_attr_source_global_option_still_locates_history_rewrite_verb():
     with_global = _cmd("git --attr-source HEAD reset --hard HEAD~3")
     assert with_global.verdict == bare.verdict == Verdict.AUTH
     assert with_global.reason_codes == bare.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #726: combined short flags, abbreviated long options, and value-consuming
+# options slip past both protected-branch push checks ---
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # combined short flags: delete
+        "git push -qd origin main",
+        "git push -dq origin main",
+        "git push -ud origin main",
+        # abbreviated long options: delete
+        "git push --del origin main",
+        "git push --dele origin main",
+        "git push --delet origin main",
+    ],
+)
+def test_combined_short_flags_and_abbreviated_delete_block(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # combined short flags: force
+        "git push -fu origin main",
+        "git push -qf origin main",
+        # abbreviated long options: force
+        "git push --force-w origin main",
+        "git push --force-with origin main",
+        "git push --force-with-l origin main",
+    ],
+)
+def test_combined_short_flags_and_abbreviated_force_block(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # combined short delete on a feature branch — not protected
+        "git push -qd origin my-feature",
+        "git push -dq origin my-feature",
+        # abbreviated long delete on a feature branch
+        "git push --del origin my-feature",
+    ],
+)
+def test_combined_short_delete_of_feature_branch_is_not_blocked(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # combined short force on a feature branch — not protected
+        "git push -fu origin my-feature",
+        # abbreviated long force on a feature branch
+        "git push --force-w origin my-feature",
+    ],
+)
+def test_combined_short_force_of_feature_branch_is_not_blocked(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # benign combined short flags that should PASS
+        "git push -u origin main",
+        "git push -q origin feature",
+        "git push -qu origin main",
+        "git push -uq origin main",
+    ],
+)
+def test_benign_combined_short_flags_pass(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+def test_push_option_value_is_not_mistaken_for_refspec():
+    # ``-o main`` means ``--push-option=main``, NOT push to branch ``main``.
+    # Without value-consuming option handling, ``main`` after ``-o`` would be
+    # misread as the remote, desyncing refspec identification.
+    result = _cmd("git push -o main origin feature", action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_long_push_option_value_is_not_mistaken_for_refspec():
+    result = _cmd("git push --push-option main origin feature", action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_receive_pack_value_is_not_mistaken_for_refspec():
+    result = _cmd("git push --receive-pack main origin feature", action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_push_option_value_does_not_hide_delete_flag():
+    result = _cmd(
+        "git push -o x --delete origin main",
+        action_type=ActionType.git_op,
+    )
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #726: --mirror and --prune should produce AUTH ---
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --mirror",
+        "git push --mirr",
+    ],
+)
+def test_push_mirror_requires_auth(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --prune",
+        "git push --pru",
+    ],
+)
+def test_push_prune_requires_auth(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #726: -c remote.*.push=... config override should produce AUTH ---
+
+
+def test_push_with_remote_push_config_override_requires_auth():
+    result = _cmd(
+        "git -c remote.origin.push=:refs/heads/main push origin",
+        action_type=ActionType.git_op,
+    )
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+def test_push_with_remote_push_config_override_different_remote_requires_auth():
+    result = _cmd(
+        "git -c remote.upstream.push=+refs/heads/*:refs/heads/* push upstream",
+        action_type=ActionType.git_op,
+    )
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+def test_push_with_non_remote_push_config_is_not_elevated():
+    # A -c key that is NOT remote.*.push should not trigger the AUTH.
+    result = _cmd(
+        "git -c core.pager=cat push origin feature",
+        action_type=ActionType.git_op,
+    )
+    assert result.verdict is Verdict.PASS
+
+
+# --- #742: bare ``--signed`` must NOT consume the following token ----------
+# ``--signed`` takes an OPTIONAL value attached via ``=`` (``--signed=yes``);
+# a bare ``--signed`` never pops the next token.  Before the fix, the parser
+# skipped the token after ``--signed``, swallowing ``--force`` or ``origin``
+# and silently PASSing a destructive push.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # --signed followed by --force: force-push to a protected branch
+        "git push --signed --force origin main",
+        # --signed followed by a remote: delete of a protected branch
+        "git push --signed origin --delete main",
+    ],
+)
+def test_bare_signed_does_not_swallow_next_token(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
