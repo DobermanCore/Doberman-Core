@@ -594,3 +594,96 @@ def test_bounded_on_a_one_megabyte_command():
     huge_command = "pip install " + ("a" * (1024 * 1024))
     result = rule.evaluate(_action(), _ctx(huge_command))
     assert result.verdict is Verdict.PASS
+
+
+# ── #645: npx, npm exec, and pipx run execute-on-install verbs ───────────
+
+
+def test_npx_dependency_admission():
+    # npx <pkg> fetches and runs without a subcommand: ordinary flags (e.g.
+    # --yes, -y) are skipped, known-malicious blocks, typosquats require auth,
+    # and popular/legitimate names pass.
+    rule = DependencyAdmissionRule(
+        known_malicious={"npm": frozenset({"crossenv"})},
+        popular_by_len={"npm": {7: frozenset({"request"})}},
+    )
+    segments, _, _ = walk_command("npx --yes crossenv")
+    assert _ecosystem_and_names(segments[0]) == ("npm", ["crossenv"])
+
+    result_block = rule.evaluate(_action(), _ctx("npx --yes crossenv"))
+    assert result_block.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_block.reason_codes
+
+    result_plain = rule.evaluate(_action(), _ctx("npx crossenv"))
+    assert result_plain.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_plain.reason_codes
+
+    result_auth = rule.evaluate(_action(), _ctx("npx requestx"))
+    assert result_auth.verdict is Verdict.AUTH
+    assert ReasonCode.dependency_name_typosquat in result_auth.reason_codes
+
+    result_pass = rule.evaluate(_action(), _ctx("npx request"))
+    assert result_pass.verdict is Verdict.PASS
+
+    segments_bare, _, _ = walk_command("npx --yes")
+    assert _ecosystem_and_names(segments_bare[0]) is None
+
+
+def test_npm_exec_dependency_admission():
+    # npm exec <pkg> fetches and runs via exec subcommand: ordinary flags
+    # are skipped, known-malicious blocks, typosquats require auth,
+    # and popular/legitimate names pass.
+    rule = DependencyAdmissionRule(
+        known_malicious={"npm": frozenset({"crossenv"})},
+        popular_by_len={"npm": {7: frozenset({"request"})}},
+    )
+    segments, _, _ = walk_command("npm exec --yes crossenv")
+    assert _ecosystem_and_names(segments[0]) == ("npm", ["crossenv"])
+
+    result_block = rule.evaluate(_action(), _ctx("npm exec --yes crossenv"))
+    assert result_block.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_block.reason_codes
+
+    result_plain = rule.evaluate(_action(), _ctx("npm exec crossenv"))
+    assert result_plain.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_plain.reason_codes
+
+    result_auth = rule.evaluate(_action(), _ctx("npm exec requestx"))
+    assert result_auth.verdict is Verdict.AUTH
+    assert ReasonCode.dependency_name_typosquat in result_auth.reason_codes
+
+    result_pass = rule.evaluate(_action(), _ctx("npm exec request"))
+    assert result_pass.verdict is Verdict.PASS
+
+    segments_bare, _, _ = walk_command("npm exec")
+    assert _ecosystem_and_names(segments_bare[0]) is None
+
+
+def test_pipx_run_dependency_admission():
+    # pipx run <pkg> fetches and runs via run subcommand: ordinary flags
+    # are skipped, known-malicious blocks, typosquats require auth,
+    # and popular/legitimate names pass.
+    rule = DependencyAdmissionRule(
+        known_malicious={"pypi": frozenset({"evilpkg-fixture"})},
+        popular_by_len={"pypi": {8: frozenset({"requests"})}},
+    )
+    segments, _, _ = walk_command("pipx run --verbose evilpkg-fixture")
+    assert _ecosystem_and_names(segments[0]) == ("pypi", ["evilpkg-fixture"])
+
+    result_block = rule.evaluate(_action(), _ctx("pipx run --verbose evilpkg-fixture"))
+    assert result_block.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_block.reason_codes
+
+    result_plain = rule.evaluate(_action(), _ctx("pipx run evilpkg-fixture"))
+    assert result_plain.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_plain.reason_codes
+
+    result_auth = rule.evaluate(_action(), _ctx("pipx run requestx"))
+    assert result_auth.verdict is Verdict.AUTH
+    assert ReasonCode.dependency_name_typosquat in result_auth.reason_codes
+
+    result_pass = rule.evaluate(_action(), _ctx("pipx run requests"))
+    assert result_pass.verdict is Verdict.PASS
+
+    segments_bare, _, _ = walk_command("pipx run")
+    assert _ecosystem_and_names(segments_bare[0]) is None

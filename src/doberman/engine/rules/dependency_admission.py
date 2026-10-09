@@ -107,10 +107,11 @@ _NO_VALUE_FLAGS: frozenset[str] = frozenset()
 _ECOSYSTEM_VERBS: dict[str, tuple[str, frozenset[str], frozenset[str]]] = {
     "pip": ("pypi", frozenset({"install"}), _PIP_VALUE_FLAGS),
     "pip3": ("pypi", frozenset({"install"}), _PIP_VALUE_FLAGS),
-    "pipx": ("pypi", frozenset({"install"}), _PIP_VALUE_FLAGS),
+    "pipx": ("pypi", frozenset({"install", "run"}), _PIP_VALUE_FLAGS),
     "uv": ("pypi", frozenset({"add"}), _NO_VALUE_FLAGS),
     "poetry": ("pypi", frozenset({"add"}), _NO_VALUE_FLAGS),
-    "npm": ("npm", frozenset({"install", "i", "add"}), _NPM_VALUE_FLAGS),
+    "npm": ("npm", frozenset({"install", "i", "add", "exec", "x"}), _NPM_VALUE_FLAGS),
+    "npx": ("npm", frozenset(), _NPM_VALUE_FLAGS),
     "pnpm": ("npm", frozenset({"install", "i", "add"}), _PNPM_VALUE_FLAGS),
     "yarn": ("npm", frozenset({"add"}), _YARN_VALUE_FLAGS),
     "bun": ("npm", frozenset({"install", "i", "add"}), _BUN_VALUE_FLAGS),
@@ -213,9 +214,15 @@ def _ecosystem_and_names(raw_tokens: list[str]) -> tuple[str, list[str]] | None:
         return None
     ecosystem, subcommands, value_flags = entry
     rest = tokens[1:]
-    if not rest or rest[0].lower() not in subcommands:
+    if not rest:
         return None
-    names = _extract_names(rest[1:], value_flags)
+    if subcommands:
+        if rest[0].lower() not in subcommands:
+            return None
+        operand_tokens = rest[1:]
+    else:
+        operand_tokens = rest
+    names = _extract_names(operand_tokens, value_flags)
     return (ecosystem, names) if names else None
 
 
