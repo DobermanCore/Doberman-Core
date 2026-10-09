@@ -1154,11 +1154,11 @@ _GIT_PUSH_MANDATORY_VALUE_SHORT = set("o")
 #: in their ``--opt <value>`` (space-separated) form. ``=``-joined forms are
 #: self-contained and handled generically. Verified against ``git push
 #: --help`` (git 2.54): ``--push-option``, ``--receive-pack``/``--exec``,
-#: ``--repo``, ``--signed``, ``--force-with-lease`` (with ``=``), ``-t``
-#: (``--thin``, no value).
-_GIT_PUSH_LONG_VALUE_OPTIONS = frozenset(
-    {"--push-option", "--receive-pack", "--exec", "--repo", "--signed"}
-)
+#: ``--repo``, ``--force-with-lease`` (with ``=``), ``-t``
+#: (``--thin``, no value). ``--signed`` is deliberately absent: its value
+#: is OPTIONAL and only attaches via ``=`` (``--signed=yes``); a bare
+#: ``--signed`` never consumes the following token.
+_GIT_PUSH_LONG_VALUE_OPTIONS = frozenset({"--push-option", "--receive-pack", "--exec", "--repo"})
 
 #: Canonical long option names for ``git push`` that the abbreviated-prefix
 #: resolver recognises. Listed in the order git-push(1) documents them;
@@ -1264,8 +1264,11 @@ def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
        resolved against the canonical ``git push`` option list via
        :func:`_git_push_long_option_match`.
     3. **Value-consuming options** (``-o``, ``--push-option``, ``--repo``,
-       ``--receive-pack``, ``--exec``, ``--signed``): the following token is
-       consumed as their value and never misidentified as a remote or refspec.
+       ``--receive-pack``, ``--exec``): the following token is consumed as
+       their value and never misidentified as a remote or refspec.
+       ``--signed`` is NOT in this set: its value is optional and only
+       attaches via ``=`` (e.g. ``--signed=yes``); a bare ``--signed``
+       never consumes the next token.
 
     Positional extraction follows git's own convention: the first positional
     is the remote; everything after is a refspec. ``+``-prefixed refspecs
@@ -1335,6 +1338,8 @@ def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
     # text itself (after the ``+``) is kept as an explicit ref so the
     # semantic callers can match it against the protected set.
     explicit_refs = positionals[1:]  # first positional is the remote
+    if positionals and positionals[0].startswith("+"):
+        info.has_force = True
     for ref_token in explicit_refs:
         if ref_token.startswith("+"):
             info.has_force = True
