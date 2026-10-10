@@ -35,6 +35,22 @@ can't evaluate it.
 Requires the `doberman` CLI on `PATH` in the same environment the OpenClaw gateway process runs
 in (`pip install doberman-core` or your project's editable install).
 
+You must configure OpenClaw to grant this adapter conversation-level hook access. Merge the following setting into your existing OpenClaw configuration (do not replace your entire configuration):
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "doberman": {
+        "hooks": {
+          "allowConversationAccess": true
+        }
+      }
+    }
+  }
+}
+```
+
 ```bash
 # Link the adapter directory in place (no copy, so pulling a newer Doberman
 # checkout keeps the adapter current):
@@ -91,10 +107,7 @@ After install, and after every OpenClaw upgrade or config change:
   Doberman's protected/sensitive globs are blocked or authenticated up front), but a read tool's
   returned content isn't vetted for leaked secrets here, unlike the Claude Code post-hook, which
   scans output after execution.
-- **`cwd` is best-effort** (`process.cwd()` of the gateway process, since `before_tool_call`
-  exposes no working-directory field of its own). If the gateway runs from somewhere other than
-  the project root, per-repo role/policy resolution falls back to Doberman's default mode rather
-  than the real project's policy.
+- **`cwd` is best-effort**. The `before_tool_call` hook exposes no working-directory field of its own. The adapter attempts to map the session's workspace directory from the `before_agent_run` hook. When available, it uses the mapped session workspace directory. When not available, it falls back to the gateway process's `process.cwd()`. This fallback does not guarantee that the intended project's policies will be applied if the gateway runs from outside the project root.
 - **No build step by design.** `index.js` is plain ESM, loaded directly by OpenClaw
   (`package.json`'s `openclaw.extensions`). If you need to extend it, keep it dependency-free or
   add a build step deliberately, and document it here.
