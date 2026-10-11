@@ -868,6 +868,86 @@ async def apply_egress_velocity_change(
     )
 
 
+def _approval_memory_classify(before_seconds: int, after_seconds: int) -> Classification:
+    """Classify an approval-memory TTL change (``doberman approvals ttl``).
+
+    :func:`classify_change` reads two integers as ``neutral`` (both rank as an
+    unknown token), so the TTL needs this numeric sibling. A longer TTL keeps a
+    past approval trusted for longer, so a raise is a **weaken**; a lower value
+    (including ``0``, which disables memory) is a **strengthen**; equal is
+    ``neutral``. A value that cannot be coerced to ``int`` is a weaken (fail safe).
+    """
+    try:
+        before_val, after_val = int(before_seconds), int(after_seconds)
+    except (TypeError, ValueError):
+        return Classification.weaken
+    if after_val > before_val:
+        return Classification.weaken
+    if after_val < before_val:
+        return Classification.strengthen
+    return Classification.neutral
+
+
+async def apply_approval_memory_change(
+    before_seconds: int,
+    after_seconds: int,
+    reason: str,
+    *,
+    repo_root: str,
+    prompter: Prompter | None = None,
+    now: datetime | None = None,
+) -> ChangeOutcome:
+    """Chokepoint for an approval-memory TTL change (``approval_memory_seconds``).
+
+    Structural sibling of :func:`apply_egress_velocity_change` (same
+    record/notify/return shape). Classification is via
+    :func:`_approval_memory_classify`: raising the TTL is a **weaken** and must
+    clear the same mandatory possession-factor gate as every other policy
+    weakening (:func:`_run_weaken_gate`: TOTP if enrolled, else password). Lowering
+    or disabling it applies automatically and the prompter is never invoked.
+
+    Every attempt (incl. denials) is recorded to the append-only ledger and fanned
+    out to observers; the caller persists only when ``outcome.approved`` and passes
+    ``outcome.ts`` to ``save_policy(..., ledger_ts=...)``.
+    """
+    reason = _redact_reason(reason)
+    when = now or datetime.now(timezone.utc)
+    classification = _approval_memory_classify(before_seconds, after_seconds)
+    before = {"approval_memory_seconds": before_seconds}
+    after = {"approval_memory_seconds": after_seconds}
+
+    if classification is Classification.weaken:
+        from doberman.auth.provider import CliPrompter
+
+        approved, method = _run_weaken_gate(before, after, reason, prompter or CliPrompter())
+    else:
+        approved, method = True, "auto"
+
+    await _record_change(
+        repo_root,
+        before,
+        after,
+        classification,
+        reason,
+        approved=approved,
+        method=method,
+        now=when,
+    )
+    notify_observers(
+        {
+            "ts": when.isoformat(),
+            "classification": classification.value,
+            "changed_rules": _changed_keys(before, after),
+            "reason": reason,
+            "approved": approved,
+            "method": method,
+        }
+    )
+    return ChangeOutcome(
+        classification=classification, approved=approved, method=method, ts=when.isoformat()
+    )
+
+
 async def read_policy_changes(repo_root: str, *, limit: int | None = None) -> list[dict]:
     """Read ledger rows, newest first (for ``doberman policy-history``)."""
     if not db_path(repo_root).exists():

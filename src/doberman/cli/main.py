@@ -63,6 +63,7 @@ from doberman.policy.drift import (
     _prefs_classify,
     _run_weaken_gate,
     _verify_possession_factor,
+    apply_approval_memory_change,
     apply_change,
     apply_egress_velocity_change,
     apply_enforcement_change,
@@ -2183,18 +2184,22 @@ def approvals_ttl(
 ) -> None:
     """Set the 0-900 second TTL; raising it is a gated weakening."""
     current = load_approval_memory_seconds(path)
-    if seconds > current:
-        approved, method = _run_weaken_gate(
-            {"approval_memory_seconds": current},
-            {"approval_memory_seconds": seconds},
+    outcome = asyncio.run(
+        apply_approval_memory_change(
+            current,
+            seconds,
             "doberman approvals ttl CLI",
-            CliPrompter(),
+            repo_root=path,
+            prompter=CliPrompter(),
         )
-        if not approved:
-            typer.echo(f"error: approval-memory TTL change denied ({method}); unchanged", err=True)
-            raise typer.Exit(code=1)
+    )
+    if not outcome.approved:
+        typer.echo(
+            f"error: approval-memory TTL change denied ({outcome.method}); unchanged", err=True
+        )
+        raise typer.Exit(code=1)
     doc = load_policy(path) or recommend_policy()
-    save_policy(doc.with_approval_memory_seconds(seconds), path)
+    save_policy(doc.with_approval_memory_seconds(seconds), path, ledger_ts=outcome.ts)
     typer.echo(f"Approval memory TTL set to {seconds} second(s).")
 
 
