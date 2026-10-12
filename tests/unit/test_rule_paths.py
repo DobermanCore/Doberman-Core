@@ -475,6 +475,23 @@ def test_root_conftest_delete_requires_auth(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "target",
+    [
+        "tests",
+        "tests/",
+        "packages/sub/tests",
+        "packages/sub/tests/",
+    ],
+)
+def test_tests_directory_delete_requires_auth(tmp_path, target):
+    # Deleting the whole tests directory via a tool call now raises AUTH (#647).
+    action = _action(target, action_type=ActionType.file_delete)
+    result = RULE.evaluate(action, _ctx(tmp_path))
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.test_file_removal in result.reason_codes
+
+
+@pytest.mark.parametrize(
     "command",
     [
         "mv /tmp/downloaded.txt ./notes.txt",

@@ -1869,6 +1869,11 @@ def _segment_verdict(
             ReasonCode.test_file_removal,
             "Command moves/renames a test file; authentication required.",
         )
+    if _delete_targets_test_file(tokens, root):
+        return _auth(
+            ReasonCode.test_file_removal,
+            "Command deletes a test file or test directory; authentication required.",
+        )
     if cmd == "rm" and _count_delete_operands(tokens) >= bulk_threshold:
         return _auth(
             ReasonCode.bulk_operation,
@@ -1948,6 +1953,59 @@ def _mv_rename_source(tokens: list[str]) -> str | None:
         operands = argv[1:]
     positional = [t for t in operands if not t.startswith("-")]
     return positional[0] if len(positional) >= 2 else None
+
+
+def _delete_operands(tokens: list[str]) -> list[str]:
+    """Path operands of an ``rm``, ``git rm``, or Windows delete command.
+
+    Leading ``-`` flags are skipped, ``--`` stops flag processing for ``rm``
+    and ``git rm``, and Windows delete verbs extract positional operands via
+    :func:`_windows_delete_flags_and_operands`. Keys the git case on the
+    actual verb (:func:`_git_leading_globals`), so ``git log --grep rm`` is
+    never mistaken for ``git rm``.
+    """
+    if not tokens:
+        return []
+    cmd = tokens[0]
+    if cmd == "rm":
+        raw = tokens[1:]
+    elif cmd == "git":
+        argv, _ = _git_leading_globals(tokens)
+        if not argv or argv[0] != "rm":
+            return []
+        raw = argv[1:]
+    elif cmd.lower() in _WINDOWS_DELETE_VERBS:
+        _, _, ops = _windows_delete_flags_and_operands(tokens)
+        return ops
+    else:
+        return []
+
+    operands: list[str] = []
+    after_dashdash = False
+    for t in raw:
+        if after_dashdash:
+            operands.append(t)
+        elif t == "--":
+            after_dashdash = True
+        elif not t.startswith("-"):
+            operands.append(t)
+    return operands
+
+
+def _delete_targets_test_file(tokens: list[str], root: str) -> bool:
+    """True if an ``rm``, ``git rm``, or Windows delete command targets a test
+    file or test directory (#647).
+
+    Operands that resolve outside the repo root are skipped (same confinement
+    check as :class:`~doberman.engine.rules.paths.ProtectedPathRule`).
+    """
+    for op in _delete_operands(tokens):
+        canon = canonicalize(op, root=root)
+        if canon.escapes_root:
+            continue
+        if is_test_file(canon.relposix):
+            return True
+    return False
 
 
 def _git_is_history_rewrite(tokens: list[str]) -> bool:

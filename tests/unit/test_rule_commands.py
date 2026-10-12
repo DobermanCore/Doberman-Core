@@ -1315,23 +1315,59 @@ def test_process_kill_explanation_is_redacted(command):
     assert "secretservice" not in result.explanation
 
 
-# --- Known-gap characterization: shell-level test-file deletion -------------
-# ProtectedPathRule.test_file_removal (paths.py) only ever sees a file_delete/
-# rename TOOL action; a shell `rm`/`git rm` of a test file is a COMMAND LINE,
-# evaluated only by this rule (DestructiveCommandRule), which has no test-file
-# concept at all. These lock in the documented gap (README's Known
-# limitations) as PASS, rather than assert coverage this rule doesn't have.
+# --- test_file_removal: shell-level test-file deletion (#647) ---------------
 @pytest.mark.parametrize(
     "command",
     [
         "rm tests/unit/test_auth.py",
         "rm -rf tests/",
+        "rm -rf tests",
+        "rm test_*.py",
+        "rm *_test.py",
+        "rm conftest.py",
         "git rm tests/unit/test_auth.py",
+        "git rm -f tests/unit/test_auth.py",
+        "git -C repo rm tests/unit/test_auth.py",
+        "Remove-Item tests/unit/test_auth.py",
+        "Remove-Item -Recurse tests/",
+        "del tests\\unit\\test_auth.py",
     ],
 )
-def test_shell_deletion_of_a_test_file_is_invisible_to_this_rule(command):
+def test_shell_deletion_of_test_file_requires_auth(command):
     action_type = ActionType.git_op if command.startswith("git ") else ActionType.shell_exec
     result = _cmd(command, action_type=action_type)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.test_file_removal in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm build/output.log",
+        "git rm build/output.log",
+        "Remove-Item build/output.log",
+        "del build\\output.log",
+    ],
+)
+def test_shell_deletion_of_ordinary_non_test_file_is_unaffected(command):
+    action_type = ActionType.git_op if command.startswith("git ") else ActionType.shell_exec
+    result = _cmd(command, action_type=action_type)
+    assert result.verdict is Verdict.PASS
+
+
+def test_shell_deletion_outside_repo_root_is_not_blocked(tmp_path):
+    action = SecurityObject(
+        id="cmd-1",
+        ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
+        agent_role="unknown",
+        action_type=ActionType.shell_exec,
+        tool_name="shell_exec",
+        target="rm /tmp/other_test.py",
+    )
+    ctx = EvalContext(
+        metadata={"raw_arguments": {"command": "rm /tmp/other_test.py"}, "repo_root": str(tmp_path)}
+    )
+    result = RULE.evaluate(action, ctx)
     assert result.verdict is Verdict.PASS
 
 
