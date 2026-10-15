@@ -430,6 +430,7 @@ async def prune_decisions(
     older_than_days: int | None = None,
     max_rows: int | None = None,
     now: datetime | None = None,
+    dry_run: bool = False,
 ) -> dict[str, int]:
     """Prune resolved decision-log rows by age and/or a retained row budget.
 
@@ -443,6 +444,9 @@ async def prune_decisions(
     of storage: exact cutoff stays, one second older goes. With ``max_rows``,
     the newest matching rows are retained first, so an old-but-unresolved row
     cannot displace a newer resolved row from the budget.
+
+    With ``dry_run=True``, runs the same deletes to count the matching rows,
+    then rolls back instead of committing — nothing is actually removed.
 
     Returns counts only and raises on storage errors rather than reporting a
     partial delete as successful.
@@ -477,7 +481,10 @@ async def prune_decisions(
             )
             overflow_deleted = cur.rowcount
 
-        await conn.commit()
+        if dry_run:
+            await conn.rollback()
+        else:
+            await conn.commit()
     return {"age_deleted": age_deleted, "overflow_deleted": overflow_deleted}
 
 

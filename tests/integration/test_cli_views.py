@@ -95,6 +95,29 @@ def test_decision_log_prune_reports_count_only(tmp_path):
     assert _SECRET not in result.stdout
 
 
+def test_decision_log_prune_dry_run_deletes_nothing(tmp_path):
+    root = str(tmp_path)
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    _seed_auth_secret_read(root, ts=old)
+
+    dry_result = runner.invoke(
+        app,
+        ["decision-log-prune", "--older-than-days", "1", "--path", root, "--dry-run"],
+    )
+    assert dry_result.exit_code == 0, dry_result.output
+    assert "Would prune 1 row(s) (1 by age, 0 over --max-rows)." in dry_result.output
+
+    log_after_dry_run = runner.invoke(app, ["log", "--path", root])
+    assert "AUTH" in log_after_dry_run.stdout
+
+    real_result = runner.invoke(
+        app,
+        ["decision-log-prune", "--older-than-days", "1", "--path", root],
+    )
+    assert real_result.exit_code == 0, real_result.output
+    assert "Decision log pruned: 1 row(s)." in real_result.output
+
+
 def test_memory_shows_classes_and_counts_only(tmp_path):
     root = str(tmp_path)
     _seed_auth_secret_read(root)

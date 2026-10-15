@@ -368,6 +368,26 @@ async def test_prune_deletes_auth_rows_with_any_recorded_outcome(tmp_path):
     assert rows[0]["auth_result"] is None
 
 
+async def test_prune_dry_run_counts_without_deleting(tmp_path):
+    root = str(tmp_path)
+    now = datetime.now(timezone.utc)
+    await _seed_decision(root, "old", now - timedelta(days=90, seconds=1))
+    await _seed_decision(root, "boundary", now - timedelta(days=90))
+    await _seed_decision(root, "fresh", now - timedelta(days=1))
+
+    dry_result = await prune_decisions(root, older_than_days=90, now=now, dry_run=True)
+
+    count, _ = await _decision_verdicts_and_count(root)
+    assert dry_result == {"age_deleted": 1, "overflow_deleted": 0}
+    assert count == 3
+
+    real_result = await prune_decisions(root, older_than_days=90, now=now)
+
+    count, _ = await _decision_verdicts_and_count(root)
+    assert real_result == dry_result
+    assert count == 2
+
+
 async def test_prune_requires_at_least_one_policy(tmp_path):
     raised = False
     try:
