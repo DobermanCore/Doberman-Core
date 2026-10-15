@@ -208,7 +208,9 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `prefs` | `1` | Preference change denied by the gate. |
 | `egress-velocity` | `2` | Unknown knob, missing value, or a non-positive value. |
 | `egress-velocity` | `1` | Threshold change denied by the gate. |
+| `doctor` | `2` | `--path` does not exist, or exists but is not a directory. |
 | `doctor` | `1` | One or more critical checks failed. |
+| `approvals status` | `2` | `--path` does not exist, or exists but is not a directory. |
 | `setup` | `0` | The run completed as designed. This is NOT the same claim as "you got the mode you asked for". A `--mode <lower>` request the raise-only gate refuses still exits `0`; the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`) and the `Mode:` line repeats the reason. |
 | `setup` | `1` | The closing doctor pass found a critical (e.g. hooks call `doberman`, which is not on PATH), printed as `!! Setup incomplete !!`, never `complete`. |
 | `setup` | `3` | A run that wired ONLY `mcp`/`openclaw` (no hooks-based host at all), printed as `!! Setup pending !!`; a MIXED run (some hooks-kind host wired, some still manual), printed as `!! Setup partly pending !!`. Not an error either way: a manual paste-and-restart step still stands between here and protection, so both are distinguished from a fully-live `0` and a broken `1`. |

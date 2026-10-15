@@ -59,6 +59,26 @@ def _seed(root: str) -> None:
     )
 
 
+def test_status_missing_path_exits_2_and_creates_nothing(tmp_path):
+    missing = tmp_path / "typo-ed-path"
+
+    result = runner.invoke(app, ["approvals", "status", "--path", str(missing)])
+
+    assert result.exit_code == 2
+    assert f"error: --path {missing} does not exist" in result.output
+    assert not missing.exists()
+
+
+def test_status_path_is_a_file_exits_2(tmp_path):
+    a_file = tmp_path / "not-a-dir"
+    a_file.write_text("x")
+
+    result = runner.invoke(app, ["approvals", "status", "--path", str(a_file)])
+
+    assert result.exit_code == 2
+    assert f"error: --path {a_file} is not a directory" in result.output
+
+
 def test_status_prints_count_ttl_and_enabled_without_fingerprint(tmp_path):
     root = str(tmp_path)
     _seed(root)

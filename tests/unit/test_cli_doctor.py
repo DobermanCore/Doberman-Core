@@ -115,6 +115,26 @@ def _make_healthy(root: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_doctor_missing_path_exits_2_and_creates_nothing(tmp_path):
+    missing = tmp_path / "typo-ed-path"
+
+    result = runner.invoke(app, ["doctor", "--path", str(missing)])
+
+    assert result.exit_code == 2
+    assert f"error: --path {missing} does not exist" in result.output
+    assert not missing.exists()
+
+
+def test_doctor_path_is_a_file_exits_2(tmp_path):
+    a_file = tmp_path / "not-a-dir"
+    a_file.write_text("x")
+
+    result = runner.invoke(app, ["doctor", "--path", str(a_file)])
+
+    assert result.exit_code == 2
+    assert f"error: --path {a_file} is not a directory" in result.output
+
+
 def test_doctor_healthy_fixture_exits_zero(tmp_path):
     root = str(tmp_path)
     _make_healthy(root)
