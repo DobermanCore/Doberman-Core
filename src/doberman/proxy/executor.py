@@ -82,7 +82,11 @@ from doberman.storage.db import (
     open_db,
     revoke_elevation,
 )
-from doberman.storage.log import recent_session_decisions, record_decision
+from doberman.storage.log import (
+    recent_session_decisions,
+    record_decision,
+    record_shadow,
+)
 from doberman.subjective.baseline import (
     budget_allows_step_up,
     entity_id,
@@ -778,6 +782,15 @@ async def _persist(
         )
     except Exception:  # noqa: BLE001 — logging must never break the execution path
         _engine_logger.warning("decision log persist failed (action %s); continuing", action.id)
+    try:
+        await record_shadow(
+            decision,
+            action,
+            repo_root=REPO_ROOT,
+            entity_id=eid,
+        )
+    except Exception:  # noqa: BLE001 - shadow logging must never break execution
+        _engine_logger.warning("shadow log persist failed (action %s); continuing", action.id)
 
 
 async def _handle_auth(

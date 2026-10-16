@@ -394,13 +394,12 @@ async def record_shadow(
     """Persist one redacted shadow-adjudication row (best-effort, shadow-only).
 
     Writes a row ONLY when ``decision.shadow`` is set. Stores the live verdict and
-    the shadow verdict/reason-code **classes** — never a raw value — so this
+    the shadow verdict/reason-code **classes** (never a raw value) so this
     ledger is redaction-safe by construction. Like :func:`record_decision` it is
     outside the decision path: any failure is logged and swallowed, so it can
     never raise into execution or alter a verdict (the decision is already made).
 
-    Not yet wired into the executor persist path — this slice provides + unit-tests
-    the writer; wiring is a follow-up.
+    Wired into the executor persist path (:func:`doberman.proxy.executor._persist`).
     """
     if decision.shadow is None:
         return
