@@ -122,3 +122,19 @@ def test_ttl_rejects_out_of_range(tmp_path):
 
     assert result.exit_code != 0
     assert load_approval_memory_seconds(str(tmp_path)) == 300
+
+
+def test_approvals_status_rejects_missing_path(tmp_path):
+    missing = tmp_path / "missing_dir"
+    result = runner.invoke(app, ["approvals", "status", "--path", str(missing)])
+    assert result.exit_code == 2
+    assert f"error: --path {missing} does not exist" in result.output
+    assert not missing.exists()
+
+
+def test_approvals_status_rejects_file_path(tmp_path):
+    file_path = tmp_path / "not_a_dir.txt"
+    file_path.write_text("hello")
+    result = runner.invoke(app, ["approvals", "status", "--path", str(file_path)])
+    assert result.exit_code == 2
+    assert f"error: --path {file_path} is not a directory" in result.output
