@@ -3143,8 +3143,14 @@ def _feed_row(row: dict) -> dict:
     ``row`` comes from :func:`doberman.storage.log.read_decisions`/
     ``read_decisions_since``, already redacted at write time (path *class*,
     not a raw path; no raw arguments; no secrets). This picks a further
-    subset - e.g. ``agent_role``/``auth_result`` are dropped even though
-    they're on the row.
+    subset - e.g. ``auth_result``/``action_id``/``entity_id`` are dropped even
+    though they're on the row.
+
+    ``session_id`` (the host's opaque session UUID), ``agent_role``,
+    ``auth_path`` (a closed enum) and ``human_confirmed`` (1/0/NULL, passed
+    through as stored, the same as ``log --jsonl``) let a companion UI group
+    rows by the session that made them and tell who resolved an AUTH. None of
+    them can carry command text; a row that never recorded one sends null.
 
     ``risk`` and ``source_context`` are included (beyond what the TUI's
     5-column table shows) because a PASS row for a non-path action (e.g.
@@ -3181,6 +3187,10 @@ def _feed_row(row: dict) -> dict:
         "reason_codes": reason_codes(row),
         "headline": headline(row) if show_why else "",
         "explanation": template_explanation(row, with_reasons=False) if show_why else "",
+        "session_id": row.get("session_id"),
+        "agent_role": row.get("agent_role"),
+        "auth_path": row.get("auth_path"),
+        "human_confirmed": row.get("human_confirmed"),
     }
 
 

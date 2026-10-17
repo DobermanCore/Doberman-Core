@@ -194,6 +194,10 @@ Operators can bound how many decision rows are kept with `doberman decision-log-
 only resolved decisions, never pending `AUTH` rows or the append-only policy-change ledger. See the
 [CLI reference](docs/CLI.md) for the age and row-budget options.
 
+`doberman log --jsonl` and the dashboard's live feed carry each decision's host session id, so a
+companion tool can group decisions by the agent session that made them. The feed also names the
+agent role and who resolved an `AUTH` (`auth_path`, `human_confirmed`).
+
 ---
 
 ## Turn gate

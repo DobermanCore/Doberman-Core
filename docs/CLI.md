@@ -149,7 +149,9 @@ Emits `{version, path, ok, checks[], critical_failures[]}`. `ok` is `true` only 
 
 ### `doberman log --jsonl`
 
-One redacted JSON object per decision line, newest first. Fields are an allowlist of already-redacted data: `ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id`, `agent_role`, `risk`, `auth_path`, and `human_confirmed` when present. Empty stdout when there are no rows.
+One redacted JSON object per decision line, newest first. Fields are an allowlist of already-redacted data: `ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id`, `agent_role`, `risk`, `auth_path`, `human_confirmed`, `source_context`, and `session_id` when present. Empty stdout when there are no rows.
+
+`session_id` is the host's opaque session identifier (the Claude Code session UUID for its hooks), so a consumer can group one agent session's decisions. It is `null` for a decision with no host session, such as an MCP-proxy call, or a row recorded before the column existed.
 
 `auth_result` says *what* the outcome was; `auth_path` and `human_confirmed` say *who decided*. `auth_path` names the code path that resolved the authentication (`proxy_challenge`, `proxy_elevation`, `proxy_post_approval_gate`, `host_hook_challenge`, `host_hook_monitor`, `host_hook_objective`, `turn_gate`, or `none` when no authentication was involved). `human_confirmed` is `1` only when a person affirmatively approved, `0` when a challenge ran and no person answered it (an expired challenge, the dev auto-deny, an approval-memory hit), and `null` when no authentication was involved at all or the row predates the column. `null` is "not recorded", never "nobody approved".
 

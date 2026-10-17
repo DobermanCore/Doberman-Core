@@ -2341,6 +2341,8 @@ def tune(
 # for "allowed without a human" cannot answer the question #399 raised. Both are
 # closed values (an AuthPath enum member; 1/0/NULL) and can never carry command
 # text, so exporting them widens the stream by nothing an operator must redact.
+# session_id is the host harness's opaque session UUID (HK.5.1), not a secret;
+# it lets a consumer group a session's decisions.
 _JSONL_EXTRA_COLUMNS = (
     "id",
     "agent_role",
@@ -2348,6 +2350,7 @@ _JSONL_EXTRA_COLUMNS = (
     "auth_path",
     "human_confirmed",
     "source_context",
+    "session_id",
 )
 
 # Keep every action type in one column even when a new enum member outgrows the
