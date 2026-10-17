@@ -15,6 +15,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -31,7 +32,7 @@ from doberman.models import (
     SourceContext,
     Verdict,
 )
-from doberman.storage.log import record_decision
+from doberman.storage.log import exportable_session_id, record_decision
 
 _TOKEN = "test-dash-token-session-fields-01"  # noqa: S105 - fixture value, not a real secret
 _SECRET = "SYNTHETIC-SECRET-AKIA0000SESS"  # noqa: S105 - synthetic test fixture, not a real key
@@ -55,6 +56,23 @@ _FEED_KEYS = {
     "agent_role",
     "auth_path",
     "human_confirmed",
+}
+
+# Every key one `log --jsonl` line may carry, pinned the same way.
+_JSONL_KEYS = {
+    "ts",
+    "final_verdict",
+    "action_type",
+    "target_path_class",
+    "reason_codes",
+    "auth_result",
+    "id",
+    "agent_role",
+    "risk",
+    "auth_path",
+    "human_confirmed",
+    "source_context",
+    "session_id",
 }
 
 
@@ -122,6 +140,8 @@ def test_feed_row_carries_the_session_fields(tmp_path):
     assert event["agent_role"] == "backend"
     assert event["auth_path"] == "host_hook_challenge"
     assert event["human_confirmed"] == 1
+    # True == 1 in Python, so the value check alone would pass a JSON bool.
+    assert type(event["human_confirmed"]) is int
     assert set(event) == _FEED_KEYS
 
 
@@ -146,6 +166,7 @@ def test_feed_row_keeps_human_confirmed_zero_distinct_from_null(tmp_path):
     [event] = _feed_events(root)
     assert event["human_confirmed"] == 0
     assert event["human_confirmed"] is not None
+    assert type(event["human_confirmed"]) is int
 
 
 def test_feed_row_of_a_legacy_row_without_the_columns_is_null():
@@ -174,13 +195,33 @@ def test_feed_row_still_drops_auth_result_and_raw_columns():
 
 def test_log_jsonl_exports_session_id(tmp_path):
     root = str(tmp_path)
-    _record(root, session_id=_SESSION, auth_path=AuthPath.host_hook_challenge, human_confirmed=True)
+    _record(
+        root,
+        session_id=_SESSION,
+        auth_path=AuthPath.host_hook_challenge,
+        human_confirmed=True,
+        entity_id="hmac:entity-populated",
+        elevation_id="elev-populated",
+    )
 
     [obj] = _jsonl(root)
     assert obj["session_id"] == _SESSION
     assert obj["agent_role"] == "backend"
     assert obj["auth_path"] == "host_hook_challenge"
     assert obj["human_confirmed"] == 1
+    assert type(obj["human_confirmed"]) is int
+    # Every column of a fully populated row went through the allow-list, so
+    # anything beyond these keys (action_id, entity_id, ...) is a leak.
+    assert set(obj) == _JSONL_KEYS
+
+
+def test_log_jsonl_keeps_human_confirmed_zero_an_int(tmp_path):
+    root = str(tmp_path)
+    _record(root, auth_path=AuthPath.host_hook_monitor, human_confirmed=False)
+
+    [obj] = _jsonl(root)
+    assert obj["human_confirmed"] == 0
+    assert type(obj["human_confirmed"]) is int
 
 
 def test_log_jsonl_session_id_is_null_when_not_recorded(tmp_path):
@@ -192,3 +233,62 @@ def test_log_jsonl_session_id_is_null_when_not_recorded(tmp_path):
     assert obj["session_id"] is None
     assert obj["auth_path"] is None
     assert obj["human_confirmed"] is None
+    assert set(obj) == _JSONL_KEYS
+
+
+# --- session id shape at export ---------------------------------------------
+#
+# The hook path stores any non-empty string the host sends as session_id, so
+# a crafted payload can plant a path or a credential there. Both exports send
+# it on only when it has an id's shape, and null otherwise. That covers rows
+# written before the check existed too, because it runs at read time.
+
+_CRAFTED_SESSION_IDS = [
+    "/home/alice/.ssh/id_ed25519",
+    "C:\\Users\\alice\\secrets\\prod.env",
+    "../../.doberman/doberman.db",
+    "aws_secret_access_key=SYNTHETICSESSIONCANARY0001",
+    "Authorization: Bearer SYNTHETICSESSIONCANARY0002",
+    "https://hooks.example.test/T000/SYNTHETICSESSIONCANARY0003",
+    "sess-ok\nSYNTHETICSESSIONCANARY0004",
+    "-leading-dash",
+    "a" * 129,
+]
+
+_REAL_SESSION_IDS = [
+    _SESSION,  # Claude Code / Codex / Cursor: a UUID
+    "conv-00000000-0000-0000-0000-000000000001",  # Cursor conversation_id fixture
+    "hmac:" + "0123456789abcdef" * 4,  # ambient monitor session fingerprint
+    "agent:main:main",  # colon-separated host session key
+    "sess_abc.123",
+    "a" * 128,
+]
+
+
+@pytest.mark.parametrize("crafted", _CRAFTED_SESSION_IDS)
+def test_crafted_session_id_exports_as_null_in_both_surfaces(tmp_path, crafted):
+    root = str(tmp_path)
+    _record(root, session_id=crafted)
+
+    [event] = _feed_events(root)
+    [obj] = _jsonl(root)
+    assert event["session_id"] is None
+    assert obj["session_id"] is None
+
+    feed_text = json.dumps(event)
+    jsonl_text = json.dumps(obj)
+    for fragment in ("alice", "SYNTHETICSESSIONCANARY", "doberman.db", "leading-dash", "a" * 129):
+        if fragment in crafted:
+            assert fragment not in feed_text
+            assert fragment not in jsonl_text
+
+
+@pytest.mark.parametrize("value", _REAL_SESSION_IDS)
+def test_real_session_id_shapes_export_unchanged(value):
+    assert exportable_session_id(value) == value
+    assert _feed_row({"final_verdict": "PASS", "session_id": value})["session_id"] == value
+
+
+@pytest.mark.parametrize("value", [None, "", 42, b"sess-bytes"])
+def test_non_string_or_empty_session_id_exports_as_null(value):
+    assert exportable_session_id(value) is None

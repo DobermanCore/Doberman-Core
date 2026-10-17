@@ -82,7 +82,7 @@ from doberman.explain import REASON_DESCRIPTIONS, headline, template_explanation
 from doberman.policy.drift import apply_mode_change
 from doberman.policy.modes import SecurityMode
 from doberman.storage import approvals
-from doberman.storage.log import read_decisions, read_decisions_since
+from doberman.storage.log import exportable_session_id, read_decisions, read_decisions_since
 
 #: Tiers whose challenge requires a TOTP code (mirrors
 #: ``LocalAuthProvider._run_tier``'s ``two_factor``/``role_elevation`` branch).
@@ -3146,11 +3146,13 @@ def _feed_row(row: dict) -> dict:
     subset - e.g. ``auth_result``/``action_id``/``entity_id`` are dropped even
     though they're on the row.
 
-    ``session_id`` (the host's opaque session UUID), ``agent_role``,
+    ``session_id`` (the host's opaque session id), ``agent_role``,
     ``auth_path`` (a closed enum) and ``human_confirmed`` (1/0/NULL, passed
     through as stored, the same as ``log --jsonl``) let a companion UI group
-    rows by the session that made them and tell who resolved an AUTH. None of
-    them can carry command text; a row that never recorded one sends null.
+    rows by the session that made them and tell who resolved an AUTH. The
+    host sends ``session_id`` as free text, so it goes out only when it has an
+    id's shape (:func:`doberman.storage.log.exportable_session_id`), else
+    null; a row that never recorded a field sends null too.
 
     ``risk`` and ``source_context`` are included (beyond what the TUI's
     5-column table shows) because a PASS row for a non-path action (e.g.
@@ -3187,7 +3189,7 @@ def _feed_row(row: dict) -> dict:
         "reason_codes": reason_codes(row),
         "headline": headline(row) if show_why else "",
         "explanation": template_explanation(row, with_reasons=False) if show_why else "",
-        "session_id": row.get("session_id"),
+        "session_id": exportable_session_id(row.get("session_id")),
         "agent_role": row.get("agent_role"),
         "auth_path": row.get("auth_path"),
         "human_confirmed": row.get("human_confirmed"),
