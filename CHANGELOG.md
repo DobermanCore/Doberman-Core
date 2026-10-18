@@ -6,6 +6,35 @@ gets its own [notes on GitHub](https://github.com/DobermanCore/Doberman-Core/rel
 
 Not yet released: [`changelog.d/`](changelog.d/), compiled into the next version.
 
+## v0.19.0 — 2026-10-18
+An ambient activity monitor, tighter command and hook checks, and a wave of contributor fixes
+
+### Security
+- `doberman doctor` now fails when Claude Code's `disableAllHooks` turns every hook off, instead of reporting the hooks intact (#691, thanks @vortsghost2025)
+- A host-hook delete whose path was long enough to be redacted still gets its blast-radius preview and post-approval recheck (#692)
+- Path-qualified or `.exe` spellings of destructive verbs and `git --attr-source <tree-ish>` no longer slip past the command scanner (#693)
+- The approval prompt and phone push mask bearer tokens and password flags, not only name=value secrets (#694)
+- Activity path classes reject raw credential filenames like `.ssh/id_rsa` and accept wildcard and Windows drive classes like `/etc/*` and `C:/Users/x/.aws/*` (#700, #707, thanks @Souptik96)
+- `git push --delete`/`-d` and `git push origin :<branch>` against a protected branch now block like a force-push (#711, thanks @AmirF194)
+
+### Added
+- `doberman monitor run` and `status` score non-inline activity through the same engine; alert-only, never enforcing (#699, thanks @Maqbool61)
+- `doberman decision-log-prune --dry-run` lists the rows a prune would delete without deleting them (#735, thanks @harmehak0173)
+- `doberman doctor` warns about an enabled plugin no installed package provides, and `plugins enable` says so too; neither loads plugin code (#738, thanks @dchaudhari7177)
+- `doberman log --jsonl` and the dashboard feed carry each decision's `session_id`; the feed also names `agent_role`, `auth_path` and `human_confirmed` (#756)
+
+### Fixed
+- A root-level `conftest.py` and a shell `mv`/`git mv` of a test file now raise AUTH instead of passing silently (#689, thanks @Som0111)
+- `doberman approvals ttl` changes, including denied raises, now appear in `doberman policy-history` (#746, thanks @Santoshkumarpuppala)
+- `doberman tune` no longer counts ambient-monitor rows toward friction rates or standing-elevation proposals (#708, thanks @Maqbool61)
+- `doberman dash` refuses a busy or out-of-range `--port` before printing the URL, and a negative `--last` is a usage error (#736, #737, thanks @dchaudhari7177)
+- `doberman doctor` and `approvals status` refuse a `--path` that does not exist instead of creating it (#740, thanks @dchaudhari7177)
+- The MCP proxy reuses a SQLite connection only within its own task and event loop, so AUTH workers and child tasks get their own (#656, thanks @be-student)
+- Setup step totals skip refused tuning, a bad message tone lists the valid ones, and `policy-versions --show --json` prints compact JSON (#701, #733, #734, thanks @a27851305-hue, @harmehak0173)
+
+### Docs
+- `docs/CLI.md` documents `plugins`, `policy-file` and `memory seed`, and a test fails when a visible command is missing from it (#739, thanks @dchaudhari7177)
+
 ## v0.18.7 — 2026-09-09
 Approve or deny from your phone, and three ways past the command scanner are closed.
 
