@@ -179,6 +179,36 @@ def test_chain_without_a_repo_root_is_the_old_chain():
     assert kinds == ["NtfyPrompter", "GuiPrompter", "TtyPrompter"]
 
 
+@pytest.mark.parametrize("root", [".", "relative/project"])
+def test_chain_without_an_absolute_root_is_the_old_chain(root):
+    # "." is the spine's fallback when the host sent no cwd; neither it nor a relative path
+    # says which project's dashboard to trust.
+    prompter = _default_auth_prompter(root, _SESSION)
+
+    kinds = [type(p).__name__ for p in prompter.prompters]
+    assert kinds == ["NtfyPrompter", "GuiPrompter", "TtyPrompter"]
+
+
+def test_a_payload_without_cwd_never_reaches_a_dashboard(tmp_path, monkeypatch, local_channels):
+    # A dashboard is live in the hook process's own folder, which may be another project.
+    monkeypatch.chdir(tmp_path)
+    touch_heartbeat(str(tmp_path))
+
+    def _no_heartbeat_read(*_a, **_kw):
+        raise AssertionError("no dashboard heartbeat may be read without a host cwd")
+
+    monkeypatch.setattr(dashboard_prompter, "heartbeat_is_fresh", _no_heartbeat_read)
+    _no_wait_allowed(monkeypatch)
+    local_channels.gui_answer = True
+    out = claude_code.evaluate_pre(
+        {"hook_event_name": "PreToolUse", "session_id": _SESSION, **_CONFIRM_CALL}
+    )
+
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert local_channels == ["gui"]
+    assert _all_rows(str(tmp_path)) == []
+
+
 def test_dashboard_down_falls_to_the_old_chain_without_waiting_or_queuing(
     tmp_path, monkeypatch, local_channels
 ):

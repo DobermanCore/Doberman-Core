@@ -22,6 +22,7 @@ is imported lazily, only inside the AUTH branch that actually needs it.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
@@ -371,7 +372,9 @@ def _default_auth_prompter(
     # fixed step, not a fan-out race. Upgrade path: first-answer-wins concurrent
     # notify, if a sequential wait proves too slow in practice.
     chain: list[Prompter] = [NtfyPrompter(), GuiPrompter(), TtyPrompter()]
-    if repo_root:
+    # Only a folder the host named: the spine's "." fallback (no cwd sent) is the hook
+    # process's own folder, whose dashboard may belong to another project.
+    if repo_root and os.path.isabs(repo_root):
         from doberman.auth.dashboard_prompter import DashboardPrompter
 
         chain.insert(0, DashboardPrompter(repo_root, session_id=session_id))
