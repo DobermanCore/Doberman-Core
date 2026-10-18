@@ -288,6 +288,7 @@ TEST_FILE_GLOBS: tuple[str, ...] = (
 )
 
 _TEST_FILE_PATTERNS = _sanitize_globs(TEST_FILE_GLOBS)
+_SENSITIVE_PATTERNS = _sanitize_globs(DEFAULT_SENSITIVE_GLOBS)
 
 
 def is_test_file(relposix: str) -> bool:
@@ -299,6 +300,15 @@ def is_test_file(relposix: str) -> bool:
     cross-module reuse pattern as :func:`names_control_plane`.
     """
     return _matches_any(relposix, _TEST_FILE_PATTERNS)
+
+
+def is_sensitive_path(relposix: str) -> bool:
+    """True if a canonical (lower-cased) relposix path matches the sensitive-path
+    glob table (:data:`DEFAULT_SENSITIVE_GLOBS`). Public so :mod:`doberman.engine.rules.
+    commands` (``DestructiveCommandRule``) preserves ``sensitive_path_access`` on
+    shell deletions targeting sensitive paths, matching :class:`ProtectedPathRule`.
+    """
+    return _matches_any(relposix, _SENSITIVE_PATTERNS)
 
 
 #: Heuristic for "this tool call is a rename/move". ActionType has no dedicated

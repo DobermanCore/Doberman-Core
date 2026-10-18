@@ -44,6 +44,7 @@ from pathlib import Path, PurePosixPath
 
 from doberman.canonical import canonicalize
 from doberman.engine.rules.paths import (
+    is_sensitive_path,
     is_test_file,
     names_control_plane,
     needs_filesystem_resolution,
@@ -2692,7 +2693,18 @@ def _segment_verdict(
     if windows_delete is not None:
         return windows_delete
 
-    # --- Risky but recoverable → AUTH ---
+    # --- Risky but recoverable -> AUTH ---
+    if cmd == "rm" and _rm_targets_unrecoverable_data(tokens):
+        return _auth(
+            ReasonCode.destructive_command,
+            "Deleting an unrecoverable, gitignored data file (local database, "
+            "secret, or key); authentication required.",
+        )
+    if _delete_targets_sensitive_path(tokens, root):
+        return _auth(
+            ReasonCode.sensitive_path_access,
+            "Command deletes a sensitive path; authentication required.",
+        )
     mv_source = _mv_rename_source(tokens)
     if mv_source is not None and is_test_file(canonicalize(mv_source, root=root).relposix):
         return _auth(
@@ -2708,12 +2720,6 @@ def _segment_verdict(
         return _auth(
             ReasonCode.bulk_operation,
             "Bulk delete at or above the configured threshold; authentication required.",
-        )
-    if cmd == "rm" and _rm_targets_unrecoverable_data(tokens):
-        return _auth(
-            ReasonCode.destructive_command,
-            "Deleting an unrecoverable, gitignored data file (local database, "
-            "secret, or key); authentication required.",
         )
     # #198 — the directory-shaped case AN-1's lexical gate above deliberately
     # deferred. Placed AFTER it (and after the bulk-threshold check) so both
@@ -2832,6 +2838,17 @@ def _delete_operands(tokens: list[str]) -> list[str]:
     return operands
 
 
+def _delete_targets_sensitive_path(tokens: list[str], root: str) -> bool:
+    """True if an ``rm``, ``git rm``, or Windows delete command targets a
+    sensitive path on the sensitive list (:data:`~doberman.engine.rules.paths.DEFAULT_SENSITIVE_GLOBS`).
+    """
+    for op in _delete_operands(tokens):
+        canon = canonicalize(op, root=root)
+        if is_sensitive_path(canon.relposix):
+            return True
+    return False
+
+
 def _delete_targets_test_file(tokens: list[str], root: str) -> bool:
     """True if an ``rm``, ``git rm``, or Windows delete command targets a test
     file or test directory (#647).
@@ -2841,8 +2858,6 @@ def _delete_targets_test_file(tokens: list[str], root: str) -> bool:
     """
     for op in _delete_operands(tokens):
         canon = canonicalize(op, root=root)
-        if canon.escapes_root:
-            continue
         if is_test_file(canon.relposix):
             return True
     return False
