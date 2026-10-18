@@ -552,7 +552,8 @@ nobody answers falls back when its 90-second window closes. On the MCP proxy the
 the phone (when set up), MCP elicitation, the GUI dialog, then the terminal.
 
 Host hooks (Claude Code, Codex, Cursor) use the same queue: an `AUTH` from a hook is answered here
-first, then on the phone, the GUI dialog, then the terminal. The hook looks for the heartbeat in the
+first, then on the phone, the GUI dialog, then the terminal. While the dashboard is running, the phone
+is pinged only after that 90-second window closes unanswered. The hook looks for the heartbeat in the
 folder the host runs in, so start `doberman dash --path` on that same folder. Each hook card's
 `/api/pending` item carries the host `session_id` (`null` for a proxy approval, or for a value that
 does not look like an id). A 2FA-tier code is still checked in the hook process, never by the
