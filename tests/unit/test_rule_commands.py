@@ -1325,6 +1325,7 @@ def test_process_kill_explanation_is_redacted(command):
         "rm test_*.py",
         "rm *_test.py",
         "rm conftest.py",
+        "rm -- tests/unit/test_auth.py",
         "git rm tests/unit/test_auth.py",
         "git rm -f tests/unit/test_auth.py",
         "git -C repo rm tests/unit/test_auth.py",
@@ -1338,6 +1339,20 @@ def test_shell_deletion_of_test_file_requires_auth(command):
     result = _cmd(command, action_type=action_type)
     assert result.verdict is Verdict.AUTH
     assert ReasonCode.test_file_removal in result.reason_codes
+
+
+def test_shell_deletion_unrecoverable_precedes_test_file():
+    result = _cmd("rm tests/x.py app.db")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.destructive_command in result.reason_codes
+    assert ReasonCode.test_file_removal not in result.reason_codes
+
+
+def test_shell_deletion_sensitive_path_precedes_test_file():
+    result = _cmd("rm .github/workflows/tests/ci.yml")
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_path_access in result.reason_codes
+    assert ReasonCode.test_file_removal not in result.reason_codes
 
 
 @pytest.mark.parametrize(
