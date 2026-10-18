@@ -200,7 +200,9 @@ only resolved decisions, never pending `AUTH` rows or the append-only policy-cha
 `doberman log --jsonl` and the dashboard's live feed carry each decision's host session id, so a
 companion tool can group decisions by the agent session that made them. A value that does not look
 like an id, such as a path, is exported as `null`. The feed also names the agent role and who
-resolved an `AUTH` (`auth_path`, `human_confirmed`).
+resolved an `AUTH` (`auth_path`, `human_confirmed`). A host-hook `AUTH` from Claude Code, Codex or
+Cursor can be answered on `doberman dash` too, when the dashboard runs on the folder the host works
+in, and its `/api/pending` item carries the same `session_id` (`null` for an MCP-proxy approval).
 
 ---
 

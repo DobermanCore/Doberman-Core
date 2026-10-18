@@ -22,11 +22,17 @@ next channel (never a hang, never an invented answer):
   final, not a fall-through — see ``gui_prompter.py``'s docstring): here a
   dashboard timeout SHOULD still let a human at the terminal/GUI answer, so it
   also raises ``PrompterUnavailableError`` rather than propagating as a denial.
+  The row's expiry is the same window (the wait itself is timed on the
+  monotonic clock, the row's UTC ``expires_at`` is kept for display and
+  for resolve's own check), and when the window closes this channel
+  moves the row out of ``pending`` in one write, so a late click on the
+  dashboard is refused (409) instead of being lost, and a click that committed
+  just before that write is still honoured.
 """
 
 import asyncio
 import threading
-from datetime import datetime, timezone
+import time
 
 from doberman.auth.challenge import EFFECT_SET_LABEL, current_challenge, format_effect_set
 from doberman.auth.gui_prompter import PrompterUnavailableError
@@ -65,11 +71,16 @@ class DashboardPrompter:
         heartbeat_max_age_s: float = DEFAULT_HEARTBEAT_MAX_AGE_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         timeout_s: float = DEFAULT_TIMEOUT_S,
+        session_id: str | None = None,
     ) -> None:
         self._repo_root = repo_root
         self._heartbeat_max_age_s = heartbeat_max_age_s
         self._poll_interval_s = poll_interval_s
         self._timeout_s = timeout_s
+        # shortcut: the session id is fixed per prompter, which fits a host hook
+        # (one process per tool call); move it into the challenge context if a
+        # host ever shares one prompter across sessions.
+        self._session_id = session_id
 
     def confirm(self, message: str) -> bool:  # noqa: ARG002 - message unused; we build our own
         _engaged.value = False  # reset: this thread may reuse the same prompter across challenges
@@ -110,22 +121,43 @@ class DashboardPrompter:
                 explanation=explanation,
                 target_path_class=path_class(action),
                 repo_root=self._repo_root,
+                # The row dies when this channel gives up, so no late answer is lost.
+                ttl_s=self._timeout_s,
+                # The host sends any string; create_pending keeps it only if id-shaped.
+                session_id=self._session_id,
             )
         )
 
-        deadline = datetime.now(timezone.utc).timestamp() + self._timeout_s
-        while datetime.now(timezone.utc).timestamp() < deadline:
+        # Monotonic, so a wall-clock jump can neither stretch nor cut the window.
+        deadline = _monotonic() + self._timeout_s
+        while True:
             row = asyncio.run(approvals.get_pending(approval_id, repo_root=self._repo_root))
             if row is not None and row["status"] == "resolved":
-                _last_code.value = row.get("totp_code")
-                _engaged.value = True
-                return row["decision"] == "approved"
+                return self._take_answer(approval_id, decision.action_id)
+            # Checked after the poll, so an answer given during the last wait is still read.
+            if _monotonic() >= deadline:
+                # One write settles the race with a click: the row leaves 'pending', so a
+                # later click gets 409, unless a click committed after the poll above.
+                if asyncio.run(approvals.expire(approval_id, repo_root=self._repo_root)):
+                    break
+                return self._take_answer(approval_id, decision.action_id)
             _sleep(self._poll_interval_s)
 
         # Timed out with no human answer via the dashboard - NOT a denial: a
         # stale/unattended dashboard must not silently deny a real human who
         # can still answer at the terminal/GUI. See the module docstring.
         raise PrompterUnavailableError("dashboard approval timed out with no response")
+
+    def _take_answer(self, approval_id: str, action_id: str) -> bool:
+        """Consume the resolved row (its code is cleared in the same write) as this answer."""
+        row = asyncio.run(approvals.consume(approval_id, repo_root=self._repo_root))
+        # Only a resolved row for the action this channel queued is an answer; a row
+        # rewritten for another action (or gone) is no answer from this channel.
+        if row is None or row["action_id"] != action_id:
+            raise PrompterUnavailableError("the dashboard holds no answer for this action")
+        _last_code.value = row.get("totp_code")
+        _engaged.value = True
+        return row["decision"] == "approved"
 
     def read_code(self, message: str) -> str:  # noqa: ARG002 - code already collected in confirm()
         if not getattr(_engaged, "value", False):
@@ -140,8 +172,11 @@ class DashboardPrompter:
         return code
 
 
+def _monotonic() -> float:
+    """Broken out so tests can drive the window without waiting it out."""
+    return time.monotonic()
+
+
 def _sleep(seconds: float) -> None:
     """Broken out so tests can monkeypatch the wait without a real sleep."""
-    import time
-
     time.sleep(seconds)

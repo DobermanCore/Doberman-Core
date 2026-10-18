@@ -539,15 +539,26 @@ same row can never both win. Each pending card points at the channel that can ac
 `d` denies the action outright; it does not send it anywhere, so the note reads `The raw command
 stays in your terminal. To read it before deciding, leave this card alone - it moves there in
 M:SS.` with a live countdown. The row header shows the same live countdown (`answerable here for
-M:SS, then it moves to your terminal`). At 0, the challenge has genuinely moved to the terminal/GUI
-channel (not been denied), independent of the approval row's own longer DB TTL.
+M:SS, then it moves to your terminal`). At 0, the challenge has genuinely moved to the next channel
+(not been denied), and the approval row expires at the same moment, so a late click is refused
+rather than taken as an answer nobody is waiting for.
 
 Both Approve and Deny need the same two-step arm-then-confirm gesture (a 5s countdown) before they
 submit. The dashboard never verifies a TOTP code itself. A tier that needs one gets a real, visible
 "6-digit code" label above the field, and the code rides opaquely to the same auth-challenge
 machinery already running in the decision path. This channel engages only while the dashboard's own
-heartbeat is fresh. A stale heartbeat, or an unanswered approval, falls back to the next channel
-(MCP elicitation, then GUI dialog, then terminal) with no added latency.
+heartbeat is fresh. A stale or missing heartbeat falls back to the next channel at once; an approval
+nobody answers falls back when its 90-second window closes. On the MCP proxy the next channels are
+the phone (when set up), MCP elicitation, the GUI dialog, then the terminal.
+
+Host hooks (Claude Code, Codex, Cursor) use the same queue: an `AUTH` from a hook is answered here
+first, then on the phone, the GUI dialog, then the terminal. While the dashboard is running, the phone
+is pinged only after that 90-second window closes unanswered. The hook looks for the heartbeat in the
+folder the host runs in, so start `doberman dash --path` on that same folder. Each hook card's
+`/api/pending` item carries the host `session_id` (`null` for a proxy approval, or for a value that
+does not look like an id). A 2FA-tier code is still checked in the hook process, never by the
+dashboard. When Windows Hello, Touch ID or the phone is enabled as an approval method, a 2FA-tier
+action asks that method first and does not reach the dashboard.
 
 Every `BLOCK`/`AUTH` row in the recent-decisions feed (and every pending card) leads with a one-line
 human explanation, with its reason codes glossed via a hover tooltip. Expanding a row (click, tap,

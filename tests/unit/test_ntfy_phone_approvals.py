@@ -1006,15 +1006,18 @@ def test_build_auth_prompter_chain_order():
     ]
 
 
-def test_default_auth_prompter_starts_with_ntfy_and_is_a_no_op_unconfigured(ntfy_cfg):
+def test_default_auth_prompter_puts_ntfy_after_the_dashboard_and_is_a_no_op_unconfigured(
+    ntfy_cfg,
+):
     from doberman.hosthooks.hookio import _default_auth_prompter
 
-    prompter = _default_auth_prompter()
+    # The hook always knows its repo, so the dashboard leads the chain.
+    prompter = _default_auth_prompter(str(ntfy_cfg))
 
     kinds = [type(p).__name__ for p in prompter.prompters]
-    assert kinds == ["NtfyPrompter", "GuiPrompter", "TtyPrompter"]
+    assert kinds == ["DashboardPrompter", "NtfyPrompter", "GuiPrompter", "TtyPrompter"]
     # With no phone config, behaviour is byte-identical to the old [Gui, Tty]
     # chain: the phone step raises PrompterUnavailableError immediately -- no
     # network call, no popup -- so it never changes what the human sees.
     with pytest.raises(PrompterUnavailableError):
-        prompter.prompters[0].confirm("msg")
+        prompter.prompters[1].confirm("msg")

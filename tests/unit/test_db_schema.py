@@ -305,6 +305,105 @@ async def test_migration_tolerates_a_racing_process_adding_a_column_first(tmp_pa
     assert versions == [SCHEMA_VERSION]
 
 
+# --- v17 -> v18: pending_approvals gains `session_id` ----------------------
+
+_V17_PENDING_APPROVALS = """
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version (version) VALUES (17);
+CREATE TABLE pending_approvals (
+    id                 TEXT PRIMARY KEY,
+    action_id          TEXT NOT NULL,
+    created_at         TEXT NOT NULL,
+    expires_at         TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'pending',
+    tier               TEXT,
+    action_type        TEXT,
+    risk               TEXT,
+    reason_codes_json  TEXT,
+    explanation        TEXT,
+    target_path_class  TEXT,
+    decision           TEXT,
+    totp_code          TEXT
+);
+INSERT INTO pending_approvals (id, action_id, created_at, expires_at, tier)
+    VALUES ('legacy-row', 'legacy-action', '2026-01-01T00:00:00+00:00',
+            '2026-01-01T00:02:00+00:00', 'local_confirm');
+"""
+
+
+async def _build_v17_db(tmp_path) -> None:
+    path = db_path(str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = await aiosqlite.connect(str(path))
+    await conn.executescript(_V17_PENDING_APPROVALS)
+    await conn.commit()
+    await conn.close()
+
+
+async def test_v17_pending_approvals_gains_session_id_and_keeps_rows(tmp_path):
+    await _build_v17_db(tmp_path)
+    async with open_db(str(tmp_path)) as conn:
+        assert "session_id" in await _columns(conn, "pending_approvals")
+        async with conn.execute(
+            "SELECT action_id, tier, session_id FROM pending_approvals WHERE id = 'legacy-row'"
+        ) as cur:
+            row = await cur.fetchone()
+        async with conn.execute("SELECT version FROM schema_version") as cur:
+            versions = [r[0] for r in await cur.fetchall()]
+    # The row survives; no session id was recorded for it, so it reads NULL.
+    assert row == ("legacy-action", "local_confirm", None)
+    assert versions == [SCHEMA_VERSION]
+
+
+async def test_v18_migration_is_idempotent(tmp_path):
+    await _build_v17_db(tmp_path)
+    root = str(tmp_path)
+    async with open_db(root):
+        pass
+    # Force the migration to run again over an already-migrated table.
+    async with aiosqlite.connect(str(db_path(root))) as conn:
+        await conn.execute("UPDATE schema_version SET version = 17")
+        await conn.commit()
+    async with open_db(root) as conn:
+        cols = await _columns(conn, "pending_approvals")
+    assert cols.count("session_id") == 1
+
+
+async def test_fresh_db_pending_approvals_has_session_id(tmp_path):
+    async with open_db(str(tmp_path)) as conn:
+        cols = await _columns(conn, "pending_approvals")
+    assert cols[-1] == "session_id"
+    assert set(cols) & _FORBIDDEN_COLUMNS == set()
+
+
+async def test_migration_tolerates_a_racing_process_adding_pending_session_id_first(
+    tmp_path, monkeypatch
+):
+    # The loser of a race reads table_info before the winner's ALTER lands,
+    # then runs its own ALTER after it. Reproduce that view: the column is
+    # already there, but this process's snapshot of the columns lacks it.
+    from doberman.storage import db as db_module
+
+    await _build_v17_db(tmp_path)
+    async with aiosqlite.connect(str(db_path(str(tmp_path)))) as conn:
+        await conn.execute("ALTER TABLE pending_approvals ADD COLUMN session_id TEXT")
+        await conn.commit()
+
+    real = db_module._table_columns
+
+    async def stale(conn, table):
+        cols = await real(conn, table)
+        return [c for c in cols if not (table == "pending_approvals" and c == "session_id")]
+
+    monkeypatch.setattr(db_module, "_table_columns", stale)
+    async with open_db(str(tmp_path)) as conn:  # must not raise OperationalError
+        cols = await real(conn, "pending_approvals")
+        async with conn.execute("SELECT version FROM schema_version") as cur:
+            versions = [r[0] for r in await cur.fetchall()]
+    assert cols.count("session_id") == 1
+    assert versions == [SCHEMA_VERSION]
+
+
 # --- _add_column_if_missing itself (direct unit test, review fix for #619) -
 
 
@@ -446,5 +545,5 @@ def test_schema_text_change_requires_a_version_bump():
 
     from doberman.storage.db import _SCHEMA
 
-    assert SCHEMA_VERSION == 17
-    assert hashlib.sha256(_SCHEMA.encode()).hexdigest()[:16] == "7acc17c533b1f2de"
+    assert SCHEMA_VERSION == 18
+    assert hashlib.sha256(_SCHEMA.encode()).hexdigest()[:16] == "aa6b3558b8fc6774"
