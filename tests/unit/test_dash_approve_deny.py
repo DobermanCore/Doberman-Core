@@ -558,6 +558,59 @@ def test_totp_tier_code_flows_through_existing_verification(tmp_path, monkeypatc
     assert calls == ["999000"]  # verified from the PROMPTER side, via the existing totp module
 
 
+def test_a_used_code_is_cleared_from_the_row_when_it_is_read(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    monkeypatch.setattr(totp, "verify", lambda code, **_kw: code == "999000")
+    monkeypatch.setattr(
+        dashboard_prompter, "_sleep", _make_resolver(root, decision="approved", totp_code="999000")
+    )
+    decision, action = _decision_and_action(
+        risk=Risk.high, reason_codes=[ReasonCode.sensitive_secret_access]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=DashboardPrompter(root))
+
+    assert result.approved is True
+    row = asyncio.run(approvals.get_pending(_only_row_id(root), repo_root=root))
+    assert row["status"] == "resolved"
+    assert row["decision"] == "approved"
+    assert row["totp_code"] is None  # nothing left in the file for another action to reuse
+
+
+def test_a_resolved_row_rewritten_for_another_action_is_not_an_answer(tmp_path, monkeypatch):
+    # Anything that can write the database could point an approved row at a different action.
+    # The prompter knows which action it queued, so such a row is no answer from this channel.
+    root = str(tmp_path)
+    touch_heartbeat(root)
+
+    def _approve_then_retarget(seconds):  # noqa: ARG001
+        [row] = asyncio.run(approvals.list_pending(repo_root=root))
+        asyncio.run(approvals.resolve(row["id"], decision="approved", repo_root=root))
+
+        async def _retarget() -> None:
+            async with open_db(root) as conn:
+                await conn.execute(
+                    "UPDATE pending_approvals SET action_id = 'action-other' WHERE id = ?",
+                    (row["id"],),
+                )
+                await conn.commit()
+
+        asyncio.run(_retarget())
+
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _approve_then_retarget)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter([DashboardPrompter(root), fallback])
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert result.approved is False
+    assert fallback.confirm_calls  # the next channel asked a human instead
+
+
 # --- blast-radius preview (ADR 0094): rendered into the pending explanation -----------------
 
 

@@ -17,7 +17,8 @@ count, so two concurrent resolutions of the same row can never both "win" and
 an expired row can never be resolved (it is already dead). When its window
 closes the prompter moves the row to ``'expired'`` with the same kind of
 ``WHERE status = 'pending'`` write (:func:`expire`), so a click and the
-deadline cannot both win either.
+deadline cannot both win either. The prompter reads a resolved row through
+:func:`consume`, which clears its TOTP code in the same transaction.
 """
 
 import json
@@ -66,6 +67,8 @@ _RESOLVE = (
 )
 
 _EXPIRE = "UPDATE pending_approvals SET status = 'expired' WHERE id = ? AND status = 'pending'"
+
+_CLEAR_CODE = "UPDATE pending_approvals SET totp_code = NULL WHERE id = ? AND status = 'resolved'"
 
 
 def _row_to_dict(row) -> dict:
@@ -155,6 +158,26 @@ async def resolve(
         cur = await conn.execute(_RESOLVE, (decision, totp_code, approval_id, when.isoformat()))
         await conn.commit()
         return cur.rowcount > 0
+
+
+async def consume(approval_id: str, *, repo_root: str = ".") -> dict | None:
+    """The prompter's read of a resolved row: return it and clear its code in one transaction.
+
+    Returns the row as resolved (code included), or None when it is not resolved.
+    Once this returns, the code is no longer in the database, so a used code is
+    not left behind for anything else that can read the file.
+    """
+    async with open_db(repo_root) as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        async with conn.execute(_SELECT_ONE, (approval_id,)) as cur:
+            row = await cur.fetchone()
+        record = _row_to_dict(row) if row else None
+        if record is not None and record["status"] == "resolved":
+            await conn.execute(_CLEAR_CODE, (approval_id,))
+        else:
+            record = None
+        await conn.commit()
+    return record
 
 
 async def expire(approval_id: str, *, repo_root: str = ".") -> bool:

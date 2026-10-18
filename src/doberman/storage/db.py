@@ -331,8 +331,10 @@ CREATE TABLE IF NOT EXISTS shadow_adjudications (
 -- storage.approvals.resolve / expire, each a race-safe UPDATE ... WHERE).
 -- `totp_code` rides the row only because the dash NEVER verifies it - the
 -- prompter (decision path) is the sole consumer, via the existing
--- doberman.auth.totp.verify. `session_id` is the host session id, kept only
--- when it is id-shaped (storage.log.exportable_session_id), else NULL.
+-- doberman.auth.totp.verify, and it clears the code in the same write that
+-- reads it (storage.approvals.consume). `session_id` is the host session
+-- id, kept only when it is id-shaped (storage.log.exportable_session_id),
+-- else NULL.
 CREATE TABLE IF NOT EXISTS pending_approvals (
     id                 TEXT PRIMARY KEY,
     action_id          TEXT NOT NULL,

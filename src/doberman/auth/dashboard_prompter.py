@@ -130,23 +130,31 @@ class DashboardPrompter:
         while True:
             row = asyncio.run(approvals.get_pending(approval_id, repo_root=self._repo_root))
             if row is not None and row["status"] == "resolved":
-                return _answer(row)
+                return self._take_answer(approval_id, decision.action_id)
             # Checked after the poll, so an answer given during the last wait is still read.
             if datetime.now(timezone.utc).timestamp() >= deadline:
                 # One write settles the race with a click: the row leaves 'pending', so a
                 # later click gets 409, unless a click committed after the poll above.
                 if asyncio.run(approvals.expire(approval_id, repo_root=self._repo_root)):
                     break
-                row = asyncio.run(approvals.get_pending(approval_id, repo_root=self._repo_root))
-                if row is not None and row["status"] == "resolved":
-                    return _answer(row)
-                break
+                return self._take_answer(approval_id, decision.action_id)
             _sleep(self._poll_interval_s)
 
         # Timed out with no human answer via the dashboard - NOT a denial: a
         # stale/unattended dashboard must not silently deny a real human who
         # can still answer at the terminal/GUI. See the module docstring.
         raise PrompterUnavailableError("dashboard approval timed out with no response")
+
+    def _take_answer(self, approval_id: str, action_id: str) -> bool:
+        """Consume the resolved row (its code is cleared in the same write) as this answer."""
+        row = asyncio.run(approvals.consume(approval_id, repo_root=self._repo_root))
+        # Only a resolved row for the action this channel queued is an answer; a row
+        # rewritten for another action (or gone) is no answer from this channel.
+        if row is None or row["action_id"] != action_id:
+            raise PrompterUnavailableError("the dashboard holds no answer for this action")
+        _last_code.value = row.get("totp_code")
+        _engaged.value = True
+        return row["decision"] == "approved"
 
     def read_code(self, message: str) -> str:  # noqa: ARG002 - code already collected in confirm()
         if not getattr(_engaged, "value", False):
@@ -159,13 +167,6 @@ class DashboardPrompter:
         if not code:
             raise EOFError("no TOTP code was supplied through the dashboard")
         return code
-
-
-def _answer(row: dict) -> bool:
-    """Take a resolved row as this channel's answer (and its code, for read_code)."""
-    _last_code.value = row.get("totp_code")
-    _engaged.value = True
-    return row["decision"] == "approved"
 
 
 def _sleep(seconds: float) -> None:
