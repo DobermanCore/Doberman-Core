@@ -43,6 +43,7 @@ from doberman.models import (
     Verdict,
 )
 from doberman.storage import approvals
+from doberman.storage.db import open_db
 from doberman.storage.heartbeat import touch_heartbeat
 
 _TOKEN = "test-dash-token-0123456789"  # noqa: S105 - fixture value, not a real secret
@@ -442,13 +443,95 @@ def test_late_dashboard_resolve_after_the_window_is_409(tmp_path):
     assert resp.status_code == 409
 
 
-def _only_row_id(root: str) -> str:
-    # A "now" long before the row was written lists it even once it has expired.
-    rows = asyncio.run(
-        approvals.list_pending(repo_root=root, now=datetime(2000, 1, 1, tzinfo=timezone.utc))
+def _frozen_prompter_clock(monkeypatch) -> dict:
+    """Freeze the prompter's clock; the test moves ``clock["now"]`` itself."""
+    clock = {"now": datetime.now(timezone.utc)}
+
+    class _FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003
+            return clock["now"]
+
+    monkeypatch.setattr(dashboard_prompter, "datetime", _FrozenClock)
+    return clock
+
+
+def test_a_resolve_committed_after_the_final_poll_is_honoured(tmp_path, monkeypatch):
+    # The final poll reads the row as pending, the click commits right after that read, and
+    # the deadline check then finds the window closed. The answer is in the database, so the
+    # deadline write must see it and honour it instead of falling to the next channel.
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    clock = _frozen_prompter_clock(monkeypatch)
+    real_get = approvals.get_pending
+    raced = {"done": False}
+
+    async def _poll_then_click(approval_id, *, repo_root):
+        row = await real_get(approval_id, repo_root=repo_root)
+        if not raced["done"]:
+            raced["done"] = True
+            assert await approvals.resolve(approval_id, decision="approved", repo_root=repo_root)
+            clock["now"] += timedelta(seconds=31)
+        return row
+
+    def _no_wait(seconds):  # noqa: ARG001
+        raise AssertionError("the window closed on the first poll; nothing should wait")
+
+    monkeypatch.setattr(approvals, "get_pending", _poll_then_click)
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _no_wait)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter([DashboardPrompter(root, timeout_s=30), fallback])
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
     )
-    assert len(rows) == 1
-    return rows[0]["id"]
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert result.approved is True
+    assert fallback.confirm_calls == []
+
+
+def test_a_click_after_the_prompter_gave_up_is_409_even_inside_the_rows_ttl(tmp_path, monkeypatch):
+    # The prompter's window closes while the row's expires_at is still ahead on the dash's
+    # clock. The prompter's own write must close the row, so the click cannot be accepted
+    # for a challenge that has already moved to the next channel.
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    clock = _frozen_prompter_clock(monkeypatch)
+
+    def _overrun(seconds):  # noqa: ARG001
+        clock["now"] += timedelta(seconds=31)
+
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _overrun)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter([DashboardPrompter(root, timeout_s=30), fallback])
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert result.approved is False
+    assert fallback.confirm_calls
+    client = TestClient(create_app(_TOKEN, root))
+    resp = client.post(
+        f"/api/resolve/{_only_row_id(root)}",
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+        json={"decision": "approved"},
+    )
+    assert resp.status_code == 409
+
+
+def _only_row_id(root: str) -> str:
+    # Every row whatever its status, so a row the prompter closed is still found.
+    async def _ids() -> list[str]:
+        async with open_db(root) as conn:
+            async with conn.execute("SELECT id FROM pending_approvals") as cur:
+                return [r[0] for r in await cur.fetchall()]
+
+    ids = asyncio.run(_ids())
+    assert len(ids) == 1
+    return ids[0]
 
 
 # --- (f) TOTP tier: code rides the row, verified via the EXISTING totp path -----------------

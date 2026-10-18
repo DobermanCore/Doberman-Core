@@ -22,8 +22,10 @@ next channel (never a hang, never an invented answer):
   final, not a fall-through — see ``gui_prompter.py``'s docstring): here a
   dashboard timeout SHOULD still let a human at the terminal/GUI answer, so it
   also raises ``PrompterUnavailableError`` rather than propagating as a denial.
-  The row's expiry is the same window, so once this channel has given up a
-  late click on the dashboard is refused (409) instead of being lost.
+  The row's expiry is the same window, and when the window closes this channel
+  moves the row out of ``pending`` in one write, so a late click on the
+  dashboard is refused (409) instead of being lost, and a click that committed
+  just before that write is still honoured.
 """
 
 import asyncio
@@ -128,11 +130,16 @@ class DashboardPrompter:
         while True:
             row = asyncio.run(approvals.get_pending(approval_id, repo_root=self._repo_root))
             if row is not None and row["status"] == "resolved":
-                _last_code.value = row.get("totp_code")
-                _engaged.value = True
-                return row["decision"] == "approved"
+                return _answer(row)
             # Checked after the poll, so an answer given during the last wait is still read.
             if datetime.now(timezone.utc).timestamp() >= deadline:
+                # One write settles the race with a click: the row leaves 'pending', so a
+                # later click gets 409, unless a click committed after the poll above.
+                if asyncio.run(approvals.expire(approval_id, repo_root=self._repo_root)):
+                    break
+                row = asyncio.run(approvals.get_pending(approval_id, repo_root=self._repo_root))
+                if row is not None and row["status"] == "resolved":
+                    return _answer(row)
                 break
             _sleep(self._poll_interval_s)
 
@@ -152,6 +159,13 @@ class DashboardPrompter:
         if not code:
             raise EOFError("no TOTP code was supplied through the dashboard")
         return code
+
+
+def _answer(row: dict) -> bool:
+    """Take a resolved row as this channel's answer (and its code, for read_code)."""
+    _last_code.value = row.get("totp_code")
+    _engaged.value = True
+    return row["decision"] == "approved"
 
 
 def _sleep(seconds: float) -> None:

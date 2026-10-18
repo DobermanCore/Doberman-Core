@@ -326,8 +326,9 @@ CREATE TABLE IF NOT EXISTS shadow_adjudications (
 -- ever touches the decision path itself. Display fields are the SAME
 -- redaction-safe vocabulary the terminal/GUI prompters already show a human
 -- (action type, risk, reason codes, explanation, path *class*) - never the
--- raw target/arguments. `status` transitions 'pending' -> 'resolved' exactly
--- once (see storage.approvals.resolve's race-safe UPDATE ... WHERE clause).
+-- raw target/arguments. `status` leaves 'pending' exactly once: 'resolved'
+-- by the dash, or 'expired' when the prompter's window closes first (see
+-- storage.approvals.resolve / expire, each a race-safe UPDATE ... WHERE).
 -- `totp_code` rides the row only because the dash NEVER verifies it - the
 -- prompter (decision path) is the sole consumer, via the existing
 -- doberman.auth.totp.verify. `session_id` is the host session id, kept only

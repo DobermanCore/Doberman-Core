@@ -35,6 +35,7 @@ from doberman.hosthooks import claude_code
 from doberman.hosthooks.hookio import _default_auth_prompter
 from doberman.models import AuthPath
 from doberman.storage import approvals
+from doberman.storage.db import open_db
 from doberman.storage.heartbeat import touch_heartbeat
 from doberman.storage.log import read_decisions
 
@@ -112,10 +113,14 @@ def _pre(root: str, call: dict, *, session_id: str | None = _SESSION) -> str:
 
 
 def _all_rows(root: str) -> list[dict]:
-    # A "now" long before any row was written lists expired rows too.
-    return asyncio.run(
-        approvals.list_pending(repo_root=root, now=datetime(2000, 1, 1, tzinfo=timezone.utc))
-    )
+    # Every row whatever its status: resolved and closed rows included.
+    async def _read() -> list[dict]:
+        async with open_db(root) as conn:
+            async with conn.execute("SELECT * FROM pending_approvals") as cur:
+                names = [col[0] for col in cur.description]
+                return [dict(zip(names, row, strict=True)) for row in await cur.fetchall()]
+
+    return asyncio.run(_read())
 
 
 def _latest_decision(root: str) -> dict:
@@ -301,12 +306,10 @@ def test_silence_everywhere_denies(tmp_path, monkeypatch, local_channels):
     assert _pre(root, _CONFIRM_CALL) == "deny"
     assert local_channels == ["gui"]  # the dialog was the next channel, and it expired
     assert _latest_decision(root)["human_confirmed"] == 0
-    # The dashboard row dies with its window, so a late click cannot approve anything.
+    # The hook closed the row when its window ended, so a late click cannot approve anything,
+    # even while the row's expires_at is still ahead on the real clock.
     [row] = _all_rows(root)
-    after_window = datetime.now(timezone.utc) + timedelta(
-        seconds=dashboard_prompter.DEFAULT_TIMEOUT_S + 1
-    )
-    late = approvals.resolve(row["id"], decision="approved", repo_root=root, now=after_window)
+    late = approvals.resolve(row["id"], decision="approved", repo_root=root)
     assert asyncio.run(late) is False
 
 

@@ -14,7 +14,10 @@ plus the host session id when it has an id's shape (NULL otherwise).
 Single-use and race-safe: resolution is one ``UPDATE ... WHERE
 status = 'pending' AND expires_at > ?`` state transition, gated on affected-row
 count, so two concurrent resolutions of the same row can never both "win" and
-an expired row can never be resolved (it is already dead).
+an expired row can never be resolved (it is already dead). When its window
+closes the prompter moves the row to ``'expired'`` with the same kind of
+``WHERE status = 'pending'`` write (:func:`expire`), so a click and the
+deadline cannot both win either.
 """
 
 import json
@@ -61,6 +64,8 @@ _RESOLVE = (
     "UPDATE pending_approvals SET status = 'resolved', decision = ?, totp_code = ? "
     "WHERE id = ? AND status = 'pending' AND expires_at > ?"
 )
+
+_EXPIRE = "UPDATE pending_approvals SET status = 'expired' WHERE id = ? AND status = 'pending'"
 
 
 def _row_to_dict(row) -> dict:
@@ -148,5 +153,19 @@ async def resolve(
     when = now or datetime.now(timezone.utc)
     async with open_db(repo_root) as conn:
         cur = await conn.execute(_RESOLVE, (decision, totp_code, approval_id, when.isoformat()))
+        await conn.commit()
+        return cur.rowcount > 0
+
+
+async def expire(approval_id: str, *, repo_root: str = ".") -> bool:
+    """Close a row its prompter stopped waiting on. True iff it was still pending.
+
+    The same single-use transition as :func:`resolve`, so the two race safely
+    whatever either clock says: when this wins, a later resolve affects zero
+    rows (409); when it returns False, a resolve committed first and its answer
+    is in the row.
+    """
+    async with open_db(repo_root) as conn:
+        cur = await conn.execute(_EXPIRE, (approval_id,))
         await conn.commit()
         return cur.rowcount > 0
