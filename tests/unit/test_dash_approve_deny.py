@@ -315,6 +315,17 @@ async def test_create_pending_without_session_id_stores_null(tmp_path):
     assert [r["session_id"] for r in listed] == [None]
 
 
+@pytest.mark.parametrize("crafted", ["C:\\Users\\dev\\.ssh\\id_rsa", "token=abc123", "sess 1"])
+async def test_create_pending_stores_null_for_a_malformed_session_id(tmp_path, crafted):
+    # Any caller, not only the prompter: the row keeps a session id only when it has an id's shape.
+    root = str(tmp_path)
+    approval_id = await _create(root, session_id=crafted)
+
+    row = await approvals.get_pending(approval_id, repo_root=root)
+
+    assert row["session_id"] is None
+
+
 def _capturing_resolver(root: str, captured: dict, *, decision: str = "approved"):
     """``_sleep`` stand-in: record the pending row as the dashboard sees it, then resolve it."""
 

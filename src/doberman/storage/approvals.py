@@ -26,6 +26,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from doberman.storage.db import open_db
+from doberman.storage.log import exportable_session_id
 
 #: How long a pending row stays resolvable before it's considered dead.
 DEFAULT_APPROVAL_TTL_S = 120.0
@@ -95,8 +96,9 @@ async def create_pending(
 
     Every field is already redaction-safe by the time it reaches here (see
     ``doberman.auth.dashboard_prompter`` - it derives these from the same
-    ``Decision``/``SecurityObject`` the terminal prompt itself renders, and
-    passes ``session_id`` only after ``exportable_session_id`` accepted it).
+    ``Decision``/``SecurityObject`` the terminal prompt itself renders).
+    ``session_id`` is checked here for every caller: it is kept only when
+    ``exportable_session_id`` accepts it, and stored as NULL otherwise.
     """
     when = now or datetime.now(timezone.utc)
     expires = when + timedelta(seconds=ttl_s)
@@ -115,7 +117,7 @@ async def create_pending(
                 json.dumps(reason_codes),
                 explanation,
                 target_path_class,
-                session_id,
+                exportable_session_id(session_id),
             ),
         )
         await conn.commit()

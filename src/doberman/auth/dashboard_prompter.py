@@ -36,7 +36,7 @@ from doberman.auth.challenge import EFFECT_SET_LABEL, current_challenge, format_
 from doberman.auth.gui_prompter import PrompterUnavailableError
 from doberman.storage import approvals
 from doberman.storage.heartbeat import DEFAULT_HEARTBEAT_MAX_AGE_S, heartbeat_is_fresh
-from doberman.storage.log import exportable_session_id, path_class
+from doberman.storage.log import path_class
 
 #: How often to poll the pending row while waiting for a human decision.
 DEFAULT_POLL_INTERVAL_S = 1.0
@@ -121,8 +121,8 @@ class DashboardPrompter:
                 repo_root=self._repo_root,
                 # The row dies when this channel gives up, so no late answer is lost.
                 ttl_s=self._timeout_s,
-                # The host sends any string; keep it only if it has an id's shape.
-                session_id=exportable_session_id(self._session_id),
+                # The host sends any string; create_pending keeps it only if id-shaped.
+                session_id=self._session_id,
             )
         )
 
