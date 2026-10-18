@@ -129,21 +129,36 @@ export default definePluginEntry({
 
     const sessionWorkspaces = new Map();
 
-    api.on("before_agent_run", (event, ctx) => {
-      if (ctx && ctx.sessionId && ctx.workspaceDir) {
-        if (sessionWorkspaces.size >= 1000 && !sessionWorkspaces.has(ctx.sessionId)) {
-          const oldestKey = sessionWorkspaces.keys().next().value;
-          sessionWorkspaces.delete(oldestKey);
+    try {
+      api.on("before_agent_run", (event, ctx) => {
+        if (
+          ctx &&
+          ctx.sessionId &&
+          typeof ctx.workspaceDir === "string" &&
+          ctx.workspaceDir.trim().length > 0
+        ) {
+          if (sessionWorkspaces.size >= 1000 && !sessionWorkspaces.has(ctx.sessionId)) {
+            const oldestKey = sessionWorkspaces.keys().next().value;
+            sessionWorkspaces.delete(oldestKey);
+          }
+          sessionWorkspaces.set(ctx.sessionId, ctx.workspaceDir);
         }
-        sessionWorkspaces.set(ctx.sessionId, ctx.workspaceDir);
-      }
-    });
+      });
+    } catch {
+      // Optional lifecycle hook: registration failure must never prevent
+      // before_tool_call from registering.
+    }
 
-    api.on("session_end", (event, ctx) => {
-      if (ctx && ctx.sessionId) {
-        sessionWorkspaces.delete(ctx.sessionId);
-      }
-    });
+    try {
+      api.on("session_end", (event, ctx) => {
+        if (ctx && ctx.sessionId) {
+          sessionWorkspaces.delete(ctx.sessionId);
+        }
+      });
+    } catch {
+      // Optional lifecycle hook: registration failure must never prevent
+      // before_tool_call from registering.
+    }
 
     api.on(
       "before_tool_call",
