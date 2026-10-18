@@ -137,6 +137,16 @@ def test_approvals_status_refuses_a_missing_path_and_creates_nothing(tmp_path):
     assert not missing.exists()
 
 
+def test_approvals_status_refuses_a_file_path(tmp_path):
+    a_file = tmp_path / "not-a-dir"
+    a_file.write_text("x", encoding="utf-8")
+
+    result = runner.invoke(app, ["approvals", "status", "--path", str(a_file)])
+
+    assert result.exit_code == 2
+    assert f"error: --path {a_file} is not a directory" in result.output
+
+
 def _ttl_rows(root: str) -> list[dict]:
     rows = asyncio.run(read_policy_changes(root))
     return [r for r in rows if r["rule_id"] == "approval_memory_seconds"]
