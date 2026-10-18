@@ -24,6 +24,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from starlette.testclient import TestClient
 
 from doberman.auth import dashboard_prompter, totp
@@ -273,6 +274,183 @@ async def test_concurrent_resolve_exactly_one_wins(tmp_path):
     assert row["decision"] in ("approved", "denied")
 
 
+# --- session id on the row (schema v18) -----------------------------------------------------
+
+
+async def _create(root: str, **kwargs) -> str:
+    return await approvals.create_pending(
+        "action-1",
+        tier="soft_confirm",
+        action_type="shell_exec",
+        risk="low",
+        reason_codes=["destructive_command"],
+        explanation="test",
+        target_path_class=None,
+        repo_root=root,
+        **kwargs,
+    )
+
+
+async def test_create_pending_stores_session_id(tmp_path):
+    root = str(tmp_path)
+    approval_id = await _create(root, session_id="sess-abc_1")
+
+    row = await approvals.get_pending(approval_id, repo_root=root)
+    listed = await approvals.list_pending(repo_root=root)
+
+    assert row["session_id"] == "sess-abc_1"
+    assert [r["session_id"] for r in listed] == ["sess-abc_1"]
+
+
+async def test_create_pending_without_session_id_stores_null(tmp_path):
+    root = str(tmp_path)
+    approval_id = await _create(root)
+
+    row = await approvals.get_pending(approval_id, repo_root=root)
+    listed = await approvals.list_pending(repo_root=root)
+
+    assert "session_id" in row
+    assert row["session_id"] is None
+    assert [r["session_id"] for r in listed] == [None]
+
+
+def _capturing_resolver(root: str, captured: dict, *, decision: str = "approved"):
+    """``_sleep`` stand-in: record the pending row as the dashboard sees it, then resolve it."""
+
+    def _resolver(seconds):  # noqa: ARG001
+        rows = asyncio.run(approvals.list_pending(repo_root=root))
+        captured["row"] = rows[0]
+        asyncio.run(approvals.resolve(rows[0]["id"], decision=decision, repo_root=root))
+
+    return _resolver
+
+
+def test_prompter_row_carries_validated_session_id(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    captured: dict = {}
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _capturing_resolver(root, captured))
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(
+        decision, action, prompter=DashboardPrompter(root, session_id="sess-7f3a:main")
+    )
+
+    assert result.approved is True
+    assert captured["row"]["session_id"] == "sess-7f3a:main"
+
+
+@pytest.mark.parametrize(
+    "crafted",
+    [
+        "C:\\Users\\dev\\.ssh\\id_rsa",
+        "token=abc123",
+        "https://evil.example/collect",
+        "sess 1",
+        "a" * 129,
+    ],
+)
+def test_prompter_stores_null_for_crafted_session_id(tmp_path, monkeypatch, crafted):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    captured: dict = {}
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _capturing_resolver(root, captured))
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    run_auth_challenge(decision, action, prompter=DashboardPrompter(root, session_id=crafted))
+
+    assert captured["row"]["session_id"] is None
+    stored = asyncio.run(approvals.get_pending(captured["row"]["id"], repo_root=root))
+    assert crafted not in json.dumps(stored)
+
+
+def test_row_expiry_matches_the_prompter_window(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    captured: dict = {}
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _capturing_resolver(root, captured))
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    run_auth_challenge(decision, action, prompter=DashboardPrompter(root, timeout_s=30))
+
+    row = captured["row"]
+    window = datetime.fromisoformat(row["expires_at"]) - datetime.fromisoformat(row["created_at"])
+    assert window == timedelta(seconds=30)
+
+
+def test_a_resolve_in_the_last_poll_gap_is_still_honoured(tmp_path, monkeypatch):
+    # The human answers during the prompter's last wait; by the time it wakes the window has
+    # closed. The answer is in the row, so it must win rather than fall to the next channel.
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    clock = {"now": datetime.now(timezone.utc)}
+
+    class _FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003
+            return clock["now"]
+
+    def _resolve_then_overrun(seconds):  # noqa: ARG001
+        rows = asyncio.run(approvals.list_pending(repo_root=root))
+        asyncio.run(approvals.resolve(rows[0]["id"], decision="approved", repo_root=root))
+        clock["now"] += timedelta(seconds=31)
+
+    monkeypatch.setattr(dashboard_prompter, "datetime", _FrozenClock)
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _resolve_then_overrun)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter([DashboardPrompter(root, timeout_s=30), fallback])
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert result.approved is True
+    assert fallback.confirm_calls == []
+
+
+def test_late_dashboard_resolve_after_the_window_is_409(tmp_path):
+    # Once the prompter has given up and moved to the next channel, the row must be dead:
+    # a click on the dashboard after that cannot be taken as an answer.
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter(
+        [DashboardPrompter(root, timeout_s=0.05, poll_interval_s=0.01), fallback]
+    )
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert result.approved is False
+    assert fallback.confirm_calls
+    client = TestClient(create_app(_TOKEN, root))
+    approval_id = _only_row_id(root)
+    resp = client.post(
+        f"/api/resolve/{approval_id}",
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+        json={"decision": "approved"},
+    )
+    assert resp.status_code == 409
+
+
+def _only_row_id(root: str) -> str:
+    # A "now" long before the row was written lists it even once it has expired.
+    rows = asyncio.run(
+        approvals.list_pending(repo_root=root, now=datetime(2000, 1, 1, tzinfo=timezone.utc))
+    )
+    assert len(rows) == 1
+    return rows[0]["id"]
+
+
 # --- (f) TOTP tier: code rides the row, verified via the EXISTING totp path -----------------
 
 
@@ -463,9 +641,42 @@ def test_pending_lists_allowlisted_fields_only(tmp_path):
         "explanation",
         "target_path_class",
         "needs_totp",
+        "session_id",
     }
     assert row["needs_totp"] is True  # two_factor tier
     assert row["explanation"] == "needs review"
+
+
+def _pending_via_api(root: str) -> list[dict]:
+    client = TestClient(create_app(_TOKEN, root))
+    resp = client.get("/api/pending", headers={"Authorization": f"Bearer {_TOKEN}"})
+    assert resp.status_code == 200
+    return resp.json()
+
+
+def test_pending_api_returns_session_id_and_null_when_absent(tmp_path):
+    root = str(tmp_path)
+    asyncio.run(_create(root, session_id="sess-hook-1"))
+    asyncio.run(_create(root))  # a proxy-side row carries no session
+
+    rows = _pending_via_api(root)
+
+    assert len(rows) == 2
+    # Indexing (not .get) so a row missing the key fails rather than reading as None.
+    assert {r["session_id"] for r in rows} == {"sess-hook-1", None}
+
+
+def test_pending_api_nulls_a_malformed_stored_session_id(tmp_path):
+    # A row written by anything other than the prompter (or an older build) is checked again
+    # on the way out, the same way the feed checks decisions.session_id.
+    root = str(tmp_path)
+    crafted = "C:\\Users\\dev\\secrets.txt"
+    asyncio.run(_create(root, session_id=crafted))
+
+    rows = _pending_via_api(root)
+
+    assert [r["session_id"] for r in rows] == [None]
+    assert "secrets.txt" not in json.dumps(rows)
 
 
 def test_resolve_bad_decision_value_is_400(tmp_path):

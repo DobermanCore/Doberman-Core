@@ -2565,9 +2565,11 @@ def dash(
     route requires it as a bearer token, checked in constant time. Reports the
     live decision feed, summary stats, mode, and enforcement state for
     ``--path`` (default: the current repo), plus an interactive AUTH
-    approve/deny queue: a challenge on the decision path engages this
-    dashboard only while it is running (see the heartbeat below), and falls
-    back to the terminal/GUI otherwise. Requires the optional 'dash' extra.
+    approve/deny queue for the MCP proxy and the host hooks (a hook uses
+    the folder the host runs in, so point ``--path`` there): a challenge
+    engages this dashboard only while it is running (see the heartbeat
+    below), and falls back to the phone, GUI or terminal otherwise.
+    Requires the optional 'dash' extra.
     """
     try:
         import uvicorn

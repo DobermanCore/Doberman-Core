@@ -8,7 +8,8 @@ the decision path in either direction.
 
 Redaction is structural: a row stores only what the terminal/GUI prompt
 itself already shows a human (action type, risk, reason codes, the human
-explanation, and a path *class* - never a raw target, argument, or secret).
+explanation, and a path *class* - never a raw target, argument, or secret),
+plus the host session id when it has an id's shape (NULL otherwise).
 
 Single-use and race-safe: resolution is one ``UPDATE ... WHERE
 status = 'pending' AND expires_at > ?`` state transition, gated on affected-row
@@ -28,8 +29,8 @@ DEFAULT_APPROVAL_TTL_S = 120.0
 _INSERT_PENDING = (
     "INSERT INTO pending_approvals "
     "(id, action_id, created_at, expires_at, status, tier, action_type, risk, "
-    "reason_codes_json, explanation, target_path_class) "
-    "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)"
+    "reason_codes_json, explanation, target_path_class, session_id) "
+    "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _COLUMNS = [
@@ -46,6 +47,7 @@ _COLUMNS = [
     "target_path_class",
     "decision",
     "totp_code",
+    "session_id",
 ]
 
 _SELECT_ONE = f"SELECT {', '.join(_COLUMNS)} FROM pending_approvals WHERE id = ?"  # noqa: S608
@@ -79,12 +81,14 @@ async def create_pending(
     repo_root: str = ".",
     now: datetime | None = None,
     ttl_s: float = DEFAULT_APPROVAL_TTL_S,
+    session_id: str | None = None,
 ) -> str:
     """Write a new pending row and return its id.
 
     Every field is already redaction-safe by the time it reaches here (see
     ``doberman.auth.dashboard_prompter`` - it derives these from the same
-    ``Decision``/``SecurityObject`` the terminal prompt itself renders).
+    ``Decision``/``SecurityObject`` the terminal prompt itself renders, and
+    passes ``session_id`` only after ``exportable_session_id`` accepted it).
     """
     when = now or datetime.now(timezone.utc)
     expires = when + timedelta(seconds=ttl_s)
@@ -103,6 +107,7 @@ async def create_pending(
                 json.dumps(reason_codes),
                 explanation,
                 target_path_class,
+                session_id,
             ),
         )
         await conn.commit()

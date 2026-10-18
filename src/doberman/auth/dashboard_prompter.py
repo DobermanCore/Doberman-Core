@@ -22,6 +22,8 @@ next channel (never a hang, never an invented answer):
   final, not a fall-through — see ``gui_prompter.py``'s docstring): here a
   dashboard timeout SHOULD still let a human at the terminal/GUI answer, so it
   also raises ``PrompterUnavailableError`` rather than propagating as a denial.
+  The row's expiry is the same window, so once this channel has given up a
+  late click on the dashboard is refused (409) instead of being lost.
 """
 
 import asyncio
@@ -32,7 +34,7 @@ from doberman.auth.challenge import EFFECT_SET_LABEL, current_challenge, format_
 from doberman.auth.gui_prompter import PrompterUnavailableError
 from doberman.storage import approvals
 from doberman.storage.heartbeat import DEFAULT_HEARTBEAT_MAX_AGE_S, heartbeat_is_fresh
-from doberman.storage.log import path_class
+from doberman.storage.log import exportable_session_id, path_class
 
 #: How often to poll the pending row while waiting for a human decision.
 DEFAULT_POLL_INTERVAL_S = 1.0
@@ -65,11 +67,16 @@ class DashboardPrompter:
         heartbeat_max_age_s: float = DEFAULT_HEARTBEAT_MAX_AGE_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         timeout_s: float = DEFAULT_TIMEOUT_S,
+        session_id: str | None = None,
     ) -> None:
         self._repo_root = repo_root
         self._heartbeat_max_age_s = heartbeat_max_age_s
         self._poll_interval_s = poll_interval_s
         self._timeout_s = timeout_s
+        # shortcut: the session id is fixed per prompter, which fits a host hook
+        # (one process per tool call); move it into the challenge context if a
+        # host ever shares one prompter across sessions.
+        self._session_id = session_id
 
     def confirm(self, message: str) -> bool:  # noqa: ARG002 - message unused; we build our own
         _engaged.value = False  # reset: this thread may reuse the same prompter across challenges
@@ -110,16 +117,23 @@ class DashboardPrompter:
                 explanation=explanation,
                 target_path_class=path_class(action),
                 repo_root=self._repo_root,
+                # The row dies when this channel gives up, so no late answer is lost.
+                ttl_s=self._timeout_s,
+                # The host sends any string; keep it only if it has an id's shape.
+                session_id=exportable_session_id(self._session_id),
             )
         )
 
         deadline = datetime.now(timezone.utc).timestamp() + self._timeout_s
-        while datetime.now(timezone.utc).timestamp() < deadline:
+        while True:
             row = asyncio.run(approvals.get_pending(approval_id, repo_root=self._repo_root))
             if row is not None and row["status"] == "resolved":
                 _last_code.value = row.get("totp_code")
                 _engaged.value = True
                 return row["decision"] == "approved"
+            # Checked after the poll, so an answer given during the last wait is still read.
+            if datetime.now(timezone.utc).timestamp() >= deadline:
+                break
             _sleep(self._poll_interval_s)
 
         # Timed out with no human answer via the dashboard - NOT a denial: a

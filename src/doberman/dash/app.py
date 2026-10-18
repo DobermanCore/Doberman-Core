@@ -32,7 +32,8 @@ never HTTP into the decision path:
 
 * ``GET /api/pending`` - unexpired rows still awaiting a decision. Same
   allow-listed, redaction-safe vocabulary as the D2 feed (action type, risk,
-  reason codes, the human explanation, path *class*, tier) - never a raw
+  reason codes, the human explanation, path *class*, tier) plus the host
+  session id (null for proxy rows or a malformed id) - never a raw
   target/argument/secret. Bearer token via header only (no query-param
   fallback - this route isn't consumed by ``EventSource``).
 * ``POST /api/resolve/{id}`` - body ``{"decision": "approved"|"denied",
@@ -3253,6 +3254,8 @@ def _pending_row(row: dict) -> dict:
     human explanation string, reason-code/tier/risk/action-type CLASSES). This
     is a further allow-list on top: ``decision``/``totp_code`` are the
     resolution's own write-side fields and are never echoed back out.
+    ``session_id`` is checked again here, as the feed does, so a row written
+    by anything but the prompter still cannot export a path or credential.
     """
     return {
         "id": row.get("id"),
@@ -3265,6 +3268,7 @@ def _pending_row(row: dict) -> dict:
         "explanation": row.get("explanation"),
         "target_path_class": row.get("target_path_class"),
         "needs_totp": row.get("tier") in _TOTP_TIERS,
+        "session_id": exportable_session_id(row.get("session_id")),
     }
 
 
