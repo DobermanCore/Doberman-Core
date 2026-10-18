@@ -170,6 +170,7 @@ async def consume(approval_id: str, *, repo_root: str = ".") -> dict | None:
     not left behind for anything else that can read the file.
     """
     async with open_db(repo_root) as conn:
+        # Relies on open_db keeping sqlite3's legacy transaction mode: this is the only BEGIN.
         await conn.execute("BEGIN IMMEDIATE")
         async with conn.execute(_SELECT_ONE, (approval_id,)) as cur:
             row = await cur.fetchone()
