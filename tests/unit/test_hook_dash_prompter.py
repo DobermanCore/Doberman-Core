@@ -16,7 +16,6 @@ import asyncio
 import json
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
 
 import pytest
 from starlette.testclient import TestClient
@@ -146,17 +145,12 @@ def _dashboard_answers(monkeypatch, root: str, *, decision="approved", code=None
 
 def _nobody_at_the_dashboard(monkeypatch):
     """The dashboard is up but nobody answers: each poll wait jumps past its window."""
-    clock = {"now": datetime.now(timezone.utc)}
-
-    class _Clock(datetime):
-        @classmethod
-        def now(cls, tz=None):  # noqa: ARG003
-            return clock["now"]
+    clock = {"now": 1000.0}
 
     def _wait(seconds):  # noqa: ARG001
-        clock["now"] += timedelta(seconds=dashboard_prompter.DEFAULT_TIMEOUT_S + 1)
+        clock["now"] += dashboard_prompter.DEFAULT_TIMEOUT_S + 1
 
-    monkeypatch.setattr(dashboard_prompter, "datetime", _Clock)
+    monkeypatch.setattr(dashboard_prompter, "_monotonic", lambda: clock["now"])
     monkeypatch.setattr(dashboard_prompter, "_sleep", _wait)
 
 

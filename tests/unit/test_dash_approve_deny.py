@@ -401,19 +401,13 @@ def test_a_resolve_in_the_last_poll_gap_is_still_honoured(tmp_path, monkeypatch)
     # closed. The answer is in the row, so it must win rather than fall to the next channel.
     root = str(tmp_path)
     touch_heartbeat(root)
-    clock = {"now": datetime.now(timezone.utc)}
-
-    class _FrozenClock(datetime):
-        @classmethod
-        def now(cls, tz=None):  # noqa: ARG003
-            return clock["now"]
+    clock = _frozen_prompter_clock(monkeypatch)
 
     def _resolve_then_overrun(seconds):  # noqa: ARG001
         rows = asyncio.run(approvals.list_pending(repo_root=root))
         asyncio.run(approvals.resolve(rows[0]["id"], decision="approved", repo_root=root))
-        clock["now"] += timedelta(seconds=31)
+        clock["now"] += 31
 
-    monkeypatch.setattr(dashboard_prompter, "datetime", _FrozenClock)
     monkeypatch.setattr(dashboard_prompter, "_sleep", _resolve_then_overrun)
     fallback = _RecordingPrompter(confirm_result=False)
     chain = FallbackPrompter([DashboardPrompter(root, timeout_s=30), fallback])
@@ -454,16 +448,74 @@ def test_late_dashboard_resolve_after_the_window_is_409(tmp_path):
     assert resp.status_code == 409
 
 
-def _frozen_prompter_clock(monkeypatch) -> dict:
-    """Freeze the prompter's clock; the test moves ``clock["now"]`` itself."""
-    clock = {"now": datetime.now(timezone.utc)}
+def _jumping_wall_clock(monkeypatch, *, wall_step: timedelta, mono_step: float) -> list[float]:
+    """On every poll wait the wall clock moves by ``wall_step`` and the monotonic one by
+    ``mono_step``. Returns the monotonic time of each wait taken."""
+    wall = {"now": datetime.now(timezone.utc)}
+    mono = {"now": 1000.0}
+    waits: list[float] = []
 
-    class _FrozenClock(datetime):
+    class _Wall(datetime):
         @classmethod
         def now(cls, tz=None):  # noqa: ARG003
-            return clock["now"]
+            return wall["now"]
 
-    monkeypatch.setattr(dashboard_prompter, "datetime", _FrozenClock)
+    def _wait(seconds):  # noqa: ARG001
+        waits.append(mono["now"])
+        if len(waits) > 5:
+            raise AssertionError("the dashboard window never closed")
+        wall["now"] += wall_step
+        mono["now"] += mono_step
+
+    # Every wall-clock reader moves: the row's expires_at and resolve's own check
+    # (approvals), and the prompter if it still reads one (raising=False: it need not).
+    monkeypatch.setattr(dashboard_prompter, "datetime", _Wall, raising=False)
+    monkeypatch.setattr(approvals, "datetime", _Wall)
+    monkeypatch.setattr(dashboard_prompter, "_monotonic", lambda: mono["now"], raising=False)
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _wait)
+    return waits
+
+
+@pytest.mark.parametrize(
+    ("wall_step", "expected_waits"),
+    [
+        # Rolled back an hour per wait: the window must still end after 91 monotonic seconds.
+        (timedelta(hours=-1), 2),
+        # Jumped an hour ahead per wait: the window must not end before 90 monotonic seconds.
+        (timedelta(hours=1), 2),
+    ],
+)
+def test_a_wall_clock_jump_neither_extends_nor_shortens_the_window(
+    tmp_path, monkeypatch, wall_step, expected_waits
+):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    waits = _jumping_wall_clock(monkeypatch, wall_step=wall_step, mono_step=45.5)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter([DashboardPrompter(root), fallback])
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert len(waits) == expected_waits  # 2 x 45.5 = 91 monotonic seconds, whatever the wall says
+    assert result.approved is False
+    assert fallback.confirm_calls
+    approval_id = _only_row_id(root)
+    assert asyncio.run(approvals.get_pending(approval_id, repo_root=root))["status"] == "expired"
+    resp = TestClient(create_app(_TOKEN, root)).post(
+        f"/api/resolve/{approval_id}",
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+        json={"decision": "approved"},
+    )
+    assert resp.status_code == 409
+
+
+def _frozen_prompter_clock(monkeypatch) -> dict:
+    """Freeze the prompter's monotonic clock; the test moves ``clock["now"]`` itself."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(dashboard_prompter, "_monotonic", lambda: clock["now"])
     return clock
 
 
@@ -482,7 +534,7 @@ def test_a_resolve_committed_after_the_final_poll_is_honoured(tmp_path, monkeypa
         if not raced["done"]:
             raced["done"] = True
             assert await approvals.resolve(approval_id, decision="approved", repo_root=repo_root)
-            clock["now"] += timedelta(seconds=31)
+            clock["now"] += 31
         return row
 
     def _no_wait(seconds):  # noqa: ARG001
@@ -511,7 +563,7 @@ def test_a_click_after_the_prompter_gave_up_is_409_even_inside_the_rows_ttl(tmp_
     clock = _frozen_prompter_clock(monkeypatch)
 
     def _overrun(seconds):  # noqa: ARG001
-        clock["now"] += timedelta(seconds=31)
+        clock["now"] += 31
 
     monkeypatch.setattr(dashboard_prompter, "_sleep", _overrun)
     fallback = _RecordingPrompter(confirm_result=False)

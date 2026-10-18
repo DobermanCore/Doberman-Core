@@ -22,7 +22,9 @@ next channel (never a hang, never an invented answer):
   final, not a fall-through — see ``gui_prompter.py``'s docstring): here a
   dashboard timeout SHOULD still let a human at the terminal/GUI answer, so it
   also raises ``PrompterUnavailableError`` rather than propagating as a denial.
-  The row's expiry is the same window, and when the window closes this channel
+  The row's expiry is the same window (the wait itself is timed on the
+  monotonic clock, the row's UTC ``expires_at`` is kept for display and
+  for resolve's own check), and when the window closes this channel
   moves the row out of ``pending`` in one write, so a late click on the
   dashboard is refused (409) instead of being lost, and a click that committed
   just before that write is still honoured.
@@ -30,7 +32,7 @@ next channel (never a hang, never an invented answer):
 
 import asyncio
 import threading
-from datetime import datetime, timezone
+import time
 
 from doberman.auth.challenge import EFFECT_SET_LABEL, current_challenge, format_effect_set
 from doberman.auth.gui_prompter import PrompterUnavailableError
@@ -126,13 +128,14 @@ class DashboardPrompter:
             )
         )
 
-        deadline = datetime.now(timezone.utc).timestamp() + self._timeout_s
+        # Monotonic, so a wall-clock jump can neither stretch nor cut the window.
+        deadline = _monotonic() + self._timeout_s
         while True:
             row = asyncio.run(approvals.get_pending(approval_id, repo_root=self._repo_root))
             if row is not None and row["status"] == "resolved":
                 return self._take_answer(approval_id, decision.action_id)
             # Checked after the poll, so an answer given during the last wait is still read.
-            if datetime.now(timezone.utc).timestamp() >= deadline:
+            if _monotonic() >= deadline:
                 # One write settles the race with a click: the row leaves 'pending', so a
                 # later click gets 409, unless a click committed after the poll above.
                 if asyncio.run(approvals.expire(approval_id, repo_root=self._repo_root)):
@@ -169,8 +172,11 @@ class DashboardPrompter:
         return code
 
 
+def _monotonic() -> float:
+    """Broken out so tests can drive the window without waiting it out."""
+    return time.monotonic()
+
+
 def _sleep(seconds: float) -> None:
     """Broken out so tests can monkeypatch the wait without a real sleep."""
-    import time
-
     time.sleep(seconds)
