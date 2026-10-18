@@ -514,6 +514,10 @@ recent-window breakdown when it differs from the all-time counts), and `top reas
 where every count is explicitly labeled with its window so none can be confused with another. Below
 that is a live decision feed that backfills recent decisions, then streams new ones, newest first.
 Both are read-only and serve only already-redacted fields, never a raw target, argument, or secret.
+Each feed event also carries the decision's `session_id` (the host's opaque session id), `agent_role`,
+`auth_path` and `human_confirmed`, each `null` when the row did not record it, so a companion tool
+can group feed rows by the agent session that made them. A `session_id` that does not look like an
+id (see `doberman log --jsonl` in the [CLI reference](CLI.md)) is sent as `null`.
 
 Each feed row's timestamp is a client-computed relative age (`3m ago`, `2h ago`, `yesterday 11:00`,
 refreshed every 30s) rather than a bare UTC clock, with the absolute local time and the explicitly

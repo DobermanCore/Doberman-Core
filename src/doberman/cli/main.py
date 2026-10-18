@@ -101,7 +101,12 @@ from doberman.storage.approval_memory import clear as clear_approval_memory
 from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
 from doberman.storage.exclusions import add_exclusion, is_excluded, remove_exclusion
-from doberman.storage.log import memory_summary, prune_decisions, read_decisions
+from doberman.storage.log import (
+    exportable_session_id,
+    memory_summary,
+    prune_decisions,
+    read_decisions,
+)
 from doberman.storage.memory import prune_stale_entities, reset_memory
 from doberman.storage.taint import clear_taint, entity_scope, read_taint
 from doberman.storage.tool_pins import approve_pin
@@ -2341,6 +2346,9 @@ def tune(
 # for "allowed without a human" cannot answer the question #399 raised. Both are
 # closed values (an AuthPath enum member; 1/0/NULL) and can never carry command
 # text, so exporting them widens the stream by nothing an operator must redact.
+# session_id is the host harness's opaque session id (HK.5.1); it lets a
+# consumer group a session's decisions. The host sends it as free text, so the
+# export below keeps it only when exportable_session_id accepts its shape.
 _JSONL_EXTRA_COLUMNS = (
     "id",
     "agent_role",
@@ -2348,6 +2356,7 @@ _JSONL_EXTRA_COLUMNS = (
     "auth_path",
     "human_confirmed",
     "source_context",
+    "session_id",
 )
 
 # Keep every action type in one column even when a new enum member outgrows the
@@ -2400,6 +2409,8 @@ def log(
             # purpose: a column added to the decisions table later must be opted
             # in here deliberately, rather than leaking into the stream by default.
             record.update({key: row[key] for key in _JSONL_EXTRA_COLUMNS if key in row})
+            if "session_id" in record:
+                record["session_id"] = exportable_session_id(record["session_id"])
             typer.echo(json.dumps(record, sort_keys=True, separators=(",", ":"), default=str))
         return
     if not rows:
