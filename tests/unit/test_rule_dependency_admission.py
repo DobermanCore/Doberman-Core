@@ -625,6 +625,22 @@ def test_npx_dependency_admission():
     result_pass = rule.evaluate(_action(), _ctx("npx request"))
     assert result_pass.verdict is Verdict.PASS
 
+    # Tool arguments are not checked as package names:
+    # "test" is 1-edit from "jest", but "npx playwright test" must pass
+    assert rule.evaluate(_action(), _ctx("npx playwright test")).verdict is Verdict.PASS
+    # "crossenv" is malicious, but "npx prettier crossenv" passes crossenv as an argument
+    assert rule.evaluate(_action(), _ctx("npx prettier crossenv")).verdict is Verdict.PASS
+
+    # Explicit package flag (--package=<pkg> / --package <pkg>)
+    assert (
+        rule.evaluate(_action(), _ctx("npx --package=crossenv -- cross-env")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --package crossenv -- cross-env")).verdict
+        is Verdict.BLOCK
+    )
+
     segments_bare, _, _ = walk_command("npx --yes")
     assert _ecosystem_and_names(segments_bare[0]) is None
 
@@ -647,6 +663,22 @@ def test_npm_exec_dependency_admission():
     result_plain = rule.evaluate(_action(), _ctx("npm exec crossenv"))
     assert result_plain.verdict is Verdict.BLOCK
     assert ReasonCode.dependency_known_malicious in result_plain.reason_codes
+
+    # Explicit package flags (--package=<pkg>, --package <pkg>, -p=<pkg>, -p <pkg>)
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --package=crossenv -- cross-env")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --package crossenv -- cross-env")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec -p=crossenv -- cross-env")).verdict is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec -p crossenv -- cross-env")).verdict is Verdict.BLOCK
+    )
 
     result_auth = rule.evaluate(_action(), _ctx("npm exec requestx"))
     assert result_auth.verdict is Verdict.AUTH
@@ -677,6 +709,21 @@ def test_pipx_run_dependency_admission():
     result_plain = rule.evaluate(_action(), _ctx("pipx run evilpkg-fixture"))
     assert result_plain.verdict is Verdict.BLOCK
     assert ReasonCode.dependency_known_malicious in result_plain.reason_codes
+
+    # Explicit spec flags (--spec=<pkg>, --spec <pkg>)
+    assert (
+        rule.evaluate(_action(), _ctx("pipx run --spec=evilpkg-fixture app")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("pipx run --spec evilpkg-fixture app")).verdict
+        is Verdict.BLOCK
+    )
+
+    # Arguments passed to the tool are not checked
+    assert (
+        rule.evaluate(_action(), _ctx("pipx run requests evilpkg-fixture")).verdict is Verdict.PASS
+    )
 
     result_auth = rule.evaluate(_action(), _ctx("pipx run requestx"))
     assert result_auth.verdict is Verdict.AUTH

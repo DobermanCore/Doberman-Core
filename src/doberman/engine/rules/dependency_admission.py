@@ -203,26 +203,126 @@ def _extract_names(tokens: list[str], value_flags: frozenset[str]) -> list[str]:
     return names
 
 
+_RUNNER_VERBS: frozenset[tuple[str, str | None]] = frozenset(
+    {
+        ("npx", None),
+        ("npm", "exec"),
+        ("npm", "x"),
+        ("pipx", "run"),
+    }
+)
+
+
+def _extract_runner_names(
+    tokens: list[str],
+    is_npm: bool,
+    value_flags: frozenset[str],
+) -> list[str]:
+    """Extract package names from runner commands (npx, npm exec, pipx run).
+
+    Checks only the package being executed, never arguments passed to the tool
+    (e.g. ``npx playwright test`` checks ``playwright``, not ``test``;
+    ``npx prettier crossenv`` checks ``prettier``, not ``crossenv``).
+    Supports explicit package flags: ``--package=<pkg>`` / ``--package <pkg>`` /
+    ``-p=<pkg>`` / ``-p <pkg>`` on npm/npx, and ``--spec=<spec>`` /
+    ``--spec <spec>`` on pipx.
+    """
+    explicit_packages: list[str] = []
+    positional: list[str] = []
+
+    skip_package = False
+    skip_other_value = False
+    after_dashdash = False
+
+    for tok in tokens:
+        if skip_package:
+            skip_package = False
+            candidate = _strip_version(tok).lower()
+            if _is_installable_name(candidate):
+                explicit_packages.append(candidate)
+            continue
+
+        if skip_other_value:
+            skip_other_value = False
+            continue
+
+        if not after_dashdash:
+            if tok == "--":
+                after_dashdash = True
+                continue
+            if is_npm:
+                if tok.startswith("--package="):
+                    pkg = tok.split("=", 1)[1]
+                    candidate = _strip_version(pkg).lower()
+                    if _is_installable_name(candidate):
+                        explicit_packages.append(candidate)
+                    continue
+                if tok.startswith("-p="):
+                    pkg = tok.split("=", 1)[1]
+                    candidate = _strip_version(pkg).lower()
+                    if _is_installable_name(candidate):
+                        explicit_packages.append(candidate)
+                    continue
+                if tok in ("--package", "-p"):
+                    skip_package = True
+                    continue
+            else:
+                if tok.startswith("--spec="):
+                    spec = tok.split("=", 1)[1]
+                    candidate = _strip_version(spec).lower()
+                    if _is_installable_name(candidate):
+                        explicit_packages.append(candidate)
+                    continue
+                if tok == "--spec":
+                    skip_package = True
+                    continue
+
+            if tok.startswith("-"):
+                if "=" not in tok and tok in value_flags:
+                    skip_other_value = True
+                continue
+
+        candidate = _strip_version(tok).lower()
+        if _is_installable_name(candidate):
+            positional.append(candidate)
+
+    if explicit_packages:
+        return explicit_packages
+    if positional:
+        return [positional[0]]
+    return []
+
+
 def _ecosystem_and_names(raw_tokens: list[str]) -> tuple[str, list[str]] | None:
     """One segment's ``(ecosystem, [package names])``, or ``None`` if it is
     not a recognized package-manager install/add invocation."""
     tokens = _peel_uv_pip(_peel_module_runner(argv_from_tokens(raw_tokens)))
     if not tokens:
         return None
-    entry = _ECOSYSTEM_VERBS.get(tokens[0].lower())
+    verb = tokens[0].lower()
+    entry = _ECOSYSTEM_VERBS.get(verb)
     if entry is None:
         return None
     ecosystem, subcommands, value_flags = entry
     rest = tokens[1:]
-    if not rest:
+    if not rest and subcommands:
         return None
     if subcommands:
-        if rest[0].lower() not in subcommands:
+        if not rest:
+            return None
+        subcmd = rest[0].lower()
+        if subcmd not in subcommands:
             return None
         operand_tokens = rest[1:]
     else:
+        subcmd = None
         operand_tokens = rest
-    names = _extract_names(operand_tokens, value_flags)
+    if (verb, subcmd) in _RUNNER_VERBS:
+        names = _extract_runner_names(
+            operand_tokens, is_npm=(ecosystem == "npm"), value_flags=value_flags
+        )
+    else:
+        names = _extract_names(operand_tokens, value_flags)
     return (ecosystem, names) if names else None
 
 
