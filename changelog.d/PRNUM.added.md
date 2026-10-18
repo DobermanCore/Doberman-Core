@@ -1,1 +1,0 @@
-- `doberman dash` answers host-hook `AUTH` challenges from Claude Code, Codex and Cursor; `/api/pending` items carry the host `session_id` (#PRNUM)

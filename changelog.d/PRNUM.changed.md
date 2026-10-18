@@ -1,1 +1,0 @@
-- A dashboard approval now expires when its 90-second window closes, so a late click is refused instead of accepted and ignored (#PRNUM)
