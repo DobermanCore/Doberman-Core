@@ -1158,7 +1158,9 @@ _GIT_PUSH_MANDATORY_VALUE_SHORT = set("o")
 #: (``--thin``, no value). ``--signed`` is deliberately absent: its value
 #: is OPTIONAL and only attaches via ``=`` (``--signed=yes``); a bare
 #: ``--signed`` never consumes the following token.
-_GIT_PUSH_LONG_VALUE_OPTIONS = frozenset({"--push-option", "--receive-pack", "--exec", "--repo"})
+_GIT_PUSH_LONG_VALUE_OPTIONS = frozenset(
+    {"--push-option", "--receive-pack", "--exec", "--repo", "--recurse-submodules"}
+)
 
 #: Canonical long option names for ``git push`` that the abbreviated-prefix
 #: resolver recognises. Listed in the order git-push(1) documents them;
@@ -1239,6 +1241,8 @@ class _GitPushInfo:
         "has_prune",
         "explicit_refs",
         "assignments",
+        "displaced",
+        "ambiguous_first",
     )
 
     def __init__(self) -> None:
@@ -1248,6 +1252,8 @@ class _GitPushInfo:
         self.has_prune: bool = False
         self.explicit_refs: list[str] = []
         self.assignments: list[str] = []
+        self.displaced: bool = False
+        self.ambiguous_first: str | None = None
 
 
 def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
@@ -1307,9 +1313,21 @@ def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
             elif canonical == "--prune":
                 info.has_prune = True
             elif canonical in _GIT_PUSH_LONG_VALUE_OPTIONS and "=" not in token:
-                # Space-separated value: skip the next token.
-                i += 2
+                # Space-separated value: consume the next token only if it
+                # exists and does not start with ``-``.  A dash-prefixed
+                # value is intentionally NOT consumed — we let the next
+                # iteration parse it as an option (fail-closed).
+                if i + 1 < len(push_args) and not push_args[i + 1].startswith("-"):
+                    info.displaced = True
+                    i += 2
+                    continue
+                # No consumable value — advance past the option only.
+                i += 1
                 continue
+            elif canonical == "--repo" and "=" in token:
+                # Deliberate tightening for the --repo=<value> form: repo is
+                # specified as an option, so positionals shift.
+                info.displaced = True
             i += 1
             continue
 
@@ -1323,9 +1341,12 @@ def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
                 elif ch in _GIT_PUSH_MANDATORY_VALUE_SHORT:
                     # ``-o``: remainder of this cluster is its value (if any);
                     # if the option letter is the LAST char, the NEXT token is
-                    # the value.
+                    # the value — but only when it exists and does not start
+                    # with ``-`` (same dash-guard as the long-option path).
                     if ci == len(token) - 1:
-                        i += 1  # skip following value token
+                        if i + 1 < len(push_args) and not push_args[i + 1].startswith("-"):
+                            info.displaced = True
+                            i += 1  # skip following value token
                     break  # rest of cluster is value, stop scanning flags
             i += 1
             continue
@@ -1344,6 +1365,11 @@ def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
         if ref_token.startswith("+"):
             info.has_force = True
     info.explicit_refs = explicit_refs
+    # When a value option consumed a separate token, the first positional
+    # may actually be a refspec that got shifted into the remote slot.
+    # Record it so the semantic checks can test it against the protected set.
+    if info.displaced and positionals:
+        info.ambiguous_first = positionals[0]
     return info
 
 
@@ -1367,6 +1393,13 @@ def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) ->
     # Any token that names (or pushes to) a protected branch.
     for token in info.explicit_refs:
         ref = token.lstrip("+").split(":")[-1].lower()
+        ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
+        if ref in protected_set:
+            return True
+    # #742: when a value option consumed a token, the first positional may
+    # be a branch that was displaced into the remote slot.  Check it too.
+    if info.ambiguous_first is not None:
+        ref = info.ambiguous_first.lstrip("+").split(":")[-1].lower()
         ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
         if ref in protected_set:
             return True
@@ -1398,13 +1431,28 @@ def _git_push_deletes_protected_branch(tokens: list[str], protected: Iterable[st
         # delete; a plain ``branch`` token here is an ordinary push/update.
         explicit_refs = [t for t in explicit_refs if t.startswith(":")]
         if not explicit_refs:
-            return False
+            # #742: still check whether the ambiguous_first is itself a
+            # colon-prefixed empty-source refspec.
+            if info.ambiguous_first is not None and info.ambiguous_first.startswith(":"):
+                pass  # fall through to the candidate check below
+            else:
+                return False
     protected_set = {b.lower() for b in protected}
     for token in explicit_refs:
         ref = token.split(":")[-1].lower()
         ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
         if ref in protected_set:
             return True
+    # #742: when a value option consumed a token, the first positional may
+    # be a branch that was displaced into the remote slot.  Check it against
+    # the protected set when --delete/-d is active or the candidate itself
+    # is a colon-prefixed empty-source refspec.
+    if info.ambiguous_first is not None:
+        if info.has_delete or info.ambiguous_first.startswith(":"):
+            ref = info.ambiguous_first.split(":")[-1].lower()
+            ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
+            if ref in protected_set:
+                return True
     return False
 
 
@@ -1425,14 +1473,14 @@ def _git_push_risky_config_or_bulk(tokens: list[str]) -> GuardrailResult | None:
     if info.has_mirror:
         return _auth(
             ReasonCode.destructive_command,
-            "git push --mirror overwrites the remote's entire ref namespace; "
-            "authentication required.",
+            "git push --mirror can overwrite or delete remote refs that aren't "
+            "visible on the command line; authentication required.",
         )
     if info.has_prune:
         return _auth(
             ReasonCode.destructive_command,
-            "git push --prune deletes remote refs that have no local counterpart; "
-            "authentication required.",
+            "git push --prune can delete remote refs that aren't visible on the "
+            "command line; authentication required.",
         )
     for assignment in info.assignments:
         key, sep, _value = assignment.partition("=")
@@ -1443,8 +1491,8 @@ def _git_push_risky_config_or_bulk(tokens: list[str]) -> GuardrailResult | None:
         ):
             return _auth(
                 ReasonCode.destructive_command,
-                "git push with a -c remote.*.push config override rewrites the push "
-                "refspec silently; authentication required.",
+                "git push with a -c remote.*.push override can affect refs that "
+                "aren't visible on the command line; authentication required.",
             )
     return None
 
