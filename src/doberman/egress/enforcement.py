@@ -153,7 +153,7 @@ class EnforcementProbe:
         background task on its own; whoever owns the broker calls this on
         whatever cadence makes sense.
 
-        # ponytail: the direct half runs the (blocking) connector in a
+        # shortcut: the direct half runs the (blocking) connector in a
         # worker thread via ``asyncio.to_thread`` so it never stalls the
         # event loop; the positive half is awaited directly since
         # ``BrokerProbe`` is now async.

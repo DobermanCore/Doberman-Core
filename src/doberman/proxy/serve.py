@@ -59,7 +59,7 @@ def build_auth_prompter(proxy, loop: asyncio.AbstractEventLoop, repo_root: str) 
     Factored out of :func:`_serve` so the chain order is a plain, synchronous unit
     test instead of one only reachable by driving the whole async proxy loop.
     """
-    # ponytail: the phone waits its own `wait_s` before the local dialog opens — a
+    # shortcut: the phone waits its own `wait_s` before the local dialog opens — a
     # fixed step in the chain, not a fan-out race. Upgrade path: first-answer-wins
     # concurrent notify, if a sequential wait proves too slow in practice.
     return FallbackPrompter(

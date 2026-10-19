@@ -84,7 +84,7 @@ def load_pins(repo_root: str = ".") -> dict[str, str]:
     if not path.exists():
         return {}
     try:
-        # ponytail: one small read per decision; the parse+validate work below
+        # shortcut: one small read per decision; the parse+validate work below
         # is cached on the bytes themselves, so no staleness ceiling remains.
         raw = path.read_bytes()
         data = _parse_pins_yaml_data(raw)

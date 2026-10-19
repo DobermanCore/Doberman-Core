@@ -597,7 +597,7 @@ def run_auth_challenge(
         # escape the fail-closed path entirely. Deny it here, at the one provider seam —
         # tagged ``"error"`` so the audit tells it apart from a timeout or a human "no".
         # ADR 0064; Prime Directive 1 (fail closed) is why this catch is this broad.
-        # ponytail: a BaseExceptionGroup wrapping a CancelledError also denies here rather
+        # shortcut: a BaseExceptionGroup wrapping a CancelledError also denies here rather
         # than unwrapping to re-raise — the worker ran on a daemon thread whose result is
         # discarded, so there is no live coroutine to cancel cooperatively; a fail-closed
         # deny is the correct outcome, not an unwrap TODO.

@@ -25,7 +25,7 @@ SECURITY: reason codes + class labels only. The matched value never appears
 in any explanation, log field, or output — the explanation names the class
 ("payment card number"), never the payload.
 
-ponytail: one-time auth codes (6-digit OTPs) are deliberately NOT detected —
+shortcut: one-time auth codes (6-digit OTPs) are deliberately NOT detected —
 even destination-gated, bare 6-digit numbers false-positive far too often
 (ports, ids, timestamps); a context-aware OTP classifier is enterprise work.
 """
@@ -54,7 +54,7 @@ _PAN_SHAPE = re.compile(r"(?<![0-9A-Za-z])\d(?:[ -]?\d){12,18}(?![0-9A-Za-z])")
 
 
 # Major issuer IINs: Visa, Mastercard (51-55, 2221-2720), Amex, Discover.
-# ponytail: the big-four cover the realistic exfil surface; extend the table,
+# shortcut: the big-four cover the realistic exfil surface; extend the table,
 # don't loosen the checks, if a real gap shows up.
 def _has_known_iin(digits: str) -> bool:
     if digits.startswith("4"):
@@ -112,7 +112,7 @@ def _contains_iban(text: str) -> bool:
 
 
 # ── US SSN: dashed form + SSA validity constraints ───────────────────────────
-# ponytail: undashed 9-digit SSNs are indistinguishable from ordinary ids —
+# shortcut: undashed 9-digit SSNs are indistinguishable from ordinary ids —
 # only the dashed form is detected; the ceiling is recorded in issue #321.
 
 _SSN_SHAPE = re.compile(r"(?<![\d-])(\d{3})-(\d{2})-(\d{4})(?![\d-])")

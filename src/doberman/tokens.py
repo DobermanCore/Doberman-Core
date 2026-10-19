@@ -161,7 +161,7 @@ _WHOLE_SCRIPT_CONFUSABLES: frozenset[str] = frozenset(
 #: Russian "он"/"на", Greek "το"/"την") are otherwise indistinguishable from
 #: a spoof at this letter-set granularity. Attack samples (paypal, account,
 #: secure, whole-word brand lookalikes) are all >= this length.
-#: ponytail: fixed length floor, not a script-aware stop-word list — raise if
+#: shortcut: fixed length floor, not a script-aware stop-word list — raise if
 #: a short real-world attack token is later found to need catching.
 #: Ceiling, stated plainly: one extra genuine Cyrillic/Greek letter or word
 #: anywhere in the same text silences this channel for the WHOLE text, not

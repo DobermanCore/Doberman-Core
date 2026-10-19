@@ -92,7 +92,7 @@ def _is_repo_relative_target(target: str) -> bool:
 # DB — so a `doberman memory seed` run (a short-lived CLI process) cannot durably warm it; the
 # next real proxy process starts its HST cold regardless of what this command did. Reporting a
 # live learn count here would tell the operator a number that is discarded at process exit.
-# ponytail: no persistence branch, always this literal — building HST persistence is explicitly
+# shortcut: no persistence branch, always this literal — building HST persistence is explicitly
 # out of scope for this slice.
 HST_STATUS = "in-process"
 

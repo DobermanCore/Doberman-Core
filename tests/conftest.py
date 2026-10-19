@@ -463,7 +463,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     via ``-m "not real_display"`` without a real display test actually
     needing one to be deselected.
 
-    # ponytail: every real-Tk window this file opens can steal OS/WM focus
+    # shortcut: every real-Tk window this file opens can steal OS/WM focus
     # from every other one -- confirmed as the cause of both the local
     # `pytest -n 4` flake and the windows-latest CI flake in #551 (a real,
     # asynchronous focus change racing a test's own focus assertion). CI runs

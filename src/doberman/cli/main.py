@@ -2594,7 +2594,7 @@ def dash(
 
     from doberman.storage.heartbeat import touch_heartbeat
 
-    # ponytail: a daemon thread ticking a file mtime - simplest possible
+    # shortcut: a daemon thread ticking a file mtime - simplest possible
     # liveness signal the decision-path process can check without any IPC.
     # Dies with the process; no explicit stop needed for a CLI-lifetime thread.
     stop_heartbeat = threading.Event()

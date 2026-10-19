@@ -144,7 +144,7 @@ def _key(version: object) -> tuple[tuple[int, ...], int, int]:
     the final *N* and above everything that precedes *N*, so an installed rc is
     nagged toward its final and a final is never nagged toward an rc.
 
-    ponytail: understands only the normalized ``dev``/``a``/``b``/``rc`` family
+    shortcut: understands only the normalized ``dev``/``a``/``b``/``rc`` family
     — no epochs, post-releases, or local ``+tags``; any other suffix ranks as a
     final release, as the whole string did before. Swap in ``packaging.version``
     if full PEP 440 ordering ever matters. Unparseable stays ``()``.

@@ -46,7 +46,7 @@ DEFAULT_POLL_INTERVAL_S = 1.0
 #: How long to wait for a decision before falling back to the next channel.
 DEFAULT_TIMEOUT_S = 90.0
 
-# ponytail: one thread-local slot for the TOTP code a resolved row carried,
+# shortcut: one thread-local slot for the TOTP code a resolved row carried,
 # plus a flag for whether THIS channel actually answered confirm(). _run_tier
 # always calls confirm() then (for 2FA tiers) read_code() next, on the same
 # thread doing the challenge - a per-thread stash is enough to hand the code

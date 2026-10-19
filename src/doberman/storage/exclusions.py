@@ -70,7 +70,7 @@ def load_excluded_projects(*, home: Path | None = None) -> list[str]:
     try:
         if not path.exists():
             return []
-        # ponytail: one small read per decision; the parse+validate work below
+        # shortcut: one small read per decision; the parse+validate work below
         # is cached on the bytes themselves, so no staleness ceiling remains.
         raw = path.read_bytes()
         data = _parse_excluded_projects_data(raw)
