@@ -2394,3 +2394,194 @@ def test_bare_signed_does_not_swallow_next_token(command):
     result = _cmd(command, action_type=ActionType.git_op)
     assert result.verdict is Verdict.BLOCK
     assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 FIX 1: value-consuming options must not swallow dash-prefixed flags --
+# When a value-consuming option (-o, --push-option, --repo, etc.) is followed
+# by a token starting with ``-``, the parser must NOT consume it as the option's
+# value.  Instead, the dash-prefixed token is parsed as its own flag on the next
+# iteration (fail-closed).
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push -o --force origin main",
+        "git push --push-option --force origin main",
+        "git push -qo --force origin main",
+        "git push --repo --force origin main",
+        "git push --repo --delete origin main",
+    ],
+)
+def test_value_option_does_not_swallow_dash_prefixed_flag(command):
+    """Dash-prefixed values after value-consuming options must still be parsed
+    as flags.  All five cases involve a destructive flag (--force or --delete)
+    targeting a protected branch and must return BLOCK."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 FIX 2: preserve base verdicts when value consumption shifts positionals
+# The PR parser correctly consumes option values, but doing so changes which
+# tokens land in ``positionals[0]`` (treated as the remote) vs
+# ``positionals[1:]`` (explicit_refs).  These tests verify that the
+# ``ambiguous_first`` tracking preserves every base-commit BLOCK verdict.
+#
+# NOTE: ``git push -f -o x main feature`` and ``git push -f --repo x main
+# feature`` intentionally preserve the base commit's false-positive BLOCK
+# verdicts.  In real Git, ``-o x`` consumes ``x`` and ``--repo x`` sets the
+# repository, so ``main`` would be the remote or a refspec — but the base
+# parser treated ``main`` as a branch refspec and BLOCKed.  We preserve that
+# stricter interpretation rather than silently loosening the guardrail.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push -f --repo x main feature",
+        "git push --repo x main --delete feature",
+        "git push --repo origin --delete main",
+        "git push -d --repo origin main feature",
+        "git push -f -o x main feature",
+        "git push --delete -o x main feature",
+        "git push -f --push-option x main feature",
+        "git push -f --receive-pack x main feature",
+        "git push -f --exec x main feature",
+    ],
+)
+def test_displaced_positional_preserves_base_block(command):
+    """Value-option consumption shifts positionals, but the displaced first
+    positional must still be checked against the protected-branch set.
+    All of these returned BLOCK on the base commit."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 FIX 2: intentional tightenings beyond base behavior ----------------
+
+
+def test_force_push_with_repo_option_bare_fallback_blocks():
+    """``git push -f --repo x origin`` — base returned PASS because the old
+    parser saw ``[x, origin]`` as positionals and matched ``origin`` (not
+    protected) as the explicit ref.  The PR parser correctly consumes ``x``
+    as ``--repo``'s value, leaving only ``origin`` as positionals[0] with no
+    explicit refs.  The bare-force fallback (``not info.explicit_refs``)
+    correctly returns BLOCK.  This stricter result is intentional: a bare
+    force-push should be blocked by the maintainer's review rule."""
+    result = _cmd("git push -f --repo x origin", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push -f -o x origin",
+        "git push -f --push-option x origin",
+    ],
+)
+def test_bare_force_push_after_consuming_option_value_blocks(command):
+    """Command forms like ``git push -f -o x origin`` and ``git push -f
+    --push-option x origin`` force-push the current branch in real Git.
+    After consuming the option value, only ``origin`` remains as the remote,
+    leaving no explicit refspec.  The bare-force fallback must BLOCK."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+def test_repo_equals_delete_protected_blocks():
+    """``git push --repo=origin --delete main`` — base returned PASS because the
+    base parser ignores dash-prefixed tokens when collecting positionals,
+    leaving ``main`` as the first positional.  The existing ``positionals[1:]``
+    extraction then drops it, so the base deletion check returns PASS.  The
+    PR parser recognizes the ``=``-joined form and correctly marks
+    ``displaced=True``, so ``main`` is checked as an ambiguous candidate
+    against the protected set.  This BLOCK is an intentional tightening for the
+    equals form."""
+    result = _cmd("git push --repo=origin --delete main", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 FIX 2: control tests — PASS verdicts that must be preserved --------
+
+
+def test_delete_unprotected_branch_via_repo_option_passes():
+    """``git push --repo origin --delete feature`` — was PASS on base and must
+    remain PASS.  ``feature`` is not a protected branch."""
+    result = _cmd("git push --repo origin --delete feature", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+def test_force_push_unprotected_branch_passes():
+    """``git push -f origin feature`` — ordinary force-push to an unprotected
+    branch.  Was PASS on base and must remain PASS.  The force and refspec
+    handling changes must not block pushes to non-protected branches."""
+    result = _cmd("git push -f origin feature", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+# --- #742 FIX 3: --recurse-submodules consumes its space-separated value ------
+# Real Git (verified with ``git push --dry-run -f --recurse-submodules check
+# origin``) consumes ``check`` as the option value, leaving ``origin`` as the
+# remote with no explicit refspec.  That's a bare force-push of the current
+# branch — the fail-safe must BLOCK it.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Space-separated: both were PASS on base; their BLOCK verdict is an
+        # intentional tightening — the parser now correctly consumes the
+        # submodule value, exposing the bare force-push.
+        "git push -f --recurse-submodules check origin",
+        "git push -f --recurse check origin",
+        # Equals form: value is self-contained; bare-force fallback applies.
+        "git push -f --recurse-submodules=check origin",
+    ],
+)
+def test_recurse_submodules_value_consumed_bare_force_blocks(command):
+    """When --recurse-submodules (or its --recurse abbreviation) consumes the
+    value, the remaining positional is just the remote with no explicit refspec.
+    The bare-force fallback must BLOCK."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 Step 2: AUTH explanations for uninspectable push shapes -------------
+# When a push affects refs that cannot be determined statically (--mirror,
+# --prune, or a -c remote.*.push config override), the rule requires
+# authentication (AUTH) and explicitly clarifies that the affected refs aren't
+# visible on the command line.
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_explanation"),
+    [
+        (
+            "git push --mirror origin",
+            "git push --mirror can overwrite or delete remote refs that aren't "
+            "visible on the command line; authentication required.",
+        ),
+        (
+            "git push --prune origin",
+            "git push --prune can delete remote refs that aren't visible on the "
+            "command line; authentication required.",
+        ),
+        (
+            "git -c remote.origin.push=+main push origin",
+            "git push with a -c remote.*.push override can affect refs that "
+            "aren't visible on the command line; authentication required.",
+        ),
+    ],
+)
+def test_uninspectable_push_shapes_require_auth_with_explanation(command, expected_explanation):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+    assert "aren't visible on the command line" in result.explanation
+    assert result.explanation == expected_explanation
