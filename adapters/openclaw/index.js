@@ -19,7 +19,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 // Doberman's own subprocess deadline. Kept comfortably under HOOK_TIMEOUT_MS
 // below so OUR fail-closed return always wins the race before OpenClaw's own
 // hook-timeout handling could apply.
-// ponytail: one constant, no options plumbing.
+// shortcut: one constant, no options plumbing.
 const DOBERMAN_TIMEOUT_MS = 10_000;
 
 // Headroom above DOBERMAN_TIMEOUT_MS for process spawn/IO overhead, handed to

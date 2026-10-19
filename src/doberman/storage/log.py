@@ -158,7 +158,7 @@ def path_class(action: SecurityObject) -> str | None:
     pure = PurePosixPath(str(action.target).replace("\\", "/"))
     parent = pure.parent.as_posix()
     parent = "" if parent == "." else parent
-    # ponytail: extensionless names are their own class only with no
+    # shortcut: extensionless names are their own class only with no
     # directory (the bare-dotfile shape, e.g. ".env"); under a directory an
     # extensionless name must be wildcarded too, or the raw filename leaks
     # verbatim (".ssh/id_rsa", "/etc/passwd").

@@ -124,7 +124,7 @@ def summarize(results: list[RowAgreement]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # ponytail: no flags today; keep the argv parameter so the CLI signature
+    # shortcut: no flags today; keep the argv parameter so the CLI signature
     # matches the other benchmark suites and stays stable if one is added.
     del argv
     if not judge_enabled():

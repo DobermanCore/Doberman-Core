@@ -1,4 +1,4 @@
-"""Regression pins for six documented ``ponytail:`` shortcuts (deliberate
+"""Regression pins for six documented ``shortcut:`` shortcuts (deliberate
 ceilings, each with a stated upgrade path). One test per item; each docstring
 names the file:line carrying the comment and the ceiling it pins. No behavior
 change — these tests only fail the day the referenced ceiling silently moves.
@@ -32,7 +32,7 @@ _NOW = datetime(2026, 7, 26, tzinfo=timezone.utc)
 
 
 # --- 1. src/doberman/auth/challenge.py:557 -----------------------------------
-# ponytail: a BaseExceptionGroup wrapping a CancelledError (or any other
+# shortcut: a BaseExceptionGroup wrapping a CancelledError (or any other
 # non-Exception BaseException, e.g. a bare KeyboardInterrupt) escaping the
 # challenge worker also DENIES here, fail closed, rather than propagating as
 # an approval or an unhandled crash.
@@ -101,7 +101,7 @@ def test_bare_keyboard_interrupt_from_worker_denies_not_approves(monkeypatch):
 
 
 # --- 2. src/doberman/engine/rules/commands.py:917 ----------------------------
-# ponytail: lexical glob on operands only — no filesystem or git access in the
+# shortcut: lexical glob on operands only — no filesystem or git access in the
 # decision path.
 
 _RULE = DestructiveCommandRule()
@@ -138,7 +138,7 @@ def test_unrecoverable_delete_verdict_never_touches_filesystem_or_subprocess():
 
 
 # --- 3. src/doberman/tokens.py:164 -------------------------------------------
-# ponytail: fixed length floor (_WHOLE_SCRIPT_MIN_LEN = 4), not a script-aware
+# shortcut: fixed length floor (_WHOLE_SCRIPT_MIN_LEN = 4), not a script-aware
 # stop-word list — a token of exactly 3 lookalike Cyrillic chars is exempt, one
 # of exactly 4 is reported.
 
@@ -161,7 +161,7 @@ def _scan_whole_script_confusable_report(text: str) -> OODTokenReport:
 
 
 # --- 4. src/doberman/subjective/infer.py:307 ---------------------------------
-# ponytail: 40-char budget between `push` and `--force` is a tunable heuristic
+# shortcut: 40-char budget between `push` and `--force` is a tunable heuristic
 # (_IRREVERSIBLE_SHELL) — a gap of exactly 40 chars still matches (low
 # reversibility), 41 no longer does.
 
@@ -197,7 +197,7 @@ def test_irreversible_shell_force_push_gap_boundary():
 
 
 # --- 6. src/doberman/engine/correlator.py:120 --------------------------------
-# ponytail: _BUDGET_VOLUME_THRESHOLD (=3) is a round threshold, not a fit
+# shortcut: _BUDGET_VOLUME_THRESHOLD (=3) is a round threshold, not a fit
 # against real traffic — it only ever shifts risk between high/critical on an
 # already-firing pattern (trifecta/destructive-flow), never PASS vs AUTH/BLOCK.
 

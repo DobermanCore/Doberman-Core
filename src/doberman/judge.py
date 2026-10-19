@@ -206,7 +206,7 @@ class HaikuJudgeAdjudicator:
                 slot["error"] = True
                 logger.debug("judge: adjudicate failed; abstaining", exc_info=True)
 
-        # ponytail: a daemon thread + join(timeout=) bounds the CALLER's wait,
+        # shortcut: a daemon thread + join(timeout=) bounds the CALLER's wait,
         # not the SDK call itself - a timed-out call keeps running inside
         # client.messages.create() until the SDK returns or raises. daemon=True
         # just means CPython's _python_exit atexit hook never joins it, so a

@@ -43,7 +43,7 @@ jobs:
           python -m pip install --upgrade twine
           twine check dist/*
       - name: Generate SBOM (CycloneDX)
-        # ponytail: SBOM generation only, not a vulnerability gate — a newly disclosed CVE in a
+        # shortcut: SBOM generation only, not a vulnerability gate — a newly disclosed CVE in a
         # transitive dependency shouldn't silently block a release nobody's reviewed yet.
         # continue-on-error (not `|| true`) so a finding still shows as a warning in the run,
         # instead of a clean green check hiding it. Add a blocking `pip-audit` step separately

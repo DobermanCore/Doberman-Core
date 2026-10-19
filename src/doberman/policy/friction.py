@@ -235,7 +235,7 @@ def generate_proposals(rows: list[dict], *, min_occurrences: int = 5) -> list[di
        destructive_*, control-plane, tool_schema_changed, lethal_trifecta,
        ...) is excluded by construction, never by a per-code carve-out.
 
-    # ponytail: standing-elevation proposals are the only tuning lever today
+    # shortcut: standing-elevation proposals are the only tuning lever today
     # - other friction sources (e.g. subjective cold-start noise, #326) need
     # their own consumable mechanism before they can grow a proposal `kind`
     # here; add one only when that lever exists.

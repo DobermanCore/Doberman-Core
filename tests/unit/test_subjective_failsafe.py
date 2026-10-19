@@ -1,7 +1,7 @@
 """Hardening test for how the subjective score path handles garbage surprise metadata.
 
 Two invariants were audited as "only indirectly tested." Verified against the
-actual suite before adding anything (ponytail: no duplicate coverage):
+actual suite before adding anything (shortcut: no duplicate coverage):
 
 1. **Hard-block-allowlist clamp** (a non-allowlisted subjective ``BLOCK`` is
    clamped to ``AUTH`` by ``decide()``; only ``lethal_trifecta`` may stay

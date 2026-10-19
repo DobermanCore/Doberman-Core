@@ -259,7 +259,7 @@ class NtfyChannel:
         a broken backend become a silent approval.
 
         ``nonce=None`` (the CLI's connectivity test) publishes plain, with no
-        Approve/Deny actions — # ponytail: a keyword on the existing method
+        Approve/Deny actions — # shortcut: a keyword on the existing method
         rather than a second publish path, since the payload only differs by
         the ``actions`` key.
         """
@@ -311,7 +311,7 @@ class NtfyChannel:
         req = urllib.request.Request(url, headers=headers, method="GET")  # noqa: S310 — same host as publish
         approve_line, deny_line = f"approve {nonce}", f"deny {nonce}"
         deadline_at = since + deadline_s
-        # ponytail: one connection for the whole wait, socket timeout = the
+        # shortcut: one connection for the whole wait, socket timeout = the
         # whole remaining deadline (not a smaller cap) so a quiet reply topic
         # never kills the stream before wait_s is up.
         remaining = deadline_at - self._clock()

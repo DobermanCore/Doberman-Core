@@ -117,7 +117,7 @@ _EGRESS_ATTEMPT_REASONS: frozenset[ReasonCode] = frozenset(
     }
 )
 
-# ponytail: a round threshold, not a fit against real traffic — the budget
+# shortcut: a round threshold, not a fit against real traffic — the budget
 # clause is a weak co-factor by design (it can never fire alone; see
 # `correlate` below), so a wrong constant here only ever shifts risk between
 # high/critical on an already-firing pattern, never PASS vs. AUTH/BLOCK.
@@ -253,7 +253,7 @@ def _destructive_flow_fires(recent: Sequence[DecisionRow], action: SecurityObjec
     """A broad read/list + a shell command, anywhere earlier this session,
     followed by the CURRENT action being an external egress.
 
-    ponytail: the redacted decision log never carries raw command text (by
+    shortcut: the redacted decision log never carries raw command text (by
     design — see ``models.py``'s ``SecurityObject.raw_args_redacted`` note), so
     "archive/compress shape" cannot be distinguished from any other shell
     command once it is only a persisted ``DecisionRow`` — any prior
@@ -453,7 +453,7 @@ def apply_correlator(
     would raise ``RuntimeError: asyncio.run() cannot be called from a running
     event loop``).
 
-    ponytail: ``doberman.proxy.executor._apply_correlator`` still carries its
+    shortcut: ``doberman.proxy.executor._apply_correlator`` still carries its
     own copy of this read-correlate-raise sequence rather than calling
     :func:`apply_correlator_async` directly — its tests monkeypatch
     ``executor.recent_session_decisions`` (a module-level name), which a

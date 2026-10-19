@@ -184,7 +184,7 @@ _PM_FETCH_SUBCOMMANDS = frozenset({"add", "download", "fetch", "install", "sync"
 #: (requirements.txt) must not be mistaken for a host. A URL value stays a route.
 _REQUIREMENT_FILE_FLAGS = frozenset({"-r", "--requirement", "-c", "--constraint"})
 #: Ambient env vars that redirect a package manager off its default registry.
-#: ponytail: config-file redirects (~/.npmrc, pip.conf, project .npmrc) are
+#: shortcut: config-file redirects (~/.npmrc, pip.conf, project .npmrc) are
 #: invisible to static parsing — the runtime egress broker is the upgrade path;
 #: the secrets/taint/trifecta floors hold regardless of route.
 _PM_REGISTRY_ENV_NAMES = frozenset(
@@ -551,7 +551,7 @@ def _extract_command_egress(command: str) -> tuple[str | None, dict[str, Any]]:
     # path-qualified (`/usr/bin/curl`) verb is still caught and an egress name
     # that only appears *inside* another token (`--git-ref`) is not; fall back
     # to the raw string only when parsing itself was unreliable.
-    # ponytail: a bare egress name used purely as an argument (`grep curl x`)
+    # shortcut: a bare egress name used purely as an argument (`grep curl x`)
     # still steps a wrapped command up to AUTH — a blunt fail-closed ceiling.
     # The precise fix is the deferred runtime egress broker, not a per-wrapper
     # flag-grammar parser: no clean heuristic exists (`sudo -u www-data` and

@@ -801,7 +801,7 @@ def test_focus_ring_wrapper_lights_up_on_both_buttons(real_root):
     tuned/verified against Deny only; this closes that gap for real, on the
     real widget tree, not just the palette constants above.
 
-    # ponytail: uses `_press` (below), not `event_generate`, for the same
+    # shortcut: uses `_press` (below), not `event_generate`, for the same
     # reason `_press`'s own docstring gives for KeyPress -- a CI process that
     # is not the foreground session can lose Tk-internal focus at any moment,
     # and a real, asynchronous <FocusOut> racing in right after this test's
@@ -2346,7 +2346,7 @@ def test_focus_ring_outer_line_actually_paints_a_real_pixel_probe(real_root):
         # Windows only: a real True/False answer, or None when we can't tell
         # (no ctypes, window title not found) -- never used to block the
         # probe on ITS OWN failure to answer, only on a confirmed "no".
-        # ponytail: GetForegroundWindow(), not winfo/focus_get() -- Tk only
+        # shortcut: GetForegroundWindow(), not winfo/focus_get() -- Tk only
         # knows its OWN focus/mapped state, not whether Windows is actually
         # compositing this window on top of everything else, which is the
         # one thing an agent/CI process running off-screen can never win

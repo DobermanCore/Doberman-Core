@@ -467,7 +467,7 @@ _MAX_COMMAND_SEGMENTS = 256
 #: into super-linear time on its own (~31.5s measured locally on a 1 MB
 #: payload, ~7.7 min reported on an 800 KB one elsewhere; root cause is
 #: CPython's `shlex.read_token`, not this module).
-#: ponytail: a hard truncation, not a smarter parser. 64 KiB clears every
+#: shortcut: a hard truncation, not a smarter parser. 64 KiB clears every
 #: existing adversarial payload in this module's own test suite (the
 #: largest quotes a ~16 KB `-c` script with its dangerous call placed AFTER
 #: a filler blob, on purpose, to prove the scan isn't position-limited —
@@ -787,7 +787,7 @@ def _normalize_windows_backslashes(command: str) -> str:
     (see ``_WINDOWS_PATH_TRIGGER_RE``) gets every backslash flipped to ``/`` before
     tokenization so a Windows path survives intact.
 
-    ponytail: a whole-line, word-triggered flip rather than per-segment/per-operand
+    shortcut: a whole-line, word-triggered flip rather than per-segment/per-operand
     surgery — simplest fix that passes the live-tested Windows commands, and a no-op
     (verified against the existing POSIX test suite) unless both a trigger word and a
     literal backslash are present. Known ceiling: a POSIX ``rm`` operand that
@@ -1061,7 +1061,7 @@ def _any_operand_unrecoverable(operands: Iterable[str]) -> bool:
 def _rm_targets_unrecoverable_data(tokens: list[str]) -> bool:
     """``rm`` whose operand basename matches an unrecoverable, gitignored data
     file (local DB / secret / key)."""
-    # ponytail: lexical glob on operands only — no filesystem or git access in the
+    # shortcut: lexical glob on operands only — no filesystem or git access in the
     # decision path. Catches file targets; a directory operand (rm -rf data/) cannot
     # be classified lexically and is deliberately out of scope (deferred — see ADR).
     operands = [t for t in tokens[1:] if not t.startswith("-")]
@@ -1094,7 +1094,7 @@ def _windows_delete_flag(token: str) -> tuple[bool, bool, bool]:
     """
     if token.startswith("-") and len(token) > 1:
         body = token[1:].lower()
-        # ponytail: prefix-match against "recurse"/"force" only (not the full
+        # shortcut: prefix-match against "recurse"/"force" only (not the full
         # PowerShell parameter-disambiguation table) — over-classifying Force is
         # raise-only (safe); a non-recurse/force switch (-Path, -Confirm, ...) is
         # still correctly excluded from the operand count.
