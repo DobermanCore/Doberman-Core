@@ -27,9 +27,9 @@ idea of what git says. The probe is deterministic (no network, no clock, fixed
 committer identity) and each repo is built fresh per test.
 """
 
-import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 
 import pytest
@@ -192,23 +192,28 @@ def test_tracked_copy_backstop_blocks_a_false_positive(repo, monkeypatch):
 
 @requires_git
 @pytest.mark.parametrize("name", ["node_modules", "build", "dist", ".venv", "__pycache__"])
-def test_regenerable_build_directories_are_carved_out(name, repo):
+@pytest.mark.parametrize("spelling", ["{name}", "{name}/", "./{name}/", "{name}/pkg"])
+def test_regenerable_build_directories_are_carved_out(name, spelling, repo):
     """Deliberate scoping choice: tool-owned output is regenerated from committed
-    sources, so escalating it would only teach people to click through prompts."""
+    sources, so escalating it would only teach people to click through prompts.
+    The trailing-slash (tab completion) and sub-path spellings carve out too."""
     target = repo / name
-    target.mkdir(exist_ok=True)
+    (target / "pkg").mkdir(parents=True, exist_ok=True)
     (target / "artifact").write_text("generated\n", encoding="utf-8")
     (repo / ".gitignore").write_text(f"data/\n{name}/\n", encoding="utf-8")
-    assert _cmd(f"rm -rf {name}", repo).verdict is Verdict.PASS
+    assert _cmd("rm -rf " + spelling.format(name=name), repo).verdict is Verdict.PASS
 
 
 @requires_git
 def test_carve_out_is_case_insensitive(repo):
-    """Matched with ``fnmatchcase`` on a lowercased basename so the same command
-    classifies identically on POSIX and on Windows."""
+    """Matched with ``fnmatchcase`` on a lowercased component so the same command
+    classifies identically on POSIX and on Windows. ``Build/`` is ignored, so the
+    only thing that can make this PASS is the carve-out."""
     (repo / "Build").mkdir()
+    (repo / "Build" / "out.bin").write_text("x\n", encoding="utf-8")
     (repo / ".gitignore").write_text("Build/\n", encoding="utf-8")
     assert _cmd("rm -rf Build", repo).verdict is Verdict.PASS
+    assert commands_module._is_regenerable_dir("Build")
 
 
 @requires_git
@@ -245,11 +250,16 @@ def test_unexpanded_glob_operand_does_not_escalate(repo):
 
 
 @requires_git
-def test_operand_escaping_the_repo_root_does_not_escalate(repo, tmp_path):
-    """Confinement is decided by the shared canonicalizer, not by this gate."""
+def test_operand_escaping_the_worktree_does_not_escalate(repo, tmp_path):
+    """Confinement to the worktree top is enforced by ``_delete_dir_candidates``
+    itself, so it is asserted there: deleting the guard makes this fail."""
     outside = tmp_path.parent / "outside_the_repo"
     outside.mkdir(exist_ok=True)
     assert _cmd("rm -rf ../outside_the_repo", repo).verdict is Verdict.PASS
+    top = repo.resolve()
+    assert commands_module._delete_dir_candidates([outside.resolve()], top) == []
+    assert commands_module._delete_dir_candidates([top], top) == []
+    assert commands_module._delete_dir_candidates([top / "data"], top) == ["data"]
 
 
 # --- fails toward today, never toward PASS ----------------------------------
@@ -329,7 +339,8 @@ def test_timeout_is_actually_passed_to_the_subprocess(repo, monkeypatch):
         seen.update(kwargs)
         raise subprocess.TimeoutExpired(cmd="git", timeout=2.0)
 
-    monkeypatch.setattr(commands_module.shutil, "which", lambda _n: os.fspath("git"))
+    real_git = shutil.which("git")
+    monkeypatch.setattr(commands_module.shutil, "which", lambda _n: real_git)
     commands_module._git_executable.cache_clear()
     monkeypatch.setattr(commands_module.subprocess, "run", _capture)
     _cmd("rm -rf data", repo)
@@ -395,3 +406,170 @@ def test_explanation_names_the_category_and_never_the_path(repo):
     assert "rows.csv" not in result.explanation
     assert str(repo) not in result.explanation
     assert "gitignored directory" in result.explanation
+
+
+# --- review round 2: hardening and coverage (#653) --------------------------
+
+
+@requires_git
+@pytest.mark.parametrize("name", ["Uploads", "Exports", "UPPER"])
+def test_capitalized_ignored_directory_escalates(name, repo):
+    """``canonicalize().relposix`` is lower-cased for matching; handing that to
+    ``git check-ignore`` makes a ``Uploads/`` entry invisible on a case-sensitive
+    filesystem (Linux, CI). Every other fixture name is lowercase."""
+    (repo / name).mkdir()
+    (repo / name / "rows.csv").write_text("x\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(f"{name}/\n", encoding="utf-8")
+    assert _cmd(f"rm -rf {name}", repo).verdict is Verdict.AUTH
+    top = repo.resolve()
+    assert commands_module._delete_dir_candidates([top / name], top) == [name]
+
+
+@requires_git
+@pytest.mark.parametrize("command", ["rm -rf data/*", "rm -rf data/*.state", "rm -rf ./data/*"])
+def test_glob_operand_probes_its_literal_prefix(command, repo):
+    assert _cmd(command, repo).verdict is Verdict.AUTH
+
+
+@requires_git
+@pytest.mark.parametrize("command", ["rm -rf dat*", "rm -rf src/*", "rm -rf build/*"])
+def test_glob_without_a_qualifying_prefix_does_not_escalate(command, repo):
+    (repo / "build").mkdir(exist_ok=True)
+    (repo / ".gitignore").write_text("data/\nbuild/\n", encoding="utf-8")
+    assert _cmd(command, repo).verdict is Verdict.PASS
+
+
+def test_literal_prefix_helper():
+    assert commands_module._literal_prefix("data/*") == "data"
+    assert commands_module._literal_prefix("a/b/*.log") == "a/b"
+    assert commands_module._literal_prefix("*") == ""
+    assert commands_module._literal_prefix("/*") == ""
+    assert commands_module._literal_prefix("/abs/data/*") == "/abs/data"
+
+
+@requires_git
+def test_subdirectory_cwd_is_confined_to_the_worktree_top_not_cwd(repo):
+    """``root`` is the hook's cwd. From ``repo/src``, ``../data`` and the absolute
+    path are inside the worktree and must not be dropped as escaping."""
+    src = repo / "src"
+    assert _cmd("rm -rf ../data", src).verdict is Verdict.AUTH
+    assert _cmd(f"rm -rf '{repo / 'data'}'", src).verdict is Verdict.AUTH
+
+
+@requires_git
+def test_nested_repo_operand_does_not_poison_the_batch(repo):
+    """A path inside a nested repo/submodule makes the whole ``--stdin`` batch
+    exit 128 for git. It is filtered out so the genuine operand still escalates."""
+    nested = repo / "vendor" / "pkg"
+    nested.mkdir(parents=True)
+    _git(nested, "init", "-q")
+    (nested / "inner").mkdir()
+    (nested / "inner" / "f").write_text("x\n", encoding="utf-8")
+    assert _cmd("rm -rf data vendor/pkg/inner", repo).verdict is Verdict.AUTH
+    assert _cmd("rm -rf vendor/pkg/inner", repo).verdict is Verdict.PASS
+    top = repo.resolve()
+    assert commands_module._delete_dir_candidates([top / "vendor" / "pkg" / "inner"], top) == []
+
+
+@requires_git
+@pytest.mark.parametrize("name", ["données", "数据"])
+def test_non_ascii_directory_names_escalate(name, repo):
+    (repo / name).mkdir()
+    (repo / name / "f").write_text("x\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(f"{name}/\n", encoding="utf-8")
+    assert _cmd(f"rm -rf {name}", repo).verdict is Verdict.AUTH
+
+
+@requires_git
+def test_probe_budget_is_shared_across_chained_segments(repo, monkeypatch):
+    """Many chained segments must not mean many git processes — and exhausting
+    the budget must raise, not wave the unprobed tail through."""
+    calls = []
+    real_run = commands_module.subprocess.run
+
+    def _counting_run(argv, **kwargs):
+        calls.append(argv)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(commands_module.subprocess, "run", _counting_run)
+    (repo / "plain").mkdir()
+    (repo / "plain" / "f").write_text("x\n", encoding="utf-8")
+    result = _cmd("; ".join(["rm -rf plain"] * 60), repo)
+    assert len(calls) <= commands_module._MAX_GIT_PROBES
+    assert result.verdict is Verdict.AUTH
+    assert result.explanation == commands_module._GITIGNORED_UNVERIFIED_EXPLANATION
+
+
+@requires_git
+def test_padding_ahead_of_the_dangerous_delete_does_not_bypass(repo):
+    command = "; ".join(["rm -rf src"] * 20 + ["rm -rf data"])
+    assert _cmd(command, repo).verdict is Verdict.AUTH
+
+
+@requires_git
+def test_probe_budget_resets_for_every_decision(repo):
+    _cmd("; ".join(["rm -rf src"] * 40), repo)
+    assert _cmd("rm -rf data", repo).explanation == (
+        commands_module._GITIGNORED_UNCOMMITTED_EXPLANATION
+    )
+
+
+@requires_git
+@pytest.mark.parametrize("planted", ["relative", "under_root"])
+def test_git_binary_in_the_repo_or_relative_is_refused(planted, repo, monkeypatch):
+    """Windows ``shutil.which`` searches the cwd first; a ``git.bat`` in the repo
+    must never be executed by merely evaluating ``rm -rf src``."""
+    bad = repo / "git.bat"
+    bad.write_text("@echo off\n", encoding="utf-8")
+    found = ".\\git.BAT" if planted == "relative" else str(bad)
+    monkeypatch.setattr(commands_module.shutil, "which", lambda _n: found)
+    commands_module._git_executable.cache_clear()
+    assert commands_module._git_executable(str(repo)) is None
+
+    def _boom(*_a, **_k):
+        raise AssertionError("a refused git must never be spawned")
+
+    monkeypatch.setattr(commands_module.subprocess, "run", _boom)
+    assert _cmd("rm -rf data", repo).verdict is Verdict.PASS
+
+
+@requires_git
+def test_fsmonitor_hook_never_runs_during_evaluation(repo):
+    """A repo-configured ``core.fsmonitor`` command is attacker-controlled code
+    that git would execute on index refresh; the probe must disable it."""
+    marker = repo.parent / (repo.name + "-fsmonitor-ran")
+    script = repo.parent / (repo.name + "-fsmonitor.py")
+    script.write_text(f"open({str(marker)!r}, 'w').write('ran')\n", encoding="utf-8")
+    hook = f'"{sys.executable}" "{script}"'.replace("\\", "/")
+    _git(repo, "config", "core.fsmonitor", hook)
+
+    # Precondition: the hook really does fire for an unhardened git, so the
+    # assertion below is capable of failing.
+    subprocess.run(  # noqa: S603
+        [shutil.which("git"), "-C", str(repo), "status"], capture_output=True, check=False
+    )
+    if not marker.exists():
+        pytest.skip("this git does not run the configured fsmonitor hook here")
+    marker.unlink()
+
+    assert _cmd("rm -rf data", repo).verdict is Verdict.AUTH
+    assert not marker.exists()
+
+
+@requires_git
+def test_git_is_invoked_with_hardening_flags(repo, monkeypatch):
+    seen = []
+    real_run = commands_module.subprocess.run
+
+    def _capture(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(commands_module.subprocess, "run", _capture)
+    _cmd("rm -rf data", repo)
+    assert seen
+    for argv, kwargs in seen:
+        assert argv[1:3] == ["-c", "core.fsmonitor=false"]
+        if "ls-files" in argv:
+            assert "--literal-pathspecs" in argv
+        assert kwargs.get("encoding") == "utf-8"
