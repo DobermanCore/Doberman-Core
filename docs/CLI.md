@@ -98,6 +98,21 @@ Wiring commands plus the low-level per-host handlers they install.
 
 All five `hook` subcommands run only the fast deterministic objective floor, so they add minimal latency, and fail closed on any malformed input or engine error.
 
+## Model provider
+
+The optional LLM narrator (`doberman log --why`) and the shadow judge call one named provider. The default is Anthropic and is unchanged; `orcarouter` selects [OrcaRouter](https://www.orcarouter.ai), an OpenAI-compatible gateway with its own API key and its own live model catalog. Nothing here changes what Doberman allows or blocks: an LLM verdict is advisory and never loosens a rule.
+
+| Command | Purpose | Key flags |
+|---------|---------|-----------|
+| `doberman provider` | The provider group; run it with no subcommand to list its commands. | none |
+| `doberman provider status` | Show the active provider, whether `DOBERMAN_LLM_PROVIDER` is overriding the saved choice, the OrcaRouter credential source (environment variable or the per-user `0600` file - never the key itself), the pinned endpoint, and the chosen model. | none |
+| `doberman provider use <name>` | Select `anthropic` or `orcarouter` for the narrator and the shadow judge. An environment override still wins, and `status` says so. | none |
+| `doberman provider set-key` | Store an OrcaRouter API key (`sk-orca-...`) in the per-user `0600` file, read with hidden input or from stdin. The value is never echoed, logged, or written to the repo. | `--stdin` |
+| `doberman provider clear-key` | Delete the stored key. An `ORCAROUTER_API_KEY` environment variable is left alone and reported. | none |
+| `doberman provider models` | Print the models the gateway's `GET /v1/models` returns for one capability, with the source labeled (`live`, or a degraded `last_known_good`/`seed` fallback). The dashboard's model dropdown is fed by the same call, so the IDs here are exactly what it offers. | `--capability`/`-c`, `--modality`/`-m` (repeatable), `--refresh`, `--json` |
+
+An OrcaRouter model is never typed by hand: the saved value must come from the catalog the gateway just returned, both in the dashboard and in `provider models`.
+
 ## Output conventions
 
 Human-readable diagnostics use one severity vocabulary: `error:` means the command failed and returned a non-zero exit code, `warning:` means it succeeded but skipped or degraded something, and `note:` marks a purely informational aside. Machine-readable flags keep their documented schemas and never add these prefixes.

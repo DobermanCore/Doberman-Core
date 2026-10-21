@@ -223,6 +223,16 @@ role_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(role_app, name="role", rich_help_panel="Policy")
+
+provider_app = typer.Typer(
+    help=(
+        "Model provider for the optional LLM narrator and shadow judge - the named "
+        "OrcaRouter gateway (its own key and live model catalog) or the unchanged "
+        "Anthropic default."
+    ),
+    no_args_is_help=True,
+)
+app.add_typer(provider_app, name="provider", rich_help_panel="Advanced")
 telemetry_cmd.register_cli_telemetry(
     app, twofa_app, password_app, taint_app, tools_app, memory_app, role_app
 )
@@ -2232,6 +2242,175 @@ def approvals_ttl(
     doc = load_policy(path) or recommend_policy()
     save_policy(doc.with_approval_memory_seconds(seconds), path, ledger_ts=outcome.ts)
     typer.echo(f"Approval memory TTL set to {seconds} second(s).")
+
+
+# ---------------------------------------------------------------------------
+# provider - the named LLM provider behind explain/judge
+# ---------------------------------------------------------------------------
+
+
+@provider_app.command("status")
+def provider_status_cmd() -> None:
+    """Show the active provider, its credential source, and the chosen model.
+
+    Never prints the key itself, or any fragment of it - only where it is read
+    from (environment variable or per-user file) and whether it is present.
+    """
+    from doberman.providers import provider_status
+
+    status = provider_status()
+    typer.echo(f"Active provider: {status['active']}")
+    if status["env_override"]:
+        typer.echo(
+            "note: DOBERMAN_LLM_PROVIDER is set and outranks the saved choice; "
+            "unset it to switch from the dashboard or `doberman provider use`.",
+        )
+    for provider in status["providers"]:
+        state = "configured" if provider["configured"] else "not configured"
+        typer.echo(f"  {provider['label']}: {state} ({provider['auth']})")
+        if provider["name"] == "orcarouter":
+            source = provider.get("key_source") or "none"
+            typer.echo(f"    key source: {source}")
+            typer.echo(f"    endpoint: {provider['base_url']}")
+            typer.echo(f"    model: {provider['model']}")
+
+
+@provider_app.command("use")
+def provider_use(
+    name: str = typer.Argument(..., help="Provider name: anthropic or orcarouter."),
+) -> None:
+    """Select the provider used by the LLM narrator and the shadow judge."""
+    from doberman.providers import ProviderConfigError, use_provider
+
+    try:
+        chosen = use_provider(name)
+    except ProviderConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Active provider set to {chosen}.")
+
+
+@provider_app.command("set-key")
+def provider_set_key(
+    stdin: bool = typer.Option(
+        False,
+        "--stdin",
+        help="Read the key from standard input instead of prompting (for a secret manager).",
+    ),
+) -> None:
+    """Store an OrcaRouter API key in the per-user 0600 file.
+
+    The value is read with hidden input (or from stdin) and is never echoed,
+    logged, or written anywhere except its own 0600 file.
+    """
+    from doberman.providers import ProviderConfigError, save_api_key
+
+    if stdin:
+        value = sys.stdin.readline()
+    else:
+        value = typer.prompt("OrcaRouter API key", hide_input=True)
+    try:
+        save_api_key(value)
+    except ProviderConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("OrcaRouter API key saved (per-user file, mode 0600).")
+
+
+@provider_app.command("clear-key")
+def provider_clear_key() -> None:
+    """Remove the stored OrcaRouter key (an environment variable is untouched)."""
+    from doberman.providers import ProviderConfigError, clear_api_key
+
+    try:
+        removed = clear_api_key()
+    except ProviderConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if not removed:
+        typer.echo("No stored OrcaRouter key to remove.")
+    else:
+        typer.echo("Stored OrcaRouter key removed.")
+    # An environment variable outranks the file, so "removed" must not read as
+    # "no key is in use any more".
+    if os.environ.get("ORCAROUTER_API_KEY", "").strip():
+        typer.echo("note: ORCAROUTER_API_KEY is still set in the environment.")
+
+
+@provider_app.command("models")
+def provider_models(
+    capability: str = typer.Option(
+        "chat", "--capability", "-c", help="chat, embedding, image, video, or rerank."
+    ),
+    modality: list[str] = typer.Option(  # noqa: B008 — Typer's Option() factory, not a mutable default
+        None,
+        "--modality",
+        "-m",
+        help="Require an input modality (e.g. image); repeatable. Chat only.",
+    ),
+    refresh: bool = typer.Option(False, "--refresh", help="Bypass the cached catalog."),
+    as_json: bool = typer.Option(False, "--json", help="Print the catalog as JSON."),
+) -> None:
+    """List the models OrcaRouter's live catalog returns for one capability.
+
+    This is the same discovery the dashboard's dropdown uses: the IDs printed
+    here are verbatim catalog IDs, and the printed source says whether the list
+    is live or a labeled fallback (seed / last-known-good).
+    """
+    from doberman.providers import CAPABILITIES, ProviderConfigError, get_provider, provider_status
+
+    if capability not in CAPABILITIES:
+        typer.echo(f"error: unknown capability {capability!r}", err=True)
+        raise typer.Exit(code=1)
+    provider = get_provider("orcarouter")
+    try:
+        catalog = provider.models(capability, modalities=modality or (), refresh=refresh)
+    except ProviderConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "capability": capability,
+                    "modalities": list(modality or ()),
+                    "source": catalog.source,
+                    "detail": catalog.detail,
+                    "auth_failed": catalog.auth_failed,
+                    "models": [model.to_dict() for model in catalog.models],
+                },
+                indent=2,
+            )
+        )
+        return
+
+    if catalog.degraded:
+        typer.echo(f"catalog: {catalog.source} (degraded) - {catalog.detail}")
+        if catalog.error:
+            typer.echo(f"reason: {catalog.error}")
+        if catalog.auth_failed:
+            typer.echo(
+                "hint: OrcaRouter rejected the key - run `doberman provider set-key` "
+                "or check ORCAROUTER_API_KEY.",
+            )
+    else:
+        typer.echo(f"catalog: {catalog.source}")
+    if not catalog.models:
+        typer.echo(f"No models returned for capability={capability}.")
+        return
+    active = provider_status()["active"]
+    chosen = next(
+        (p.get("model") for p in provider_status()["providers"] if p["name"] == "orcarouter"),
+        "",
+    )
+    for model in catalog.models:
+        marker = "*" if model.id == chosen else " "
+        typer.echo(f" {marker} {model.id}")
+    typer.echo(
+        f"{len(catalog.models)} model(s); '*' marks the saved OrcaRouter model "
+        f"(active provider: {active})."
+    )
 
 
 @app.command(rich_help_panel="Auth")

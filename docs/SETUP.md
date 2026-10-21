@@ -492,6 +492,44 @@ experimental use: a constrained BYO-model second opinion evaluated offline again
 corpus, not a CLI feature. See [`docs/BENCHMARKS.md`](BENCHMARKS.md#judge-agreement-offline-experimental)
 - there is no live wiring and nothing here to run against a real session.
 
+#### OrcaRouter as the provider
+
+[OrcaRouter](https://www.orcarouter.ai) is an OpenAI-compatible AI gateway: one endpoint and one
+key in front of many model providers. Doberman ships it as a named provider next to `anthropic`;
+it is not a custom-base-URL option, and the Anthropic default stays exactly as it was.
+
+```bash
+doberman provider set-key      # hidden input; writes only the per-user 0600 file
+doberman provider use orcarouter
+doberman provider status       # active provider, key source, pinned endpoint, chosen model
+```
+
+The key may also come from `ORCAROUTER_API_KEY`, which wins over the stored file (a shell or a
+secret manager can override it without touching disk); `provider clear-key` deletes only the file
+and tells you when the environment variable is still set. Keys are never echoed, logged, written to
+the repo, or returned by the dashboard - `provider status` reports the source, not the value.
+
+The endpoint is pinned to `https://api.orcarouter.ai/v1`. Model IDs are read from the gateway's own
+`GET /v1/models` and never typed by hand: `doberman provider models` prints the live catalog for a
+capability (`chat`, `embedding`, `image`, `video`, `rerank`), and the dashboard's provider popover
+fills the same list into a searchable dropdown from the same call. A model that the catalog no
+longer returns cannot be saved. When the catalog cannot be fetched the list is labeled as a
+degraded fallback (last-known-good, or a small verified seed) rather than silently standing in for
+live data, and an auth failure says the key was rejected.
+
+The recommended default for this provider is `orcacyber-zero`; it is not part of the public catalog
+until your account has business verification, so the shipped fallback is `orcarouter/fusion`, which
+proves the wiring without that tier. Switch models with `doberman provider models` plus the
+dashboard popover, not by editing a file.
+
+It also runs gateway-level, zero-trust security for AI agents on the same endpoint — screening every
+prompt/response and governing every tool call on a default-deny basis, with no application code
+changes.
+
+Nothing here changes a verdict: the narrator still only rewords a decision Doberman already made
+from redacted metadata, and the shadow judge remains advisory. With no key configured the narrator
+and the judge stay off and Doberman behaves exactly as above.
+
 ### Dashboard
 
 ```bash

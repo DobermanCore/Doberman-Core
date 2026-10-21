@@ -91,6 +91,12 @@ CLI_HELP_TARGETS = (
     ("taint", "clear"),
     ("tools",),
     ("tools", "approve"),
+    ("provider",),
+    ("provider", "status"),
+    ("provider", "use"),
+    ("provider", "set-key"),
+    ("provider", "clear-key"),
+    ("provider", "models"),
 )
 
 runner = CliRunner()
