@@ -34,6 +34,7 @@ import posixpath
 import re
 import shlex
 from collections.abc import Iterable
+from pathlib import Path
 
 from doberman.canonical import canonicalize
 from doberman.engine.rules.paths import (
@@ -1152,7 +1153,7 @@ def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) ->
     or ``+ref``-shaped token that merely appears as another verb's *argument*
     (``git log --grep push --force``) is never mistaken for an actual force-push.
     """
-    argv, _ = _git_leading_globals(tokens)
+    argv, _, _ = _git_leading_globals(tokens)
     if not argv or argv[0] != "push":
         return False
     push_args = argv[1:]
@@ -1189,7 +1190,7 @@ def _git_push_deletes_protected_branch(tokens: list[str], protected: Iterable[st
     a force-push, ``git push --delete`` always names its target explicitly, so
     there's no bare/current-branch case to fail safe on.
     """
-    argv, _ = _git_leading_globals(tokens)
+    argv, _, _ = _git_leading_globals(tokens)
     if not argv or argv[0] != "push":
         return False
     push_args = argv[1:]
@@ -1875,7 +1876,7 @@ def _segment_verdict(
             ReasonCode.sensitive_path_access,
             "Command deletes a sensitive path; authentication required.",
         )
-    mv_source = _mv_rename_source(tokens)
+    mv_source = _mv_rename_source(tokens, root=root)
     if mv_source is not None and is_test_file(canonicalize(mv_source, root=root).relposix):
         return _auth(
             ReasonCode.test_file_removal,
@@ -1903,7 +1904,7 @@ def _segment_verdict(
             "authentication required.",
         )
     if cmd == "git":
-        _, assignments = _git_leading_globals(tokens)
+        _, assignments, _ = _git_leading_globals(tokens)
         if _git_assignment_sets_alias(assignments):
             return _auth(
                 ReasonCode.opaque_command,
@@ -1940,7 +1941,7 @@ def _looks_like_fork_bomb(tokens: list[str]) -> bool:
     return bool(_FORK_BOMB_RE.search(joined))
 
 
-def _mv_rename_source(tokens: list[str]) -> str | None:
+def _mv_rename_source(tokens: list[str], root: str = ".") -> str | None:
     """SOURCE operand of a plain ``mv SRC DST`` / ``git mv SRC DST`` segment,
     or ``None`` (#648: "A `git mv` or shell `mv` is a command ... and
     `DestructiveCommandRule` doesn't special-case it either") — leading ``-``
@@ -1952,34 +1953,71 @@ def _mv_rename_source(tokens: list[str]) -> str | None:
     """
     if tokens[:1] == ["mv"]:
         operands = tokens[1:]
+        effective_cwd = root
     else:
-        argv, _ = _git_leading_globals(tokens)
+        argv, _, cwd_paths = _git_leading_globals(tokens)
         if not argv or argv[0] != "mv":
             return None
         operands = argv[1:]
+        effective_cwd = _effective_git_cwd(cwd_paths, root)
     positional = [t for t in operands if not t.startswith("-")]
-    return positional[0] if len(positional) >= 2 else None
+    if len(positional) < 2:
+        return None
+    return _resolve_operand_cwd(positional[0], effective_cwd, root)
 
 
-def _delete_operands(tokens: list[str]) -> list[str]:
+def _effective_git_cwd(cwd_paths: list[str], root: str) -> str:
+    """Compute the effective working directory resulting from Git's -C options (#647/#747).
+
+    Git interprets each subsequent relative -C path relative to the preceding
+    working directory. An empty path (-C "") leaves the working directory
+    unchanged. An absolute path replaces the current working directory.
+    """
+    effective = Path(root)
+    for p in cwd_paths:
+        if not p:
+            continue
+        p_path = Path(p)
+        if p_path.is_absolute():
+            effective = p_path
+        else:
+            effective = effective / p_path
+    return str(effective)
+
+
+def _resolve_operand_cwd(operand: str, effective_cwd: str, root: str) -> str:
+    """Resolve a delete or move operand against the effective working directory (#647/#747).
+
+    If the effective working directory differs from the repository root and the
+    operand is a relative path, prefix it with the effective working directory
+    so subsequent canonicalization resolves against the repository root.
+    """
+    if effective_cwd == root or Path(operand).is_absolute():
+        return operand
+    return str(Path(effective_cwd) / operand)
+
+
+def _delete_operands(tokens: list[str], root: str = ".") -> list[str]:
     """Path operands of an ``rm``, ``git rm``, or Windows delete command.
 
     Leading ``-`` flags are skipped, ``--`` stops flag processing for ``rm``
     and ``git rm``, and Windows delete verbs extract positional operands via
     :func:`_windows_delete_flags_and_operands`. Keys the git case on the
-    actual verb (:func:`_git_leading_globals`), so ``git log --grep rm`` is
-    never mistaken for ``git rm``.
+    actual verb (:func:`_git_leading_globals`), and carries the effective
+    working directory from git's ``-C`` options into path resolution (#647/#747).
     """
     if not tokens:
         return []
     cmd = tokens[0]
+    effective_cwd = root
     if cmd == "rm":
         raw = tokens[1:]
     elif cmd == "git":
-        argv, _ = _git_leading_globals(tokens)
+        argv, _, cwd_paths = _git_leading_globals(tokens)
         if not argv or argv[0] != "rm":
             return []
         raw = argv[1:]
+        effective_cwd = _effective_git_cwd(cwd_paths, root)
     elif cmd.lower() in _WINDOWS_DELETE_VERBS:
         _, _, ops = _windows_delete_flags_and_operands(tokens)
         return ops
@@ -1990,11 +2028,11 @@ def _delete_operands(tokens: list[str]) -> list[str]:
     after_dashdash = False
     for t in raw:
         if after_dashdash:
-            operands.append(t)
+            operands.append(_resolve_operand_cwd(t, effective_cwd, root))
         elif t == "--":
             after_dashdash = True
         elif not t.startswith("-"):
-            operands.append(t)
+            operands.append(_resolve_operand_cwd(t, effective_cwd, root))
     return operands
 
 
@@ -2002,7 +2040,7 @@ def _delete_targets_sensitive_path(tokens: list[str], root: str) -> bool:
     """True if an ``rm``, ``git rm``, or Windows delete command targets a
     sensitive path on the sensitive list (:data:`~doberman.engine.rules.paths.DEFAULT_SENSITIVE_GLOBS`).
     """
-    for op in _delete_operands(tokens):
+    for op in _delete_operands(tokens, root=root):
         canon = canonicalize(op, root=root)
         if is_sensitive_path(canon.relposix):
             return True
@@ -2016,7 +2054,7 @@ def _delete_targets_test_file(tokens: list[str], root: str) -> bool:
     Operands that resolve outside the repo root are skipped (same confinement
     check as :class:`~doberman.engine.rules.paths.ProtectedPathRule`).
     """
-    for op in _delete_operands(tokens):
+    for op in _delete_operands(tokens, root=root):
         canon = canonicalize(op, root=root)
         if is_test_file(canon.relposix):
             return True
@@ -2028,7 +2066,7 @@ def _git_is_history_rewrite(tokens: list[str]) -> bool:
     inspects that verb's OWN argv, so ``reset``/``filter-branch``/``clean``
     appearing merely as another verb's *argument* (``git log filter-branch``)
     is never mistaken for the real subcommand."""
-    argv, _ = _git_leading_globals(tokens)
+    argv, _, _ = _git_leading_globals(tokens)
     if not argv:
         return False
     verb, rest = argv[0], argv[1:]
@@ -2040,28 +2078,32 @@ def _git_is_history_rewrite(tokens: list[str]) -> bool:
     return verb == "clean" and any(t.startswith("-") and "f" in t for t in rest)
 
 
-def _git_leading_globals(tokens: list[str]) -> tuple[list[str], list[str]]:
-    """``(subcommand_argv, config_assignments)`` — walk git's leading global
-    options ONCE so the subcommand locator and the config-level
-    verification-bypass check share one skip-loop. Skips ``-C <path>``/
+def _git_leading_globals(
+    tokens: list[str],
+) -> tuple[list[str], list[str], list[str]]:
+    """(subcommand_argv, config_assignments, cwd_paths): walk git's leading global
+    options ONCE so the subcommand locator, the config-level
+    verification-bypass check, and the -C working-directory resolver share one
+    skip-loop. Skips ``-C <path>``/
     ``-c <k=v>`` and every option in ``_GIT_GLOBAL_OPTIONS_WITH_VALUE``
     (and each one's value token, space- or ``=``-separated), ``--no-pager``,
-    ``-p``/``--paginate``, and any other leading ``-``/``--`` token — so
+    ``-p``/``--paginate``, and any other leading ``-``/``--`` token: so
     ``git -C repo commit ...`` and ``git --git-dir /repo commit ...`` both
     still locate ``commit``, and a non-commit verb (``log``, ``tag``,
     ``shortlog``) that merely mentions "commit" among its own arguments is
     never mistaken for it. Along the way, every ``-c <k=v>`` value token and
     every ``--config-env`` value (space- or ``=``-separated) ``k=v`` is
-    collected into ``config_assignments`` — these never appear as a flag ON
-    the subcommand, so nothing downstream would otherwise see them."""
+    collected into ``config_assignments``, and every ``-C <path>`` directory
+    is collected into ``cwd_paths`` (#647/#747)."""
     if not tokens or tokens[0] != "git":
-        return [], []
+        return [], [], []
     rest = tokens[1:]
     i = 0
     assignments: list[str] = []
+    cwd_paths: list[str] = []
     while i < len(rest) and rest[i].startswith("-"):
         token = rest[i]
-        if token == "-c":  # noqa: S105 — git's -c <k=v> option flag, not a secret
+        if token == "-c":  # noqa: S105 -- git's -c <k=v> option flag, not a secret
             if i + 1 < len(rest):
                 assignments.append(rest[i + 1])
             i += 2
@@ -2070,13 +2112,26 @@ def _git_leading_globals(tokens: list[str]) -> tuple[list[str], list[str]]:
             assignments.append(token[len("--config-env=") :])
             i += 1
             continue
-        if token == "--config-env":  # noqa: S105 — git's --config-env <k=v> flag, not a secret
+        if token == "--config-env":  # noqa: S105 -- git's --config-env <k=v> flag, not a secret
             if i + 1 < len(rest):
                 assignments.append(rest[i + 1])
             i += 2
             continue
+        if token == "-C":  # noqa: S105 -- git's -C <path> option flag, not a secret
+            if i + 1 < len(rest):
+                cwd_paths.append(rest[i + 1])
+            i += 2
+            continue
+        if token.startswith("-C="):
+            cwd_paths.append(token[len("-C=") :])
+            i += 1
+            continue
+        if token.startswith("-C") and len(token) > 2:
+            cwd_paths.append(token[2:])
+            i += 1
+            continue
         i += 2 if token in _GIT_GLOBAL_OPTIONS_WITH_VALUE else 1
-    return rest[i:], assignments
+    return rest[i:], assignments, cwd_paths
 
 
 def _git_config_bypasses_verification(assignments: Iterable[str]) -> bool:
@@ -2134,7 +2189,7 @@ def _git_commit_bypasses_verification(tokens: list[str]) -> bool:
     / ``git -c commit.gpgsign=false commit`` / ``git --config-env=core.hooksPath=...
     commit``) — see :func:`_git_config_bypasses_verification`. Same evasion
     class, but the assignment never appears as a flag on ``commit`` itself."""
-    argv, assignments = _git_leading_globals(tokens)
+    argv, assignments, _ = _git_leading_globals(tokens)
     if not argv or argv[0] != "commit":
         return False
     if _git_config_bypasses_verification(assignments):

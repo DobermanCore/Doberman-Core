@@ -438,6 +438,7 @@ def test_custom_bulk_threshold_is_respected():
     [
         "mv tests/unit/test_x.py trash/test_x.py",
         "git mv tests/unit/test_x.py trash/test_x.py",
+        "git -C tests mv unit/test_x.py trash/test_x.py",
     ],
 )
 def test_mv_or_git_mv_of_test_file_requires_auth(command):
@@ -1353,6 +1354,36 @@ def test_shell_deletion_sensitive_path_precedes_test_file():
     assert result.verdict is Verdict.AUTH
     assert ReasonCode.sensitive_path_access in result.reason_codes
     assert ReasonCode.test_file_removal not in result.reason_codes
+
+
+def test_git_c_option_resolves_effective_cwd_for_test_deletion():
+    # One -C option targeting tests directory: git targets tests/fixture.txt (#647/#747)
+    result = _cmd("git -C tests rm -f fixture.txt", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.test_file_removal in result.reason_codes
+
+    # Repeated -C options
+    result_rep = _cmd("git -C tests -C unit rm -f fixture.txt", action_type=ActionType.git_op)
+    assert result_rep.verdict is Verdict.AUTH
+    assert ReasonCode.test_file_removal in result_rep.reason_codes
+
+
+def test_git_c_option_resolves_effective_cwd_for_sensitive_target():
+    # -C option targeting sensitive directory (.github/workflows)
+    result = _cmd("git -C .github/workflows rm ci.yml", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_path_access in result.reason_codes
+
+    # Repeated -C targeting sensitive directory
+    result_rep = _cmd("git -C .github -C workflows rm ci.yml", action_type=ActionType.git_op)
+    assert result_rep.verdict is Verdict.AUTH
+    assert ReasonCode.sensitive_path_access in result_rep.reason_codes
+
+
+def test_git_c_option_preserves_block_verdicts():
+    # Existing BLOCK results remain unchanged with -C
+    result = _cmd("git -C repo push --force origin main", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
 
 
 @pytest.mark.parametrize(
