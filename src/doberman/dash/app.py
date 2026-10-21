@@ -72,6 +72,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
@@ -82,6 +83,18 @@ from doberman.dash.stats import build_stats, reason_codes
 from doberman.explain import REASON_DESCRIPTIONS, headline, template_explanation
 from doberman.policy.drift import apply_mode_change
 from doberman.policy.modes import SecurityMode
+from doberman.providers import (
+    CAPABILITIES,
+    OrcaRouterProvider,
+    ProviderConfigError,
+    clear_api_key,
+    default_model,
+    model_is_available,
+    provider_status,
+    save_api_key,
+    set_orcarouter_model,
+    use_provider,
+)
 from doberman.storage import approvals
 from doberman.storage.log import exportable_session_id, read_decisions, read_decisions_since
 
@@ -740,6 +753,111 @@ _HTML_SHELL = """<!doctype html>
   #mode-cancel-btn:hover { background: var(--neutral-bg); }
   #mode-success { color: var(--pass); font-family: var(--mono); font-size: var(--fs-1); }
   #mode-error { color: var(--block); font-family: var(--mono); font-size: var(--fs-1); }
+  /* D7: provider settings popover. Deliberately its own rules rather than
+     extra selectors on the #mode-form rules above - the mode form's markup
+     and CSS are pinned byte-for-byte by the round 4-9 tests, and merging
+     selectors would change those lines. Same disclosure pattern: a card
+     anchored under its trigger >=641px, a full-width band below that, and
+     the shared .mode-form-actions row for its buttons. */
+  #provider-edit-btn {
+    font-size: var(--fs-1); font-weight: 600; padding: .35rem .7rem;
+    border: 1px solid var(--fg-3); border-radius: 4px; background: transparent;
+    color: var(--fg-2);
+  }
+  #provider-edit-btn[aria-expanded="true"] { background: var(--neutral-bg); color: var(--fg); }
+  #provider-edit-btn:hover { background: var(--neutral-bg); color: var(--fg); }
+  /* Same translucent scrim as #mode-scrim, one z-index step below the
+     provider card so the two overlays never draw at the same depth. Only
+     one popover is open at a time (opening one closes the other). */
+  #provider-scrim {
+    position: fixed; inset: 0; z-index: 16; background: oklch(0% 0 0 / 45%);
+  }
+  #provider-form:not([hidden]) {
+    display: flex; flex-wrap: wrap; align-items: flex-start; gap: .5rem;
+    margin: -.2rem 0 1.2rem; font-size: var(--fs-2);
+  }
+  @media (min-width: 641px) {
+    #provider-form:not([hidden]) {
+      position: fixed; width: 32rem; max-width: calc(100vw - 2rem);
+      padding: 1rem 1.25rem; margin: 0; border-radius: var(--r-lg);
+      background: var(--ink-1); box-shadow: var(--shadow-card); z-index: 17;
+    }
+  }
+  #provider-form-title {
+    flex-basis: 100%; margin: 0 0 .3rem;
+    font-family: var(--mono); font-size: var(--fs-1); font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--fg-3);
+  }
+  /* A visible <label> per control, not aria-label only - this form edits a
+     credential, so the field's purpose must be readable on screen. */
+  #provider-form label { flex-basis: 100%; color: var(--fg-2); font-size: var(--fs-1); }
+  #provider-form select, #provider-form input {
+    font-size: var(--fs-2); padding: .35rem .55rem;
+    background: var(--ink-2); color: var(--fg); border: 1px solid var(--rule); border-radius: 4px;
+  }
+  #provider-form input { width: 16rem; letter-spacing: .04em; }
+  /* The model search field spans the card; the key field stays narrow. */
+  #provider-model-input { flex-basis: 100%; width: 100%; }
+  #provider-form button {
+    font-size: var(--fs-2); font-weight: 600; padding: .35rem .85rem;
+    border: 1px solid var(--rule); border-radius: 4px; background: transparent;
+    color: inherit;
+  }
+  #provider-key-save-btn { border-color: var(--pass); color: var(--pass); }
+  #provider-key-save-btn:hover { background: var(--pass-bg); }
+  #provider-key-clear-btn { border-color: var(--block); color: var(--block); }
+  #provider-key-clear-btn:hover { background: var(--block-bg); }
+  #provider-cancel-btn:hover { background: var(--neutral-bg); }
+  /* The catalog's SOURCE is part of the contract, not a debug aside: a seed
+     or last-known-good list is shown in the AUTH amber and says "degraded",
+     so a screenshot can never make it look like the live catalog. */
+  #provider-key-status, #provider-model-status {
+    flex-basis: 100%; margin: 0; color: var(--fg-2);
+    font-family: var(--mono); font-size: var(--fs-1);
+  }
+  #provider-key-status.degraded, #provider-model-status.degraded { color: var(--auth); }
+  #provider-key-status:empty, #provider-model-status:empty { display: none; }
+  #provider-success { color: var(--pass); font-family: var(--mono); font-size: var(--fs-1); }
+  #provider-error { color: var(--block); font-family: var(--mono); font-size: var(--fs-1); }
+  /* The model picker: a search field + a listbox, never a free-text model
+     string. The trigger and the panel share the field's full width (the
+     panel is left/right anchored to it), so an open dropdown reads as one
+     control rather than a detached floating box. */
+  .provider-model-field {
+    position: relative; flex-basis: 100%;
+    display: flex; flex-wrap: wrap; gap: .4rem;
+  }
+  .provider-model-field input, #provider-model-btn { flex-basis: 100%; width: 100%; }
+  #provider-model-btn {
+    text-align: left; font-family: var(--mono);
+    background: var(--ink-2); color: var(--fg);
+    border: 1px solid var(--rule); border-radius: 4px;
+    padding: .4rem .55rem; font-size: var(--fs-2);
+  }
+  #provider-model-btn::after { content: " \\25BE"; color: var(--fg-3); float: right; }
+  #provider-model-btn[aria-expanded="true"] { border-color: var(--fg-3); }
+  #provider-model-list {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 21;
+    /* This dropdown caps its own height (round 9 forbids the *feed* from
+       capping, hence the logical-property spelling - one catalogue of 200+
+       models must scroll inside the card, not push the card past the
+       viewport). */
+    max-block-size: 15rem; overflow-y: auto; margin: .25rem 0 0; padding: .25rem;
+    list-style: none; background: var(--ink-1); border: 1px solid var(--rule);
+    border-radius: var(--r-sm); box-shadow: var(--shadow-card);
+  }
+  #provider-model-list[hidden] { display: none; }
+  #provider-model-list li {
+    display: flex; justify-content: space-between; gap: .6rem;
+    padding: .35rem .5rem; border-radius: 4px; cursor: pointer;
+  }
+  #provider-model-list li:hover, #provider-model-list li.active { background: var(--ink-2); }
+  #provider-model-list li[aria-selected="true"] { background: var(--neutral-bg); }
+  #provider-model-list li.model-empty {
+    display: block; cursor: default; color: var(--fg-3); font-family: var(--mono);
+  }
+  #provider-model-list .model-id { font-family: var(--mono); }
+  #provider-model-list .model-meta { color: var(--fg-3); font-size: var(--fs-1); white-space: nowrap; }
   /* >=641px: anchored under the "?" trigger by JS (positionShortcutsPanel),
      same fixed-position technique as the mode-form popover (positionModeForm)
      - JS sets top/right inline on open, clamped to stay inside the viewport.
@@ -890,6 +1008,7 @@ _HTML_SHELL = """<!doctype html>
         <span class="badge badge-neutral" id="enforcement-badge">enforcement: -</span>
       </div>
       <div class="topbar-group" id="topbar-utility-group">
+        <button type="button" id="provider-edit-btn" aria-expanded="false" aria-controls="provider-form" title="Model provider and API key">Models</button>
         <button type="button" id="theme-toggle-btn">Switch to light theme</button>
         <button type="button" id="shortcuts-btn" aria-haspopup="true" aria-expanded="false">Shortcuts (?)</button>
       </div>
@@ -957,6 +1076,41 @@ _HTML_SHELL = """<!doctype html>
     </div>
     <span id="mode-success"></span>
     <span id="mode-error" role="alert"></span>
+  </div>
+  <div id="provider-scrim" hidden></div>
+  <div id="provider-form" hidden role="dialog" aria-modal="true" aria-labelledby="provider-form-title">
+    <p id="provider-form-title">Model provider</p>
+    <label for="provider-select">Provider</label>
+    <select id="provider-select"></select>
+    <p id="provider-detail"></p>
+    <label for="provider-key">OrcaRouter API key</label>
+    <input id="provider-key" type="password" autocomplete="off" spellcheck="false"
+      placeholder="sk-orca-..." aria-describedby="provider-key-status">
+    <p id="provider-key-status" aria-live="polite"></p>
+    <div class="mode-form-actions">
+      <button type="button" id="provider-key-save-btn">Save key</button>
+      <button type="button" id="provider-key-clear-btn">Clear key</button>
+    </div>
+    <label id="provider-model-label" for="provider-model-input">Model</label>
+    <div class="provider-model-field">
+      <input id="provider-model-input" type="search" autocomplete="off" spellcheck="false"
+        placeholder="Search models" aria-controls="provider-model-list" aria-expanded="false"
+        role="combobox" aria-autocomplete="list">
+      <button type="button" id="provider-model-btn" aria-haspopup="listbox" aria-expanded="false"
+        aria-controls="provider-model-list">Choose a model</button>
+      <ul id="provider-model-list" role="listbox" aria-labelledby="provider-model-label" hidden></ul>
+    </div>
+    <label for="provider-attach-image">
+      <input id="provider-attach-image" type="checkbox"> Attach an image (image-capable models only)
+    </label>
+    <p id="provider-model-status" aria-live="polite"></p>
+    <div class="mode-form-actions">
+      <button type="button" id="provider-model-save-btn">Save model</button>
+      <button type="button" id="provider-refresh-btn">Refresh list</button>
+      <button type="button" id="provider-cancel-btn">Close</button>
+    </div>
+    <span id="provider-success"></span>
+    <span id="provider-error" role="alert"></span>
   </div>
   <div id="shortcuts-panel" hidden role="region" aria-label="Keyboard shortcuts" tabindex="-1">
     <p class="panel-title" id="shortcuts-panel-title">Shortcuts</p>
@@ -1673,6 +1827,8 @@ _HTML_SHELL = """<!doctype html>
       }
 
       function openModeForm() {
+        // One overlay at a time - the provider card shares this corner.
+        if (!providerForm.hidden) { closeProviderForm(); }
         modeEditing = true;
         modeErrorEl.textContent = "";
         modeSuccessEl.textContent = "";
@@ -1844,6 +2000,539 @@ _HTML_SHELL = """<!doctype html>
         }
         cancelModeArm();
         submitModeChange();
+      });
+
+      // ------------------------------------------------------------------
+      // Model provider popover (OrcaRouter + Anthropic).
+      //
+      // Every model option below comes from GET /api/providers, which reads
+      // the gateway's own GET /v1/models and echoes the catalog's SOURCE
+      // with it. There is deliberately no free-text model entry and no
+      // client-side model list: an id the live catalog did not return cannot
+      // be submitted, and a seed/last-known-good list is labeled as degraded
+      // wherever it is shown.
+      // ------------------------------------------------------------------
+      var providerEditBtn = document.getElementById("provider-edit-btn");
+      var providerForm = document.getElementById("provider-form");
+      var providerScrim = document.getElementById("provider-scrim");
+      var providerSelect = document.getElementById("provider-select");
+      var providerDetailEl = document.getElementById("provider-detail");
+      var providerKeyInput = document.getElementById("provider-key");
+      var providerKeyStatusEl = document.getElementById("provider-key-status");
+      var providerKeySaveBtn = document.getElementById("provider-key-save-btn");
+      var providerKeyClearBtn = document.getElementById("provider-key-clear-btn");
+      var providerModelInput = document.getElementById("provider-model-input");
+      var providerModelBtn = document.getElementById("provider-model-btn");
+      var providerModelList = document.getElementById("provider-model-list");
+      var providerModelStatusEl = document.getElementById("provider-model-status");
+      var providerModelSaveBtn = document.getElementById("provider-model-save-btn");
+      var providerRefreshBtn = document.getElementById("provider-refresh-btn");
+      var providerAttachImageEl = document.getElementById("provider-attach-image");
+      var providerCancelBtn = document.getElementById("provider-cancel-btn");
+      var providerSuccessEl = document.getElementById("provider-success");
+      var providerErrorEl = document.getElementById("provider-error");
+
+      var providerState = {
+        active: "",
+        model: "",
+        models: [],
+        source: "",
+        detail: "",
+        error: "",
+        authFailed: false,
+        loading: false
+      };
+      var providerActiveOption = -1;
+      // Set by the combobox's own Escape handler (one press closes the list
+      // only); the page-level Escape handler reads and clears it.
+      var providerEscapeConsumed = false;
+
+      function providerModalities() {
+        return providerAttachImageEl.checked ? ["image"] : [];
+      }
+
+      function providerSourceLabel() {
+        if (providerState.source === "live") { return "live catalog"; }
+        if (providerState.source === "last_known_good") {
+          return "DEGRADED - last catalog fetched successfully";
+        }
+        if (providerState.source === "seed") {
+          return "DEGRADED - small verified seed list, not the live catalog";
+        }
+        return "";
+      }
+
+      function providerLabelFor(modelId) {
+        for (var i = 0; i < providerState.models.length; i += 1) {
+          if (providerState.models[i].id === modelId) {
+            return providerState.models[i].name || modelId;
+          }
+        }
+        return modelId;
+      }
+
+      function renderProviderStatus(data) {
+        providerState.active = data.active || providerState.active;
+        providerSelect.textContent = "";
+        (data.providers || []).forEach(function (p) {
+          var opt = document.createElement("option");
+          opt.value = p.name;
+          opt.textContent = p.label || p.name;
+          providerSelect.appendChild(opt);
+        });
+        if (providerState.active) { providerSelect.value = providerState.active; }
+
+        var active = null;
+        (data.providers || []).forEach(function (p) {
+          if (p.name === providerState.active) { active = p; }
+        });
+        var configured = !!(active && active.configured);
+        // The key row is about OrcaRouter's OWN credential; the Anthropic
+        // provider keeps the historical environment-only setup and says so
+        // rather than offering a field that would not do anything.
+        var orca = active && active.name === "orcarouter";
+        providerKeyInput.disabled = !orca;
+        providerKeySaveBtn.disabled = !orca;
+        providerKeyClearBtn.disabled = !orca;
+        if (orca) {
+          providerKeyInput.placeholder = "sk-orca-...";
+          providerKeyStatusEl.textContent = configured
+            ? "A key is configured (" + (active.key_source || "stored") + "). Paste a new one to replace it."
+            : "No OrcaRouter key configured yet.";
+          providerKeyStatusEl.className = configured ? "" : "degraded";
+        } else {
+          providerKeyStatusEl.textContent =
+            "Anthropic reads its key from the environment; nothing to set here.";
+          providerKeyStatusEl.className = "";
+        }
+        providerKeyInput.value = "";
+        providerDetailEl.textContent = active
+          ? (active.note || "") + (active.base_url ? " - " + active.base_url : "")
+          : "";
+        providerModelInput.disabled = !orca;
+        providerModelBtn.disabled = !orca;
+        providerModelSaveBtn.disabled = !orca;
+        providerRefreshBtn.disabled = !orca;
+        renderProviderModels();
+      }
+
+      // Filtering is CLIENT-side over the list the server already filtered
+      // server-side: the search box narrows what /v1/models returned, it
+      // never becomes a way to name a model the catalog omitted.
+      function providerVisibleModels() {
+        var q = providerModelInput.value.trim().toLowerCase();
+        if (!q) { return providerState.models; }
+        return providerState.models.filter(function (m) {
+          return (m.id + " " + (m.name || "")).toLowerCase().indexOf(q) !== -1;
+        });
+      }
+
+      function renderProviderModels() {
+        if (providerSelect.value !== "orcarouter") {
+          // Anthropic keeps its fixed historical model; there is nothing to
+          // choose, and pretending otherwise would be a dead dropdown.
+          providerModelStatusEl.textContent =
+            "Anthropic uses its own fixed model - no model list to pick from.";
+          providerModelStatusEl.className = "";
+          providerModelBtn.textContent = "No models available";
+          providerModelList.textContent = "";
+          providerModelList.hidden = true;
+          return;
+        }
+        var source = providerSourceLabel();
+        var degraded = providerState.source && providerState.source !== "live";
+        var parts = [];
+        if (providerState.loading) {
+          parts.push("Loading the model catalog...");
+        } else if (providerState.error) {
+          parts.push(providerState.error);
+        }
+        if (source) { parts.push(source + " - " + providerState.models.length + " models"); }
+        if (degraded && providerState.detail) { parts.push(providerState.detail); }
+        providerModelStatusEl.textContent = parts.join(" ");
+        providerModelStatusEl.className = degraded ? "degraded" : "";
+
+        providerModelBtn.textContent = providerState.model
+          ? providerState.model
+          : (providerState.models.length ? "Choose a model" : "No models available");
+
+        if (providerModelList.hidden) { return; }
+        providerModelList.textContent = "";
+        var visible = providerVisibleModels();
+        providerActiveOption = -1;
+        if (!visible.length) {
+          var empty = document.createElement("li");
+          empty.className = "model-empty";
+          empty.textContent = providerState.loading
+            ? "Loading..."
+            : (providerState.models.length
+              ? "No model matches that search."
+              : "No models returned. Use Refresh list to try again.");
+          providerModelList.appendChild(empty);
+          return;
+        }
+        visible.forEach(function (m, idx) {
+          var li = document.createElement("li");
+          li.setAttribute("role", "option");
+          li.setAttribute("tabindex", "-1");
+          li.setAttribute("aria-selected", m.id === providerState.model ? "true" : "false");
+          li.dataset.modelId = m.id;
+          if (m.id === providerState.model) { providerActiveOption = idx; }
+          var idSpan = document.createElement("span");
+          idSpan.className = "model-id";
+          idSpan.textContent = m.id;
+          li.appendChild(idSpan);
+          var meta = document.createElement("span");
+          meta.className = "model-meta";
+          var bits = [];
+          if (m.context_length) { bits.push("ctx " + m.context_length); }
+          if (m.supports_reasoning) { bits.push("reasoning"); }
+          meta.textContent = bits.join(" · ");
+          li.appendChild(meta);
+          providerModelList.appendChild(li);
+        });
+      }
+
+      function openProviderModelList() {
+        providerModelList.hidden = false;
+        providerModelBtn.setAttribute("aria-expanded", "true");
+        providerModelInput.setAttribute("aria-expanded", "true");
+        renderProviderModels();
+        var target = providerModelList.querySelector('li[role="option"][aria-selected="true"]')
+          || providerModelList.querySelector('li[role="option"]');
+        if (target && target.focus) { target.focus(); }
+      }
+
+      function closeProviderModelList() {
+        providerModelList.hidden = true;
+        providerModelBtn.setAttribute("aria-expanded", "false");
+        providerModelInput.setAttribute("aria-expanded", "false");
+        providerActiveOption = -1;
+      }
+
+      function pickProviderModel(modelId) {
+        providerState.model = modelId;
+        providerErrorEl.textContent = "";
+        closeProviderModelList();
+        renderProviderModels();
+      }
+
+      async function loadProviderModels(refresh) {
+        // One GET covers both the selector and the model list: /api/providers
+        // returns the provider status AND the chat catalog. Reading the status
+        // on open is what fills #provider-select - without it the control is
+        // empty until the user has changed something, and the OrcaRouter rows
+        // never appear at all.
+        providerState.loading = true;
+        providerState.error = "";
+        renderProviderModels();
+        var qs = "?capability=chat";
+        providerModalities().forEach(function (m) { qs += "&modality=" + encodeURIComponent(m); });
+        if (refresh) { qs += "&refresh=1"; }
+        try {
+          var res = await fetch("/api/providers" + qs, {
+            headers: { "Authorization": "Bearer " + token }
+          });
+          var data = await res.json().catch(function () { return {}; });
+          if (!res.ok) {
+            throw new Error((data && data.error) || ("status " + res.status));
+          }
+          renderProviderStatus(data);
+          var catalog = providerSelect.value === "orcarouter" ? (data.catalog || {}) : {};
+          providerState.models = catalog.models || [];
+          providerState.source = catalog.source || "";
+          providerState.detail = catalog.detail || "";
+          providerState.error = "";
+          providerState.authFailed = !!catalog.auth_failed;
+          // A model that is no longer offered (or never was, after an image
+          // attachment changed the eligible set) must not survive in the
+          // select - the saved id is only shown when the catalog backs it.
+          var ids = providerState.models.map(function (m) { return m.id; });
+          if (providerState.model && ids.indexOf(providerState.model) === -1) {
+            providerState.model = "";
+          }
+          if (!providerState.model && ids.length) {
+            var rec = data.recommended_model;
+            providerState.model = ids.indexOf(rec) !== -1 ? rec : ids[0];
+          }
+        } catch (err) {
+          providerState.loading = false;
+          providerState.models = [];
+          providerState.source = "";
+          providerState.detail = "";
+          providerState.error = "Could not read the model catalog: " +
+            (err && err.message ? err.message : "network error") + ".";
+          renderProviderModels();
+          return;
+        }
+        providerState.loading = false;
+        renderProviderModels();
+      }
+
+      // >=641px: anchor the card under #provider-edit-btn, right-aligned to
+      // it - the same technique positionModeForm uses for its own trigger.
+      function positionProviderForm() {
+        if (window.matchMedia && window.matchMedia("(max-width: 640px)").matches) {
+          providerForm.style.top = "";
+          providerForm.style.right = "";
+          return;
+        }
+        if (providerEditBtn.scrollIntoView) {
+          providerEditBtn.scrollIntoView({ block: "nearest" });
+        }
+        var rect = providerEditBtn.getBoundingClientRect();
+        providerForm.style.top = Math.max(8, rect.bottom + 8) + "px";
+        providerForm.style.right = Math.max(8, window.innerWidth - rect.right) + "px";
+      }
+      window.addEventListener("resize", function () {
+        if (!providerForm.hidden) { positionProviderForm(); }
+      });
+      window.addEventListener("scroll", function () {
+        if (!providerForm.hidden) { positionProviderForm(); }
+      }, { passive: true });
+
+      function openProviderForm() {
+        // One overlay at a time: the mode popover owns the same corner.
+        if (!modeForm.hidden) { closeModeForm(); }
+        providerErrorEl.textContent = "";
+        providerSuccessEl.textContent = "";
+        providerKeyInput.value = "";
+        providerForm.hidden = false;
+        providerScrim.hidden = false;
+        mainEl.inert = true;
+        topbarRow1El.inert = true;
+        // NOT #topbar-utility-group: the trigger lives inside it, and the
+        // mode popover keeps its own trigger interactive for the same reason.
+        // Tab still cannot leave the card (the focus trap below).
+        providerEditBtn.setAttribute("aria-expanded", "true");
+        positionProviderForm();
+        setTimeout(function () { providerSelect.focus(); }, 0);
+        loadProviderModels(false);
+      }
+
+      function closeProviderForm() {
+        var wasOpen = !providerForm.hidden;
+        providerForm.hidden = true;
+        providerScrim.hidden = true;
+        closeProviderModelList();
+        mainEl.inert = false;
+        topbarRow1El.inert = false;
+        topbarUtilityGroupEl.inert = false;
+        providerKeyInput.value = "";
+        providerErrorEl.textContent = "";
+        providerSuccessEl.textContent = "";
+        providerEditBtn.setAttribute("aria-expanded", "false");
+        if (wasOpen) { providerEditBtn.focus(); }
+      }
+
+      providerEditBtn.addEventListener("click", function () {
+        if (providerForm.hidden) { openProviderForm(); } else { closeProviderForm(); }
+      });
+      providerCancelBtn.addEventListener("click", closeProviderForm);
+      providerScrim.addEventListener("click", closeProviderForm);
+
+      providerSelect.addEventListener("change", function () {
+        // The provider choice applies immediately (there is no separate Save
+        // for it) - one persisted setting, and the key/model rows below
+        // follow whatever is now active.
+        providerErrorEl.textContent = "";
+        providerSuccessEl.textContent = "";
+        providerState.models = [];
+        providerState.source = "";
+        providerState.model = "";
+        closeProviderModelList();
+        providerModelInput.value = "";
+        providerPost({ action: "use_provider", provider: providerSelect.value })
+          .then(function (result) {
+            if (!result.ok) {
+              providerErrorEl.textContent = providerPostError(result);
+              providerSelect.value = providerState.active;
+              return;
+            }
+            renderProviderStatus(result.data);
+            loadProviderModels(false);
+          })
+          .catch(function () {
+            providerErrorEl.textContent = "network error - try again";
+            providerSelect.value = providerState.active;
+          });
+      });
+
+      // Changing the attachment invalidates a text-only pick: the eligible
+      // set just changed, so the dropdown is refetched against the new
+      // modality and the current id is dropped unless the new list offers it.
+      providerAttachImageEl.addEventListener("change", function () {
+        if (providerState.model) {
+          providerState.model = "";
+          providerModelInput.value = "";
+          announce("Image attached - choose an image-capable model.");
+        }
+        loadProviderModels(false);
+      });
+
+      providerModelBtn.addEventListener("click", function () {
+        if (providerModelList.hidden) { openProviderModelList(); } else { closeProviderModelList(); }
+      });
+      providerModelInput.addEventListener("focus", function () {
+        if (providerModelList.hidden) { openProviderModelList(); }
+      });
+      providerModelInput.addEventListener("input", renderProviderModels);
+      providerModelList.addEventListener("click", function (e) {
+        var li = e.target.closest("li[data-model-id]");
+        if (li) { pickProviderModel(li.dataset.modelId); }
+      });
+      // Combobox keys: Up/Down move the active option, Enter picks it,
+      // Escape closes only the list (the page-level handler closes the whole
+      // card, which would otherwise discard the search text mid-flow).
+      // `providerEscapeConsumed` is how that one-press-one-thing rule is kept
+      // across two document-level keydown listeners: they both run for one
+      // Escape (stopPropagation does not stop same-node listeners), so the
+      // page-level handler checks this flag first and does nothing.
+      document.addEventListener("keydown", function (e) {
+        if (providerForm.hidden) { return; }
+        if (providerModelList.hidden) { return; }
+        var options = providerModelList.querySelectorAll('li[role="option"]');
+        if (e.key === "Escape") {
+          providerEscapeConsumed = true;
+          closeProviderModelList();
+          providerModelBtn.focus();
+          return;
+        }
+        if (!options.length) { return; }
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          var step = e.key === "ArrowDown" ? 1 : -1;
+          providerActiveOption = (providerActiveOption + step + options.length) % options.length;
+          for (var i = 0; i < options.length; i += 1) {
+            options[i].classList.toggle("active", i === providerActiveOption);
+          }
+          if (options[providerActiveOption].focus) { options[providerActiveOption].focus(); }
+        } else if (e.key === "Enter" && providerActiveOption !== -1) {
+          e.preventDefault();
+          pickProviderModel(options[providerActiveOption].dataset.modelId);
+        }
+      });
+
+      function providerPost(body) {
+        return fetch("/api/providers", {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(body)
+        }).then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, status: res.status, data: data };
+          });
+        });
+      }
+
+      function providerPostError(result) {
+        // textContent only - never render a server error string as markup.
+        return (result.data && result.data.error) || ("request failed (" + result.status + ")");
+      }
+
+      providerKeySaveBtn.addEventListener("click", function () {
+        var value = providerKeyInput.value.trim();
+        providerErrorEl.textContent = "";
+        providerSuccessEl.textContent = "";
+        if (!value) {
+          providerErrorEl.textContent = "Enter an OrcaRouter API key first.";
+          return;
+        }
+        providerKeySaveBtn.disabled = true;
+        providerPost({ action: "save_key", key: value })
+          .then(function (result) {
+            providerKeySaveBtn.disabled = false;
+            // Never echo the key back, not even a prefix: the field is
+            // cleared the moment the request leaves, whatever the outcome.
+            providerKeyInput.value = "";
+            if (result.ok) {
+              providerSuccessEl.textContent = "API key saved.";
+              renderProviderStatus(result.data);
+              loadProviderModels(true);
+            } else {
+              providerErrorEl.textContent = providerPostError(result);
+            }
+          })
+          .catch(function () {
+            providerKeySaveBtn.disabled = false;
+            providerKeyInput.value = "";
+            providerErrorEl.textContent = "network error - try again";
+          });
+      });
+
+      providerKeyClearBtn.addEventListener("click", function () {
+        providerErrorEl.textContent = "";
+        providerSuccessEl.textContent = "";
+        providerPost({ action: "clear_key" })
+          .then(function (result) {
+            if (result.ok) {
+              providerSuccessEl.textContent = result.data && result.data.removed
+                ? "API key removed."
+                : "No stored API key to remove.";
+              renderProviderStatus(result.data);
+              loadProviderModels(true);
+            } else {
+              providerErrorEl.textContent = providerPostError(result);
+            }
+          })
+          .catch(function () {
+            providerErrorEl.textContent = "network error - try again";
+          });
+      });
+
+      providerModelSaveBtn.addEventListener("click", function () {
+        if (!providerState.model) {
+          providerErrorEl.textContent = "Choose a model from the list first.";
+          return;
+        }
+        providerErrorEl.textContent = "";
+        providerSuccessEl.textContent = "";
+        providerPost({ action: "set_model", model: providerState.model })
+          .then(function (result) {
+            if (result.ok) {
+              providerSuccessEl.textContent = "Model: " + result.data.model + " - saved";
+              renderProviderStatus(result.data);
+            } else {
+              providerErrorEl.textContent = providerPostError(result);
+            }
+          })
+          .catch(function () {
+            providerErrorEl.textContent = "network error - try again";
+          });
+      });
+
+      providerRefreshBtn.addEventListener("click", function () {
+        loadProviderModels(true);
+      });
+
+      // Focus containment, same as the mode popover: Tab cycles the card's
+      // own controls while it is open rather than escaping into the inert page.
+      providerForm.addEventListener("keydown", function (e) {
+        if (e.key !== "Tab") { return; }
+        var focusable = Array.prototype.slice
+          .call(providerForm.querySelectorAll("select, input, button"))
+          .filter(function (el) { return !el.disabled; });
+        if (!focusable.length) { return; }
+        var first = focusable[0];
+        var last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      });
+
+      // Click-outside dismiss, same shape as the mode popover's: the scrim
+      // covers the page, and this catches a click that lands anywhere else.
+      document.addEventListener("click", function (e) {
+        if (providerForm.hidden) { return; }
+        if (providerForm.contains(e.target) || e.target === providerEditBtn) { return; }
+        closeProviderForm();
       });
 
       var pendingList = document.getElementById("pending-list");
@@ -2702,6 +3391,8 @@ _HTML_SHELL = """<!doctype html>
       document.addEventListener("keydown", function (e) {
         if (e.key === "Escape") {
           if (!modeForm.hidden) { attemptCloseModeForm(); return; }
+          if (providerEscapeConsumed) { providerEscapeConsumed = false; return; }
+          if (!providerForm.hidden) { closeProviderForm(); return; }
           if (!shortcutsPanel.hidden) { closeShortcuts(); return; }
           // The filter is not a trap: clear it and hand focus back to the
           // first VISIBLE row (the feed's newest, now that newest renders at
@@ -3367,12 +4058,138 @@ def _make_mode_route(token: str, repo_root: str) -> Route:
     return Route("/api/mode", mode_route, methods=["GET", "POST"])
 
 
+def _make_providers_route(token: str, provider: OrcaRouterProvider | None = None) -> Route:
+    """``/api/providers`` - the named-provider settings surface.
+
+    GET returns the browser-safe provider status plus the model catalog for
+    the requested ``capability`` (``chat`` by default) and optional
+    ``modality`` filters. The catalog's ``source`` travels with it so the page
+    can label a seed / last-known-good list as degraded instead of showing it
+    as the live catalog.
+
+    POST performs one settings action at a time. The API key is written to the
+    per-user 0600 file and is never echoed back - not in the response, not in
+    an error message, not in a log line. ``set_model`` is validated against
+    the catalog the gateway just returned, so a model id no catalog offered
+    cannot be persisted.
+
+    The catalog fetch is blocking (stdlib ``urllib``), so it runs in a worker
+    thread; the route itself stays async like every other ``/api/*`` route.
+    """
+
+    orca = provider or OrcaRouterProvider()
+
+    async def _catalog_body(request: Request) -> dict[str, object]:
+        capability = request.query_params.get("capability", "chat")
+        if capability not in CAPABILITIES:
+            return {"error": f"unknown capability {capability!r}"}
+        modalities = [
+            value
+            for key, value in request.query_params.multi_items()
+            if key in ("modality", "modalities") and value
+        ]
+        refresh = request.query_params.get("refresh", "") in ("1", "true", "yes")
+        catalog = await run_in_threadpool(
+            orca.models, capability, modalities=modalities, refresh=refresh
+        )
+        return {
+            "catalog": {
+                "capability": capability,
+                "modalities": modalities,
+                "source": catalog.source,
+                "detail": catalog.detail,
+                "error": catalog.error,
+                "auth_failed": catalog.auth_failed,
+                "models": [model.to_dict() for model in catalog.models],
+            },
+            "recommended_model": default_model(catalog),
+        }
+
+    async def providers(request: Request) -> Response:
+        if not _token_matches(request, token):
+            return _unauthorized()
+
+        if request.method == "GET":
+            body = await _catalog_body(request)
+            if "error" in body:
+                return JSONResponse(body, status_code=400)
+            return JSONResponse({**provider_status(), **body})
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        action = body.get("action")
+
+        if action == "use_provider":
+            name = body.get("provider")
+            if not isinstance(name, str) or not name:
+                return JSONResponse({"error": "provider is required"}, status_code=400)
+            try:
+                use_provider(name)
+            except ProviderConfigError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return JSONResponse(provider_status())
+
+        if action == "save_key":
+            # str only: a non-string body field is a client bug, not a key.
+            key = body.get("key")
+            if not isinstance(key, str):
+                return JSONResponse({"error": "key is required"}, status_code=400)
+            try:
+                save_api_key(key)
+            except ProviderConfigError as exc:
+                # validate_key_format's message names the expected prefix and
+                # never repeats the value - safe to show.
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            # A new credential means the catalog (and any auth failure) may
+            # now look different; drop the in-memory copy.
+            orca.invalidate_cache()
+            return JSONResponse(provider_status())
+
+        if action == "clear_key":
+            try:
+                removed = clear_api_key()
+            except ProviderConfigError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=500)
+            orca.invalidate_cache()
+            return JSONResponse({**provider_status(), "removed": removed})
+
+        if action == "set_model":
+            model = body.get("model")
+            if not isinstance(model, str) or not model.strip():
+                return JSONResponse({"error": "model is required"}, status_code=400)
+            catalog = await run_in_threadpool(orca.models, "chat", refresh=True)
+            if not model_is_available(model, catalog):
+                return JSONResponse(
+                    {
+                        "error": (
+                            "that model is not in the catalog OrcaRouter returned; "
+                            "pick one from the list"
+                        )
+                    },
+                    status_code=400,
+                )
+            try:
+                saved = set_orcarouter_model(model)
+            except ProviderConfigError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return JSONResponse({**provider_status(), "model": saved})
+
+        return JSONResponse({"error": "unknown action"}, status_code=400)
+
+    return Route("/api/providers", providers, methods=["GET", "POST"])
+
+
 def create_app(
     token: str,
     repo_root: str = ".",
     *,
     feed_poll_interval: float = _FEED_POLL_INTERVAL_S,
     feed_max_polls: int | None = None,
+    provider: OrcaRouterProvider | None = None,
 ) -> Starlette:
     """Build the dashboard's Starlette app, bound to one per-run ``token``.
 
@@ -3394,5 +4211,6 @@ def create_app(
         _make_pending_route(token, repo_root),
         _make_resolve_route(token, repo_root),
         _make_mode_route(token, repo_root),
+        _make_providers_route(token, provider),
     ]
     return Starlette(routes=routes)

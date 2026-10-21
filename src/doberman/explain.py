@@ -5,16 +5,17 @@ Two explanation modes, always with a safe default:
 * :func:`template_explanation` - deterministic, offline, always available. Built from
   the redacted row alone (verdict, decided layer, reason codes) using the shared
   :class:`~doberman.models.ReasonCode` constants.
-* :func:`_llm_explain` - an OPT-IN narrator (Claude Haiku) that rewords the same
-  redacted metadata in plainer language. It never sees a raw path, argument, or
-  secret, and it never influences the verdict - it explains a decision that has
-  already been made.
+* :func:`_llm_explain` - an OPT-IN narrator (Claude Haiku by default, or OrcaRouter
+  when that provider is selected) that rewords the same redacted metadata in
+  plainer language. It never sees a raw path, argument, or secret, and it never
+  influences the verdict - it explains a decision that has already been made.
 
 Fail-safe by construction: LLM enrichment is only attempted when explicitly opted in
-(``DOBERMAN_EXPLAIN_LLM`` + ``ANTHROPIC_API_KEY`` + ``anthropic`` installed), and any
-failure (missing key, network error, timeout, bad response, whatever) falls back to
-the template. This module never raises into a caller and never touches
-``doberman.proxy`` (policy-core decoupling, see CLAUDE.md §9 / import-linter).
+(``DOBERMAN_EXPLAIN_LLM`` plus the selected provider's credential - and, for the
+default provider, ``anthropic`` installed), and any failure (missing key, network
+error, timeout, bad response, whatever) falls back to the template. This module
+never raises into a caller and never touches ``doberman.proxy`` (policy-core
+decoupling, see CLAUDE.md §9 / import-linter).
 """
 
 from __future__ import annotations
@@ -25,6 +26,13 @@ import logging
 import os
 
 from doberman.models import ReasonCode
+from doberman.providers import (
+    ChatRequest,
+    active_provider_name,
+    get_provider,
+    orcarouter_model,
+    resolve_api_key,
+)
 
 logger = logging.getLogger("doberman.explain")
 
@@ -514,32 +522,45 @@ def headline(row: dict) -> str:
 
 
 def _llm_enrichment_enabled() -> bool:
-    """Resolve the opt-in gate: installed + API key + explicit env flag, all three."""
+    """Resolve the opt-in gate for the selected provider.
+
+    The explicit env opt-in is required either way. Beyond it:
+
+    * ``anthropic`` (the default, unchanged): the optional package must be
+      installed and its key present in the environment.
+    * ``orcarouter``: the named provider must have a key configured (its own env
+      var or per-user file) - no extra package is needed.
+    """
+    if os.environ.get("DOBERMAN_EXPLAIN_LLM", "").strip().lower() not in {"1", "true", "yes"}:
+        return False
+    if active_provider_name() == "orcarouter":
+        return bool(resolve_api_key())
     if importlib.util.find_spec("anthropic") is None:
         return False
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return False
-    return os.environ.get("DOBERMAN_EXPLAIN_LLM", "").strip().lower() in {"1", "true", "yes"}
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
 def _llm_explain(payload: dict) -> str:
-    """Ask Haiku to reword the redacted payload. Narrator only - never the verdict."""
-    import anthropic  # lazy: only imported once the opt-in gate has already passed
+    """Ask the selected provider to reword the redacted payload.
 
-    client = anthropic.Anthropic()
-    message = client.messages.create(
-        model=_LLM_MODEL,
-        max_tokens=_LLM_MAX_TOKENS,
-        timeout=_LLM_TIMEOUT_S,
-        system=_LLM_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": json.dumps(payload, sort_keys=True)}],
+    Narrator only - it never influences the verdict. The Anthropic path is the
+    historical call, byte for byte; the OrcaRouter path goes to that provider's
+    own fixed origin with its own key and the model the user picked.
+    """
+    provider = get_provider()
+    model = orcarouter_model() if provider.name == "orcarouter" else _LLM_MODEL
+    result = provider.chat(
+        ChatRequest(
+            system=_LLM_SYSTEM_PROMPT,
+            user=json.dumps(payload, sort_keys=True),
+            model=model,
+            max_tokens=_LLM_MAX_TOKENS,
+            timeout_s=_LLM_TIMEOUT_S,
+        )
     )
-    text = "".join(
-        block.text for block in message.content if getattr(block, "type", None) == "text"
-    )
-    if not text.strip():
+    if not result.text.strip():
         raise ValueError("empty LLM response")
-    return text
+    return result.text
 
 
 def llm_enrichment_enabled() -> bool:

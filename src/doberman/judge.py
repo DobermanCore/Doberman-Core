@@ -19,10 +19,13 @@ The only consumer in this repo is the offline bench,
 lift over the deterministic rules on the class-only
 :func:`doberman.engine.adjudicator.redacted_features` envelope.
 
-Mirrors ``doberman.explain``'s proven three-way opt-in gate (``anthropic``
-installed AND ``ANTHROPIC_API_KEY`` set AND an explicit env flag) and its lazy
-``import anthropic`` (only reached after the gate passes, so the optional
-``[judge]`` extra is completely inert with nothing set).
+Mirrors ``doberman.explain``'s opt-in gate: an explicit env flag is always
+required, plus the selected provider's own credential (for the default
+``anthropic`` provider that still means ``anthropic`` installed, its key in
+the environment, and the flag; for the ``orcarouter`` provider it means that
+provider's configured key). ``import anthropic`` happens lazily - only after
+the gate passes - so the optional ``[judge]`` extra is completely inert with
+nothing set.
 
 SECURITY: the request payload sent to the model is exactly the caller-supplied
 ``features`` mapping (a :func:`redacted_features` output), JSON-encoded — this
@@ -45,6 +48,13 @@ from typing import Any
 
 from doberman.engine.decision_engine import max_risk, max_verdict
 from doberman.models import GuardrailResult, ReasonCode, Risk, Verdict
+from doberman.providers import (
+    ChatRequest,
+    active_provider_name,
+    get_provider,
+    orcarouter_model,
+    resolve_api_key,
+)
 
 logger = logging.getLogger("doberman.judge")
 
@@ -68,16 +78,22 @@ _JUDGE_SYSTEM_PROMPT = (
 
 
 def _judge_enabled() -> bool:
-    """The three-way opt-in gate: installed + API key + explicit env flag."""
-    if importlib.util.find_spec("anthropic") is None:
-        return False
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return False
-    return os.environ.get("DOBERMAN_JUDGE_ENABLED", "").strip().lower() in {
+    """The opt-in gate: explicit env flag plus the selected provider's credential.
+
+    ``anthropic`` (the default) additionally requires the optional package to be
+    installed; ``orcarouter`` needs only its own configured key.
+    """
+    if os.environ.get("DOBERMAN_JUDGE_ENABLED", "").strip().lower() not in {
         "1",
         "true",
         "yes",
-    }
+    }:
+        return False
+    if active_provider_name() == "orcarouter":
+        return bool(resolve_api_key())
+    if importlib.util.find_spec("anthropic") is None:
+        return False
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
 def judge_enabled() -> bool:
@@ -147,30 +163,24 @@ def _recommend(unambiguous: bool, high_impact: bool, current: GuardrailResult) -
 
 def _call_judge(features: Mapping[str, Any]) -> dict[str, bool]:
     """Ask the judge model for the two booleans. Raises on ANY anomaly (bad
-    JSON, missing/non-bool field, empty response, SDK error) - the caller
-    treats every exception as abstain. Lazy import: reached only after the
-    opt-in gate has already passed, so an installed-but-disabled extra never
+    JSON, missing/non-bool field, empty response, transport error) - the caller
+    treats every exception as abstain. The provider is constructed only after
+    the opt-in gate has already passed, so an installed-but-disabled extra never
     imports ``anthropic``.
     """
-    import anthropic  # lazy - see module docstring
-
-    client = anthropic.Anthropic()
-    message = client.messages.create(
-        model=_JUDGE_MODEL,
-        max_tokens=_JUDGE_MAX_TOKENS,
-        timeout=_JUDGE_TIMEOUT_S,
-        system=[
-            {
-                "type": "text",
-                "text": _JUDGE_SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": json.dumps(dict(features), sort_keys=True)}],
+    provider = get_provider()
+    model = orcarouter_model() if provider.name == "orcarouter" else _JUDGE_MODEL
+    result = provider.chat(
+        ChatRequest(
+            system=_JUDGE_SYSTEM_PROMPT,
+            user=json.dumps(dict(features), sort_keys=True),
+            model=model,
+            max_tokens=_JUDGE_MAX_TOKENS,
+            timeout_s=_JUDGE_TIMEOUT_S,
+            cache_system=True,
+        )
     )
-    text = "".join(
-        block.text for block in message.content if getattr(block, "type", None) == "text"
-    )
+    text = result.text
     parsed = json.loads(text)
     if not isinstance(parsed, dict):
         raise ValueError("judge response is not a JSON object")

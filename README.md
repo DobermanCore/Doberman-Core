@@ -56,6 +56,7 @@ Works with Claude Code, Codex, OpenClaw, and any MCP-compatible agent. Cursor is
 - [Quick start](#quick-start): install and protect an agent in two commands
 - [Verify it end-to-end](#verify-it-end-to-end): watch it front a real MCP server
 - [Turn gate](#turn-gate): the optional check that runs before the model even starts thinking
+- [Model provider](#model-provider): point the optional narrator at OrcaRouter, with its live model list
 - [Benchmark](#benchmark): attack-block rate vs. false positives (flagging something harmless)
 - [Write a guardrail plugin](#write-a-guardrail-plugin): register your own rule or audit sink
 - [Policy as code](#policy-as-code): a repo-committed `doberman.policy.yaml`, reviewed like code
@@ -218,6 +219,38 @@ matching a Tier-0 signature (a known, deterministic prompt-injection pattern) re
 action gate described above remains the real safety guarantee: an attacker who slips past the turn
 gate still has to get past it. Full mechanism, module map, and invariants:
 [Turn gate](docs/TURN_GATE.md).
+
+---
+
+## Model provider
+
+Doberman's optional plain-language narrator (`doberman log --why`, the TUI's why panel) and its
+experimental shadow judge both call one named provider. The default is Anthropic and is unchanged.
+The alternative is [OrcaRouter](https://www.orcarouter.ai), an OpenAI-compatible AI gateway that
+routes many providers behind one endpoint: one key, one base URL, and its own live model catalog.
+
+```bash
+doberman provider set-key        # hidden input; stored in a per-user 0600 file
+doberman provider use orcarouter
+doberman provider models         # the gateway's GET /v1/models, verbatim
+```
+
+`ORCAROUTER_API_KEY` works too and outranks the stored file. The key is never echoed, logged,
+written to the repo, or returned by the dashboard. The endpoint is pinned to
+`https://api.orcarouter.ai/v1`, and model IDs are read from the gateway's catalog rather than typed
+by hand: `doberman provider models` prints the live list, and the dashboard's provider popover fills
+the same list into a searchable dropdown. A model the catalog stops returning cannot be saved, and
+when the catalog is unreachable the list is labeled as a degraded fallback instead of pretending to
+be live. The recommended default, `orcacyber-zero`, is available once your account has business
+verification; until then the shipped fallback is `orcarouter/fusion`.
+
+It also runs gateway-level, zero-trust security for AI agents on the same endpoint — screening every
+prompt/response and governing every tool call on a default-deny basis, with no application code
+changes.
+
+The narrator only ever rewords a decision Doberman already made, from redacted metadata, and the
+judge stays advisory: choosing a provider never changes what is allowed or blocked. Full setup:
+[Setup guide](docs/SETUP.md#orcarouter-as-the-provider).
 
 ---
 
