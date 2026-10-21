@@ -459,17 +459,11 @@ mere presence is enough to require authentication) all require authentication th
 Rename detection mostly looks at the tool's name: it looks for "rename" or "move" in the name of a
 `file_write` or `file_delete` action, so a mere read from a tool merely named something like
 "rename_file" doesn't count, and a rename tool with any other name is invisible this way. A plain
-`mv SRC DST` / `git mv SRC DST` shell command is also recognized (its SOURCE operand runs through the
-same test-file check, and `DestructiveCommandRule` flags a test-file `mv`/`git mv` the same way), but
-only that exact two-operand shape — a wrapped, chained, or otherwise adversarially-parsed rename
-(the sort `DestructiveCommandRule`'s own command walk defends against elsewhere) is not unwrapped
-here.
-
-The same gap applies to an outright shell delete: `rm tests/unit/test_auth.py`, `rm -rf tests/`, and
-`git rm tests/unit/test_auth.py` are command lines that only `DestructiveCommandRule` evaluates, and
-that rule has no concept of test files at all, so all three pass through with no step-up. The
-`test_file_removal` check only ever sees a `file_delete` or rename *tool* action, never a shell command
-that happens to target a test file.
+`mv SRC DST` / `git mv SRC DST` shell command, as well as shell delete commands (`rm`, `git rm`, and
+Windows delete verbs), are also recognized (their operands run through the same test-file check, and
+`DestructiveCommandRule` flags a test-file deletion or rename with `test_file_removal`), but only that
+clean operand shape: a wrapped, chained, or otherwise adversarially-parsed command (the sort
+`DestructiveCommandRule`'s own command walk defends against elsewhere) is not unwrapped here.
 
 Deliberately out of scope: catching a `pytest.mark.skip`, `xfail`, or `it.skip` marker added to a
 test that's kept in place, a lowered `--cov-fail-under` coverage threshold, an edit that only
