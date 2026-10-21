@@ -213,83 +213,255 @@ _RUNNER_VERBS: frozenset[tuple[str, str | None]] = frozenset(
 )
 
 
-def _extract_runner_names(
-    tokens: list[str],
-    is_npm: bool,
-    value_flags: frozenset[str],
-) -> list[str]:
-    """Extract package names from runner commands (npx, npm exec, pipx run).
+_NPX_VALUE_FLAGS: frozenset[str] = frozenset(
+    {
+        "-c",
+        "--call",
+        "--loglevel",
+        "--registry",
+        "--prefix",
+        "--userconfig",
+        "--cache",
+        "-w",
+        "--workspace",
+        "--tag",
+        "--node-options",
+        "--scope",
+        "--script-shell",
+    }
+)
 
-    Checks only the package being executed, never arguments passed to the tool
-    (e.g. ``npx playwright test`` checks ``playwright``, not ``test``;
-    ``npx prettier crossenv`` checks ``prettier``, not ``crossenv``).
-    Supports explicit package flags: ``--package=<pkg>`` / ``--package <pkg>`` /
-    ``-p=<pkg>`` / ``-p <pkg>`` on npm/npx, and ``--spec=<spec>`` /
-    ``--spec <spec>`` on pipx.
+_NPM_EXEC_VALUE_FLAGS: frozenset[str] = frozenset(
+    {
+        "-c",
+        "--call",
+        "--loglevel",
+        "--registry",
+        "--prefix",
+        "--userconfig",
+        "--cache",
+        "-w",
+        "--workspace",
+        "--tag",
+        "--node-options",
+        "--scope",
+        "--script-shell",
+    }
+)
+
+_PIPX_RUN_VALUE_FLAGS: frozenset[str] = frozenset(
+    {
+        "--python",
+        "--with",
+        "-i",
+        "--index-url",
+        "--pip-args",
+        "--python-args",
+    }
+)
+
+
+def _extract_npx_names(tokens: list[str]) -> list[str]:
+    """Extract package names from an npx invocation (#645).
+
+    Option parsing stops at the application operand, ensuring flags passed to the
+    underlying tool are not misread as runner options (e.g. ``npx crossenv --package=request``
+    blocks on ``crossenv``, not ``request``). Recognizes npx-specific package flags
+    (``--package``, ``-p``) and consumes runner value flags (e.g. ``--loglevel silent``).
     """
     explicit_packages: list[str] = []
-    positional: list[str] = []
+    app: str | None = None
+    i = 0
+    n = len(tokens)
 
-    skip_package = False
-    skip_other_value = False
-    after_dashdash = False
+    while i < n:
+        tok = tokens[i]
+        if tok == "--":
+            i += 1
+            if i < n:
+                candidate = _strip_version(tokens[i]).lower()
+                if _is_installable_name(candidate):
+                    app = candidate
+            break
 
-    for tok in tokens:
-        if skip_package:
-            skip_package = False
-            candidate = _strip_version(tok).lower()
-            if _is_installable_name(candidate):
-                explicit_packages.append(candidate)
+        if tok.startswith("--package="):
+            pkg = tok.split("=", 1)[1]
+            cand = _strip_version(pkg).lower()
+            if _is_installable_name(cand):
+                explicit_packages.append(cand)
+            i += 1
             continue
-
-        if skip_other_value:
-            skip_other_value = False
-            continue
-
-        if not after_dashdash:
-            if tok == "--":
-                after_dashdash = True
-                continue
-            if is_npm:
-                if tok.startswith("--package="):
-                    pkg = tok.split("=", 1)[1]
-                    candidate = _strip_version(pkg).lower()
-                    if _is_installable_name(candidate):
-                        explicit_packages.append(candidate)
-                    continue
-                if tok.startswith("-p="):
-                    pkg = tok.split("=", 1)[1]
-                    candidate = _strip_version(pkg).lower()
-                    if _is_installable_name(candidate):
-                        explicit_packages.append(candidate)
-                    continue
-                if tok in ("--package", "-p"):
-                    skip_package = True
-                    continue
+        if tok == "--package":
+            if i + 1 < n:
+                cand = _strip_version(tokens[i + 1]).lower()
+                if _is_installable_name(cand):
+                    explicit_packages.append(cand)
+                i += 2
             else:
-                if tok.startswith("--spec="):
-                    spec = tok.split("=", 1)[1]
-                    candidate = _strip_version(spec).lower()
-                    if _is_installable_name(candidate):
-                        explicit_packages.append(candidate)
-                    continue
-                if tok == "--spec":
-                    skip_package = True
-                    continue
+                i += 1
+            continue
+        if tok.startswith("-p="):
+            pkg = tok.split("=", 1)[1]
+            cand = _strip_version(pkg).lower()
+            if _is_installable_name(cand):
+                explicit_packages.append(cand)
+            i += 1
+            continue
+        if tok == "-p":
+            if i + 1 < n:
+                cand = _strip_version(tokens[i + 1]).lower()
+                if _is_installable_name(cand):
+                    explicit_packages.append(cand)
+                i += 2
+            else:
+                i += 1
+            continue
 
-            if tok.startswith("-"):
-                if "=" not in tok and tok in value_flags:
-                    skip_other_value = True
-                continue
+        if tok in _NPX_VALUE_FLAGS:
+            i += 2
+            continue
+        if any(tok.startswith(f"{vf}=") for vf in _NPX_VALUE_FLAGS):
+            i += 1
+            continue
 
-        candidate = _strip_version(tok).lower()
-        if _is_installable_name(candidate):
-            positional.append(candidate)
+        if tok.startswith("-"):
+            i += 1
+            continue
+
+        cand = _strip_version(tok).lower()
+        if _is_installable_name(cand):
+            app = cand
+        break
 
     if explicit_packages:
         return explicit_packages
-    if positional:
-        return [positional[0]]
+    if app:
+        return [app]
+    return []
+
+
+def _extract_npm_exec_names(tokens: list[str]) -> list[str]:
+    """Extract package names from an npm exec / npm x invocation (#645).
+
+    Option parsing stops at the application operand. Keeps npm's ``-p`` meaning
+    ``--parseable`` (boolean flag taking no argument), so ``npm exec crossenv -p request``
+    blocks on ``crossenv`` rather than treating ``request`` as a package. Recognizes
+    ``--package`` (and ``--package=<pkg>``).
+    """
+    explicit_packages: list[str] = []
+    app: str | None = None
+    i = 0
+    n = len(tokens)
+
+    while i < n:
+        tok = tokens[i]
+        if tok == "--":
+            i += 1
+            if i < n:
+                candidate = _strip_version(tokens[i]).lower()
+                if _is_installable_name(candidate):
+                    app = candidate
+            break
+
+        if tok.startswith("--package="):
+            pkg = tok.split("=", 1)[1]
+            cand = _strip_version(pkg).lower()
+            if _is_installable_name(cand):
+                explicit_packages.append(cand)
+            i += 1
+            continue
+        if tok == "--package":
+            if i + 1 < n:
+                cand = _strip_version(tokens[i + 1]).lower()
+                if _is_installable_name(cand):
+                    explicit_packages.append(cand)
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if tok in _NPM_EXEC_VALUE_FLAGS:
+            i += 2
+            continue
+        if any(tok.startswith(f"{vf}=") for vf in _NPM_EXEC_VALUE_FLAGS):
+            i += 1
+            continue
+
+        if tok.startswith("-"):
+            i += 1
+            continue
+
+        cand = _strip_version(tok).lower()
+        if _is_installable_name(cand):
+            app = cand
+        break
+
+    if explicit_packages:
+        return explicit_packages
+    if app:
+        return [app]
+    return []
+
+
+def _extract_pipx_run_names(tokens: list[str]) -> list[str]:
+    """Extract package names from a pipx run invocation (#645).
+
+    Option parsing stops at the application operand, ignoring arguments passed
+    to the tool. Recognizes pipx's ``--spec`` / ``--spec=<spec>`` and consumes
+    pipx options with values such as space-separated ``--python <ver>``.
+    """
+    explicit_packages: list[str] = []
+    app: str | None = None
+    i = 0
+    n = len(tokens)
+
+    while i < n:
+        tok = tokens[i]
+        if tok == "--":
+            i += 1
+            if i < n:
+                candidate = _strip_version(tokens[i]).lower()
+                if _is_installable_name(candidate):
+                    app = candidate
+            break
+
+        if tok.startswith("--spec="):
+            spec = tok.split("=", 1)[1]
+            cand = _strip_version(spec).lower()
+            if _is_installable_name(cand):
+                explicit_packages.append(cand)
+            i += 1
+            continue
+        if tok == "--spec":
+            if i + 1 < n:
+                cand = _strip_version(tokens[i + 1]).lower()
+                if _is_installable_name(cand):
+                    explicit_packages.append(cand)
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if tok in _PIPX_RUN_VALUE_FLAGS:
+            i += 2
+            continue
+        if any(tok.startswith(f"{vf}=") for vf in _PIPX_RUN_VALUE_FLAGS):
+            i += 1
+            continue
+
+        if tok.startswith("-"):
+            i += 1
+            continue
+
+        cand = _strip_version(tok).lower()
+        if _is_installable_name(cand):
+            app = cand
+        break
+
+    if explicit_packages:
+        return explicit_packages
+    if app:
+        return [app]
     return []
 
 
@@ -318,9 +490,14 @@ def _ecosystem_and_names(raw_tokens: list[str]) -> tuple[str, list[str]] | None:
         subcmd = None
         operand_tokens = rest
     if (verb, subcmd) in _RUNNER_VERBS:
-        names = _extract_runner_names(
-            operand_tokens, is_npm=(ecosystem == "npm"), value_flags=value_flags
-        )
+        if verb == "npx":
+            names = _extract_npx_names(operand_tokens)
+        elif verb == "npm" and subcmd in ("exec", "x"):
+            names = _extract_npm_exec_names(operand_tokens)
+        elif verb == "pipx" and subcmd == "run":
+            names = _extract_pipx_run_names(operand_tokens)
+        else:
+            names = []
     else:
         names = _extract_names(operand_tokens, value_flags)
     return (ecosystem, names) if names else None
