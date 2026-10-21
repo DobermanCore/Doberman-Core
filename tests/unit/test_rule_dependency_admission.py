@@ -632,6 +632,38 @@ def test_npx_dependency_admission():
     assert result_loglevel_eq.verdict is Verdict.BLOCK
     assert ReasonCode.dependency_known_malicious in result_loglevel_eq.reason_codes
 
+    # Supported value-options separate-value and equals controls (#645)
+    assert (
+        rule.evaluate(_action(), _ctx("npx --fetch-timeout 1000 crossenv")).verdict is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --fetch-timeout=1000 crossenv")).verdict is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --fetch-timeout 1000 prettier crossenv")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --fetch-timeout=1000 prettier crossenv")).verdict
+        is Verdict.PASS
+    )
+    assert rule.evaluate(_action(), _ctx("npx -C /tmp crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npx -C=/tmp crossenv")).verdict is Verdict.BLOCK
+    assert (
+        rule.evaluate(_action(), _ctx("npx --registry https://registry.npmjs.org crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --registry=https://registry.npmjs.org crossenv")).verdict
+        is Verdict.BLOCK
+    )
+
+    # Boolean flags preserved and do not consume following package operand
+    assert rule.evaluate(_action(), _ctx("npx --prefer-offline crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npx --offline crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npx -y crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npx --force crossenv")).verdict is Verdict.BLOCK
+
     result_auth = rule.evaluate(_action(), _ctx("npx requestx"))
     assert result_auth.verdict is Verdict.AUTH
     assert ReasonCode.dependency_name_typosquat in result_auth.reason_codes
@@ -699,6 +731,39 @@ def test_npm_exec_dependency_admission():
     assert result_loglevel.verdict is Verdict.BLOCK
     assert ReasonCode.dependency_known_malicious in result_loglevel.reason_codes
 
+    # Supported value-options separate-value and equals controls (#645)
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --fetch-timeout 1000 crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --fetch-timeout=1000 crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --fetch-timeout 1000 prettier crossenv")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --fetch-timeout=1000 prettier crossenv")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --loglevel=silent crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert rule.evaluate(_action(), _ctx("npm exec -w app crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npm exec -w=app crossenv")).verdict is Verdict.BLOCK
+
+    # Boolean flags preserved and do not consume following package operand
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --prefer-offline crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert rule.evaluate(_action(), _ctx("npm exec --offline crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npm exec -y crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npm exec --force crossenv")).verdict is Verdict.BLOCK
+
     # Explicit package flags (--package=<pkg>, --package <pkg>)
     assert (
         rule.evaluate(_action(), _ctx("npm exec --package=crossenv -- cross-env")).verdict
@@ -707,6 +772,49 @@ def test_npm_exec_dependency_admission():
     assert (
         rule.evaluate(_action(), _ctx("npm exec --package crossenv -- cross-env")).verdict
         is Verdict.BLOCK
+    )
+
+    # npm exec parses options after command name until bare "--" (#645)
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec request --package=crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec request --package crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm x request --package=crossenv")).verdict is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm x request --package crossenv")).verdict is Verdict.BLOCK
+    )
+
+    # Reverse case: --package=request specifies the installed package, so crossenv command passes
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec crossenv --package=request")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec crossenv --package request")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm x crossenv --package=request")).verdict is Verdict.PASS
+    )
+
+    # Bare "--" controls: option parsing stops at "--"
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec crossenv -- --package=request")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --package=crossenv -- request")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec request -- --package=crossenv")).verdict
+        is Verdict.PASS
     )
 
     # Benign-argument controls

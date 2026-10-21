@@ -213,41 +213,109 @@ _RUNNER_VERBS: frozenset[tuple[str, str | None]] = frozenset(
 )
 
 
-_NPX_VALUE_FLAGS: frozenset[str] = frozenset(
+_NPM_VALUE_FLAGS: frozenset[str] = frozenset(
     {
+        "-C",
+        "-L",
         "-c",
-        "--call",
-        "--loglevel",
-        "--registry",
-        "--prefix",
-        "--userconfig",
-        "--cache",
+        "-m",
+        "-reg",
         "-w",
-        "--workspace",
-        "--tag",
+        "--_auth",
+        "--access",
+        "--also",
+        "--audit-level",
+        "--auth-type",
+        "--before",
+        "--browser",
+        "--ca",
+        "--cache",
+        "--cache-max",
+        "--cache-min",
+        "--cafile",
+        "--call",
+        "--cert",
+        "--cidr",
+        "--color",
+        "--cpu",
+        "--depth",
+        "--diff",
+        "--diff-dst-prefix",
+        "--diff-src-prefix",
+        "--diff-unified",
+        "--editor",
+        "--enjoy-by",
+        "--expect-result-count",
+        "--expect-results",
+        "--fetch-retries",
+        "--fetch-retry-factor",
+        "--fetch-retry-maxtimeout",
+        "--fetch-retry-mintimeout",
+        "--fetch-timeout",
+        "--git",
+        "--globalconfig",
+        "--heading",
+        "--https-proxy",
+        "--include",
+        "--init-author-email",
+        "--init-author-name",
+        "--init-author-url",
+        "--init-license",
+        "--init-module",
+        "--init-version",
+        "--init.author.email",
+        "--init.author.name",
+        "--init.author.url",
+        "--init.license",
+        "--init.module",
+        "--init.version",
+        "--install-strategy",
+        "--key",
+        "--libc",
+        "--local-address",
+        "--location",
+        "--lockfile-version",
+        "--loglevel",
+        "--logs-dir",
+        "--logs-max",
+        "--maxsockets",
+        "--message",
         "--node-options",
+        "--noproxy",
+        "--omit",
+        "--only",
+        "--os",
+        "--otp",
+        "--pack-destination",
+        "--prefix",
+        "--preid",
+        "--provenance-file",
+        "--proxy",
+        "--registry",
+        "--replace-registry-host",
+        "--save-prefix",
+        "--sbom-format",
+        "--sbom-type",
         "--scope",
         "--script-shell",
+        "--searchexclude",
+        "--searchlimit",
+        "--searchopts",
+        "--searchstaleness",
+        "--shell",
+        "--tag",
+        "--tag-version-prefix",
+        "--umask",
+        "--user-agent",
+        "--userconfig",
+        "--viewer",
+        "--which",
+        "--workspace",
     }
 )
 
-_NPM_EXEC_VALUE_FLAGS: frozenset[str] = frozenset(
-    {
-        "-c",
-        "--call",
-        "--loglevel",
-        "--registry",
-        "--prefix",
-        "--userconfig",
-        "--cache",
-        "-w",
-        "--workspace",
-        "--tag",
-        "--node-options",
-        "--scope",
-        "--script-shell",
-    }
-)
+_NPX_VALUE_FLAGS: frozenset[str] = _NPM_VALUE_FLAGS | {"-p"}
+_NPM_EXEC_VALUE_FLAGS: frozenset[str] = _NPM_VALUE_FLAGS
 
 _PIPX_RUN_VALUE_FLAGS: frozenset[str] = frozenset(
     {
@@ -318,9 +386,12 @@ def _extract_npx_names(tokens: list[str]) -> list[str]:
             continue
 
         if tok in _NPX_VALUE_FLAGS:
-            i += 2
+            if i + 1 < n:
+                i += 2
+            else:
+                i += 1
             continue
-        if any(tok.startswith(f"{vf}=") for vf in _NPX_VALUE_FLAGS):
+        if "=" in tok and tok.split("=", 1)[0] in _NPX_VALUE_FLAGS:
             i += 1
             continue
 
@@ -343,10 +414,14 @@ def _extract_npx_names(tokens: list[str]) -> list[str]:
 def _extract_npm_exec_names(tokens: list[str]) -> list[str]:
     """Extract package names from an npm exec / npm x invocation (#645).
 
-    Option parsing stops at the application operand. Keeps npm's ``-p`` meaning
-    ``--parseable`` (boolean flag taking no argument), so ``npm exec crossenv -p request``
-    blocks on ``crossenv`` rather than treating ``request`` as a package. Recognizes
-    ``--package`` (and ``--package=<pkg>``).
+    Unlike npx, npm exec continues parsing options after the command name until
+    a bare ``--`` operand is encountered. The package(s) installed by npm are
+    specified via ``--package`` (or ``--package=<pkg>``); if no ``--package``
+    options are given, npm executes the first application operand.
+
+    Keeps npm's ``-p`` meaning ``--parseable`` (boolean flag taking no argument),
+    so ``npm exec crossenv -p request`` blocks on ``crossenv`` rather than
+    treating ``request`` as a package.
     """
     explicit_packages: list[str] = []
     app: str | None = None
@@ -357,7 +432,7 @@ def _extract_npm_exec_names(tokens: list[str]) -> list[str]:
         tok = tokens[i]
         if tok == "--":
             i += 1
-            if i < n:
+            if app is None and i < n:
                 candidate = _strip_version(tokens[i]).lower()
                 if _is_installable_name(candidate):
                     app = candidate
@@ -381,9 +456,12 @@ def _extract_npm_exec_names(tokens: list[str]) -> list[str]:
             continue
 
         if tok in _NPM_EXEC_VALUE_FLAGS:
-            i += 2
+            if i + 1 < n:
+                i += 2
+            else:
+                i += 1
             continue
-        if any(tok.startswith(f"{vf}=") for vf in _NPM_EXEC_VALUE_FLAGS):
+        if "=" in tok and tok.split("=", 1)[0] in _NPM_EXEC_VALUE_FLAGS:
             i += 1
             continue
 
@@ -393,8 +471,9 @@ def _extract_npm_exec_names(tokens: list[str]) -> list[str]:
 
         cand = _strip_version(tok).lower()
         if _is_installable_name(cand):
-            app = cand
-        break
+            if app is None:
+                app = cand
+        i += 1
 
     if explicit_packages:
         return explicit_packages
@@ -443,9 +522,12 @@ def _extract_pipx_run_names(tokens: list[str]) -> list[str]:
             continue
 
         if tok in _PIPX_RUN_VALUE_FLAGS:
-            i += 2
+            if i + 1 < n:
+                i += 2
+            else:
+                i += 1
             continue
-        if any(tok.startswith(f"{vf}=") for vf in _PIPX_RUN_VALUE_FLAGS):
+        if "=" in tok and tok.split("=", 1)[0] in _PIPX_RUN_VALUE_FLAGS:
             i += 1
             continue
 
