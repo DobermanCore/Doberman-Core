@@ -16,6 +16,7 @@ import asyncio
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from starlette.testclient import TestClient
@@ -33,7 +34,8 @@ from doberman.dash.app import create_app
 from doberman.hosthooks import claude_code
 from doberman.hosthooks.hookio import _default_auth_prompter
 from doberman.models import AuthPath
-from doberman.storage import approvals
+from doberman.storage import approvals, heartbeat
+from doberman.storage import log as decision_log
 from doberman.storage.db import open_db
 from doberman.storage.heartbeat import touch_heartbeat
 from doberman.storage.log import read_decisions
@@ -49,6 +51,25 @@ _CONFIRM_CALL = {
 }
 #: An opaque shell payload is a two_factor AUTH: approval needs a TOTP code.
 _PROOF_CALL = {"tool_name": "Bash", "tool_input": {"command": 'bash -c "echo hi"'}}
+
+
+@pytest.fixture(autouse=True)
+def _heartbeat_time(monkeypatch):
+    """Keep the fake dashboard live through arbitrary hook setup time.
+
+    Only the heartbeat writer/reader share this clock. Approval expiry and
+    decision timestamps stay real; the poll window keeps its separate clock.
+    File presence, parsing, repo binding, and the production age check still run.
+    """
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    class _HeartbeatDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(heartbeat, "datetime", _HeartbeatDateTime)
+    return now
 
 
 @pytest.fixture(autouse=True)
@@ -208,16 +229,33 @@ def test_a_payload_without_cwd_never_reaches_a_dashboard(tmp_path, monkeypatch, 
     assert _all_rows(str(tmp_path)) == []
 
 
+@pytest.mark.parametrize("marker", ["missing", "stale", "corrupt", "other-repo"])
 def test_dashboard_down_falls_to_the_old_chain_without_waiting_or_queuing(
-    tmp_path, monkeypatch, local_channels
+    tmp_path, monkeypatch, local_channels, _heartbeat_time, marker
 ):
-    root = str(tmp_path)  # no heartbeat: no dashboard has run here
+    root = str(tmp_path)
+    if marker == "stale":
+        touch_heartbeat(
+            root,
+            now=_heartbeat_time - timedelta(seconds=heartbeat.DEFAULT_HEARTBEAT_MAX_AGE_S),
+        )
+    elif marker == "corrupt":
+        touch_heartbeat(root)
+        heartbeat.heartbeat_path(root).write_text("not-a-timestamp", encoding="utf-8")
+    elif marker == "other-repo":
+        touch_heartbeat(str(tmp_path / "another-repo"))
     _no_wait_allowed(monkeypatch)
     local_channels.gui_answer = True
 
     assert _pre(root, _CONFIRM_CALL) == "allow"
     assert local_channels == ["gui"]
     assert _all_rows(root) == []
+
+
+def test_heartbeat_clock_does_not_freeze_approval_or_decision_clocks():
+    assert heartbeat.datetime is not datetime
+    assert approvals.datetime is datetime
+    assert decision_log.datetime is datetime
 
 
 # --- the dashboard answers ------------------------------------------------------------------
