@@ -500,13 +500,8 @@ bigger list would remove.
 Not caught here: a typosquat of an obscure package, a brand-new malicious package not yet added to
 the bundled list, a name that isn't within one edit of anything on the popular list, or an attack
 hidden in a lockfile, manifest, or postinstall script rather than in the install command's own
-arguments.
-
-Execute-on-install commands are a known gap in this version: `npx <pkg>`, `npm exec <pkg>`, and
-`pipx run <pkg>` fetch and run a package in one step, without ever calling an `install` or `add`
-subcommand this rule recognizes, so none of them are checked today. All of this is defense-in-depth
-against the cheap, common case, a popular-package typo or a documented known-bad name, not a
-guarantee against a compromised software supply chain.
+arguments. All of this is defense-in-depth against the cheap, common case, a popular-package typo or
+a documented known-bad name, not a guarantee against a compromised software supply chain.
 
 ## The preview of how many files a delete would affect is a one-time snapshot, and the drift check only works when both counts are exact
 
