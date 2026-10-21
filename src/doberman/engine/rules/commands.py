@@ -1972,16 +1972,18 @@ def _effective_git_cwd(cwd_paths: list[str], root: str) -> str:
     Git interprets each subsequent relative -C path relative to the preceding
     working directory. An empty path (-C "") leaves the working directory
     unchanged. An absolute path replaces the current working directory.
+    Anchors to the absolute repository root so path resolution is consistent
+    whether the configured repository root is relative or absolute.
     """
-    effective = Path(root)
+    effective = Path(root).resolve()
     for p in cwd_paths:
         if not p:
             continue
         p_path = Path(p)
         if p_path.is_absolute():
-            effective = p_path
+            effective = p_path.resolve()
         else:
-            effective = effective / p_path
+            effective = (effective / p_path).resolve()
     return str(effective)
 
 
@@ -1992,7 +1994,10 @@ def _resolve_operand_cwd(operand: str, effective_cwd: str, root: str) -> str:
     operand is a relative path, prefix it with the effective working directory
     so subsequent canonicalization resolves against the repository root.
     """
-    if effective_cwd == root or Path(operand).is_absolute():
+    if Path(operand).is_absolute():
+        return operand
+    abs_root = str(Path(root).resolve())
+    if effective_cwd in (root, abs_root):
         return operand
     return str(Path(effective_cwd) / operand)
 

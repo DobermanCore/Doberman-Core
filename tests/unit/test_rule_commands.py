@@ -34,7 +34,7 @@ from doberman.roles.roles import RoleDefinition
 RULE = DestructiveCommandRule()
 
 
-def _cmd(command, *, action_type=ActionType.shell_exec, role=None):
+def _cmd(command, *, action_type=ActionType.shell_exec, role=None, repo_root=None):
     action = SecurityObject(
         id="cmd-1",
         ts=datetime(2026, 6, 7, tzinfo=timezone.utc),
@@ -43,7 +43,10 @@ def _cmd(command, *, action_type=ActionType.shell_exec, role=None):
         tool_name="shell_exec",
         target=command,
     )
-    ctx = EvalContext(role=role, metadata={"raw_arguments": {"command": command}})
+    metadata = {"raw_arguments": {"command": command}}
+    if repo_root is not None:
+        metadata["repo_root"] = repo_root
+    ctx = EvalContext(role=role, metadata=metadata)
     return RULE.evaluate(action, ctx)
 
 
@@ -1384,6 +1387,51 @@ def test_git_c_option_preserves_block_verdicts():
     # Existing BLOCK results remain unchanged with -C
     result = _cmd("git -C repo push --force origin main", action_type=ActionType.git_op)
     assert result.verdict is Verdict.BLOCK
+
+
+def test_git_c_option_relative_versus_absolute_root():
+    # When repo_root is relative (e.g. tests/syntheticrepo), git -C build rm -f ordinary.txt
+    # and git -C build mv ordinary.txt dest.txt must not prompt for test removal, matching
+    # the behavior with an absolute root (#647/#747).
+    from pathlib import Path
+
+    rel_root = "tests/syntheticrepo"
+    abs_root = str(Path(rel_root).resolve())
+
+    for root in (rel_root, abs_root):
+        # Benign deletion in build/ must PASS under both relative and absolute roots
+        res_del_benign = _cmd(
+            "git -C build rm -f ordinary.txt",
+            action_type=ActionType.git_op,
+            repo_root=root,
+        )
+        assert res_del_benign.verdict is Verdict.PASS
+
+        # Benign rename in build/ must PASS under both relative and absolute roots
+        res_mv_benign = _cmd(
+            "git -C build mv ordinary.txt dest.txt",
+            action_type=ActionType.git_op,
+            repo_root=root,
+        )
+        assert res_mv_benign.verdict is Verdict.PASS
+
+        # Test file deletion under tests/ must AUTH under both relative and absolute roots
+        res_del_test = _cmd(
+            "git -C tests rm -f test_foo.py",
+            action_type=ActionType.git_op,
+            repo_root=root,
+        )
+        assert res_del_test.verdict is Verdict.AUTH
+        assert ReasonCode.test_file_removal in res_del_test.reason_codes
+
+        # Test file rename under tests/ must AUTH under both relative and absolute roots
+        res_mv_test = _cmd(
+            "git -C tests mv test_x.py dest.py",
+            action_type=ActionType.git_op,
+            repo_root=root,
+        )
+        assert res_mv_test.verdict is Verdict.AUTH
+        assert ReasonCode.test_file_removal in res_mv_test.reason_codes
 
 
 @pytest.mark.parametrize(
