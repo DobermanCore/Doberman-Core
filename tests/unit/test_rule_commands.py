@@ -2585,3 +2585,86 @@ def test_uninspectable_push_shapes_require_auth_with_explanation(command, expect
     assert result.reason_codes == [ReasonCode.destructive_command]
     assert "aren't visible on the command line" in result.explanation
     assert result.explanation == expected_explanation
+
+
+# --- #742 FIX 4: legacy compatibility fallback for option values after remote
+# The normalized parser correctly consumes option values, but when the consumed
+# value appears AFTER the remote (e.g. ``git push -f origin -o main feature``),
+# ``main`` is consumed by ``-o`` and never reaches ``explicit_refs``.  The old
+# parser saw ``main`` as a non-dash positional and BLOCKed.  The legacy
+# compatibility fallback reproduces the old check independently so that these
+# conservative BLOCK verdicts are preserved.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Maintainer-reported regression 1: force push, option value after remote
+        "git push -f origin -o main feature",
+        # Maintainer-reported regression 2: delete, option value after remote
+        "git push --delete origin --push-option main feature",
+        # Maintainer-reported regression 3: leading '+' force signal in option value
+        "git push -o +x origin main",
+    ],
+)
+def test_legacy_fallback_preserves_base_block_for_option_values_after_remote(command):
+    """Commands where the base implementation returned BLOCK because it treated
+    an option value as a positional ref candidate.  The normalized parser
+    correctly recognises the option value, but the legacy compatibility fallback
+    must independently reproduce the old BLOCK verdict.  These are conservative
+    policy-preserving false positives, not claims about real Git behavior."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 FIX 4: cross-pollination control tests
+# These commands return PASS on both the base implementation and the PR's
+# normalized parser.  They MUST remain PASS to prove that newly recognized
+# combined flags (``-fu``, ``-qd``) do not activate legacy ref candidates
+# containing a protected branch name.  If these ever become BLOCK, the legacy
+# fallback is being incorrectly cross-pollinated with the normalized parser's
+# improved flag recognition.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # ``-fu`` is only recognized as force by the new parser; ``main`` is the
+        # option value to ``-o``.  Base returns PASS (it doesn't see ``-fu`` as
+        # force); the normalized parser returns PASS (``main`` is consumed by
+        # ``-o``).  Both are PASS, so the result must be PASS.
+        "git push -fu origin -o main feature",
+        # ``-qd`` is only recognized as delete by the new parser;
+        # ``--push-option main`` consumes ``main``.  Base returns PASS (it
+        # doesn't see ``-qd`` as delete); the normalized parser returns PASS
+        # (``main`` is consumed).  Both are PASS, so the result must be PASS.
+        "git push -qd origin --push-option main feature",
+    ],
+)
+def test_cross_pollination_control_combined_flag_plus_consumed_value_passes(command):
+    """When a flag is ONLY recognized by the new parser (combined cluster like
+    ``-fu`` or ``-qd``) and the option value is consumed by the normalized
+    parser, the legacy fallback must not produce a BLOCK from mixing the
+    new flag with old positional candidates.  Both checks return PASS
+    independently, so the combined result must be PASS."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+def test_generator_protected_branches_not_exhausted_by_normalized_check():
+    """Verify that passing a single-use generator for ``protected`` is not
+    exhausted by the normalized check before the legacy fallback runs.
+
+    Both force-push and delete checks must preserve their legacy fallback
+    BLOCK verdicts even when ``protected`` is a non-reusable iterator.
+    """
+    # Force push: option value after remote requires the legacy fallback
+    tokens_force = ["git", "push", "-f", "origin", "-o", "main", "feature"]
+    gen_force = (b for b in ["main"])
+    assert commands_module._git_force_push_to_protected(tokens_force, gen_force) is True
+
+    # Delete push: option value after remote requires the legacy fallback
+    tokens_del = ["git", "push", "--delete", "origin", "--push-option", "main", "feature"]
+    gen_del = (b for b in ["main"])
+    assert commands_module._git_push_deletes_protected_branch(tokens_del, gen_del) is True
