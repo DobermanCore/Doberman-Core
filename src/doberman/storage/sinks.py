@@ -83,6 +83,28 @@ def _is_loopback(host: str) -> bool:
     return False
 
 
+def _webhook_host(url: str) -> str:
+    """Format the hostname and optional port from *url* for log messages.
+
+    Omits userinfo, path, and query parameters so credentials in the URL
+    are never written to logs. IPv6 addresses are enclosed in brackets.
+    """
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if ":" in host and not (host.startswith("[") and host.endswith("]")):
+            host = f"[{host}]"
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if port is not None:
+            return f"{host}:{port}"
+        return host
+    except Exception:
+        return ""
+
+
 def _load_webhook_config(repo_root: str) -> dict | None:
     """Parse ``.doberman/audit_webhook.yaml`` and return the config dict.
 
@@ -326,21 +348,22 @@ class WebhookAuditSink:
                 headers["Authorization"] = token
 
         req = urllib.request.Request(self._url, data=body, headers=headers, method="POST")  # noqa: S310
+        host = _webhook_host(self._url)
         try:
             with urllib.request.urlopen(req, timeout=self._timeout_s) as _resp:  # noqa: S310
                 pass  # success; response body is ignored
         except urllib.error.HTTPError as exc:
-            logger.warning("audit_webhook: HTTP %s from %s; record dropped", exc.code, self._url)
+            logger.warning("audit_webhook: HTTP %s from %s; record dropped", exc.code, host)
         except urllib.error.URLError as exc:
             logger.warning(
                 "audit_webhook: URLError posting to %s: %s; record dropped",
-                self._url,
+                host,
                 type(exc.reason).__name__,
             )
         except TimeoutError:
-            logger.warning("audit_webhook: timeout posting to %s; record dropped", self._url)
+            logger.warning("audit_webhook: timeout posting to %s; record dropped", host)
         except OSError:
-            logger.warning("audit_webhook: network error posting to %s; record dropped", self._url)
+            logger.warning("audit_webhook: network error posting to %s; record dropped", host)
 
 
 # Module-level cache — one sink per repo root, created once per process and
