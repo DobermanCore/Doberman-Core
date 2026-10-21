@@ -1373,6 +1373,89 @@ def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
     return info
 
 
+# ---------------------------------------------------------------------------
+# Legacy compatibility helpers (#742)
+#
+# These reproduce the EXACT force-push and branch-deletion checks from the
+# base implementation (4e444c0) — before the shared parser was introduced.
+# They are called as isolated fallbacks so that a conservative BLOCK verdict
+# from the old logic is never lost.  Crucially, they are NOT combined with
+# the normalized parser's improved flag recognition: a flag that only the
+# new parser recognises (``-fu``, ``-qd``, ``--del``, ``--force-w``, …)
+# must never activate legacy ref candidates, as that would create false
+# positives that neither the old nor the new parser produces on its own.
+# ---------------------------------------------------------------------------
+
+
+def _git_force_push_to_protected_legacy(tokens: list[str], protected: Iterable[str]) -> bool:
+    """Pre-#742 compatibility: preserves the exact conservative force-push
+    verdicts from the base implementation (4e444c0).
+
+    Flag recognition uses the original exact-match checks (``-f``,
+    ``--force``, ``--force-with-lease*``, ``+HEAD``, leading ``+``).  Positional
+    extraction uses the original ``not t.startswith("-")`` filter.  Neither
+    combined-flag clusters nor abbreviated long options are recognised here —
+    that is intentional: the legacy check must reflect *only* the old parser's
+    interpretation to avoid cross-pollinating with new signals.
+    """
+    argv, _ = _git_leading_globals(tokens)
+    if not argv or argv[0] != "push":
+        return False
+    push_args = argv[1:]
+    has_force = any(
+        t in ("-f", "--force") or t.startswith("--force-with-lease") or t == "+HEAD"
+        for t in push_args
+    )
+    if not has_force:
+        # A refspec like ``+main`` is also a force push of that ref.
+        if not any(t.startswith("+") for t in push_args):
+            return False
+        has_force = True
+    protected_set = {b.lower() for b in protected}
+    positional = [t for t in push_args if not t.startswith("-")]
+    explicit_refs = positional[1:]  # the first positional is the remote
+    # Any token that names (or pushes to) a protected branch.
+    for token in explicit_refs:
+        ref = token.lstrip("+").split(":")[-1].lower()
+        ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
+        if ref in protected_set:
+            return True
+    # A bare ``git push --force`` (no explicit ref) defaults to the current
+    # branch — unknown here, so treat it as protected (fail safe).
+    return not explicit_refs
+
+
+def _git_push_deletes_protected_branch_legacy(tokens: list[str], protected: Iterable[str]) -> bool:
+    """Pre-#742 compatibility: preserves the exact conservative deletion
+    verdicts from the base implementation (4e444c0).
+
+    Flag recognition uses the original exact-match checks (``--delete``,
+    ``-d``).  Positional extraction uses the original ``not t.startswith("-")``
+    filter.  Combined-flag clusters (``-qd``) and abbreviated long options
+    (``--del``) are NOT recognised — intentionally, to avoid cross-pollination.
+    """
+    argv, _ = _git_leading_globals(tokens)
+    if not argv or argv[0] != "push":
+        return False
+    push_args = argv[1:]
+    is_delete_flag = any(t in ("--delete", "-d") for t in push_args)
+    positional = [t for t in push_args if not t.startswith("-")]
+    explicit_refs = positional[1:]  # the first positional is the remote
+    if not is_delete_flag:
+        # Without --delete/-d, only an empty-source refspec (``:branch``) is a
+        # delete; a plain ``branch`` token here is an ordinary push/update.
+        explicit_refs = [t for t in explicit_refs if t.startswith(":")]
+        if not explicit_refs:
+            return False
+    protected_set = {b.lower() for b in protected}
+    for token in explicit_refs:
+        ref = token.split(":")[-1].lower()
+        ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
+        if ref in protected_set:
+            return True
+    return False
+
+
 def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) -> bool:
     """``git push`` with a force flag targeting a protected branch.
 
@@ -1385,27 +1468,43 @@ def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) ->
     #726: delegates flag/positional parsing to :func:`_parse_git_push` so
     combined short flags (``-fu``), abbreviated long options (``--force-w``),
     and value-consuming options (``-o``) are handled correctly.
+
+    #742: after the normalized check, falls back to the legacy base-commit
+    check (:func:`_git_force_push_to_protected_legacy`) so that conservative
+    BLOCK verdicts from the old parser are never lost.  The two checks run
+    independently — a flag that only the new parser recognises never activates
+    legacy ref candidates.
     """
+    # Convert to tuple so single-use iterables (e.g. generators) are not
+    # exhausted by the normalized check before the legacy fallback runs.
+    protected = tuple(protected)
+    # --- 1. Normalized check (improved parser) ---
     info = _parse_git_push(tokens)
-    if info is None or not info.has_force:
-        return False
-    protected_set = {b.lower() for b in protected}
-    # Any token that names (or pushes to) a protected branch.
-    for token in info.explicit_refs:
-        ref = token.lstrip("+").split(":")[-1].lower()
-        ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
-        if ref in protected_set:
+    if info is not None and info.has_force:
+        protected_set = {b.lower() for b in protected}
+        # Any token that names (or pushes to) a protected branch.
+        for token in info.explicit_refs:
+            ref = token.lstrip("+").split(":")[-1].lower()
+            ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
+            if ref in protected_set:
+                return True
+        # #742: when a value option consumed a token, the first positional may
+        # be a branch that was displaced into the remote slot.  Check it too.
+        if info.ambiguous_first is not None:
+            ref = info.ambiguous_first.lstrip("+").split(":")[-1].lower()
+            ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
+            if ref in protected_set:
+                return True
+        # A bare ``git push --force`` (no explicit ref) defaults to the current
+        # branch — unknown here, so treat it as protected (fail safe).
+        if not info.explicit_refs:
             return True
-    # #742: when a value option consumed a token, the first positional may
-    # be a branch that was displaced into the remote slot.  Check it too.
-    if info.ambiguous_first is not None:
-        ref = info.ambiguous_first.lstrip("+").split(":")[-1].lower()
-        ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
-        if ref in protected_set:
-            return True
-    # A bare ``git push --force`` (no explicit ref) defaults to the current
-    # branch — unknown here, so treat it as protected (fail safe).
-    return not info.explicit_refs
+
+    # --- 2. Legacy compatibility fallback ---
+    # Runs the exact pre-#742 logic so that a base-commit BLOCK verdict for
+    # commands like ``git push -f origin -o main feature`` (where the option
+    # value appears after the remote) is never silently dropped.
+    return _git_force_push_to_protected_legacy(tokens, protected)
 
 
 def _git_push_deletes_protected_branch(tokens: list[str], protected: Iterable[str]) -> bool:
@@ -1421,39 +1520,49 @@ def _git_push_deletes_protected_branch(tokens: list[str], protected: Iterable[st
     #726: delegates flag/positional parsing to :func:`_parse_git_push` so
     combined short flags (``-qd``), abbreviated long options (``--del``), and
     value-consuming options (``-o``) are handled correctly.
+
+    #742: after the normalized check, falls back to the legacy base-commit
+    check (:func:`_git_push_deletes_protected_branch_legacy`) so that
+    conservative BLOCK verdicts from the old parser are never lost.
     """
+    # Convert to tuple so single-use iterables (e.g. generators) are not
+    # exhausted by the normalized check before the legacy fallback runs.
+    protected = tuple(protected)
+    # --- 1. Normalized check (improved parser) ---
     info = _parse_git_push(tokens)
-    if info is None:
-        return False
-    explicit_refs = info.explicit_refs
-    if not info.has_delete:
-        # Without --delete/-d, only an empty-source refspec (``:branch``) is a
-        # delete; a plain ``branch`` token here is an ordinary push/update.
-        explicit_refs = [t for t in explicit_refs if t.startswith(":")]
-        if not explicit_refs:
-            # #742: still check whether the ambiguous_first is itself a
-            # colon-prefixed empty-source refspec.
-            if info.ambiguous_first is not None and info.ambiguous_first.startswith(":"):
-                pass  # fall through to the candidate check below
-            else:
-                return False
-    protected_set = {b.lower() for b in protected}
-    for token in explicit_refs:
-        ref = token.split(":")[-1].lower()
-        ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
-        if ref in protected_set:
-            return True
-    # #742: when a value option consumed a token, the first positional may
-    # be a branch that was displaced into the remote slot.  Check it against
-    # the protected set when --delete/-d is active or the candidate itself
-    # is a colon-prefixed empty-source refspec.
-    if info.ambiguous_first is not None:
-        if info.has_delete or info.ambiguous_first.startswith(":"):
-            ref = info.ambiguous_first.split(":")[-1].lower()
+    if info is not None:
+        explicit_refs = info.explicit_refs
+        if not info.has_delete:
+            # Without --delete/-d, only an empty-source refspec (``:branch``) is a
+            # delete; a plain ``branch`` token here is an ordinary push/update.
+            explicit_refs = [t for t in explicit_refs if t.startswith(":")]
+            if not explicit_refs:
+                # #742: still check whether the ambiguous_first is itself a
+                # colon-prefixed empty-source refspec.
+                if info.ambiguous_first is not None and info.ambiguous_first.startswith(":"):
+                    pass  # fall through to the candidate check below
+                else:
+                    # Normalized check found no deletion signal — skip to legacy.
+                    return _git_push_deletes_protected_branch_legacy(tokens, protected)
+        protected_set = {b.lower() for b in protected}
+        for token in explicit_refs:
+            ref = token.split(":")[-1].lower()
             ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
             if ref in protected_set:
                 return True
-    return False
+        # #742: when a value option consumed a token, the first positional may
+        # be a branch that was displaced into the remote slot.  Check it against
+        # the protected set when --delete/-d is active or the candidate itself
+        # is a colon-prefixed empty-source refspec.
+        if info.ambiguous_first is not None:
+            if info.has_delete or info.ambiguous_first.startswith(":"):
+                ref = info.ambiguous_first.split(":")[-1].lower()
+                ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
+                if ref in protected_set:
+                    return True
+
+    # --- 2. Legacy compatibility fallback ---
+    return _git_push_deletes_protected_branch_legacy(tokens, protected)
 
 
 def _git_push_risky_config_or_bulk(tokens: list[str]) -> GuardrailResult | None:
