@@ -30,10 +30,17 @@ command string or its arguments.
 """
 
 import fnmatch
+import functools
+import os
 import posixpath
 import re
 import shlex
+import shutil
+import subprocess
 from collections.abc import Iterable
+from contextvars import ContextVar
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 from doberman.canonical import canonicalize
 from doberman.engine.rules.paths import (
@@ -1020,12 +1027,24 @@ def _is_root_or_home_target(arg: str) -> bool:
     return normalized in {"/", "~", "~/", "/*", "/.", "~/*", "*"} or normalized.startswith("/*")
 
 
-def _rm_is_catastrophic(tokens: list[str]) -> bool:
-    """``rm`` with a recursive+force flag aimed at root/home/whole-tree."""
+def _rm_recursive_and_force(tokens: list[str]) -> tuple[bool, bool]:
+    """``(recursive, force)`` for an ``rm`` argv — clustered short flags (``-rf``)
+    and long flags (``--recursive``/``--force``) alike.
+
+    Extracted from :func:`_rm_is_catastrophic` so the gitignored-directory gate
+    further down can ask the same question without keeping a second, drifting
+    copy of the flag parse. Byte-identical to the inline version it replaced.
+    """
     flags = "".join(t[1:] for t in tokens[1:] if t.startswith("-") and not t.startswith("--"))
     long_flags = {t for t in tokens[1:] if t.startswith("--")}
     recursive = "r" in flags or "R" in flags or "--recursive" in long_flags
     force = "f" in flags or "--force" in long_flags
+    return recursive, force
+
+
+def _rm_is_catastrophic(tokens: list[str]) -> bool:
+    """``rm`` with a recursive+force flag aimed at root/home/whole-tree."""
+    recursive, force = _rm_recursive_and_force(tokens)
     if not (recursive and force):
         return False
     operands = [t for t in tokens[1:] if not t.startswith("-")]
@@ -1064,8 +1083,405 @@ def _rm_targets_unrecoverable_data(tokens: list[str]) -> bool:
     # shortcut: lexical glob on operands only — no filesystem or git access in the
     # decision path. Catches file targets; a directory operand (rm -rf data/) cannot
     # be classified lexically and is deliberately out of scope (deferred — see ADR).
+    # That deferral is now picked up NEXT TO this gate, not inside it, by
+    # _rm_deletes_gitignored_uncommitted (#198): the directory case asks git
+    # instead of guessing lexically, so this function stays exactly as lexical,
+    # filesystem-free, and fast as it has always been.
     operands = [t for t in tokens[1:] if not t.startswith("-")]
     return _any_operand_unrecoverable(operands)
+
+
+# --- Gitignored, never-committed directory deletes (#198) -------------------
+#
+# The AN-1 gate above classifies a *file* operand lexically, by basename. A
+# DIRECTORY operand carries no lexical signal at all — `data/` and `build/` are
+# indistinguishable as strings, yet deleting the first can be irrecoverable
+# while deleting the second costs a rebuild. So this gate asks git rather than
+# guessing, and is deliberately built BESIDE the lexical gate rather than over
+# it: `_rm_targets_unrecoverable_data` still runs first, entirely unchanged.
+#
+# RAISE-ONLY BY CONSTRUCTION. The single transition this can produce is "the
+# segment would have returned None (PASS)" -> AUTH. It is reached only after
+# every existing BLOCK branch and every existing AUTH branch has declined, so
+# it cannot lower, reorder, or mask any verdict that fires today.
+#
+# FAILS TOWARD TODAY, NOT TOWARD PASS. Every uncertainty — no git binary, not a
+# repository, a timeout, any OS/subprocess error, an operand that escapes the
+# repo root, git reporting "ignored" but unable to say what is committed —
+# returns False, which lands the segment on exactly the plain bulk_threshold
+# behaviour it has now. The asymmetry is deliberate: this gate is additive
+# defence-in-depth, so an unanswerable probe must not invent an escalation any
+# more than it may skip one it could have proven.
+#
+# COST. The git probe sits behind cheap local gates (recursive flag -> not a
+# regenerable build directory -> lies inside the worktree and no nested repo ->
+# is a real directory, not a symlink) and then runs at most two bounded
+# subprocesses per segment. A whole decision shares one probe budget
+# (`_MAX_GIT_PROBES`): a command chaining many recursive deletes cannot multiply
+# the cost, and once the budget is spent the remaining candidates are NOT waved
+# through — they raise to AUTH as "could not be verified", which is raise-only
+# and closes the padding bypass (many cheap deletes ahead of the dangerous one).
+#
+# HARDENED GIT. The probe runs on the verdict path against a repo the agent can
+# write to, so: `core.fsmonitor=false` (a repo-configured fsmonitor command would
+# otherwise execute during evaluation, and on Windows a surviving child process
+# defeats the timeout); the binary must be an absolute path outside the repo and
+# the cwd (Windows `shutil.which` searches the cwd first, so a `git.bat` in the
+# repo would run); `--literal-pathspecs` on `ls-files` so a directory named
+# `[x]` is not a glob (`check-ignore` takes paths, not pathspecs, and rejects it); and UTF-8 on the pipes so non-ASCII names are not mangled by cp1252.
+
+#: Hard ceiling on either git probe. A hung git must never stall a decision —
+#: the timeout is caught and lands on the fall-back-to-today path.
+_GIT_PROBE_TIMEOUT_S = 2.0
+
+#: Git subprocesses one decision may spawn, across every segment of a chained
+#: command. Worst-case wall clock is this x `_GIT_PROBE_TIMEOUT_S`.
+_MAX_GIT_PROBES = 12
+
+#: Gitignored directories whose contents a build/install step regenerates from
+#: committed sources. Deleting these is routine and cheap, so escalating them
+#: would spend the human's attention on exactly the prompts least worth
+#: reading — and an auth prompt nobody reads protects nothing.
+#:
+#: Deliberately narrow: every entry is a well-known tool-OWNED output or cache
+#: directory. Ambiguous names someone might legitimately keep un-backed-up work
+#: in (`bin`, `out`, `vendor`, `data`, `tmp`) are intentionally absent, so the
+#: escalation fires for those. Matched case-insensitively against every path
+#: component below the worktree top (so `node_modules/` and
+#: `node_modules/left-pad` are both carved out). This list can only ever make
+#: the NEW escalation quieter; it has no reach over any verdict that exists
+#: today.
+_REGENERABLE_DIR_PATTERNS = (
+    "node_modules",
+    "build",
+    "dist",
+    "target",
+    "coverage",
+    "htmlcov",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".tox",
+    ".next",
+    ".nuxt",
+    ".gradle",
+    ".turbo",
+    ".parcel-cache",
+    ".eggs",
+    "*.egg-info",
+)
+
+#: Glob metacharacters. An operand carrying one was never expanded by a shell
+#: (or the command walk kept it literal). We probe only the literal path prefix
+#: before the first glob component: if that directory is ignored and untracked,
+#: everything the glob can match beneath it is too.
+_GLOB_METACHARS = ("*", "?", "[")
+
+#: Category-only explanations. Like every other explanation in this module they
+#: name the CLASS of danger and never the operand, so no raw path can reach a
+#: log, a prompt, or the decision record through this branch.
+_GITIGNORED_UNCOMMITTED_EXPLANATION = (
+    "Recursive delete of a gitignored directory that has never been committed; "
+    "git holds no copy to restore it from, so authentication is required."
+)
+_GITIGNORED_UNVERIFIED_EXPLANATION = (
+    "Too many recursive directory deletes in one command to verify against git; "
+    "authentication is required."
+)
+
+
+@dataclass
+class _ProbeState:
+    """Per-decision git probe accounting (reset at the top of every decision)."""
+
+    remaining: int = _MAX_GIT_PROBES
+    exhausted: bool = False
+
+
+_probe_state: ContextVar[_ProbeState | None] = ContextVar("doberman_git_probe_state", default=None)
+
+
+def _is_regenerable_dir(name: str) -> bool:
+    """True if this single path component names tool-regenerated build/cache output.
+
+    ``fnmatchcase`` against a lowercased name rather than ``fnmatch``: the
+    latter normalizes case through ``os.path.normcase``, which would make this
+    case-sensitive on POSIX and case-insensitive on Windows. A guardrail must
+    not classify the same command differently depending on the platform.
+    """
+    return any(fnmatch.fnmatchcase(name.lower(), pat) for pat in _REGENERABLE_DIR_PATTERNS)
+
+
+def _has_regenerable_component(relposix: str) -> bool:
+    return any(_is_regenerable_dir(part) for part in relposix.split("/") if part)
+
+
+def _literal_prefix(raw: str) -> str:
+    """The operand up to (not including) its first glob-bearing component.
+
+    ``data/*`` -> ``data``; ``data/logs/*.log`` -> ``data/logs``; ``*`` or
+    ``/*`` -> ``""`` (nothing literal to probe). Trailing separators are dropped.
+    """
+    parts = raw.replace("\\", "/").split("/")
+    for index, part in enumerate(parts):
+        if any(ch in part for ch in _GLOB_METACHARS):
+            parts = parts[:index]
+            break
+    return "/".join(parts).rstrip("/")
+
+
+def _worktree_top(root: str) -> Path | None:
+    """Nearest ancestor of ``root`` (inclusive) holding a ``.git`` entry.
+
+    Lexical on purpose — no subprocess. ``root`` is the hook's cwd, which may be
+    a subdirectory of the worktree, so confinement is to this top, not to cwd.
+    """
+    try:
+        current = Path(root).resolve()
+        for candidate in (current, *current.parents):
+            if (candidate / ".git").exists():
+                return candidate
+    except (OSError, RuntimeError):
+        return None
+    return None
+
+
+def _inside_nested_repo(target: Path, top: Path) -> bool:
+    """True if ``target`` or an ancestor below ``top`` is itself a repo or
+    submodule (carries its own ``.git``). The outer repo's ignore rules and
+    index say nothing about those paths, and handing one to ``check-ignore``
+    makes the whole batch exit 128."""
+    for candidate in (target, *target.parents):
+        if candidate == top:
+            return False
+        try:
+            if (candidate / ".git").exists():
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _delete_dir_targets(operands: Iterable[str], root: str) -> tuple[Path, list[Path]] | None:
+    """Worktree top plus the resolved existing directories a delete would hit.
+
+    The cheap, subprocess-free half of candidate selection. ``None`` when there
+    is no worktree. A glob operand contributes its literal prefix. Symlinks are
+    skipped on purpose: ``rm -rf link`` unlinks the symlink and leaves the tree
+    behind it intact, so there is no irrecoverable loss to escalate.
+    """
+    top = _worktree_top(root)
+    if top is None:
+        return None
+    targets: list[Path] = []
+    for operand in operands:
+        raw = operand.strip().strip("'\"")
+        if any(ch in raw for ch in _GLOB_METACHARS):
+            raw = _literal_prefix(raw)
+        if not raw:
+            continue
+        canonical = canonicalize(raw, root=root)
+        try:
+            # islink() on the *pre-resolution* path: canonicalize() has already
+            # followed the link, so asking the resolved form always says no.
+            original = raw if os.path.isabs(raw) else os.path.join(root, raw)
+            if os.path.islink(original) or not os.path.isdir(canonical.resolved):
+                continue
+            targets.append(Path(canonical.resolved))
+        except OSError:
+            continue
+    return top, targets
+
+
+def _delete_dir_candidates(targets: Iterable[Path], top: Path) -> list[str]:
+    """Case-preserving worktree-relative posix paths this gate may escalate on.
+
+    Confinement lives here: a target that is not under ``top``, is ``top``
+    itself, sits in a nested repo/submodule, or has a regenerable build/cache
+    component is dropped. The path handed to git keeps its case
+    (``canonicalize().relposix`` is lower-cased for pattern matching, which
+    would make ``check-ignore`` miss ``Data/`` on a case-sensitive filesystem).
+    """
+    candidates: list[str] = []
+    for target in targets:
+        try:
+            relposix = PurePosixPath(target.relative_to(top).as_posix()).as_posix()
+        except ValueError:
+            continue
+        if relposix in ("", "."):
+            continue
+        if _has_regenerable_component(relposix) or _inside_nested_repo(target, top):
+            continue
+        candidates.append(relposix)
+    return candidates
+
+
+def _path_under(path: str, base: str) -> bool:
+    try:
+        real_base = os.path.realpath(base)
+        return os.path.commonpath([os.path.realpath(path), real_base]) == real_base
+    except ValueError:  # different drives
+        return False
+
+
+@functools.lru_cache(maxsize=8)
+def _git_executable(root: str) -> str | None:
+    """Absolute path to a trustworthy git binary, or ``None``.
+
+    Cached per root because this sits on the decision path. A relative result,
+    or one that lives under the repo root or the cwd, is refused: on Windows
+    ``shutil.which`` searches the cwd before PATH, so a ``git.bat`` planted in
+    the repo would otherwise be executed just by evaluating ``rm -rf src``.
+    """
+    git = shutil.which("git")
+    if git is None or not os.path.isabs(git):
+        return None
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        return None
+    if _path_under(git, root) or _path_under(git, cwd):
+        return None
+    return git
+
+
+def _run_git(
+    root: str, args: list[str], stdin: str | None = None
+) -> subprocess.CompletedProcess | None:
+    """Run one bounded, hardened, shell-free git command with its cwd set to ``root``.
+
+    Returns ``None`` on *any* failure — no binary, an exhausted probe budget, a
+    timeout, an OS error, a subprocess error. Callers read ``None`` as "git could
+    not tell us"; budget exhaustion is additionally recorded on the decision's
+    :class:`_ProbeState` so the caller can raise rather than fall back.
+    """
+    git = _git_executable(root)
+    if git is None:
+        return None
+    state = _probe_state.get()
+    if state is None:
+        state = _ProbeState()
+        _probe_state.set(state)
+    if state.remaining <= 0:
+        state.exhausted = True
+        return None
+    state.remaining -= 1
+    # Operand paths are passed after `--` as argv entries, never interpolated
+    # into a shell, and every subcommand word is a literal in this module.
+    stream = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
+    try:
+        return subprocess.run(  # noqa: S603 — fixed argv from a vetted git path, no shell
+            [git, "-c", "core.fsmonitor=false", "-C", root, *args],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_GIT_PROBE_TIMEOUT_S,
+            check=False,
+            **stream,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _git_ignored_subset(candidates: list[str], root: str) -> list[str]:
+    """The subset of ``candidates`` git reports as ignored; ``[]`` on any error.
+
+    ``--stdin`` keeps the operand count off the command line (no argv-length
+    ceiling, one process however many paths), and ``-z`` makes both the input
+    and the output NUL-separated so a path containing a newline cannot
+    desynchronize the parse.
+    """
+    proc = _run_git(root, ["check-ignore", "-z", "--stdin"], stdin="\0".join(candidates) + "\0")
+    # git check-ignore: 0 = at least one path is ignored, 1 = none are, and
+    # anything else (128 — not a repository, unusable root) is an error whose
+    # stdout must not be read as an answer.
+    if proc is None or proc.returncode != 0:
+        return []
+    return [line for line in proc.stdout.split("\0") if line]
+
+
+def _git_tracked_paths(candidates: list[str], root: str) -> list[str] | None:
+    """Tracked paths under ``candidates``, or ``None`` if git could not say.
+
+    ``None`` and ``[]`` mean different things here and callers must not conflate
+    them: ``[]`` is git affirming that nothing under these paths is committed,
+    while ``None`` is git failing to answer at all.
+
+    Measured on git 2.47, ``check-ignore`` already consults the index and will
+    not call a directory with tracked contents ignored, so in practice this pass
+    rarely changes an answer — it is kept as a backstop because that
+    index-awareness is a default (what ``--no-index`` turns off) rather than a
+    documented guarantee, and because it can only ever make the escalation
+    quieter, never louder. It runs only once ``check-ignore`` has already said
+    "ignored", so it costs nothing on the common path.
+    """
+    proc = _run_git(root, ["--literal-pathspecs", "ls-files", "-z", "--", *candidates])
+    if proc is None or proc.returncode != 0:
+        return None
+    return [line for line in proc.stdout.split("\0") if line]
+
+
+def _probe_budget_exhausted() -> bool:
+    state = _probe_state.get()
+    return state is not None and state.exhausted
+
+
+def _gitignored_delete_explanation(operands: Iterable[str], root: str) -> str | None:
+    """Explanation if this delete would destroy a gitignored directory git has
+    no copy of (or could not be verified within the probe budget); else ``None``.
+
+    Two bounded git calls, ordered so each narrows the work of the next:
+    ``check-ignore`` reduces the candidates to the ignored ones, then
+    ``ls-files`` rules out the "ignored but already tracked" false positive — a
+    path committed *before* it was ignored, whose contents git still holds and
+    can restore. A failure at either step returns ``None`` (today's behaviour);
+    only an exhausted decision-wide budget escalates without an answer.
+    """
+    found = _delete_dir_targets(operands, root)
+    if found is None:
+        return None
+    top, targets = found
+    candidates = _delete_dir_candidates(targets, top)
+    if not candidates:
+        return None
+    if _probe_budget_exhausted():
+        return _GITIGNORED_UNVERIFIED_EXPLANATION
+    git_root = str(top)
+    ignored = _git_ignored_subset(candidates, git_root)
+    if _probe_budget_exhausted():
+        return _GITIGNORED_UNVERIFIED_EXPLANATION
+    if not ignored:
+        return None
+    tracked = _git_tracked_paths(ignored, git_root)
+    if _probe_budget_exhausted():
+        return _GITIGNORED_UNVERIFIED_EXPLANATION
+    if tracked is None:
+        # git said "ignored" but could not tell us what is committed. A tracked
+        # copy cannot be ruled out, so fall back rather than escalate.
+        return None
+    if any(
+        not any(path == target or path.startswith(target.rstrip("/") + "/") for path in tracked)
+        for target in ignored
+    ):
+        return _GITIGNORED_UNCOMMITTED_EXPLANATION
+    return None
+
+
+def _rm_deletes_gitignored_uncommitted(tokens: list[str], root: str) -> str | None:
+    """Explanation if this ``rm -r`` targets a gitignored, never-committed directory.
+
+    Gated on the recursive flag for two reasons: a non-recursive ``rm`` cannot
+    remove a directory at all, so there is no directory-shaped loss to escalate;
+    and it keeps the git probe off the overwhelmingly common plain-``rm`` path
+    entirely. A *file* target is AN-1's job, not this gate's.
+    """
+    if not _rm_recursive_and_force(tokens)[0]:
+        return None
+    operands = [t for t in tokens[1:] if not t.startswith("-")]
+    return _gitignored_delete_explanation(operands, root)
 
 
 # --- Windows/PowerShell delete-verb coverage --------------------------------
@@ -1119,10 +1535,13 @@ def _windows_delete_flags_and_operands(tokens: list[str]) -> tuple[bool, bool, l
     return recursive, force, operands
 
 
-def _windows_delete_verdict(tokens: list[str], bulk_threshold: int) -> GuardrailResult | None:
+def _windows_delete_verdict(
+    tokens: list[str], bulk_threshold: int, root: str
+) -> GuardrailResult | None:
     """Windows/PowerShell delete-verb classifier (Remove-Item/del/rd/...): recursive
-    + force at a root/home target -> BLOCK; bulk or unrecoverable-data operand ->
-    AUTH; otherwise ``None`` (not a recognized Windows delete verb, or benign)."""
+    + force at a root/home target -> BLOCK; bulk, unrecoverable-data, or
+    gitignored-never-committed-directory operand -> AUTH; otherwise ``None``
+    (not a recognized Windows delete verb, or benign)."""
     if not tokens or tokens[0].lower() not in _WINDOWS_DELETE_VERBS:
         return None
     recursive, force, operands = _windows_delete_flags_and_operands(tokens)
@@ -1139,6 +1558,13 @@ def _windows_delete_verdict(tokens: list[str], bulk_threshold: int) -> Guardrail
             "Deleting an unrecoverable, gitignored data file (local database, "
             "secret, or key); authentication required.",
         )
+    # #198, mirrored from the `rm` branch: an agent on Windows spells the same
+    # irrecoverable directory delete `Remove-Item -Recurse data`. Leaving this
+    # to the POSIX branch alone would ship the gap with a documented bypass.
+    # Last of the checks, so it can only turn this function's ``None`` (PASS)
+    # into AUTH — never displace the BLOCK or either AUTH above it.
+    if recursive and (why := _gitignored_delete_explanation(operands, root)):
+        return _auth(ReasonCode.destructive_command, why)
     return None
 
 
@@ -1858,7 +2284,7 @@ def _segment_verdict(
             "(exec-on-connect reverse/bind shell); blocked."
         )
 
-    windows_delete = _windows_delete_verdict(tokens, bulk_threshold)
+    windows_delete = _windows_delete_verdict(tokens, bulk_threshold, root)
     if windows_delete is not None:
         return windows_delete
 
@@ -1880,6 +2306,12 @@ def _segment_verdict(
             "Deleting an unrecoverable, gitignored data file (local database, "
             "secret, or key); authentication required.",
         )
+    # #198 — the directory-shaped case AN-1's lexical gate above deliberately
+    # deferred. Placed AFTER it (and after the bulk-threshold check) so both
+    # keep their existing precedence: this branch is only ever reached by a
+    # delete that today falls through to PASS.
+    if cmd == "rm" and (why := _rm_deletes_gitignored_uncommitted(tokens, root)):
+        return _auth(ReasonCode.destructive_command, why)
     if cmd == "git" and _git_is_history_rewrite(tokens):
         return _auth(
             ReasonCode.destructive_command,
@@ -2446,6 +2878,8 @@ class DestructiveCommandRule:
         self, command: str, bulk_threshold: int, root: str, protected: Iterable[str]
     ) -> GuardrailResult:
         worst: GuardrailResult = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
+        # One git probe budget per decision, shared by every chained segment (#198).
+        _probe_state.set(_ProbeState())
 
         # Checked against the RAW command, before shlex: POSIX tokenization eats
         # the `\` separators, so a Windows-spelled control-plane path never
