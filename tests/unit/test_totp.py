@@ -29,11 +29,12 @@ def test_enroll_then_verify_current_code():
 
 def test_skew_window_accepts_adjacent_step_rejects_far():
     totp.enroll()
-    code = _current_code(_T0)
-    assert totp.verify(code, at=_T0 + 30) is True  # ±1 step tolerated
-    assert totp.verify(code, at=_T0 - 30) is True
+    # Each code is accepted once, so every check uses a fresh, later step.
+    assert totp.verify(_current_code(_T0), at=_T0 - 30) is True  # one step ahead
+    assert totp.verify(_current_code(_T0 + 30), at=_T0 + 60) is True  # one step behind
     totp.reset_attempts()
-    assert totp.verify(code, at=_T0 + 90) is False  # 3 steps away → rejected
+    code = _current_code(_T0 + 60)
+    assert totp.verify(code, at=_T0 + 150) is False  # 3 steps away → rejected
 
 
 def test_wrong_code_rejected():

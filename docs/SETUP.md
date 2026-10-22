@@ -392,6 +392,10 @@ doberman 2fa setup --force
 doberman 2fa remove
 ```
 
+Each 2FA code works once. A code that already approved something, or one older than the last
+accepted code, is refused even while your authenticator still shows it; wait for the next code
+(at most 30 seconds) to approve a second action.
+
 Too many wrong 2FA codes lock further attempts for a short, self-recovering cooldown.
 `doberman 2fa reset-lockout` clears it early by proving your password instead, since a locked-out
 factor can't verify itself. It never disables the rate limiter; fresh wrong codes lock it again.
