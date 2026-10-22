@@ -416,20 +416,21 @@ def _check_tui_extra() -> CheckResult:
     return _check_optional_extra("TUI extra", "textual", "tui")
 
 
-def installed_plugin_names() -> set[str]:
-    """Every entry-point name installed under a Doberman group, without loading any.
+def installed_plugin_groups() -> dict[str, list[str]]:
+    """Every entry-point name installed under a Doberman group, mapped to its groups.
 
     Names only, through the unfiltered :func:`~doberman.engine.registry._iter_entry_points`:
     diagnosing an enabled-but-missing plugin must never import plugin code.
     """
     from doberman.engine.registry import ALL_GROUPS, _iter_entry_points
 
-    return {
-        name
-        for group in ALL_GROUPS
-        for entry_point in _iter_entry_points(group)
-        if isinstance(name := getattr(entry_point, "name", None), str)
-    }
+    groups: dict[str, list[str]] = {}
+    for group in ALL_GROUPS:
+        for entry_point in _iter_entry_points(group):
+            name = getattr(entry_point, "name", None)
+            if isinstance(name, str) and group not in groups.setdefault(name, []):
+                groups[name].append(group)
+    return groups
 
 
 def _check_plugins() -> CheckResult:
@@ -438,11 +439,23 @@ def _check_plugins() -> CheckResult:
     enabled = plugin_config.enabled_plugins()
     if not enabled:
         return CheckResult("Plugins", CheckStatus.OK, "none enabled")
-    installed = installed_plugin_names()
-    missing = [name for name in enabled if name not in installed]
+    installed = installed_plugin_groups()
+    missing = []
+    for value in enabled:
+        group, _, name = value.rpartition(":")
+        if name not in installed or (group and group not in installed[name]):
+            missing.append(value)
     if missing:
         return CheckResult(
             "Plugins", CheckStatus.WARN, f"enabled but not installed: {', '.join(missing)}"
+        )
+    legacy = plugin_config.legacy_entries(enabled)
+    if legacy:
+        return CheckResult(
+            "Plugins",
+            CheckStatus.WARN,
+            f"enabled under every group (no group recorded): {', '.join(legacy)}; "
+            "run `doberman plugins enable <name>` to narrow each to its group",
         )
     return CheckResult("Plugins", CheckStatus.OK, f"{len(enabled)} enabled, all installed")
 

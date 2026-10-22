@@ -28,7 +28,12 @@ plugins get their own context" below.
 
 Third-party rules register through the **`doberman.rules`** entry-point group
 (`RULE_GROUP` in `src/doberman/engine/registry.py`). Install a package that declares one, then run
-`doberman plugins enable <name>`. Only then does `discover_rules()` pick it up. The objective
+`doberman plugins enable <name>`. Only then does `discover_rules()` pick it up. The allowlist
+records the group with the name (`doberman.rules:<name>`), so a package that registers the same
+name as a detector or an audit sink is not trusted with it; pass `--group` when the name is
+installed under more than one group. A `plugins.json` written before this listed bare names,
+which still match every group; `doberman plugins list` and `doberman doctor` point them out, and
+enabling the name again narrows it to its group. The objective
 guardrail runs built-in rules and every enabled plugin together, reduced with the same raise-only
 `combine()` used everywhere else, so a plugin can only add risk, never lower a verdict. A plugin
 that fails to import, fails to construct, or isn't shaped like a `Guardrail` is logged and skipped.
