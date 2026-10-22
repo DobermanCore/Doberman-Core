@@ -125,3 +125,75 @@ def test_snapshot_is_cached_across_repeated_calls(tmp_path, monkeypatch):
     first = plugin_config.allowed_plugin_names()
     plugin_config.enable("y")  # mutate the file after the snapshot was taken
     assert plugin_config.allowed_plugin_names() is first  # identical cached tuple
+
+
+# --- #638: entries are group:name; legacy bare names keep working -------------
+
+_RULES = "doberman.rules"
+_DETECTORS = "doberman.detectors"
+
+
+def test_enable_with_a_group_records_group_and_name(tmp_path, monkeypatch):
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(tmp_path / "p.json"))
+    assert plugin_config.enable("my-rule", _RULES) == ["doberman.rules:my-rule"]
+    assert plugin_config.enabled_plugins() == ["doberman.rules:my-rule"]
+
+
+def test_is_allowed_matches_only_the_enabled_group(tmp_path, monkeypatch):
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(tmp_path / "p.json"))
+    allowed = plugin_config.enable("my-rule", _RULES)
+    assert plugin_config.is_allowed(_RULES, "my-rule", allowed)
+    assert not plugin_config.is_allowed(_DETECTORS, "my-rule", allowed)
+    assert plugin_config.names_for_group(_RULES, allowed) == ["my-rule"]
+    assert plugin_config.names_for_group(_DETECTORS, allowed) == []
+
+
+def test_an_old_bare_name_file_keeps_its_plugins_enabled(tmp_path, monkeypatch):
+    path = tmp_path / "p.json"
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(path))
+    path.write_text('{"enabled": ["my-rule"]}', encoding="utf-8")
+    allowed = plugin_config.enabled_plugins()
+    assert allowed == ["my-rule"]
+    assert plugin_config.legacy_entries(allowed) == ["my-rule"]
+    assert plugin_config.is_allowed(_RULES, "my-rule", allowed)
+    assert plugin_config.is_allowed(_DETECTORS, "my-rule", allowed)
+
+
+def test_enabling_a_legacy_name_for_a_group_narrows_it(tmp_path, monkeypatch):
+    path = tmp_path / "p.json"
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(path))
+    path.write_text('{"enabled": ["my-rule", "other"]}', encoding="utf-8")
+    names = plugin_config.enable("my-rule", _RULES)
+    assert names == ["other", "doberman.rules:my-rule"]
+    assert not plugin_config.is_allowed(_DETECTORS, "my-rule", names)
+
+
+def test_disable_without_a_group_removes_every_entry_for_the_name(tmp_path, monkeypatch):
+    path = tmp_path / "p.json"
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(path))
+    path.write_text(
+        '{"enabled": ["doberman.rules:x", "doberman.detectors:x", "x", "y"]}', encoding="utf-8"
+    )
+    assert plugin_config.disable("x") == ["y"]
+
+
+def test_disable_with_a_group_removes_only_that_entry(tmp_path, monkeypatch):
+    path = tmp_path / "p.json"
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(path))
+    path.write_text('{"enabled": ["doberman.rules:x", "doberman.detectors:x"]}', encoding="utf-8")
+    assert plugin_config.disable("x", _DETECTORS) == ["doberman.rules:x"]
+
+
+@pytest.mark.parametrize("group", ["rules", "doberman.", "other.rules", "doberman.Rules"])
+def test_enable_rejects_a_malformed_group(tmp_path, monkeypatch, group):
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(tmp_path / "p.json"))
+    with pytest.raises(ValueError, match="invalid plugin group"):
+        plugin_config.enable("x", group)
+    assert plugin_config.enabled_plugins() == []
+
+
+def test_malformed_group_entries_in_the_file_are_dropped(tmp_path, monkeypatch):
+    path = tmp_path / "p.json"
+    monkeypatch.setenv(plugin_config.PLUGINS_FILE_ENV, str(path))
+    path.write_text('{"enabled": ["evil:x", "doberman.rules:ok", "a:b:c"]}', encoding="utf-8")
+    assert plugin_config.enabled_plugins() == ["doberman.rules:ok"]

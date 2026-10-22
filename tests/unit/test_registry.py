@@ -256,3 +256,42 @@ def test_enabling_after_first_discovery_needs_a_snapshot_reset(
     plugin_config.reset_snapshot()
     rules = registry.discover_rules()
     assert len(rules) == 1 and isinstance(rules[0], AlwaysAuthPlugin)
+
+
+# --- #638: the allowlist keys on group:name ---------------------------------
+
+
+def test_a_name_enabled_for_one_group_does_not_load_under_another(monkeypatch, enable_plugins):
+    from doberman.engine import plugin_config
+
+    def _must_not_load():
+        raise AssertionError("a same-named detector must not ride on the rule's opt-in")
+
+    table = _FakeEntryPoints(
+        {
+            registry.RULE_GROUP: [_FakeEntryPoint("shared", lambda: AlwaysAuthPlugin)],
+            registry.DETECTOR_GROUP: [_FakeEntryPoint("shared", _must_not_load)],
+        }
+    )
+    monkeypatch.setattr(registry, "entry_points", lambda: table)
+    enable_plugins()  # points the allowlist at a temp file
+    plugin_config.enable("shared", registry.RULE_GROUP)
+    plugin_config.reset_snapshot()
+
+    rules = registry.discover_rules()
+    assert len(rules) == 1 and isinstance(rules[0], AlwaysAuthPlugin)
+    assert registry.discover_detectors() == []
+
+
+def test_a_legacy_bare_name_still_loads_under_every_group(monkeypatch, enable_plugins):
+    table = _FakeEntryPoints(
+        {
+            registry.RULE_GROUP: [_FakeEntryPoint("shared", lambda: AlwaysAuthPlugin)],
+            registry.DETECTOR_GROUP: [_FakeEntryPoint("shared", lambda: AlwaysAuthPlugin)],
+        }
+    )
+    monkeypatch.setattr(registry, "entry_points", lambda: table)
+    enable_plugins("shared")  # a pre-#638 file: bare name, no group
+
+    assert len(registry.discover_rules()) == 1
+    assert len(registry.discover_detectors()) == 1
