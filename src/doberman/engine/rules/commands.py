@@ -1278,17 +1278,25 @@ def _delete_dir_targets(operands: Iterable[str], root: str) -> tuple[Path, list[
         return None
     targets: list[Path] = []
     for operand in operands:
-        raw = operand.strip().strip("'\"")
-        if any(ch in raw for ch in _GLOB_METACHARS):
+        # Whitespace is significant in a path (`' data'` is not `data`), so only
+        # a matching surrounding quote pair is removed, never spaces.
+        raw = operand
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+            raw = raw[1:-1]
+        globbed = any(ch in raw for ch in _GLOB_METACHARS)
+        if globbed:
             raw = _literal_prefix(raw)
         if not raw:
             continue
         canonical = canonicalize(raw, root=root)
         try:
             # islink() on the *pre-resolution* path: canonicalize() has already
-            # followed the link, so asking the resolved form always says no.
+            # followed the link, so asking the resolved form always says no. A
+            # bare symlink operand only unlinks the link, but `link/*` deletes
+            # the REFERENT's contents, so a globbed prefix keeps the symlink and
+            # is probed through its resolved target.
             original = raw if os.path.isabs(raw) else os.path.join(root, raw)
-            if os.path.islink(original) or not os.path.isdir(canonical.resolved):
+            if (not globbed and os.path.islink(original)) or not os.path.isdir(canonical.resolved):
                 continue
             targets.append(Path(canonical.resolved))
         except OSError:

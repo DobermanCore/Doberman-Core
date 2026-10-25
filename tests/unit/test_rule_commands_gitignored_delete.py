@@ -27,6 +27,7 @@ idea of what git says. The probe is deterministic (no network, no clock, fixed
 committer identity) and each repo is built fresh per test.
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -573,3 +574,65 @@ def test_git_is_invoked_with_hardening_flags(repo, monkeypatch):
         if "ls-files" in argv:
             assert "--literal-pathspecs" in argv
         assert kwargs.get("encoding") == "utf-8"
+
+
+# --- review round 3: significant whitespace and symlink globs (#653) --------
+
+
+@requires_git
+def test_leading_space_in_an_operand_is_significant(repo):
+    """``rm -rf ' secret'`` deletes the directory named `` secret``, not ``secret``.
+    Stripping the token probed the wrong path and returned PASS for a real
+    gitignored directory. The unrelated, un-ignored ``secret`` stays PASS."""
+    try:
+        (repo / " secret").mkdir()
+    except OSError:
+        pytest.skip("this filesystem will not create a directory with a leading space")
+    (repo / " secret" / "f").write_text("x\n", encoding="utf-8")
+    (repo / "secret").mkdir()
+    (repo / "secret" / "f").write_text("x\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("\\ secret/\n", encoding="utf-8")
+    assert _cmd("rm -rf ' secret'", repo).verdict is Verdict.AUTH
+    assert _cmd("rm -rf ./' secret'", repo).verdict is Verdict.AUTH
+    assert _cmd("rm -rf secret", repo).verdict is Verdict.PASS
+
+
+def test_operand_whitespace_is_preserved_but_quote_pairs_are_removed(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / " d").mkdir()
+    (tmp_path / "d").mkdir()
+    top, targets = commands_module._delete_dir_targets([" d"], str(tmp_path))
+    assert [t.name for t in targets] == [" d"]
+    _, targets = commands_module._delete_dir_targets(['" d"', "'d'"], str(tmp_path))
+    assert [t.name for t in targets] == [" d", "d"]
+
+
+@requires_git
+def test_symlink_glob_probes_the_referent_on_a_real_symlink(repo):
+    """``rm -rf link/*`` deletes the contents of what ``link`` points at, so the
+    gate must follow the link; a bare ``rm -rf link`` only unlinks it."""
+    link = repo / "link"
+    try:
+        link.symlink_to(repo / "data", target_is_directory=True)
+    except (OSError, NotImplementedError):  # unprivileged Windows
+        pytest.skip("this platform will not let the test create a symlink")
+    (repo / ".gitignore").write_text("data/\nlink\n", encoding="utf-8")
+    assert _cmd("rm -rf link/*", repo).verdict is Verdict.AUTH
+    assert _cmd("rm -rf link", repo).verdict is Verdict.PASS
+
+
+def test_globbed_prefix_keeps_a_symlink_but_a_bare_operand_does_not(tmp_path, monkeypatch):
+    """Platform-independent model of the symlink case: ``islink`` says yes for
+    ``link``; the globbed spelling must still yield a target, the bare one not."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "link").mkdir()
+    real_islink = os.path.islink
+    monkeypatch.setattr(
+        commands_module.os.path,
+        "islink",
+        lambda p: True if os.path.basename(os.fspath(p)) == "link" else real_islink(p),
+    )
+    _, globbed = commands_module._delete_dir_targets(["link/*"], str(tmp_path))
+    _, bare = commands_module._delete_dir_targets(["link"], str(tmp_path))
+    assert [t.name for t in globbed] == ["link"]
+    assert bare == []
