@@ -113,7 +113,7 @@ def _deobfuscated(text: str) -> str:
     return out
 
 
-# ponytail: common non-host file extensions the bare-host regex would otherwise
+# shortcut: common non-host file extensions the bare-host regex would otherwise
 # treat as a "TLD" (README.md, package.json). A fingerprint of a filename is
 # low-risk noise (nothing egresses to a destination literally named
 # "readme.md"), but filtering the obvious cases keeps the bounded per-scope row
@@ -153,6 +153,39 @@ _NON_TLD_LABELS = frozenset(
         "ipynb",
         "gitignore",
         "lockb",
+        # Extensions a coding agent's own tool output names all the time (file
+        # listings, stack traces, diffs). Each one was checked against the IANA
+        # root zone list and is not a TLD; ones that are (rs, java, map,
+        # properties) stay out, so a real host on them still fingerprints.
+        "cjs",
+        "mjs",
+        "cts",
+        "mts",
+        "pyi",
+        "whl",
+        "rb",
+        "go",
+        "kt",
+        "cpp",
+        "hpp",
+        "php",
+        "swift",
+        "lua",
+        "vue",
+        "svelte",
+        "scss",
+        "rst",
+        "mdx",
+        "jsonl",
+        "tsv",
+        "sqlite",
+        "db",
+        "conf",
+        "diff",
+        "patch",
+        "tar",
+        "gz",
+        "tgz",
     }
 )
 

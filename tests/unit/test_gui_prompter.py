@@ -801,7 +801,7 @@ def test_focus_ring_wrapper_lights_up_on_both_buttons(real_root):
     tuned/verified against Deny only; this closes that gap for real, on the
     real widget tree, not just the palette constants above.
 
-    # ponytail: uses `_press` (below), not `event_generate`, for the same
+    # shortcut: uses `_press` (below), not `event_generate`, for the same
     # reason `_press`'s own docstring gives for KeyPress -- a CI process that
     # is not the foreground session can lose Tk-internal focus at any moment,
     # and a real, asynchronous <FocusOut> racing in right after this test's
@@ -1100,7 +1100,7 @@ def test_keyboard_hint_is_ascii_and_mentions_enter(real_root):
 
 
 def test_target_panel_collapses_a_long_no_space_target_and_keeps_the_question_visible(real_root):
-    """P0 regression: a 400-char no-space URL must never push the question,
+    """P0 regression: a long no-space URL must never push the question,
     risk line, or countdown out of view -- the target panel caps itself and
     offers a "Show full target" toggle instead.
     """
@@ -1108,7 +1108,9 @@ def test_target_panel_collapses_a_long_no_space_target_and_keeps_the_question_vi
     import tkinter.ttk as ttk
 
     root = real_root
-    long_target = "https://api.example.com/upload?" + "a" * 370
+    # 400 characters can fit the cap with macOS's fallback font metrics.
+    # Force genuine overflow while leaving Tk's real wrapping under test.
+    long_target = "https://api.example.com/upload?" + "a" * 2000
     frame = gui_prompter._content_frame(root)
     gui_prompter._build_target_panel(root, frame, long_target)
     gui_prompter._build_line(frame, gui_prompter._QUESTION)
@@ -1165,7 +1167,7 @@ def test_target_panel_single_unbroken_line_shows_a_hidden_character_count(real_r
     import tkinter.ttk as ttk
 
     root = real_root
-    long_target = "https://api.example.com/upload?" + "a" * 370
+    long_target = "https://api.example.com/upload?" + "a" * 2000
     frame = gui_prompter._content_frame(root)
     gui_prompter._build_target_panel(root, frame, long_target)
     root.update()
@@ -1193,7 +1195,7 @@ def test_target_panel_single_unbroken_line_shows_a_hidden_character_count(real_r
 
 
 def test_target_panel_single_line_tail_shows_a_trailing_exfil_payload(real_root):
-    """P1 regression (item 1): a 400-char URL ending in ``&exfil=1`` must
+    """P1 regression (item 1): a long URL ending in ``&exfil=1`` must
     keep that suffix VISIBLE even collapsed -- the previous head-only marker
     hid the entire tail, including anything an attacker appended at the very
     end of an otherwise-legitimate-looking long command/URL.
@@ -1203,13 +1205,13 @@ def test_target_panel_single_line_tail_shows_a_trailing_exfil_payload(real_root)
     root = real_root
     prefix = "https://api.example.com/upload?"
     suffix = "&exfil=1"
-    long_target = prefix + "a" * (400 - len(prefix) - len(suffix)) + suffix
-    assert len(long_target) == 400
+    long_target = prefix + "a" * 2000 + suffix
     frame = gui_prompter._content_frame(root)
     gui_prompter._build_target_panel(root, frame, long_target)
     root.update()
 
     target_text = next(w for w in _walk_widgets(frame) if isinstance(w, tkinter.Text))
+    assert target_text.tag_ranges("muted"), "the target must actually be collapsed"
     collapsed = target_text.get("1.0", "end-1c")
     assert suffix in collapsed  # the exfil payload survives collapse, not just an expand
 
@@ -2346,7 +2348,7 @@ def test_focus_ring_outer_line_actually_paints_a_real_pixel_probe(real_root):
         # Windows only: a real True/False answer, or None when we can't tell
         # (no ctypes, window title not found) -- never used to block the
         # probe on ITS OWN failure to answer, only on a confirmed "no".
-        # ponytail: GetForegroundWindow(), not winfo/focus_get() -- Tk only
+        # shortcut: GetForegroundWindow(), not winfo/focus_get() -- Tk only
         # knows its OWN focus/mapped state, not whether Windows is actually
         # compositing this window on top of everything else, which is the
         # one thing an agent/CI process running off-screen can never win
@@ -2670,7 +2672,7 @@ def test_toggle_expand_label_maps_verb_to_noun():
 def test_confirm_dialog_toggle_uses_the_derived_label(real_root):
     root = real_root
     answer: dict = {}
-    long_target = "https://api.example.com/upload?" + "a" * 370
+    long_target = "https://api.example.com/upload?" + "a" * 2000
     parts = dict(_SAMPLE_PARTS, verb="send data out", target=long_target)
     gui_prompter._populate_confirm_parts(root, parts, answer, 120.0)
     root.update()

@@ -19,7 +19,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 // Doberman's own subprocess deadline. Kept comfortably under HOOK_TIMEOUT_MS
 // below so OUR fail-closed return always wins the race before OpenClaw's own
 // hook-timeout handling could apply.
-// ponytail: one constant, no options plumbing.
+// shortcut: one constant, no options plumbing.
 const DOBERMAN_TIMEOUT_MS = 10_000;
 
 // Headroom above DOBERMAN_TIMEOUT_MS for process spawn/IO overhead, handed to
@@ -127,6 +127,39 @@ export default definePluginEntry({
     // active - see README.md's "Verify it's live" section.
     console.log("[doberman] interception active - before_tool_call hook registered");
 
+    const sessionWorkspaces = new Map();
+
+    try {
+      api.on("before_agent_run", (event, ctx) => {
+        if (
+          ctx &&
+          ctx.sessionId &&
+          typeof ctx.workspaceDir === "string" &&
+          ctx.workspaceDir.trim().length > 0
+        ) {
+          if (sessionWorkspaces.size >= 1000 && !sessionWorkspaces.has(ctx.sessionId)) {
+            const oldestKey = sessionWorkspaces.keys().next().value;
+            sessionWorkspaces.delete(oldestKey);
+          }
+          sessionWorkspaces.set(ctx.sessionId, ctx.workspaceDir);
+        }
+      });
+    } catch {
+      // Optional lifecycle hook: registration failure must never prevent
+      // before_tool_call from registering.
+    }
+
+    try {
+      api.on("session_end", (event, ctx) => {
+        if (ctx && ctx.sessionId) {
+          sessionWorkspaces.delete(ctx.sessionId);
+        }
+      });
+    } catch {
+      // Optional lifecycle hook: registration failure must never prevent
+      // before_tool_call from registering.
+    }
+
     api.on(
       "before_tool_call",
       async (event, ctx) => {
@@ -134,7 +167,7 @@ export default definePluginEntry({
           tool_name: event?.toolName,
           params: event?.params,
           derived_paths: event?.derivedPaths,
-          cwd: process.cwd(),
+          cwd: (ctx && ctx.sessionId && sessionWorkspaces.get(ctx.sessionId)) || process.cwd(),
           session_id: ctx?.sessionId,
         };
         const verdict = await askDoberman(payload);

@@ -21,8 +21,10 @@ SECURITY:
   identical to core-only. The standalone test asserts no enterprise plugin is
   present by default.
 * Every group is **opt-in by name** (:mod:`doberman.engine.plugin_config`):
-  an entry point is loaded only if its ``.name`` is listed in the per-user
-  plugins allowlist (``doberman plugins enable <name>``). Installing a
+  an entry point is loaded only if the per-user plugins allowlist lists its
+  ``.name`` for ITS group (``doberman plugins enable <name>`` records
+  ``<group>:<name>``), so enabling a rule never trusts a same-named detector
+  or audit sink (#638). Installing a
   package is never enough on its own — this closes the gap where an
   auto-loaded plugin could set env vars or otherwise influence discovery of
   a seam before it runs. The allowlist is snapshotted once per process
@@ -35,7 +37,7 @@ from functools import lru_cache
 from importlib.metadata import EntryPoint, entry_points
 
 from doberman.engine.decision_engine import Guardrail
-from doberman.engine.plugin_config import allowed_plugin_names
+from doberman.engine.plugin_config import allowed_plugin_names, names_for_group
 
 logger = logging.getLogger("doberman.engine.registry")
 
@@ -125,16 +127,17 @@ def _iter_entry_points(group: str) -> Iterator[EntryPoint]:
 
 
 def _iter_allowed_entry_points(group: str) -> Iterator[EntryPoint]:
-    """Yield entry points for ``group`` whose ``.name`` is opted in by name.
+    """Yield entry points for ``group`` whose ``.name`` is opted in for ``group``.
 
     Opt-in only (:mod:`doberman.engine.plugin_config`): an entry point is
-    loaded only if its ``.name`` is in the process's allowlist snapshot — a
+    loaded only if the process's allowlist snapshot lists its ``.name`` under
+    this ``group`` (or as a legacy bare name, which matches every group) — a
     package merely being installed is never enough to make it run in-process.
     With an empty allowlist, ``entry_points()`` is never even called, so
     nothing installed-but-unlisted is ever imported. Every ``discover_*``
     below iterates through this, never :func:`_iter_entry_points` directly.
     """
-    allowed = allowed_plugin_names()
+    allowed = names_for_group(group, allowed_plugin_names())
     if not allowed:
         return
     for entry_point in _iter_entry_points(group):
@@ -285,7 +288,7 @@ def discover_auth_providers() -> list[object]:
     # Local import avoids an engine<->auth import cycle at module load.
     from doberman.auth.provider import _looks_like_auth_provider
 
-    allowed = allowed_plugin_names()
+    allowed = names_for_group(AUTH_PROVIDER_GROUP, allowed_plugin_names())
     candidates: dict[str, object] = {}
     for entry_point in _iter_allowed_entry_points(AUTH_PROVIDER_GROUP):
         name = getattr(entry_point, "name", None)

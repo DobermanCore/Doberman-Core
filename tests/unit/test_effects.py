@@ -279,7 +279,7 @@ def test_many_nonexistent_operands_returns_within_budget(tmp_path):
 
 
 def test_unresolved_glob_operand_is_unknown_never_a_silent_zero(tmp_path):
-    # No file literally named "*.log" — and no glob engine here (ponytail) —
+    # No file literally named "*.log" — and no glob engine here (a deliberate shortcut) —
     # so this must fail toward unknown, not toward "nothing to delete".
     effects = compute_delete_effects(["*.log"], str(tmp_path))
     assert effects.capped is True

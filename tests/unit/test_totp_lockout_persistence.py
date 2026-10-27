@@ -175,8 +175,9 @@ def test_attempt_is_counted_even_if_pyotp_verify_raises(monkeypatch):
     def verify_explodes(*args, **kwargs):
         raise RuntimeError("pyotp crashed mid-verify")
 
-    monkeypatch.setattr(pyotp.TOTP, "verify", verify_explodes)
-    assert totp.verify(_current_code(_T0), at=_T0) is False
+    code = _current_code(_T0)
+    monkeypatch.setattr(pyotp.TOTP, "generate_otp", verify_explodes)
+    assert totp.verify(code, at=_T0) is False
     # The attempt landed on disk even though pyotp never finished.
     assert totp._load_lockout(_lockout_path(), now=totp._now())[0] == 1
 

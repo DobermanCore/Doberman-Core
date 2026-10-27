@@ -270,7 +270,7 @@ def resolve_auth_result(
     is the one place all of them turn an approval into an execution, which is
     why the recheck belongs here rather than in each adapter.
     """
-    # ponytail: no TOCTOU re-DECIDE like the proxy — the hook grants no elevations and
+    # shortcut: no TOCTOU re-DECIDE like the proxy — the hook grants no elevations and
     # holds no state between calls, so there is no elevation set to refresh; each call
     # is challenged independently. The delete-class effect-set recheck below is a
     # different guard and DOES apply here: it compares the filesystem against what the
@@ -368,7 +368,7 @@ def _default_auth_prompter(
     from doberman.auth.ntfy import NtfyPrompter
     from doberman.auth.tty_prompter import TtyPrompter
 
-    # ponytail: the phone waits its own `wait_s` before the local dialog opens — a
+    # shortcut: the phone waits its own `wait_s` before the local dialog opens — a
     # fixed step, not a fan-out race. Upgrade path: first-answer-wins concurrent
     # notify, if a sequential wait proves too slow in practice.
     chain: list[Prompter] = [NtfyPrompter(), GuiPrompter(), TtyPrompter()]

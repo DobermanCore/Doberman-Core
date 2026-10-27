@@ -126,7 +126,7 @@ def compute_delete_effects(
     the budget all degrade to a non-authoritative result. See ADR 0094.
 
     A glob-shaped operand (contains ``*``/``?``/``[``) that does not exist as
-    a literal path is not resolved — no glob engine here (ponytail) — and is
+    a literal path is not resolved — no glob engine here (a deliberate shortcut) — and is
     conservatively treated as unknown rather than silently contributing zero:
     a real `rm -rf build/*` must never render as a false-safe empty preview.
     Full glob resolution is a follow-up if real commands need it.

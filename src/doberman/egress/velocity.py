@@ -141,7 +141,7 @@ class EgressVelocityTracker:
         return tracked
 
 
-def demo() -> None:  # ponytail: smallest runnable self-check, no framework
+def demo() -> None:  # shortcut: smallest runnable self-check, no framework
     """``python -m doberman.egress.velocity`` -- exercise each signal once."""
     from datetime import datetime, timedelta, timezone
 

@@ -28,6 +28,7 @@ from doberman.storage.sinks import (
     WebhookAuditSink,
     _is_loopback,
     _load_webhook_config,
+    _webhook_host,
     emit_to_sinks,
 )
 
@@ -758,3 +759,138 @@ def test_emit_close_race_no_stranded_record(monkeypatch) -> None:
         f"Expected 1 delivered record, got {len(captured)} — "
         "record was stranded after close() stopped the worker"
     )
+
+
+# ---------------------------------------------------------------------------
+# Host-only logging on POST failures (#758)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://example.com/audit", "example.com"),
+        ("https://example.com:8443/audit", "example.com:8443"),
+        ("https://u:SYNTH-SECRET@127.0.0.1:1/x?t=SYNTH-SECRET", "127.0.0.1:1"),
+        ("https://[::1]:8080/hook", "[::1]:8080"),
+        ("https://[::1]/hook", "[::1]"),
+        ("https://user:pass@[2001:db8::1]:9000/path?key=val", "[2001:db8::1]:9000"),
+        ("https://user:pass@[2001:db8::1]/path", "[2001:db8::1]"),
+    ],
+)
+def test_webhook_host_formats_host_and_port_only(url: str, expected: str) -> None:
+    """_webhook_host extracts host and port, stripping credentials, path, and query."""
+    assert _webhook_host(url) == expected
+
+
+def test_webhook_host_handles_invalid_url() -> None:
+    """_webhook_host handles invalid ports or malformed URLs without raising."""
+    assert _webhook_host("https://example.com:badport/x") == "example.com"
+    assert _webhook_host("") == ""
+
+
+def test_post_http_error_logs_host_only(monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
+    """HTTPError logs only the host and port, omitting userinfo and query parameters."""
+    url = "https://u:SYNTH-SECRET@127.0.0.1:1/x?t=SYNTH-SECRET"
+    sink = WebhookAuditSink({"url": url, "auth_env": None, "timeout_s": 5.0})
+
+    def _raise_http(req, timeout=None):
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=500,
+            msg="Internal Server Error",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=None,
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _raise_http)
+
+    with caplog.at_level(logging.WARNING, logger="doberman.storage.sinks"):
+        sink._post({"test": 1})
+
+    assert "SYNTH-SECRET" not in caplog.text
+    assert "127.0.0.1:1" in caplog.text
+    assert "HTTP 500 from 127.0.0.1:1" in caplog.text
+    sink.close(drain_timeout_s=2.0)
+
+
+def test_post_url_error_logs_host_only(monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
+    """URLError logs only the host and port, omitting credentials."""
+    url = "https://u:SYNTH-SECRET@127.0.0.1:1/x?t=SYNTH-SECRET"
+    sink = WebhookAuditSink({"url": url, "auth_env": None, "timeout_s": 5.0})
+
+    def _raise_url_error(req, timeout=None):
+        raise urllib.error.URLError(ConnectionRefusedError("connection refused"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", _raise_url_error)
+
+    with caplog.at_level(logging.WARNING, logger="doberman.storage.sinks"):
+        sink._post({"test": 1})
+
+    assert "SYNTH-SECRET" not in caplog.text
+    assert "127.0.0.1:1" in caplog.text
+    assert "URLError posting to 127.0.0.1:1" in caplog.text
+    sink.close(drain_timeout_s=2.0)
+
+
+def test_post_timeout_error_logs_host_only(monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
+    """TimeoutError logs only the host and port, omitting credentials."""
+    url = "https://u:SYNTH-SECRET@127.0.0.1:1/x?t=SYNTH-SECRET"
+    sink = WebhookAuditSink({"url": url, "auth_env": None, "timeout_s": 5.0})
+
+    def _raise_timeout(req, timeout=None):
+        raise TimeoutError("connection timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _raise_timeout)
+
+    with caplog.at_level(logging.WARNING, logger="doberman.storage.sinks"):
+        sink._post({"test": 1})
+
+    assert "SYNTH-SECRET" not in caplog.text
+    assert "127.0.0.1:1" in caplog.text
+    assert "timeout posting to 127.0.0.1:1" in caplog.text
+    sink.close(drain_timeout_s=2.0)
+
+
+def test_post_os_error_logs_host_only(monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
+    """OSError logs only the host and port, omitting credentials."""
+    url = "https://u:SYNTH-SECRET@127.0.0.1:1/x?t=SYNTH-SECRET"
+    sink = WebhookAuditSink({"url": url, "auth_env": None, "timeout_s": 5.0})
+
+    def _raise_os_error(req, timeout=None):
+        raise OSError("network is down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _raise_os_error)
+
+    with caplog.at_level(logging.WARNING, logger="doberman.storage.sinks"):
+        sink._post({"test": 1})
+
+    assert "SYNTH-SECRET" not in caplog.text
+    assert "127.0.0.1:1" in caplog.text
+    assert "network error posting to 127.0.0.1:1" in caplog.text
+    sink.close(drain_timeout_s=2.0)
+
+
+def test_post_ipv6_error_logs_bracketed_host(monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
+    """IPv6 endpoint logs with brackets, never leaking userinfo or query string."""
+    url = "https://u:SYNTH-SECRET@[::1]:8080/x?t=SYNTH-SECRET"
+    sink = WebhookAuditSink({"url": url, "auth_env": None, "timeout_s": 5.0})
+
+    def _raise_http(req, timeout=None):
+        raise urllib.error.HTTPError(
+            url=req.full_url,
+            code=502,
+            msg="Bad Gateway",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=None,
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _raise_http)
+
+    with caplog.at_level(logging.WARNING, logger="doberman.storage.sinks"):
+        sink._post({"test": 1})
+
+    assert "SYNTH-SECRET" not in caplog.text
+    assert "[::1]:8080" in caplog.text
+    assert "HTTP 502 from [::1]:8080" in caplog.text
+    sink.close(drain_timeout_s=2.0)

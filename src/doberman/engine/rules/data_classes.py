@@ -25,7 +25,7 @@ SECURITY: reason codes + class labels only. The matched value never appears
 in any explanation, log field, or output — the explanation names the class
 ("payment card number"), never the payload.
 
-ponytail: one-time auth codes (6-digit OTPs) are deliberately NOT detected —
+shortcut: one-time auth codes (6-digit OTPs) are deliberately NOT detected —
 even destination-gated, bare 6-digit numbers false-positive far too often
 (ports, ids, timestamps); a context-aware OTP classifier is enterprise work.
 """
@@ -53,9 +53,36 @@ _PASS = GuardrailResult(verdict=Verdict.PASS, risk=Risk.low)
 _PAN_SHAPE = re.compile(r"(?<![0-9A-Za-z])\d(?:[ -]?\d){12,18}(?![0-9A-Za-z])")
 
 
-# Major issuer IINs: Visa, Mastercard (51-55, 2221-2720), Amex, Discover.
-# ponytail: the big-four cover the realistic exfil surface; extend the table,
-# don't loosen the checks, if a real gap shows up.
+# Diners Club International, JCB and UnionPay, from the Discover Global Network
+# "Global Payment Network - IIN Range Summary" (8-digit start/end, PAN length):
+# https://www.discoverglobalnetwork.com/downloads/IPP_VAR_Compliance.pdf
+# UnionPay's 8100 0000-8171 9999 block is left out for now: it would match any
+# Luhn-valid 16-19 digit run starting 810-817, a shape plain numeric ids share.
+_LEN_16_19 = range(16, 20)
+_DGN_IIN_RANGES: tuple[tuple[int, int, range], ...] = (
+    # Diners Club International
+    (30000000, 30599999, _LEN_16_19),
+    (30950000, 30959999, _LEN_16_19),
+    (36000000, 36999999, range(14, 20)),
+    (38000000, 39999999, _LEN_16_19),
+    # JCB
+    (30880000, 30949999, _LEN_16_19),
+    (30960000, 31029999, _LEN_16_19),
+    (31120000, 31209999, _LEN_16_19),
+    (31580000, 31599999, _LEN_16_19),
+    (33370000, 33499999, _LEN_16_19),
+    (35280000, 35899999, _LEN_16_19),
+    # UnionPay
+    (62109400, 62109499, _LEN_16_19),
+    (62212600, 62379699, _LEN_16_19),
+    (62400000, 62699999, _LEN_16_19),
+    (62820000, 62889999, _LEN_16_19),
+)
+
+
+# Major issuer IINs: Visa, Mastercard (51-55, 2221-2720), Amex, Discover, then
+# the Diners Club, JCB and UnionPay ranges in ``_DGN_IIN_RANGES``.
+# shortcut: extend the table, don't loosen the checks, if a real gap shows up.
 def _has_known_iin(digits: str) -> bool:
     if digits.startswith("4"):
         return len(digits) in (13, 16, 19)
@@ -69,7 +96,10 @@ def _has_known_iin(digits: str) -> bool:
         return len(digits) == 15
     if digits.startswith("6011") or two == 65:
         return len(digits) == 16
-    return False
+    eight = int(digits[:8])
+    return any(
+        start <= eight <= end and len(digits) in lengths for start, end, lengths in _DGN_IIN_RANGES
+    )
 
 
 def _luhn_ok(digits: str) -> bool:
@@ -112,7 +142,7 @@ def _contains_iban(text: str) -> bool:
 
 
 # ── US SSN: dashed form + SSA validity constraints ───────────────────────────
-# ponytail: undashed 9-digit SSNs are indistinguishable from ordinary ids —
+# shortcut: undashed 9-digit SSNs are indistinguishable from ordinary ids —
 # only the dashed form is detected; the ceiling is recorded in issue #321.
 
 _SSN_SHAPE = re.compile(r"(?<![\d-])(\d{3})-(\d{2})-(\d{4})(?![\d-])")

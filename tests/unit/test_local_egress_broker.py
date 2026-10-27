@@ -14,6 +14,8 @@ injected/faked.
 
 from datetime import datetime, timezone
 
+import pytest
+
 from doberman.egress.allowlist import EgressAllowlist
 from doberman.egress.broker import EgressBroker, EnforcementStatus
 from doberman.egress.enforcement import EnforcementProbe
@@ -168,3 +170,63 @@ def test_default_construction_builds_a_real_allowlist_and_probe_without_network_
     broker = LocalEgressBroker()
     assert isinstance(broker._allowlist, EgressAllowlist)
     assert isinstance(broker._probe, EnforcementProbe)
+
+
+# --- #627: a list of probe targets ---------------------------------------------
+
+
+class _RecordingProbeProxy:
+    """Records every target probed; ``reachable`` names the ones that connect."""
+
+    def __init__(self, reachable=()):
+        self.reachable = set(reachable)
+        self.probed = []
+
+    async def probe(self, host, port):
+        self.probed.append((host, port))
+        if (host, port) not in self.reachable:
+            raise ConnectionRefusedError(f"simulated: {host}:{port} unreachable")
+
+
+async def test_a_custom_probe_target_list_is_used_instead_of_the_default():
+    proxy = _RecordingProbeProxy(reachable={("mirror.internal", 8443)})
+    broker = LocalEgressBroker(
+        proxy=proxy, probe_target=[("mirror.internal", 8443), ("pypi.org", 443)]
+    )
+
+    status = await broker.refresh_enforcement()
+
+    assert status is EnforcementStatus.PROVEN
+    assert proxy.probed == [("mirror.internal", 8443)]  # first one connected
+    assert ("github.com", 443) not in proxy.probed
+
+
+async def test_probe_targets_are_tried_in_order_until_one_connects():
+    proxy = _RecordingProbeProxy(reachable={("pypi.org", 443)})
+    broker = LocalEgressBroker(
+        proxy=proxy, probe_target=(("blocked.example", 443), ("pypi.org", 443))
+    )
+
+    assert await broker.refresh_enforcement() is EnforcementStatus.PROVEN
+    assert proxy.probed == [("blocked.example", 443), ("pypi.org", 443)]
+
+
+async def test_no_reachable_probe_target_leaves_enforcement_unproven():
+    proxy = _RecordingProbeProxy(reachable=())
+    broker = LocalEgressBroker(proxy=proxy, probe_target=[("a.example", 443), ("b.example", 443)])
+
+    assert await broker.refresh_enforcement() is EnforcementStatus.UNPROVEN
+    assert proxy.probed == [("a.example", 443), ("b.example", 443)]
+
+
+async def test_the_default_probe_target_is_still_github():
+    proxy = _RecordingProbeProxy(reachable={("github.com", 443)})
+    broker = LocalEgressBroker(proxy=proxy)
+
+    assert await broker.refresh_enforcement() is EnforcementStatus.PROVEN
+    assert proxy.probed == [("github.com", 443)]
+
+
+def test_an_empty_probe_target_list_is_refused():
+    with pytest.raises(ValueError, match="at least one"):
+        LocalEgressBroker(proxy=_RecordingProbeProxy(), probe_target=[])
