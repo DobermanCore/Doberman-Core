@@ -19,6 +19,7 @@ In alphabetical order by handle (ordering is not a ranking):
 - [@be-student](https://github.com/be-student)
 - [@Bestpart-Irene](https://github.com/Bestpart-Irene)
 - [@blackcoderx](https://github.com/blackcoderx)
+- [@dchaudhari7177](https://github.com/dchaudhari7177)
 - [@harmehak0173](https://github.com/harmehak0173)
 - [@harshitagrawal2O](https://github.com/harshitagrawal2O)
 - [@jasperdingg](https://github.com/jasperdingg)
