@@ -304,7 +304,7 @@ _RECURSIVE_SHELL = re.compile(r"(?i)(?:^|\s)-[rf]+\b|--recursive\b|\*\*?")
 _IRREVERSIBLE_SHELL = re.compile(
     r"(?i)\brm\b|\bshred\b|\bmkfs\b|\bdd\b\s+if=|drop\s+(?:table|database)"
     r"|\btruncate\b|push\b[^;&|\n]{0,40}--force|--hard\b(?!-)"
-    # ponytail: 40-char budget between `push` and `--force` is a tunable heuristic
+    # shortcut: 40-char budget between `push` and `--force` is a tunable heuristic
 )
 
 # Blast-radius tier boundaries on an observed target/recipient count.

@@ -63,6 +63,7 @@ from doberman.policy.drift import (
     _prefs_classify,
     _run_weaken_gate,
     _verify_possession_factor,
+    apply_approval_memory_change,
     apply_change,
     apply_egress_velocity_change,
     apply_enforcement_change,
@@ -101,7 +102,12 @@ from doberman.storage.approval_memory import clear as clear_approval_memory
 from doberman.storage.approval_memory import count_live as count_live_approval_memory
 from doberman.storage.db import active_elevations, grant_elevation, revoke_elevation
 from doberman.storage.exclusions import add_exclusion, is_excluded, remove_exclusion
-from doberman.storage.log import memory_summary, prune_decisions, read_decisions
+from doberman.storage.log import (
+    exportable_session_id,
+    memory_summary,
+    prune_decisions,
+    read_decisions,
+)
 from doberman.storage.memory import prune_stale_entities, reset_memory
 from doberman.storage.taint import clear_taint, entity_scope, read_taint
 from doberman.storage.tool_pins import approve_pin
@@ -1506,6 +1512,22 @@ def update() -> None:
         typer.echo(f"You're on the latest version ({__version__}).")
 
 
+def _require_existing_dir(path: str) -> None:
+    """Exit 2 unless ``--path`` names an existing directory.
+
+    For the commands that read a repo's ``.doberman`` state: without it, a
+    mistyped path is created on the spot (the DBs ``mkdir(parents=True)``) and
+    the command reports on an empty repo instead of failing.
+    """
+    target = Path(path)
+    if not target.exists():
+        typer.echo(f"error: --path {path} does not exist", err=True)
+        raise typer.Exit(code=2)
+    if not target.is_dir():
+        typer.echo(f"error: --path {path} is not a directory", err=True)
+        raise typer.Exit(code=2)
+
+
 @app.command(rich_help_panel="Getting started")
 def doctor(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
@@ -1526,6 +1548,7 @@ def doctor(
     (hooks / hook command on PATH / config / DB) is not healthy, so it is
     script-friendly (`doberman doctor && ...`).
     """
+    _require_existing_dir(path)
     from doberman.cli.doctor import CheckStatus, critical_failures, run_checks
 
     # ASCII marks only: CLI output must survive a cp1252 console (see setup wizard).
@@ -1997,6 +2020,14 @@ def plugins_enable(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Enabled {name!r}. Enabled plugins: {', '.join(names)}")
+    from doberman.cli.doctor import installed_plugin_names
+
+    if name not in installed_plugin_names():
+        typer.echo(
+            f"warning: no installed package provides a plugin named {name!r}; "
+            "it stays enabled but nothing loads until one is installed",
+            err=True,
+        )
 
 
 @plugins_app.command("disable")
@@ -2161,6 +2192,7 @@ def approvals_status(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
     """Show live count and policy TTL without exposing fingerprints."""
+    _require_existing_dir(path)
     seconds = load_approval_memory_seconds(path)
     live = asyncio.run(count_live_approval_memory(datetime.now(timezone.utc), repo_root=path))
     state = "enabled" if seconds else "disabled"
@@ -2183,18 +2215,22 @@ def approvals_ttl(
 ) -> None:
     """Set the 0-900 second TTL; raising it is a gated weakening."""
     current = load_approval_memory_seconds(path)
-    if seconds > current:
-        approved, method = _run_weaken_gate(
-            {"approval_memory_seconds": current},
-            {"approval_memory_seconds": seconds},
+    outcome = asyncio.run(
+        apply_approval_memory_change(
+            current,
+            seconds,
             "doberman approvals ttl CLI",
-            CliPrompter(),
+            repo_root=path,
+            prompter=CliPrompter(),
         )
-        if not approved:
-            typer.echo(f"error: approval-memory TTL change denied ({method}); unchanged", err=True)
-            raise typer.Exit(code=1)
+    )
+    if not outcome.approved:
+        typer.echo(
+            f"error: approval-memory TTL change denied ({outcome.method}); unchanged", err=True
+        )
+        raise typer.Exit(code=1)
     doc = load_policy(path) or recommend_policy()
-    save_policy(doc.with_approval_memory_seconds(seconds), path)
+    save_policy(doc.with_approval_memory_seconds(seconds), path, ledger_ts=outcome.ts)
     typer.echo(f"Approval memory TTL set to {seconds} second(s).")
 
 
@@ -2218,7 +2254,9 @@ def tune(
     json_out: bool = typer.Option(
         False, "--json", help="Emit the report + proposals as one JSON document."
     ),
-    last: int = typer.Option(2000, "--last", help="Consider the most recent N decisions."),
+    last: int = typer.Option(
+        2000, "--last", "-n", min=0, help="Consider the most recent N decisions."
+    ),
     min_occurrences: int = typer.Option(
         5,
         "--min-occurrences",
@@ -2341,6 +2379,9 @@ def tune(
 # for "allowed without a human" cannot answer the question #399 raised. Both are
 # closed values (an AuthPath enum member; 1/0/NULL) and can never carry command
 # text, so exporting them widens the stream by nothing an operator must redact.
+# session_id is the host harness's opaque session id (HK.5.1); it lets a
+# consumer group a session's decisions. The host sends it as free text, so the
+# export below keeps it only when exportable_session_id accepts its shape.
 _JSONL_EXTRA_COLUMNS = (
     "id",
     "agent_role",
@@ -2348,6 +2389,7 @@ _JSONL_EXTRA_COLUMNS = (
     "auth_path",
     "human_confirmed",
     "source_context",
+    "session_id",
 )
 
 # Keep every action type in one column even when a new enum member outgrows the
@@ -2357,7 +2399,7 @@ _ACTION_WIDTH = max(len(action.value) for action in ActionType)
 
 @app.command(rich_help_panel="Daily")
 def log(
-    last: int = typer.Option(20, "--last", "-n", help="Show the most recent N decisions."),
+    last: int = typer.Option(20, "--last", "-n", min=0, help="Show the most recent N decisions."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
     jsonl: bool = typer.Option(
         False,
@@ -2400,6 +2442,8 @@ def log(
             # purpose: a column added to the decisions table later must be opted
             # in here deliberately, rather than leaking into the stream by default.
             record.update({key: row[key] for key in _JSONL_EXTRA_COLUMNS if key in row})
+            if "session_id" in record:
+                record["session_id"] = exportable_session_id(record["session_id"])
             typer.echo(json.dumps(record, sort_keys=True, separators=(",", ":"), default=str))
         return
     if not rows:
@@ -2469,13 +2513,7 @@ def tui(
     `doberman log --last`); the header shows how many rows are loaded versus how
     many currently match the in-app filter.
     """
-    target = Path(path)
-    if not target.exists():
-        typer.echo(f"error: --path {path} does not exist", err=True)
-        raise typer.Exit(code=2)
-    if not target.is_dir():
-        typer.echo(f"error: --path {path} is not a directory", err=True)
-        raise typer.Exit(code=2)
+    _require_existing_dir(path)
     if importlib.util.find_spec("textual") is None:
         typer.echo(
             "error: The TUI requires the optional 'textual' extra: "
@@ -2492,9 +2530,32 @@ _DASH_HOST = "127.0.0.1"
 _DASH_DEFAULT_PORT = 8642
 
 
+def _dash_port_is_free(port: int) -> bool:
+    """Whether ``port`` on the dashboard host can be bound right now.
+
+    A throwaway bind, closed straight away. Off Windows it sets SO_REUSEADDR as
+    uvicorn does, so a port only lingering in TIME_WAIT is not reported busy;
+    on Windows that option would let the bind succeed on a port in use.
+    """
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if sys.platform != "win32":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind((_DASH_HOST, port))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
 @app.command(rich_help_panel="Daily")
 def dash(
-    port: int = typer.Option(_DASH_DEFAULT_PORT, "--port", help="Port to bind the dashboard to."),
+    port: int = typer.Option(
+        _DASH_DEFAULT_PORT, "--port", min=1, max=65535, help="Port to bind the dashboard to."
+    ),
     path: str = typer.Option(".", "--path", "-p", help="Repository root to report on."),
 ) -> None:
     """Launch the local dashboard (preview) - a localhost-only control surface.
@@ -2504,9 +2565,11 @@ def dash(
     route requires it as a bearer token, checked in constant time. Reports the
     live decision feed, summary stats, mode, and enforcement state for
     ``--path`` (default: the current repo), plus an interactive AUTH
-    approve/deny queue: a challenge on the decision path engages this
-    dashboard only while it is running (see the heartbeat below), and falls
-    back to the terminal/GUI otherwise. Requires the optional 'dash' extra.
+    approve/deny queue for the MCP proxy and the host hooks (a hook uses
+    the folder the host runs in, so point ``--path`` there): a challenge
+    engages this dashboard only while it is running (see the heartbeat
+    below), and falls back to the phone, GUI or terminal otherwise.
+    Requires the optional 'dash' extra.
     """
     try:
         import uvicorn
@@ -2520,11 +2583,18 @@ def dash(
         )
         raise typer.Exit(code=1) from exc
 
+    if not _dash_port_is_free(port):
+        # Checked before the URL is printed and before the heartbeat starts, so
+        # a busy port neither prints a link that never comes up nor briefly
+        # routes AUTH challenges to a dashboard that is not there.
+        typer.echo(f"error: port {port} is already in use, try --port <another>", err=True)
+        raise typer.Exit(code=1)
+
     import threading
 
     from doberman.storage.heartbeat import touch_heartbeat
 
-    # ponytail: a daemon thread ticking a file mtime - simplest possible
+    # shortcut: a daemon thread ticking a file mtime - simplest possible
     # liveness signal the decision-path process can check without any IPC.
     # Dies with the process; no explicit stop needed for a CLI-lifetime thread.
     stop_heartbeat = threading.Event()
@@ -2920,7 +2990,7 @@ def memory_seed(
 
 @app.command("policy-history", rich_help_panel="Policy internals")
 def policy_history(
-    last: int = typer.Option(20, "--last", "-n", help="Show the most recent N changes."),
+    last: int = typer.Option(20, "--last", "-n", min=0, help="Show the most recent N changes."),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
     as_json: bool = typer.Option(
         False,
@@ -3070,6 +3140,9 @@ def decision_log_prune(
         min=0,
         help="Retain at most this many newest resolved decisions; delete the rest.",
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview rows that would be pruned without deleting."
+    ),
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
     """Prune resolved decision rows by age and/or retained-row budget.
@@ -3082,14 +3155,24 @@ def decision_log_prune(
         raise typer.Exit(code=2)
     try:
         result = asyncio.run(
-            prune_decisions(path, older_than_days=older_than_days, max_rows=max_rows)
+            prune_decisions(
+                path,
+                older_than_days=older_than_days,
+                max_rows=max_rows,
+                dry_run=dry_run,
+            )
         )
     except Exception as exc:  # noqa: BLE001 — never report a failed prune as success
         typer.echo(f"error: decision-log prune failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
     deleted = result["age_deleted"] + result["overflow_deleted"]
-    typer.echo(f"Decision log pruned: {deleted} row(s).")
+    if dry_run:
+        typer.echo(
+            f"Would prune {deleted} row(s) ({result['age_deleted']} by age, {result['overflow_deleted']} over --max-rows)."
+        )
+    else:
+        typer.echo(f"Decision log pruned: {deleted} row(s).")
 
 
 def _record_manifest(host: str, scope: str, settings_path: Path, groups: dict) -> None:
@@ -4137,10 +4220,10 @@ def setup(
     # count - `--yes` prompts for nothing, so it never shows one. A stage
     # applies only if this run's flags mean it will actually show a prompt;
     # "Preference tuning"/"Telemetry"/"Doctor"/"Demo" are counted whenever
-    # reached even on the rare path where a refused mode lowering skips the
-    # tuning body - ponytail: an exactly precise dynamic denominator isn't
-    # worth the complexity for that edge case. "Demo" (item 7) covers the
-    # closing "see it work?" offer. item 4 (round 5): each host actually
+    # reached. If a refused mode lowering later skips preference tuning, that
+    # stage is removed from the counter before the next section prints.
+    # "Demo" (item 7) covers the closing "see it work?" offer.
+    # item 4 (round 5): each host actually
     # being wired gets its OWN step number instead of one shared "Wiring"
     # slot - a `--host all` run used to show the identical "[N of M]" four
     # times in a row. The real host list is only known once section b below
@@ -4412,6 +4495,14 @@ def setup(
             mode_applied = False
 
     persisted_mode = chosen_mode if mode_applied else current_mode
+
+    # A refused mode lowering skips the preference-tuning section entirely.
+    # Keep the remaining step numbers and denominator aligned with the
+    # sections this run will actually print.
+    if not mode_applied and "Preference tuning" in step_names:
+        step_names.remove("Preference tuning")
+        step_total = len(step_names)
+        step_index = {name: i + 1 for i, name in enumerate(step_names)}
 
     # ------------------------------------------------------------------
     # d. Guardrails / preferences - also GATE ONLY (round 5 item P1; round 6

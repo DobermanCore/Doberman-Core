@@ -10,7 +10,9 @@ from doberman.cli import main as cli_main
 from doberman.cli.main import app
 from doberman.config import load_approval_memory_seconds, save_policy
 from doberman.policy.checklist import recommend_policy
+from doberman.policy.drift import read_policy_changes
 from doberman.storage.approval_memory import count_live, remember
+from doberman.storage.policy_catalogue import ORIGIN_CHANGE, read_observations
 
 runner = CliRunner()
 NOW = datetime.now(timezone.utc)
@@ -122,3 +124,89 @@ def test_ttl_rejects_out_of_range(tmp_path):
 
     assert result.exit_code != 0
     assert load_approval_memory_seconds(str(tmp_path)) == 300
+
+
+def test_approvals_status_refuses_a_missing_path_and_creates_nothing(tmp_path):
+    """A mistyped --path used to be created, with a fresh decision DB in it (#715)."""
+    missing = tmp_path / "typo"
+
+    result = runner.invoke(app, ["approvals", "status", "--path", str(missing)])
+
+    assert result.exit_code == 2
+    assert f"error: --path {missing} does not exist" in result.output
+    assert not missing.exists()
+
+
+def test_approvals_status_refuses_a_file_path(tmp_path):
+    a_file = tmp_path / "not-a-dir"
+    a_file.write_text("x", encoding="utf-8")
+
+    result = runner.invoke(app, ["approvals", "status", "--path", str(a_file)])
+
+    assert result.exit_code == 2
+    assert f"error: --path {a_file} is not a directory" in result.output
+
+
+def _ttl_rows(root: str) -> list[dict]:
+    rows = asyncio.run(read_policy_changes(root))
+    return [r for r in rows if r["rule_id"] == "approval_memory_seconds"]
+
+
+def test_ttl_raise_is_ledgered_as_an_approved_weaken(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    password.enroll(PASSWORD)
+    monkeypatch.setattr(cli_main, "CliPrompter", _Approve)
+
+    result = runner.invoke(app, ["approvals", "ttl", "600", "--path", root])
+
+    assert result.exit_code == 0, result.output
+    (row,) = _ttl_rows(root)
+    assert (row["from_state"], row["to_state"]) == ("300", "600")
+    assert row["classification"] == "weaken"
+    assert row["approved"] == 1
+    assert row["approval_method"] == "password"
+
+
+def test_ttl_raise_denial_is_still_ledgered(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    password.enroll(PASSWORD)
+    monkeypatch.setattr(cli_main, "CliPrompter", _Wrong)
+
+    result = runner.invoke(app, ["approvals", "ttl", "600", "--path", root])
+
+    assert result.exit_code == 1
+    assert load_approval_memory_seconds(root) == 300
+    (row,) = _ttl_rows(root)
+    assert row["classification"] == "weaken"
+    assert row["approved"] == 0
+    assert row["approval_method"] == "denied"
+
+
+def test_ttl_lower_applies_automatically_and_is_ledgered(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    save_policy(recommend_policy().with_approval_memory_seconds(600), root)
+    monkeypatch.setattr(cli_main, "CliPrompter", _Boom)
+
+    result = runner.invoke(app, ["approvals", "ttl", "120", "--path", root])
+
+    assert result.exit_code == 0, result.output
+    assert load_approval_memory_seconds(root) == 120
+    (row,) = _ttl_rows(root)
+    assert (row["from_state"], row["to_state"]) == ("600", "120")
+    assert row["classification"] == "strengthen"
+    assert row["approved"] == 1
+    assert row["approval_method"] == "auto"
+
+
+def test_ttl_change_links_the_catalogue_observation_to_its_ledger_row(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    password.enroll(PASSWORD)
+    monkeypatch.setattr(cli_main, "CliPrompter", _Approve)
+
+    result = runner.invoke(app, ["approvals", "ttl", "600", "--path", root])
+
+    assert result.exit_code == 0, result.output
+    (row,) = _ttl_rows(root)
+    newest = read_observations(root)[0]
+    assert newest["origin"] == ORIGIN_CHANGE
+    assert newest["ledger_ts"] == row["ts"]

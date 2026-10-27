@@ -80,7 +80,7 @@ class ForwardProxy:
         max_events: int = _MAX_EVENTS,
     ) -> None:
         if host != BIND_HOST:
-            # ponytail: loopback-only, no exceptions — see BIND_HOST above.
+            # shortcut: loopback-only, no exceptions — see BIND_HOST above.
             raise ValueError(f"ForwardProxy must bind {BIND_HOST!r}; refusing host={host!r}")
         self._allowlist = allowlist
         self._host = host

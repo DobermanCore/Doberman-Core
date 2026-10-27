@@ -82,7 +82,11 @@ from doberman.storage.db import (
     open_db,
     revoke_elevation,
 )
-from doberman.storage.log import recent_session_decisions, record_decision
+from doberman.storage.log import (
+    recent_session_decisions,
+    record_decision,
+    record_shadow,
+)
 from doberman.subjective.baseline import (
     budget_allows_step_up,
     entity_id,
@@ -245,7 +249,7 @@ def handler_failure_result(exc: Exception) -> CallToolResult:
         error_class=type(exc).__name__,
         action_id=uuid.uuid4().hex,
     )
-    # ponytail: every field above (a reason enum, an exception's own Python
+    # shortcut: every field above (a reason enum, an exception's own Python
     # type name, a fresh uuid) is structurally incapable of carrying argument
     # content — this scrub is defense-in-depth against a future edit to the
     # template that interpolates something unsafe.
@@ -500,7 +504,7 @@ def _scannable_text(result: CallToolResult) -> str:
     they carry no plaintext to leak here, and a full base64 blob is scan noise.
     Never raises — a malformed block must not break the forward/return path.
 
-    ponytail: text channels only; if binary/blob exfil ever needs scanning,
+    shortcut: text channels only; if binary/blob exfil ever needs scanning,
     decode the blob here behind a size cap.
     """
     parts: list[str] = []
@@ -778,6 +782,15 @@ async def _persist(
         )
     except Exception:  # noqa: BLE001 — logging must never break the execution path
         _engine_logger.warning("decision log persist failed (action %s); continuing", action.id)
+    try:
+        await record_shadow(
+            decision,
+            action,
+            repo_root=REPO_ROOT,
+            entity_id=eid,
+        )
+    except Exception:  # noqa: BLE001 - shadow logging must never break execution
+        _engine_logger.warning("shadow log persist failed (action %s); continuing", action.id)
 
 
 async def _handle_auth(

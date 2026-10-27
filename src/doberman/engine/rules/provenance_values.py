@@ -113,7 +113,7 @@ def _deobfuscated(text: str) -> str:
     return out
 
 
-# ponytail: common non-host file extensions the bare-host regex would otherwise
+# shortcut: common non-host file extensions the bare-host regex would otherwise
 # treat as a "TLD" (README.md, package.json). A fingerprint of a filename is
 # low-risk noise (nothing egresses to a destination literally named
 # "readme.md"), but filtering the obvious cases keeps the bounded per-scope row

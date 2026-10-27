@@ -21,20 +21,24 @@ Day-to-day posture, status, and review commands.
 | `doberman doctor` | Read-only health self-check, grouped into the same Hooks/Policy/Auth/Health sections `status` uses. Exits non-zero if a critical check fails, naming every failing check on the closing line. | `--path`/`-p`, `--json` |
 | `doberman update` | Check PyPI for a newer Doberman and print the upgrade command (never installs). Off under `DO_NOT_TRACK`/`CI`/`DOBERMAN_UPDATE_CHECK=off`. | none |
 | `doberman policy-history` | Append-only policy-change ledger, newest first. | `--last`/`-n`, `--path`/`-p`, `--json` |
+| `doberman policy-file` | Show the status of the team-committed `doberman.policy.yaml` at the repo root: present or absent, how many `blocked`/`sensitive` globs it applies, or why it was rejected, and any glob the last approval still enforces that the file has dropped. `--accept` approves a pending drop behind a confirmation of the diff plus the strongest enrolled possession factor; there is no `--yes` bypass. | `--accept`, `--path`/`-p` |
 | `doberman policy-versions` | Every policy version that has been in force (newest first); `--show` prints one snapshot, `--verify` checks the catalogue. | `--show`, `--verify`, `--path`/`-p`, `--json` |
 | `doberman log` | Recent redacted decision log, newest first. Its timestamp column reads `YYYY-MM-DD HH:MM:SS UTC` (no microseconds, matching the `tui`'s why panel); `--jsonl` keeps the raw stored `ts` value unchanged. | `--last`/`-n`, `--path`/`-p`, `--jsonl`, `--why` |
-| `doberman decision-log-prune` | Delete resolved decisions by age and/or retained-row budget. Never touches pending AUTH rows or the policy-change ledger. | `--older-than-days`, `--max-rows`, `--path`/`-p` |
+| `doberman decision-log-prune` | Delete resolved decisions by age and/or retained-row budget. Never touches pending AUTH rows or the policy-change ledger. | `--older-than-days`, `--max-rows`, `--dry-run`, `--path`/`-p` |
 | `doberman tui` | Interactive decision log with a plain-language "why" panel. Keys: `?` help (lists every binding, including the arrow keys/page up/page down that come from the table itself; a proper modal, since it never stacks, other keys are inert while it's open, and it also opens from inside the full-screen why view), `/` filter, `b`/`B`/`a` next/prev BLOCK or next AUTH (says "no other ... rows in view" rather than silently re-selecting the row you're already on when it's the only match), `w`/`enter` full-screen why, `tab` switch focus, `y` copy id, `home`/`end`, `r` reload, `q` quit. The footer always shows the same 6 bindings (`w`/`/`/`b`/`?`/`q`/`r`) at any width; `B`/`a`/`y` are keyboard-only, documented in `?`. `risk`/`auth` drop out of the table below 100 terminal columns (both are already restated in the why panel/full-screen why); the header reads `showing N of M (filtered) - X BLOCK / Y AUTH / Z PASS loaded` so it's clear which count is which. Times show in your local zone (`HH:MM:SS`, or date-qualified `MM-DD HH:MM` across a multi-day window); the why panel's border carries the row's absolute UTC instant plus a relative age ("2m ago", with a `[focus]` cue appended while it has focus), and, when its content overflows, a muted "(scroll for more)" cue in its border subtitle. The panel body itself always starts with the explanation. An empty log, a filtered-to-zero view, or a missing decision log replaces the table (not the why panel) with the message, in the table's own area. Below 76x16 the app shows a one-line "resize" notice instead of the browser, and its own footer then shows only `q`/"quit" (every key still works, just hidden). Needs the `tui` extra. | `--path`/`-p`, `--last`/`-n` |
-| `doberman dash` | Localhost-only dashboard: live decision feed, stats, and an AUTH approve/deny queue. Needs the `dash` extra. | `--port`, `--path`/`-p` |
+| `doberman dash` | Localhost-only dashboard: live decision feed, stats, and an AUTH approve/deny queue for the MCP proxy and the host hooks (run it on the folder the host works in). Needs the `dash` extra. | `--port`, `--path`/`-p` |
 | `doberman demo` | Scripted attack reel through the real decision engine. Nothing runs against a real tool or downstream server. | `--path`/`-p`, `--mode`, `--fast`, `--quiet`/`-q` |
 | `doberman monitor run` | Warm, observe-only ambient daemon (FM.2): scores non-inline activity through the same engine, never enforces. Refuses to start a second instance for the same repo. | `--path`/`-p`, `--interval`, `--mode` |
 | `doberman monitor status` | Whether the ambient monitor daemon appears to be running, plus its bus cursor and pending-event backlog. | `--path`/`-p` |
 | `doberman revoke ELEVATION_ID` | Revoke an active role elevation by id (see `doberman status`). | `--path`/`-p` |
-| `doberman tune` | Friction report (interventions per session, top AUTH reasons) plus gated standing-elevation proposals. | `--path`/`-p`, `--json`, `--last`, `--min-occurrences`, `--accept` |
+| `doberman tune` | Friction report (interventions per session, top AUTH reasons) plus gated standing-elevation proposals. | `--path`/`-p`, `--json`, `--last`/`-n`, `--min-occurrences`, `--accept` |
 | `doberman memory` | Learned-memory profile: decision counts, verdict mix, most-touched path classes. Never shows a fingerprint value or raw secret. | `--path`/`-p`, `--json` |
 | `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
 | `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
+| `doberman plugins list` | Show the enabled plugin names, then every installed entry point across all plugin seams with its enabled/disabled state. Lists names only and never loads a plugin to show it. | none |
+| `doberman plugins enable NAME` | Opt a plugin in by entry-point name. Plugins are opt-in by name: being installed is never enough for one to run in-process. | none |
+| `doberman plugins disable NAME` | Stop trusting a plugin by name; no seam imports it again. Disabling a name that was never enabled is a no-op. | none |
 | `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host and ask for telemetry consent (its default mirrors the current on-disk state, so a prior opt-out isn't silently reversed by a bare Enter). Every menu prompt (hosts, mode, weight tuning) and every yes/no confirm (telemetry, global scope, weight tuning, the closing demo offer) accepts `q`/`quit` to abort cleanly, except the closing demo offer, where `q` only declines the demo since setup has already succeeded by then. Exits non-zero (`!! Setup incomplete !!`) if the closing doctor pass finds a critical. A host-kind-free run (mcp/openclaw only) prints `!! Setup pending !!`, and a MIXED run (some hooks-kind host wired, some still manual) prints `!! Setup partly pending !!`; both exit `3`. A refused `--mode <lower>` request still exits `0`: the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`). Exit `0` means the run completed, not that the requested mode was applied. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable; also accepts `all`), `--path`/`-p`, `--dry-run`, `--no-telemetry` |
 | `doberman telemetry` | With no subcommand, prints the same status line `telemetry status` does (symmetric with bare `doberman mode`). | none |
 | `doberman telemetry on` | Opt in to anonymous CLI usage counts. | none |
@@ -74,6 +78,7 @@ Gated recovery actions for a stuck or compromised state. Each requires an enroll
 | `doberman taint clear` | Clear this repo's sticky session taint. No timer; this is the only escape hatch. | `--path`/`-p` |
 | `doberman tools approve TOOL_NAME` | Approve a changed MCP tool fingerprint after possession-factor verification. | `--path`/`-p` |
 | `doberman memory reset` | Wipe learned behavioral memory for this repo. Raise-safe by construction: a colder baseline scores everything as more novel, never less protected. | `--entity`, `--path`/`-p` |
+| `doberman memory seed` | Warm the per-entity streaming baseline from a JSONL file of allowed-action traces (see [BASELINE_SEEDING.md](BASELINE_SEEDING.md)). Every line is validated first and one bad line refuses the whole file. It can only warm the surprise baseline; it never changes a verdict, the mode, or the policy. | `--from` (required), `--now`, `--json`, `--path`/`-p` |
 | `doberman memory prune` | Drop stale entities' learned memory past a retention window. A maintenance operation, so it is not gated. | `--older-than-days` (required), `--path`/`-p` |
 | `doberman uninstall` | Remove Doberman from one project, or use `--global` for ordered machine-wide removal: all writable hooks, project and device state, enrolled factors, then the pip/pipx package. Codex plugin hooks remain under `codex plugin` control. | `--path`/`-p`, `--yes`/`-y`, `--dry-run`, `--global`/`-g`, `--keep-package` |
 
@@ -144,7 +149,9 @@ Emits `{version, path, ok, checks[], critical_failures[]}`. `ok` is `true` only 
 
 ### `doberman log --jsonl`
 
-One redacted JSON object per decision line, newest first. Fields are an allowlist of already-redacted data: `ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id`, `agent_role`, `risk`, `auth_path`, and `human_confirmed` when present. Empty stdout when there are no rows.
+One redacted JSON object per decision line, newest first. Fields are an allowlist of already-redacted data: `ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id`, `agent_role`, `risk`, `auth_path`, `human_confirmed`, `source_context`, and `session_id` when present. Empty stdout when there are no rows.
+
+`session_id` is the host's opaque session identifier (the Claude Code session UUID for its hooks), so a consumer can group one agent session's decisions. It is `null` for a decision with no host session, such as an MCP-proxy call, or a row recorded before the column existed. The host sends this value as free text, so Doberman exports it only when it looks like an id: a letter or digit followed by up to 127 letters, digits, `.`, `_`, `:` or `-`. Anything else, such as a path, a URL or a `key=value` pair, exports as `null`; the stored value is unchanged.
 
 `auth_result` says *what* the outcome was; `auth_path` and `human_confirmed` say *who decided*. `auth_path` names the code path that resolved the authentication (`proxy_challenge`, `proxy_elevation`, `proxy_post_approval_gate`, `host_hook_challenge`, `host_hook_monitor`, `host_hook_objective`, `turn_gate`, or `none` when no authentication was involved). `human_confirmed` is `1` only when a person affirmatively approved, `0` when a challenge ran and no person answered it (an expired challenge, the dev auto-deny, an approval-memory hit), and `null` when no authentication was involved at all or the row predates the column. `null` is "not recorded", never "nobody approved".
 
@@ -203,6 +210,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `prefs` | `1` | Preference change denied by the gate. |
 | `egress-velocity` | `2` | Unknown knob, missing value, or a non-positive value. |
 | `egress-velocity` | `1` | Threshold change denied by the gate. |
+| `doctor` | `2` | `--path` does not exist or is not a directory. Nothing is created. |
 | `doctor` | `1` | One or more critical checks failed. |
 | `setup` | `0` | The run completed as designed. This is NOT the same claim as "you got the mode you asked for". A `--mode <lower>` request the raise-only gate refuses still exits `0`; the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`) and the `Mode:` line repeats the reason. |
 | `setup` | `1` | The closing doctor pass found a critical (e.g. hooks call `doberman`, which is not on PATH), printed as `!! Setup incomplete !!`, never `complete`. |
@@ -213,14 +221,17 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `2fa reset-lockout` | `1` | Not enrolled, no password enrolled, or an incorrect password. |
 | `taint clear` | `1` | No possession factor enrolled, gate denied, or the DB clear failed. |
 | `tools approve` | `1` | No possession factor enrolled, gate denied, storage failed, or no pin exists for that tool. |
+| `approvals status` | `2` | `--path` does not exist or is not a directory. Nothing is created. |
 | `approvals ttl` | `1` | A TTL increase was denied by the possession-factor gate. |
 | `approvals ttl` | `2` | TTL is outside `0..900`. |
 | `revoke` | `1` | Elevation id not found, or revoke failed. |
 | `policy-versions` | `2` | `--show` given something that is not a `pv1:` id or at least 8 hex characters. |
 | `policy-versions` | `1` | `--show` matched nothing or was ambiguous; `--verify` found `mismatch` or `drift`. |
 | `tui` | `2` | `--path` does not exist, exists but is not a directory, or `--last` is less than 1. |
+| `log`, `tune`, `policy-history` | `2` | `--last` is negative. `0` is allowed and means zero rows. |
 | `tui` | `1` | The optional `textual` extra is not installed. |
-| `dash` | `1` | The optional `dash` extra is not installed. |
+| `dash` | `2` | `--port` is outside `1..65535`. |
+| `dash` | `1` | The optional `dash` extra is not installed, or `--port` is already in use (`error: port N is already in use, try --port <another>`, printed instead of the dashboard URL). |
 | `demo` | `1` | Invalid mode name, or a scenario did not match its expected outcome. |
 | `memory reset` | `1` | No possession factor enrolled, gate denied, or the DB reset failed. |
 | `memory prune` | `1` | The DB prune operation failed. |
@@ -229,7 +240,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `uninstall` | `1` | No possession factor enrolled, confirmation declined, name mismatch, gate denied, or some items were not removed. |
 | `hook cursor` | `2` | The gated Cursor event was denied. The JSON document says `deny` as well; Cursor treats either signal as a block, so a lost document still blocks. |
 
-Commands not listed (`scan`, `review`, `status`, `log`, `policy-history`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.
+Commands not listed (`scan`, `review`, `status`, `install-hooks`, `uninstall-hooks`, `session-summary`, `version`, `memory`, `hook pre`/`post`/`openclaw`/`codex-pre`) exit `0` on success and rely on Typer's default handler to return `1` on an unhandled exception; they have no `typer.Exit(code=...)` call sites of their own.
 
 ### Collision audit
 
@@ -245,6 +256,9 @@ doberman doctor --json | jq .ok
 doberman policy-history --json | jq 'length'
 doberman log --jsonl | jq -c 'select(.final_verdict=="block")'
 doberman tune --json | jq '.proposals'
+doberman policy-file
+doberman plugins list
+doberman plugins enable my_rule
 doberman 2fa setup
 doberman password set
 doberman setup

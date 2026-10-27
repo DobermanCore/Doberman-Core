@@ -32,7 +32,8 @@ never HTTP into the decision path:
 
 * ``GET /api/pending`` - unexpired rows still awaiting a decision. Same
   allow-listed, redaction-safe vocabulary as the D2 feed (action type, risk,
-  reason codes, the human explanation, path *class*, tier) - never a raw
+  reason codes, the human explanation, path *class*, tier) plus the host
+  session id (null for proxy rows or a malformed id) - never a raw
   target/argument/secret. Bearer token via header only (no query-param
   fallback - this route isn't consumed by ``EventSource``).
 * ``POST /api/resolve/{id}`` - body ``{"decision": "approved"|"denied",
@@ -82,7 +83,7 @@ from doberman.explain import REASON_DESCRIPTIONS, headline, template_explanation
 from doberman.policy.drift import apply_mode_change
 from doberman.policy.modes import SecurityMode
 from doberman.storage import approvals
-from doberman.storage.log import read_decisions, read_decisions_since
+from doberman.storage.log import exportable_session_id, read_decisions, read_decisions_since
 
 #: Tiers whose challenge requires a TOTP code (mirrors
 #: ``LocalAuthProvider._run_tier``'s ``two_factor``/``role_elevation`` branch).
@@ -95,7 +96,7 @@ _FEED_BACKFILL_LIMIT = 50
 #: much shorter one so the feed test doesn't wait on the wall clock).
 _FEED_POLL_INTERVAL_S = 1.0
 
-# ponytail: one inline page, no build toolchain.
+# shortcut: one inline page, no build toolchain.
 _HTML_SHELL = """<!doctype html>
 <html lang="en">
 <head>
@@ -3143,8 +3144,16 @@ def _feed_row(row: dict) -> dict:
     ``row`` comes from :func:`doberman.storage.log.read_decisions`/
     ``read_decisions_since``, already redacted at write time (path *class*,
     not a raw path; no raw arguments; no secrets). This picks a further
-    subset - e.g. ``agent_role``/``auth_result`` are dropped even though
-    they're on the row.
+    subset - e.g. ``auth_result``/``action_id``/``entity_id`` are dropped even
+    though they're on the row.
+
+    ``session_id`` (the host's opaque session id), ``agent_role``,
+    ``auth_path`` (a closed enum) and ``human_confirmed`` (1/0/NULL, passed
+    through as stored, the same as ``log --jsonl``) let a companion UI group
+    rows by the session that made them and tell who resolved an AUTH. The
+    host sends ``session_id`` as free text, so it goes out only when it has an
+    id's shape (:func:`doberman.storage.log.exportable_session_id`), else
+    null; a row that never recorded a field sends null too.
 
     ``risk`` and ``source_context`` are included (beyond what the TUI's
     5-column table shows) because a PASS row for a non-path action (e.g.
@@ -3181,6 +3190,10 @@ def _feed_row(row: dict) -> dict:
         "reason_codes": reason_codes(row),
         "headline": headline(row) if show_why else "",
         "explanation": template_explanation(row, with_reasons=False) if show_why else "",
+        "session_id": exportable_session_id(row.get("session_id")),
+        "agent_role": row.get("agent_role"),
+        "auth_path": row.get("auth_path"),
+        "human_confirmed": row.get("human_confirmed"),
     }
 
 
@@ -3241,6 +3254,8 @@ def _pending_row(row: dict) -> dict:
     human explanation string, reason-code/tier/risk/action-type CLASSES). This
     is a further allow-list on top: ``decision``/``totp_code`` are the
     resolution's own write-side fields and are never echoed back out.
+    ``session_id`` is checked again here, as the feed does, so a row written
+    by anything but the prompter still cannot export a path or credential.
     """
     return {
         "id": row.get("id"),
@@ -3253,6 +3268,7 @@ def _pending_row(row: dict) -> dict:
         "explanation": row.get("explanation"),
         "target_path_class": row.get("target_path_class"),
         "needs_totp": row.get("tier") in _TOTP_TIERS,
+        "session_id": exportable_session_id(row.get("session_id")),
     }
 
 

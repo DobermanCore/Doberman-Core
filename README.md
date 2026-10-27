@@ -134,6 +134,9 @@ Anonymous usage counts are on by default: command names and daily totals, never 
 secrets. The first command prints a notice, and `doberman telemetry off` or `DO_NOT_TRACK=1` turns
 them off. See [Telemetry](docs/TELEMETRY.md).
 
+Interactive setup step counters include only the sections that the current run actually shows,
+including when a refused mode lowering skips preference tuning.
+
 Doberman now reviews every tool call your agent makes. Confirm it with `doberman doctor`, or watch
 real verdicts with `doberman demo`. MCP-proxy wiring, the dashboard, the TUI, scan, and 2FA
 (two-factor authentication) are in the [Setup guide](docs/SETUP.md). Pending-approval cards in the
@@ -193,6 +196,13 @@ connections, including tasks and workers whose copied context outlives the origi
 Operators can bound how many decision rows are kept with `doberman decision-log-prune`. It deletes
 only resolved decisions, never pending `AUTH` rows or the append-only policy-change ledger. See the
 [CLI reference](docs/CLI.md) for the age and row-budget options.
+
+`doberman log --jsonl` and the dashboard's live feed carry each decision's host session id, so a
+companion tool can group decisions by the agent session that made them. A value that does not look
+like an id, such as a path, is exported as `null`. The feed also names the agent role and who
+resolved an `AUTH` (`auth_path`, `human_confirmed`). A host-hook `AUTH` from Claude Code, Codex or
+Cursor can be answered on `doberman dash` too, when the dashboard runs on the folder the host works
+in, and its `/api/pending` item carries the same `session_id` (`null` for an MCP-proxy approval).
 
 ---
 

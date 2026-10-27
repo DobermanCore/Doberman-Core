@@ -225,7 +225,8 @@ def _write_payload(tmp_path) -> dict:
     return {
         "hook_event_name": "preToolUse",
         "tool_name": "Write",
-        "tool_input": {"file_path": str(tmp_path / "notes.txt"), "content": "x"},
+        # Test dedupe independently of the random temporary root's entropy.
+        "tool_input": {"file_path": "notes.txt", "content": "x"},
         "cwd": str(tmp_path),
         "workspace_roots": [str(tmp_path)],
         "cursor_version": "2026.09.02-c22c1a3",

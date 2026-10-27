@@ -97,7 +97,7 @@ def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
         return load_builtin_roles().get(DEFAULT_ROLE_NAME, MOST_RESTRICTIVE_ROLE)
 
     try:
-        # ponytail: one small read per decision; the parse+validate work below
+        # shortcut: one small read per decision; the parse+validate work below
         # is cached on the bytes themselves, so no staleness ceiling remains.
         raw = path.read_bytes()
         data = _parse_role_yaml_data(raw)
@@ -186,7 +186,7 @@ def _extra_protected_branches(data: dict, path: Path) -> tuple[str, ...] | None:
     this module -- a blank entry is as unusable as a non-string one, so it
     fails the same way rather than being silently dropped.
 
-    ponytail: exact string match only, no glob patterns -- YAGNI until a real
+    shortcut: exact string match only, no glob patterns -- YAGNI until a real
     need for wildcard branch names shows up (would also need
     ``_git_force_push_to_protected``'s matching to grow glob support).
     """

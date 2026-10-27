@@ -95,7 +95,10 @@ _ACTIVE_DB: ContextVar[
 #: because its vocabulary differs per writer. Additive ALTER on an existing
 #: table; fresh DBs get both from _SCHEMA below. Pre-migration rows keep NULL
 #: in both: "not recorded" is the truth for them, and it must not be guessed.
-SCHEMA_VERSION = 17
+#: Version 18 adds ``pending_approvals.session_id`` so the dashboard can show
+#: which host session a hook AUTH came from. Additive ALTER on an existing
+#: table; fresh DBs get it from _SCHEMA below. Older rows keep NULL.
+SCHEMA_VERSION = 18
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -323,11 +326,15 @@ CREATE TABLE IF NOT EXISTS shadow_adjudications (
 -- ever touches the decision path itself. Display fields are the SAME
 -- redaction-safe vocabulary the terminal/GUI prompters already show a human
 -- (action type, risk, reason codes, explanation, path *class*) - never the
--- raw target/arguments. `status` transitions 'pending' -> 'resolved' exactly
--- once (see storage.approvals.resolve's race-safe UPDATE ... WHERE clause).
+-- raw target/arguments. `status` leaves 'pending' exactly once: 'resolved'
+-- by the dash, or 'expired' when the prompter's window closes first (see
+-- storage.approvals.resolve / expire, each a race-safe UPDATE ... WHERE).
 -- `totp_code` rides the row only because the dash NEVER verifies it - the
 -- prompter (decision path) is the sole consumer, via the existing
--- doberman.auth.totp.verify.
+-- doberman.auth.totp.verify, and it clears the code in the same write that
+-- reads it (storage.approvals.consume). `session_id` is the host session
+-- id, kept only when it is id-shaped (storage.log.exportable_session_id),
+-- else NULL.
 CREATE TABLE IF NOT EXISTS pending_approvals (
     id                 TEXT PRIMARY KEY,
     action_id          TEXT NOT NULL,
@@ -341,7 +348,8 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     explanation        TEXT,
     target_path_class  TEXT,
     decision           TEXT,
-    totp_code          TEXT
+    totp_code          TEXT,
+    session_id         TEXT
 );
 
 -- Slice B approval memory: a bounded record of a real local/2FA approval for
@@ -519,6 +527,12 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
         await _add_column_if_missing(conn, "decisions", "auth_path TEXT")
     if auth_cols and "human_confirmed" not in auth_cols:
         await _add_column_if_missing(conn, "decisions", "human_confirmed INTEGER")
+    # v17 -> v18: pending_approvals gains ``session_id``. Additive ALTER on an
+    # existing table; fresh DBs get it from _SCHEMA above. No backfill: an
+    # older row never recorded a session, so NULL is the truth for it.
+    pending_cols = await _table_columns(conn, "pending_approvals")
+    if pending_cols and "session_id" not in pending_cols:
+        await _add_column_if_missing(conn, "pending_approvals", "session_id TEXT")
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:

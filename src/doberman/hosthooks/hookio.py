@@ -10,7 +10,8 @@ Every function takes the host's hook event name explicitly (``event: str``)
 instead of reading a module constant, and :func:`resolve_auth` takes its
 ``Prompter`` explicitly — each adapter keeps its own module-level
 ``AUTH_PROMPTER`` injection seam (so tests can still inject a headless fake
-there) and passes it in; ``None`` builds the default phone→GUI→TTY fallback lazily.
+there) and passes it in; ``None`` builds the default dashboard→phone→GUI→TTY
+fallback lazily.
 
 **Speed.** A host hook runs before or after *every* tool call, so this module
 must NEVER import :mod:`doberman.proxy.executor` or the subjective baseline —
@@ -21,6 +22,7 @@ is imported lazily, only inside the AUTH branch that actually needs it.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
@@ -268,7 +270,7 @@ def resolve_auth_result(
     is the one place all of them turn an approval into an execution, which is
     why the recheck belongs here rather than in each adapter.
     """
-    # ponytail: no TOCTOU re-DECIDE like the proxy — the hook grants no elevations and
+    # shortcut: no TOCTOU re-DECIDE like the proxy — the hook grants no elevations and
     # holds no state between calls, so there is no elevation set to refresh; each call
     # is challenged independently. The delete-class effect-set recheck below is a
     # different guard and DOES apply here: it compares the filesystem against what the
@@ -291,7 +293,9 @@ def resolve_auth_result(
             previewed = _effects_for(operands, dynamic, repo_root)
             challenged = decision.model_copy(update={"effects": previewed})
 
-        active_prompter = prompter if prompter is not None else _default_auth_prompter()
+        active_prompter = (
+            prompter if prompter is not None else _default_auth_prompter(repo_root, session_id)
+        )
         result = run_auth_challenge(
             challenged,
             action,
@@ -346,19 +350,35 @@ def resolve_auth_result(
     )
 
 
-def _default_auth_prompter() -> "Prompter":
-    """The host-hook challenge channel: the phone first, then a topmost GUI dialog,
-    then the controlling terminal (no MCP elicitation — a hook has no agent session).
+def _default_auth_prompter(
+    repo_root: str | None = None, session_id: str | None = None
+) -> "Prompter":
+    """The host-hook challenge channel: the dashboard (when the hook knows its repo),
+    then the phone, then a topmost GUI dialog, then the controlling terminal (no MCP
+    elicitation — a hook has no agent session).
     Built lazily so the common PASS/BLOCK hot path never imports the auth stack.
+
+    The dashboard steps aside at once when no ``doberman dash`` is running for
+    ``repo_root`` (no fresh heartbeat), and after its window when nobody answers,
+    so the chain behind it is unchanged. It only relays an answer: approval still
+    needs a resolved row for this action and, on a proof tier, ``totp.verify``
+    here in the hook process.
     """
     from doberman.auth.gui_prompter import FallbackPrompter, GuiPrompter
     from doberman.auth.ntfy import NtfyPrompter
     from doberman.auth.tty_prompter import TtyPrompter
 
-    # ponytail: the phone waits its own `wait_s` before the local dialog opens — a
+    # shortcut: the phone waits its own `wait_s` before the local dialog opens — a
     # fixed step, not a fan-out race. Upgrade path: first-answer-wins concurrent
     # notify, if a sequential wait proves too slow in practice.
-    return FallbackPrompter([NtfyPrompter(), GuiPrompter(), TtyPrompter()])
+    chain: list[Prompter] = [NtfyPrompter(), GuiPrompter(), TtyPrompter()]
+    # Only a folder the host named: the spine's "." fallback (no cwd sent) is the hook
+    # process's own folder, whose dashboard may belong to another project.
+    if repo_root and os.path.isabs(repo_root):
+        from doberman.auth.dashboard_prompter import DashboardPrompter
+
+        chain.insert(0, DashboardPrompter(repo_root, session_id=session_id))
+    return FallbackPrompter(chain)
 
 
 def _auth_denied_reason(decision: Decision, *, channel_error: bool, timed_out: bool = False) -> str:

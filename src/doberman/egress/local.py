@@ -52,7 +52,7 @@ class LocalEgressBroker:
         if probe is not None:
             self._probe = probe
         elif proxy is not None:
-            # ponytail: probe one well-known allowlisted host through the
+            # shortcut: probe one well-known allowlisted host through the
             # proxy — enough to prove "this proxy is actually enforcing
             # egress right now" without a configurable target list. The
             # direct connector stays at EnforcementProbe's safe default

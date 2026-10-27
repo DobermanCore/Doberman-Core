@@ -24,6 +24,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from starlette.testclient import TestClient
 
 from doberman.auth import dashboard_prompter, totp
@@ -42,6 +43,7 @@ from doberman.models import (
     Verdict,
 )
 from doberman.storage import approvals
+from doberman.storage.db import open_db
 from doberman.storage.heartbeat import touch_heartbeat
 
 _TOKEN = "test-dash-token-0123456789"  # noqa: S105 - fixture value, not a real secret
@@ -273,6 +275,328 @@ async def test_concurrent_resolve_exactly_one_wins(tmp_path):
     assert row["decision"] in ("approved", "denied")
 
 
+# --- session id on the row (schema v18) -----------------------------------------------------
+
+
+async def _create(root: str, **kwargs) -> str:
+    return await approvals.create_pending(
+        "action-1",
+        tier="soft_confirm",
+        action_type="shell_exec",
+        risk="low",
+        reason_codes=["destructive_command"],
+        explanation="test",
+        target_path_class=None,
+        repo_root=root,
+        **kwargs,
+    )
+
+
+async def test_create_pending_stores_session_id(tmp_path):
+    root = str(tmp_path)
+    approval_id = await _create(root, session_id="sess-abc_1")
+
+    row = await approvals.get_pending(approval_id, repo_root=root)
+    listed = await approvals.list_pending(repo_root=root)
+
+    assert row["session_id"] == "sess-abc_1"
+    assert [r["session_id"] for r in listed] == ["sess-abc_1"]
+
+
+async def test_create_pending_without_session_id_stores_null(tmp_path):
+    root = str(tmp_path)
+    approval_id = await _create(root)
+
+    row = await approvals.get_pending(approval_id, repo_root=root)
+    listed = await approvals.list_pending(repo_root=root)
+
+    assert "session_id" in row
+    assert row["session_id"] is None
+    assert [r["session_id"] for r in listed] == [None]
+
+
+@pytest.mark.parametrize("crafted", ["C:\\Users\\dev\\.ssh\\id_rsa", "token=abc123", "sess 1"])
+async def test_create_pending_stores_null_for_a_malformed_session_id(tmp_path, crafted):
+    # Any caller, not only the prompter: the row keeps a session id only when it has an id's shape.
+    root = str(tmp_path)
+    approval_id = await _create(root, session_id=crafted)
+
+    row = await approvals.get_pending(approval_id, repo_root=root)
+
+    assert row["session_id"] is None
+
+
+def _capturing_resolver(root: str, captured: dict, *, decision: str = "approved"):
+    """``_sleep`` stand-in: record the pending row as the dashboard sees it, then resolve it."""
+
+    def _resolver(seconds):  # noqa: ARG001
+        rows = asyncio.run(approvals.list_pending(repo_root=root))
+        captured["row"] = rows[0]
+        asyncio.run(approvals.resolve(rows[0]["id"], decision=decision, repo_root=root))
+
+    return _resolver
+
+
+def test_prompter_row_carries_validated_session_id(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    captured: dict = {}
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _capturing_resolver(root, captured))
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(
+        decision, action, prompter=DashboardPrompter(root, session_id="sess-7f3a:main")
+    )
+
+    assert result.approved is True
+    assert captured["row"]["session_id"] == "sess-7f3a:main"
+
+
+@pytest.mark.parametrize(
+    "crafted",
+    [
+        "C:\\Users\\dev\\.ssh\\id_rsa",
+        "token=abc123",
+        "https://evil.example/collect",
+        "sess 1",
+        "a" * 129,
+    ],
+)
+def test_prompter_stores_null_for_crafted_session_id(tmp_path, monkeypatch, crafted):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    captured: dict = {}
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _capturing_resolver(root, captured))
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    run_auth_challenge(decision, action, prompter=DashboardPrompter(root, session_id=crafted))
+
+    assert captured["row"]["session_id"] is None
+    stored = asyncio.run(approvals.get_pending(captured["row"]["id"], repo_root=root))
+    assert crafted not in json.dumps(stored)
+
+
+def test_row_expiry_matches_the_prompter_window(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    captured: dict = {}
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _capturing_resolver(root, captured))
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    run_auth_challenge(decision, action, prompter=DashboardPrompter(root, timeout_s=30))
+
+    row = captured["row"]
+    window = datetime.fromisoformat(row["expires_at"]) - datetime.fromisoformat(row["created_at"])
+    assert window == timedelta(seconds=30)
+
+
+def test_a_resolve_in_the_last_poll_gap_is_still_honoured(tmp_path, monkeypatch):
+    # The human answers during the prompter's last wait; by the time it wakes the window has
+    # closed. The answer is in the row, so it must win rather than fall to the next channel.
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    clock = _frozen_prompter_clock(monkeypatch)
+
+    def _resolve_then_overrun(seconds):  # noqa: ARG001
+        rows = asyncio.run(approvals.list_pending(repo_root=root))
+        asyncio.run(approvals.resolve(rows[0]["id"], decision="approved", repo_root=root))
+        clock["now"] += 31
+
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _resolve_then_overrun)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter([DashboardPrompter(root, timeout_s=30), fallback])
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert result.approved is True
+    assert fallback.confirm_calls == []
+
+
+def test_late_dashboard_resolve_after_the_window_is_409(tmp_path):
+    # Once the prompter has given up and moved to the next channel, the row must be dead:
+    # a click on the dashboard after that cannot be taken as an answer.
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter(
+        [DashboardPrompter(root, timeout_s=0.05, poll_interval_s=0.01), fallback]
+    )
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert result.approved is False
+    assert fallback.confirm_calls
+    client = TestClient(create_app(_TOKEN, root))
+    approval_id = _only_row_id(root)
+    resp = client.post(
+        f"/api/resolve/{approval_id}",
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+        json={"decision": "approved"},
+    )
+    assert resp.status_code == 409
+
+
+def _jumping_wall_clock(monkeypatch, *, wall_step: timedelta, mono_step: float) -> list[float]:
+    """On every poll wait the wall clock moves by ``wall_step`` and the monotonic one by
+    ``mono_step``. Returns the monotonic time of each wait taken."""
+    wall = {"now": datetime.now(timezone.utc)}
+    mono = {"now": 1000.0}
+    waits: list[float] = []
+
+    class _Wall(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003
+            return wall["now"]
+
+    def _wait(seconds):  # noqa: ARG001
+        waits.append(mono["now"])
+        if len(waits) > 5:
+            raise AssertionError("the dashboard window never closed")
+        wall["now"] += wall_step
+        mono["now"] += mono_step
+
+    # Every wall-clock reader moves: the row's expires_at and resolve's own check
+    # (approvals), and the prompter if it still reads one (raising=False: it need not).
+    monkeypatch.setattr(dashboard_prompter, "datetime", _Wall, raising=False)
+    monkeypatch.setattr(approvals, "datetime", _Wall)
+    monkeypatch.setattr(dashboard_prompter, "_monotonic", lambda: mono["now"], raising=False)
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _wait)
+    return waits
+
+
+@pytest.mark.parametrize(
+    ("wall_step", "expected_waits"),
+    [
+        # Rolled back an hour per wait: the window must still end after 91 monotonic seconds.
+        (timedelta(hours=-1), 2),
+        # Jumped an hour ahead per wait: the window must not end before 90 monotonic seconds.
+        (timedelta(hours=1), 2),
+    ],
+)
+def test_a_wall_clock_jump_neither_extends_nor_shortens_the_window(
+    tmp_path, monkeypatch, wall_step, expected_waits
+):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    waits = _jumping_wall_clock(monkeypatch, wall_step=wall_step, mono_step=45.5)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter([DashboardPrompter(root), fallback])
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert len(waits) == expected_waits  # 2 x 45.5 = 91 monotonic seconds, whatever the wall says
+    assert result.approved is False
+    assert fallback.confirm_calls
+    approval_id = _only_row_id(root)
+    assert asyncio.run(approvals.get_pending(approval_id, repo_root=root))["status"] == "expired"
+    resp = TestClient(create_app(_TOKEN, root)).post(
+        f"/api/resolve/{approval_id}",
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+        json={"decision": "approved"},
+    )
+    assert resp.status_code == 409
+
+
+def _frozen_prompter_clock(monkeypatch) -> dict:
+    """Freeze the prompter's monotonic clock; the test moves ``clock["now"]`` itself."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(dashboard_prompter, "_monotonic", lambda: clock["now"])
+    return clock
+
+
+def test_a_resolve_committed_after_the_final_poll_is_honoured(tmp_path, monkeypatch):
+    # The final poll reads the row as pending, the click commits right after that read, and
+    # the deadline check then finds the window closed. The answer is in the database, so the
+    # deadline write must see it and honour it instead of falling to the next channel.
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    clock = _frozen_prompter_clock(monkeypatch)
+    real_get = approvals.get_pending
+    raced = {"done": False}
+
+    async def _poll_then_click(approval_id, *, repo_root):
+        row = await real_get(approval_id, repo_root=repo_root)
+        if not raced["done"]:
+            raced["done"] = True
+            assert await approvals.resolve(approval_id, decision="approved", repo_root=repo_root)
+            clock["now"] += 31
+        return row
+
+    def _no_wait(seconds):  # noqa: ARG001
+        raise AssertionError("the window closed on the first poll; nothing should wait")
+
+    monkeypatch.setattr(approvals, "get_pending", _poll_then_click)
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _no_wait)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter([DashboardPrompter(root, timeout_s=30), fallback])
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert result.approved is True
+    assert fallback.confirm_calls == []
+
+
+def test_a_click_after_the_prompter_gave_up_is_409_even_inside_the_rows_ttl(tmp_path, monkeypatch):
+    # The prompter's window closes while the row's expires_at is still ahead on the dash's
+    # clock. The prompter's own write must close the row, so the click cannot be accepted
+    # for a challenge that has already moved to the next channel.
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    clock = _frozen_prompter_clock(monkeypatch)
+
+    def _overrun(seconds):  # noqa: ARG001
+        clock["now"] += 31
+
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _overrun)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter([DashboardPrompter(root, timeout_s=30), fallback])
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert result.approved is False
+    assert fallback.confirm_calls
+    client = TestClient(create_app(_TOKEN, root))
+    resp = client.post(
+        f"/api/resolve/{_only_row_id(root)}",
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+        json={"decision": "approved"},
+    )
+    assert resp.status_code == 409
+
+
+def _only_row_id(root: str) -> str:
+    # Every row whatever its status, so a row the prompter closed is still found.
+    async def _ids() -> list[str]:
+        async with open_db(root) as conn:
+            async with conn.execute("SELECT id FROM pending_approvals") as cur:
+                return [r[0] for r in await cur.fetchall()]
+
+    ids = asyncio.run(_ids())
+    assert len(ids) == 1
+    return ids[0]
+
+
 # --- (f) TOTP tier: code rides the row, verified via the EXISTING totp path -----------------
 
 
@@ -295,6 +619,59 @@ def test_totp_tier_code_flows_through_existing_verification(tmp_path, monkeypatc
     assert result.approved is True
     assert result.method == "totp"
     assert calls == ["999000"]  # verified from the PROMPTER side, via the existing totp module
+
+
+def test_a_used_code_is_cleared_from_the_row_when_it_is_read(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    touch_heartbeat(root)
+    monkeypatch.setattr(totp, "verify", lambda code, **_kw: code == "999000")
+    monkeypatch.setattr(
+        dashboard_prompter, "_sleep", _make_resolver(root, decision="approved", totp_code="999000")
+    )
+    decision, action = _decision_and_action(
+        risk=Risk.high, reason_codes=[ReasonCode.sensitive_secret_access]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=DashboardPrompter(root))
+
+    assert result.approved is True
+    row = asyncio.run(approvals.get_pending(_only_row_id(root), repo_root=root))
+    assert row["status"] == "resolved"
+    assert row["decision"] == "approved"
+    assert row["totp_code"] is None  # nothing left in the file for another action to reuse
+
+
+def test_a_resolved_row_rewritten_for_another_action_is_not_an_answer(tmp_path, monkeypatch):
+    # Anything that can write the database could point an approved row at a different action.
+    # The prompter knows which action it queued, so such a row is no answer from this channel.
+    root = str(tmp_path)
+    touch_heartbeat(root)
+
+    def _approve_then_retarget(seconds):  # noqa: ARG001
+        [row] = asyncio.run(approvals.list_pending(repo_root=root))
+        asyncio.run(approvals.resolve(row["id"], decision="approved", repo_root=root))
+
+        async def _retarget() -> None:
+            async with open_db(root) as conn:
+                await conn.execute(
+                    "UPDATE pending_approvals SET action_id = 'action-other' WHERE id = ?",
+                    (row["id"],),
+                )
+                await conn.commit()
+
+        asyncio.run(_retarget())
+
+    monkeypatch.setattr(dashboard_prompter, "_sleep", _approve_then_retarget)
+    fallback = _RecordingPrompter(confirm_result=False)
+    chain = FallbackPrompter([DashboardPrompter(root), fallback])
+    decision, action = _decision_and_action(
+        risk=Risk.low, reason_codes=[ReasonCode.destructive_command]
+    )
+
+    result = run_auth_challenge(decision, action, prompter=chain)
+
+    assert result.approved is False
+    assert fallback.confirm_calls  # the next channel asked a human instead
 
 
 # --- blast-radius preview (ADR 0094): rendered into the pending explanation -----------------
@@ -463,9 +840,42 @@ def test_pending_lists_allowlisted_fields_only(tmp_path):
         "explanation",
         "target_path_class",
         "needs_totp",
+        "session_id",
     }
     assert row["needs_totp"] is True  # two_factor tier
     assert row["explanation"] == "needs review"
+
+
+def _pending_via_api(root: str) -> list[dict]:
+    client = TestClient(create_app(_TOKEN, root))
+    resp = client.get("/api/pending", headers={"Authorization": f"Bearer {_TOKEN}"})
+    assert resp.status_code == 200
+    return resp.json()
+
+
+def test_pending_api_returns_session_id_and_null_when_absent(tmp_path):
+    root = str(tmp_path)
+    asyncio.run(_create(root, session_id="sess-hook-1"))
+    asyncio.run(_create(root))  # a proxy-side row carries no session
+
+    rows = _pending_via_api(root)
+
+    assert len(rows) == 2
+    # Indexing (not .get) so a row missing the key fails rather than reading as None.
+    assert {r["session_id"] for r in rows} == {"sess-hook-1", None}
+
+
+def test_pending_api_nulls_a_malformed_stored_session_id(tmp_path):
+    # A row written by anything other than the prompter (or an older build) is checked again
+    # on the way out, the same way the feed checks decisions.session_id.
+    root = str(tmp_path)
+    crafted = "C:\\Users\\dev\\secrets.txt"
+    asyncio.run(_create(root, session_id=crafted))
+
+    rows = _pending_via_api(root)
+
+    assert [r["session_id"] for r in rows] == [None]
+    assert "secrets.txt" not in json.dumps(rows)
 
 
 def test_resolve_bad_decision_value_is_400(tmp_path):

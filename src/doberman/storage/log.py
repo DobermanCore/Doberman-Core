@@ -21,6 +21,7 @@ Redaction is structural and load-bearing:
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 
@@ -157,12 +158,38 @@ def path_class(action: SecurityObject) -> str | None:
     pure = PurePosixPath(str(action.target).replace("\\", "/"))
     parent = pure.parent.as_posix()
     parent = "" if parent == "." else parent
-    # ponytail: extensionless names are their own class only with no
+    # shortcut: extensionless names are their own class only with no
     # directory (the bare-dotfile shape, e.g. ".env"); under a directory an
     # extensionless name must be wildcarded too, or the raw filename leaks
     # verbatim (".ssh/id_rsa", "/etc/passwd").
     stem_class = f"*{pure.suffix}" if (pure.suffix or parent) else pure.name
     return f"{parent}/{stem_class}" if parent else stem_class
+
+
+# An id's shape: a letter or digit, then up to 127 letters, digits, ".", "_",
+# ":" or "-". Fits every producer's ids (UUIDs, "conv-<uuid>", "hmac:<hex>",
+# colon-separated session keys). No "/", "\", whitespace or "=", so a path,
+# a URL or a "key=value" credential can never pass.
+_EXPORTABLE_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+
+
+def exportable_session_id(value: object) -> str | None:
+    """``value`` if it has a session id's shape, else ``None``.
+
+    The host hooks store whatever non-empty string the host sent as
+    ``decisions.session_id`` (``hosthooks.spine.extract_session_id``), so a
+    crafted payload can put a path or a credential there. Every surface that
+    exports the column (the dash feed, ``doberman log --jsonl``) passes it
+    through this check at read time, which covers rows written before the
+    check existed too. The stored value is left alone: the taint floor and the
+    correlator key on it, and logging must never alter a decision.
+
+    This stops paths, URLs, whitespace and ``key=value`` text. It cannot tell
+    a bare token that happens to look like an id from a real id.
+    """
+    if isinstance(value, str) and _EXPORTABLE_SESSION_ID.fullmatch(value):
+        return value
+    return None
 
 
 def _decided_layer(decision: Decision) -> str:
@@ -394,13 +421,12 @@ async def record_shadow(
     """Persist one redacted shadow-adjudication row (best-effort, shadow-only).
 
     Writes a row ONLY when ``decision.shadow`` is set. Stores the live verdict and
-    the shadow verdict/reason-code **classes** — never a raw value — so this
+    the shadow verdict/reason-code **classes** (never a raw value) so this
     ledger is redaction-safe by construction. Like :func:`record_decision` it is
     outside the decision path: any failure is logged and swallowed, so it can
     never raise into execution or alter a verdict (the decision is already made).
 
-    Not yet wired into the executor persist path — this slice provides + unit-tests
-    the writer; wiring is a follow-up.
+    Wired into the executor persist path (:func:`doberman.proxy.executor._persist`).
     """
     if decision.shadow is None:
         return
@@ -430,6 +456,7 @@ async def prune_decisions(
     older_than_days: int | None = None,
     max_rows: int | None = None,
     now: datetime | None = None,
+    dry_run: bool = False,
 ) -> dict[str, int]:
     """Prune resolved decision-log rows by age and/or a retained row budget.
 
@@ -443,6 +470,9 @@ async def prune_decisions(
     of storage: exact cutoff stays, one second older goes. With ``max_rows``,
     the newest matching rows are retained first, so an old-but-unresolved row
     cannot displace a newer resolved row from the budget.
+
+    When ``dry_run`` is True, runs the same queries to count prunable rows but
+    rolls back instead of committing.
 
     Returns counts only and raises on storage errors rather than reporting a
     partial delete as successful.
@@ -477,7 +507,10 @@ async def prune_decisions(
             )
             overflow_deleted = cur.rowcount
 
-        await conn.commit()
+        if dry_run:
+            await conn.rollback()
+        else:
+            await conn.commit()
     return {"age_deleted": age_deleted, "overflow_deleted": overflow_deleted}
 
 

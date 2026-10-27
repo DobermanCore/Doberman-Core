@@ -8,12 +8,17 @@ the decision path in either direction.
 
 Redaction is structural: a row stores only what the terminal/GUI prompt
 itself already shows a human (action type, risk, reason codes, the human
-explanation, and a path *class* - never a raw target, argument, or secret).
+explanation, and a path *class* - never a raw target, argument, or secret),
+plus the host session id when it has an id's shape (NULL otherwise).
 
 Single-use and race-safe: resolution is one ``UPDATE ... WHERE
 status = 'pending' AND expires_at > ?`` state transition, gated on affected-row
 count, so two concurrent resolutions of the same row can never both "win" and
-an expired row can never be resolved (it is already dead).
+an expired row can never be resolved (it is already dead). When its window
+closes the prompter moves the row to ``'expired'`` with the same kind of
+``WHERE status = 'pending'`` write (:func:`expire`), so a click and the
+deadline cannot both win either. The prompter reads a resolved row through
+:func:`consume`, which clears its TOTP code in the same transaction.
 """
 
 import json
@@ -21,6 +26,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from doberman.storage.db import open_db
+from doberman.storage.log import exportable_session_id
 
 #: How long a pending row stays resolvable before it's considered dead.
 DEFAULT_APPROVAL_TTL_S = 120.0
@@ -28,8 +34,8 @@ DEFAULT_APPROVAL_TTL_S = 120.0
 _INSERT_PENDING = (
     "INSERT INTO pending_approvals "
     "(id, action_id, created_at, expires_at, status, tier, action_type, risk, "
-    "reason_codes_json, explanation, target_path_class) "
-    "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)"
+    "reason_codes_json, explanation, target_path_class, session_id) "
+    "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _COLUMNS = [
@@ -46,6 +52,7 @@ _COLUMNS = [
     "target_path_class",
     "decision",
     "totp_code",
+    "session_id",
 ]
 
 _SELECT_ONE = f"SELECT {', '.join(_COLUMNS)} FROM pending_approvals WHERE id = ?"  # noqa: S608
@@ -59,6 +66,10 @@ _RESOLVE = (
     "UPDATE pending_approvals SET status = 'resolved', decision = ?, totp_code = ? "
     "WHERE id = ? AND status = 'pending' AND expires_at > ?"
 )
+
+_EXPIRE = "UPDATE pending_approvals SET status = 'expired' WHERE id = ? AND status = 'pending'"
+
+_CLEAR_CODE = "UPDATE pending_approvals SET totp_code = NULL WHERE id = ? AND status = 'resolved'"
 
 
 def _row_to_dict(row) -> dict:
@@ -79,12 +90,15 @@ async def create_pending(
     repo_root: str = ".",
     now: datetime | None = None,
     ttl_s: float = DEFAULT_APPROVAL_TTL_S,
+    session_id: str | None = None,
 ) -> str:
     """Write a new pending row and return its id.
 
     Every field is already redaction-safe by the time it reaches here (see
     ``doberman.auth.dashboard_prompter`` - it derives these from the same
     ``Decision``/``SecurityObject`` the terminal prompt itself renders).
+    ``session_id`` is checked here for every caller: it is kept only when
+    ``exportable_session_id`` accepts it, and stored as NULL otherwise.
     """
     when = now or datetime.now(timezone.utc)
     expires = when + timedelta(seconds=ttl_s)
@@ -103,6 +117,7 @@ async def create_pending(
                 json.dumps(reason_codes),
                 explanation,
                 target_path_class,
+                exportable_session_id(session_id),
             ),
         )
         await conn.commit()
@@ -143,5 +158,40 @@ async def resolve(
     when = now or datetime.now(timezone.utc)
     async with open_db(repo_root) as conn:
         cur = await conn.execute(_RESOLVE, (decision, totp_code, approval_id, when.isoformat()))
+        await conn.commit()
+        return cur.rowcount > 0
+
+
+async def consume(approval_id: str, *, repo_root: str = ".") -> dict | None:
+    """The prompter's read of a resolved row: return it and clear its code in one transaction.
+
+    Returns the row as resolved (code included), or None when it is not resolved.
+    Once this returns, the code is no longer in the database, so a used code is
+    not left behind for anything else that can read the file.
+    """
+    async with open_db(repo_root) as conn:
+        # Relies on open_db keeping sqlite3's legacy transaction mode: this is the only BEGIN.
+        await conn.execute("BEGIN IMMEDIATE")
+        async with conn.execute(_SELECT_ONE, (approval_id,)) as cur:
+            row = await cur.fetchone()
+        record = _row_to_dict(row) if row else None
+        if record is not None and record["status"] == "resolved":
+            await conn.execute(_CLEAR_CODE, (approval_id,))
+        else:
+            record = None
+        await conn.commit()
+    return record
+
+
+async def expire(approval_id: str, *, repo_root: str = ".") -> bool:
+    """Close a row its prompter stopped waiting on. True iff it was still pending.
+
+    The same single-use transition as :func:`resolve`, so the two race safely
+    whatever either clock says: when this wins, a later resolve affects zero
+    rows (409); when it returns False, a resolve committed first and its answer
+    is in the row.
+    """
+    async with open_db(repo_root) as conn:
+        cur = await conn.execute(_EXPIRE, (approval_id,))
         await conn.commit()
         return cur.rowcount > 0

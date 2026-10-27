@@ -1381,7 +1381,7 @@ def test_delete_class_operands_compound_command_collects_across_segments():
 
 
 def test_delete_class_operands_opaque_shell_payload_is_none():
-    # Deliberately NOT unwrapped (ponytail): an opaque `-c` payload AUTHs via
+    # Deliberately NOT unwrapped (a deliberate shortcut): an opaque `-c` payload AUTHs via
     # opaque_command, not a delete-class reason — showing no preview for an
     # unclassifiable payload is correct, never a guess.
     assert delete_class_operands_and_dynamic('bash -c "rm -rf /"')[0] is None

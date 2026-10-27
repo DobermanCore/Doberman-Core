@@ -184,7 +184,7 @@ def verify(secret: str) -> bool:
     # Count the attempt BEFORE the (slow) KDF runs, so concurrent guesses cannot
     # all read the same pre-attempt count and overwrite each other after it; an
     # attempt that cannot be recorded is denied rather than run unaccounted.
-    # ponytail: read-modify-write, not a CAS — the window is now one file
+    # shortcut: read-modify-write, not a CAS — the window is now one file
     # write instead of one KDF; an O_EXCL lock file is the upgrade path.
     if not _save_lockout(lockout_path, failures + 1, now):
         return False

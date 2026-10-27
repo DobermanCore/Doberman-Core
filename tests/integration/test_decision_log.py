@@ -94,7 +94,11 @@ def test_writer_has_no_update_or_delete_path_for_decisions():
 
 
 def _decision_and_action(
-    verdict: Verdict, action_id: str, *, effects: EffectSet | None = None
+    verdict: Verdict,
+    action_id: str,
+    *,
+    effects: EffectSet | None = None,
+    shadow: GuardrailResult | None = None,
 ) -> tuple[Decision, SecurityObject]:
     reasons = [] if verdict is Verdict.PASS else [ReasonCode.sensitive_secret_access]
     now = datetime.now(timezone.utc)
@@ -110,6 +114,7 @@ def _decision_and_action(
         explanation="x",
         decided_at=now,
         effects=effects,
+        shadow=shadow,
     )
     action = SecurityObject(
         id=action_id,
@@ -304,6 +309,48 @@ async def test_prune_by_max_rows_keeps_newest_resolved_only(tmp_path):
     assert set(actions) == {"newer", "newest"}
 
 
+async def test_prune_dry_run_matches_real_prune_and_preserves_rows(tmp_path):
+    root = str(tmp_path)
+    now = datetime.now(timezone.utc)
+    await _seed_decision(root, "old-1", now - timedelta(days=95))
+    await _seed_decision(root, "old-2", now - timedelta(days=92))
+    await _seed_decision(root, "fresh-1", now - timedelta(days=10))
+    await _seed_decision(root, "fresh-2", now - timedelta(days=5))
+    await _seed_decision(root, "fresh-3", now - timedelta(days=1))
+    decision, action = _decision_and_action(Verdict.AUTH, "pending-auth")
+    await record_decision(decision, action, repo_root=root, now=now - timedelta(days=120))
+
+    before_count, before_verdicts = await _decision_verdicts_and_count(root)
+    assert before_count == 6
+
+    dry_run_result = await prune_decisions(
+        root, older_than_days=90, max_rows=2, now=now, dry_run=True
+    )
+    assert dry_run_result == {"age_deleted": 2, "overflow_deleted": 1}
+
+    after_dry_run_count, after_dry_run_verdicts = await _decision_verdicts_and_count(root)
+    assert after_dry_run_count == before_count
+    assert after_dry_run_verdicts == before_verdicts
+    all_actions_after_dry_run = {row["action_id"] for row in await read_decisions(root)}
+    assert all_actions_after_dry_run == {
+        "old-1",
+        "old-2",
+        "fresh-1",
+        "fresh-2",
+        "fresh-3",
+        "pending-auth",
+    }
+
+    real_result = await prune_decisions(
+        root, older_than_days=90, max_rows=2, now=now, dry_run=False
+    )
+    assert real_result == dry_run_result
+
+    remaining_rows = await read_decisions(root)
+    assert len(remaining_rows) == 3
+    assert {row["action_id"] for row in remaining_rows} == {"fresh-2", "fresh-3", "pending-auth"}
+
+
 async def test_prune_never_deletes_unresolved_auth(tmp_path):
     root = str(tmp_path)
     now = datetime.now(timezone.utc)
@@ -375,3 +422,123 @@ async def test_prune_requires_at_least_one_policy(tmp_path):
     except ValueError:
         raised = True
     assert raised
+
+
+# --- Shadow adjudication persistence wiring (#624) --------------------------
+
+
+async def test_persist_writes_shadow_row_when_shadow_present():
+    shadow_result = GuardrailResult(
+        verdict=Verdict.BLOCK,
+        risk=Risk.critical,
+        reason_codes=[ReasonCode.unusual_for_deployment],
+        explanation="shadow: anomalous",
+    )
+    decision, action = _decision_and_action(
+        Verdict.AUTH,
+        "persist-shadow-action",
+        shadow=shadow_result,
+    )
+
+    await executor._persist(decision, action, eid="ent-hmac")
+
+    decisions = await read_decisions(executor.REPO_ROOT)
+    assert any(row["action_id"] == "persist-shadow-action" for row in decisions)
+
+    async with open_db(executor.REPO_ROOT) as conn:
+        async with conn.execute(
+            "SELECT action_id, live_verdict, shadow_verdict, shadow_reason_codes, entity_id "
+            "FROM shadow_adjudications WHERE action_id = ?",
+            ("persist-shadow-action",),
+        ) as cur:
+            rows = await cur.fetchall()
+
+    assert len(rows) == 1
+    action_id, live_v, shadow_v, codes, entity = rows[0]
+    assert action_id == "persist-shadow-action"
+    assert live_v == "AUTH"
+    assert shadow_v == "BLOCK"
+    assert codes == '["unusual_for_deployment"]'
+    assert entity == "ent-hmac"
+
+
+async def test_persist_writes_no_shadow_row_when_shadow_absent():
+    decision, action = _decision_and_action(
+        Verdict.PASS,
+        "persist-no-shadow-action",
+        shadow=None,
+    )
+
+    await executor._persist(decision, action)
+
+    decisions = await read_decisions(executor.REPO_ROOT)
+    assert any(row["action_id"] == "persist-no-shadow-action" for row in decisions)
+
+    async with open_db(executor.REPO_ROOT) as conn:
+        async with conn.execute(
+            "SELECT COUNT(*) FROM shadow_adjudications WHERE action_id = ?",
+            ("persist-no-shadow-action",),
+        ) as cur:
+            count = (await cur.fetchone())[0]
+
+    assert count == 0
+
+
+async def test_persist_shadow_failure_does_not_affect_decision_log(monkeypatch):
+    async def boom(*args, **kwargs):
+        raise RuntimeError("shadow DB write failure")
+
+    monkeypatch.setattr(executor, "record_shadow", boom)
+
+    shadow_result = GuardrailResult(
+        verdict=Verdict.BLOCK,
+        risk=Risk.critical,
+        reason_codes=[ReasonCode.unusual_for_deployment],
+        explanation="shadow: anomalous",
+    )
+    decision, action = _decision_and_action(
+        Verdict.PASS,
+        "shadow-fail-action",
+        shadow=shadow_result,
+    )
+
+    await executor._persist(decision, action)
+
+    decisions = await read_decisions(executor.REPO_ROOT)
+    assert any(row["action_id"] == "shadow-fail-action" for row in decisions)
+
+
+async def test_persist_decision_failure_does_not_affect_shadow_log(monkeypatch):
+    async def boom(*args, **kwargs):
+        raise RuntimeError("decision DB write failure")
+
+    monkeypatch.setattr(executor, "record_decision", boom)
+
+    shadow_result = GuardrailResult(
+        verdict=Verdict.BLOCK,
+        risk=Risk.critical,
+        reason_codes=[ReasonCode.unusual_for_deployment],
+        explanation="shadow: anomalous",
+    )
+    decision, action = _decision_and_action(
+        Verdict.AUTH,
+        "decision-fail-action",
+        shadow=shadow_result,
+    )
+
+    await executor._persist(decision, action, eid="ent-shadow-ok")
+
+    async with open_db(executor.REPO_ROOT) as conn:
+        async with conn.execute(
+            "SELECT action_id, live_verdict, shadow_verdict, entity_id "
+            "FROM shadow_adjudications WHERE action_id = ?",
+            ("decision-fail-action",),
+        ) as cur:
+            rows = await cur.fetchall()
+
+    assert len(rows) == 1
+    action_id, live_v, shadow_v, entity = rows[0]
+    assert action_id == "decision-fail-action"
+    assert live_v == "AUTH"
+    assert shadow_v == "BLOCK"
+    assert entity == "ent-shadow-ok"
