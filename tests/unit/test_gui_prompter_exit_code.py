@@ -23,10 +23,11 @@ itself cancel a still-pending ``after`` callback -- and firing it against the
 now-destroyed widget names raises ``invalid command name "..."`` from
 inside Tcl's own event processing.
 
-This test reproduces the exact production shape (real dialog widgets, real
-button closures, real countdown, run via ``challenge._run_with_deadline`` on a
-daemon worker thread) and asserts the subprocess's exit code and stderr are
-untouched by either defect.
+This test reproduces the production worker-thread shape and asserts the
+subprocess's exit code and stderr are untouched by either defect. On macOS,
+the intentional main-thread guard refuses this channel before creating Tk;
+the caller must catch that refusal and preserve its own fail-closed exit code.
+Other platforms build real widgets, button closures, and a countdown.
 """
 
 import gc
@@ -49,8 +50,12 @@ _SUBPROCESS_CODE = textwrap.dedent(
 
     from doberman.auth import challenge, gui_prompter
 
+    populated = False
+
 
     def _populate(root, answer, timeout_s):
+        global populated
+        populated = True
         gui_prompter._populate_confirm(root, "regression test dialog", answer, timeout_s)
         root.after(150, root.quit)
 
@@ -61,9 +66,18 @@ _SUBPROCESS_CODE = textwrap.dedent(
         )
 
 
-    challenge._run_with_deadline(
-        _run_challenge, timeout_s=10.0, on_timeout=lambda: None, label="test-exit-code"
-    )
+    try:
+        result = challenge._run_with_deadline(
+            _run_challenge, timeout_s=10.0, on_timeout=lambda: None, label="test-exit-code"
+        )
+    except gui_prompter.PrompterUnavailableError as exc:
+        assert gui_prompter.sys.platform == "darwin"
+        assert str(exc) == "GUI auth dialog cannot safely open off the main thread on macOS"
+        assert not populated
+    else:
+        assert gui_prompter.sys.platform != "darwin", "macOS must refuse worker-thread Tk"
+        assert populated
+        assert result is False  # closing without an answer denies
     sys.exit(2)
     """
 )
@@ -80,8 +94,12 @@ _SUBPROCESS_CODE_RAISING = textwrap.dedent(
 
     from doberman.auth import challenge, gui_prompter
 
+    populated = False
+
 
     def _populate(root, answer, timeout_s):
+        global populated
+        populated = True
         gui_prompter._populate_confirm(root, "regression test dialog", answer, timeout_s)
         raise RuntimeError("populate failed after building widgets")
 
@@ -96,8 +114,16 @@ _SUBPROCESS_CODE_RAISING = textwrap.dedent(
         challenge._run_with_deadline(
             _run_challenge, timeout_s=10.0, on_timeout=lambda: None, label="test-exit-code"
         )
-    except RuntimeError:
-        pass  # the caller fails closed; the process must still exit with ITS code
+    except gui_prompter.PrompterUnavailableError as exc:
+        assert gui_prompter.sys.platform == "darwin"
+        assert str(exc) == "GUI auth dialog cannot safely open off the main thread on macOS"
+        assert not populated
+    except RuntimeError as exc:
+        assert gui_prompter.sys.platform != "darwin", "macOS must refuse worker-thread Tk"
+        assert populated
+        assert str(exc) == "populate failed after building widgets"
+    else:
+        raise AssertionError("populate must raise, or the macOS guard must refuse Tk")
     sys.exit(2)
     """
 )
@@ -106,13 +132,25 @@ _SUBPROCESS_CODE_RAISING = textwrap.dedent(
 @pytest.mark.parametrize(
     "code", [_SUBPROCESS_CODE, _SUBPROCESS_CODE_RAISING], ids=["decided", "populate-raises"]
 )
-def test_a_worker_thread_dialog_leaves_the_hooks_exit_code_intact(code):
-    try:
-        probe = gui_prompter._open_root()
-    except gui_prompter.PrompterUnavailableError:
-        pytest.skip("no display available for a GUI auth dialog")
-    probe.destroy()
-    gc.collect()
+@pytest.mark.parametrize("macos_guard", [False, True], ids=["native", "macos-guard"])
+def test_a_worker_thread_dialog_leaves_the_hooks_exit_code_intact(code, macos_guard):
+    if not macos_guard:
+        try:
+            probe = gui_prompter._open_root()
+        except gui_prompter.PrompterUnavailableError:
+            pytest.skip("no display available for a GUI auth dialog")
+        probe.destroy()
+        gc.collect()
+
+    if macos_guard:
+        # Exercise Cocoa's intentional worker-thread refusal on every OS,
+        # without constructing an unsafe Cocoa Tk root or changing global sys.
+        code = code.replace(
+            "from doberman.auth import challenge, gui_prompter",
+            "from doberman.auth import challenge, gui_prompter\n"
+            "from types import SimpleNamespace\n"
+            "gui_prompter.sys = SimpleNamespace(platform='darwin')",
+        )
 
     proc = subprocess.run(  # noqa: S603 - fixed args, no shell, this is the test
         [sys.executable, "-c", code],

@@ -8,8 +8,10 @@ rule is raise-only (PASS/AUTH only, never BLOCK).
 
 from datetime import datetime, timezone
 
+import pytest
+
 from doberman.engine.decision_engine import PASS_STUB, decide
-from doberman.engine.rules.data_classes import PiiDataClassRule
+from doberman.engine.rules.data_classes import PiiDataClassRule, _contains_pan
 from doberman.models import (
     ActionType,
     EvalContext,
@@ -63,6 +65,80 @@ def test_spaced_pan_and_amex_still_detected():
     for pan in (VISA_PAN_SPACED, AMEX_PAN):
         result = RULE.evaluate(_action(), _ctx(f"pay {pan} now"))
         assert result.verdict is Verdict.AUTH, pan
+
+
+def _luhn_complete(prefix: str, length: int) -> str:
+    """A synthetic PAN: ``prefix`` padded with zeros plus the Luhn check digit."""
+    body = prefix.ljust(length - 1, "0")
+    total = 0
+    for i, ch in enumerate(reversed(body)):
+        d = int(ch)
+        if i % 2 == 0:  # doubled positions, counted from the check digit
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return body + str(-total % 10)
+
+
+@pytest.mark.parametrize(
+    ("pan", "issuer"),
+    [
+        (VISA_PAN, "visa"),
+        ("5555555555554444", "mastercard 51-55"),
+        ("2223000048400011", "mastercard 2221-2720"),
+        (AMEX_PAN, "amex"),
+        ("6011111111111117", "discover 6011"),
+        ("6500000000000002", "discover 65"),
+    ],
+)
+def test_the_original_four_issuers_still_detect(pan, issuer):
+    assert _contains_pan(pan), issuer
+
+
+@pytest.mark.parametrize(
+    ("prefix", "length", "issuer"),
+    [
+        ("3000", 16, "diners 300-305"),
+        ("3095", 19, "diners 3095"),
+        ("36", 14, "diners 36, 14 digits"),
+        ("36", 19, "diners 36, 19 digits"),
+        ("38", 16, "diners 38-39"),
+        ("3088", 16, "jcb 3088-3094"),
+        ("3112", 17, "jcb 3112-3120"),
+        ("3337", 18, "jcb 3337-3349"),
+        ("3528", 16, "jcb 3528-3589"),
+        ("3589", 19, "jcb 3528-3589"),
+        ("62109400", 16, "unionpay 621094"),
+        ("62212600", 16, "unionpay 622126-623796"),
+        ("6240", 19, "unionpay 624-626"),
+        ("6282", 16, "unionpay 6282-6288"),
+    ],
+)
+def test_diners_jcb_and_unionpay_pans_are_detected(prefix, length, issuer):
+    pan = _luhn_complete(prefix, length)
+    assert _contains_pan(pan), issuer
+    result = RULE.evaluate(_action(), _ctx(f"card={pan}"))
+    assert result.verdict is Verdict.AUTH, issuer
+
+
+@pytest.mark.parametrize(("prefix", "length"), [("3528", 16), ("36", 14), ("6240", 16)])
+def test_a_luhn_invalid_number_in_a_new_range_is_not_detected(prefix, length):
+    pan = _luhn_complete(prefix, length)
+    bad = pan[:-1] + str((int(pan[-1]) + 1) % 10)
+    assert not _contains_pan(bad)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "length"),
+    [
+        ("3528", 15),  # JCB is 16-19 digits
+        ("3000", 14),  # Diners 300-305 is 16-19 digits, unlike the 36 range
+        ("3590", 16),  # just past JCB 3528-3589
+        ("6237970", 16),  # just past UnionPay 622126-623796
+        ("81", 16),  # UnionPay's 81 block is deliberately not in the table
+    ],
+)
+def test_lengths_and_neighbours_outside_the_table_are_not_detected(prefix, length):
+    assert not _contains_pan(_luhn_complete(prefix, length))
 
 
 def test_iban_to_external_destination_requires_auth():

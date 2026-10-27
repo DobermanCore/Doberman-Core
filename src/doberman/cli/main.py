@@ -1983,9 +1983,23 @@ def phone_off() -> None:
         typer.echo("Phone approvals disabled; no config was present.")
 
 
+def _resolve_plugin_group(group: str | None) -> str | None:
+    """``rules`` or ``doberman.rules`` -> ``doberman.rules``; exits 1 on an unknown group."""
+    from doberman.engine.registry import ALL_GROUPS
+
+    if group is None:
+        return None
+    full = group if group.startswith("doberman.") else f"doberman.{group}"
+    if full not in ALL_GROUPS:
+        short = ", ".join(g.removeprefix("doberman.") for g in ALL_GROUPS)
+        typer.echo(f"error: unknown plugin group {group!r}; use one of: {short}", err=True)
+        raise typer.Exit(code=1)
+    return full
+
+
 @plugins_app.command("list")
 def plugins_list() -> None:
-    """List enabled plugin names, and every installed entry point across all seams.
+    """List enabled plugins, and every installed entry point across all seams.
 
     Installed entry points are discovered WITHOUT loading them (names only) —
     listing an untrusted plugin's presence must never import its code.
@@ -1995,13 +2009,18 @@ def plugins_list() -> None:
 
     enabled = plugin_config.enabled_plugins()
     typer.echo("Enabled (opt-in by name): " + (", ".join(enabled) if enabled else "(none)"))
+    for name in plugin_config.legacy_entries(enabled):
+        typer.echo(
+            f"  note: {name!r} has no group, so it is trusted under every group; "
+            f"`doberman plugins enable {name}` narrows it to the group it is installed under"
+        )
     typer.echo("\nInstalled entry points (not loaded merely to list them):")
     found = False
     for group in ALL_GROUPS:
         for entry_point in _iter_entry_points(group):
             found = True
             name = getattr(entry_point, "name", "?")
-            state = "ENABLED" if name in enabled else "disabled"
+            state = "ENABLED" if plugin_config.is_allowed(group, name, enabled) else "disabled"
             typer.echo(f"  {group:34s} {name:24s} {state}")
     if not found:
         typer.echo("  (none installed)")
@@ -2010,21 +2029,51 @@ def plugins_list() -> None:
 @plugins_app.command("enable")
 def plugins_enable(
     name: str = typer.Argument(..., help="Entry-point name to trust, e.g. my_rule."),
+    group: str | None = typer.Option(
+        None,
+        "--group",
+        help=(
+            "Entry-point group to trust it under, e.g. rules or doberman.rules. "
+            "Optional when the name is installed under exactly one group."
+        ),
+    ),
 ) -> None:
-    """Enable a plugin by entry-point name. Nothing is imported until it's named here."""
+    """Enable a plugin by entry-point name, for one group. Nothing is imported until it's named here.
+
+    The allowlist records ``<group>:<name>``, so a package that registers the same
+    name under another group (a detector, an audit sink, ...) is not trusted with it.
+    """
+    from doberman.cli.doctor import installed_plugin_groups
     from doberman.engine import plugin_config
 
+    resolved = _resolve_plugin_group(group)
+    installed_in = installed_plugin_groups().get(name, [])
+    if resolved is None:
+        if len(installed_in) == 1:
+            resolved = installed_in[0]
+        elif installed_in:
+            typer.echo(
+                f"error: {name!r} is installed under several groups ({', '.join(installed_in)}); "
+                "pass --group to choose the one to trust",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        else:
+            typer.echo(
+                f"error: no installed package provides a plugin named {name!r}; "
+                "pass --group to enable it before installing",
+                err=True,
+            )
+            raise typer.Exit(code=1)
     try:
-        names = plugin_config.enable(name)
+        names = plugin_config.enable(name, resolved)
     except ValueError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
-    typer.echo(f"Enabled {name!r}. Enabled plugins: {', '.join(names)}")
-    from doberman.cli.doctor import installed_plugin_names
-
-    if name not in installed_plugin_names():
+    typer.echo(f"Enabled {name!r} under {resolved}. Enabled plugins: {', '.join(names)}")
+    if resolved not in installed_in:
         typer.echo(
-            f"warning: no installed package provides a plugin named {name!r}; "
+            f"warning: no installed package provides a plugin named {name!r} under {resolved}; "
             "it stays enabled but nothing loads until one is installed",
             err=True,
         )
@@ -2033,11 +2082,14 @@ def plugins_enable(
 @plugins_app.command("disable")
 def plugins_disable(
     name: str = typer.Argument(..., help="Entry-point name to stop trusting."),
+    group: str | None = typer.Option(
+        None, "--group", help="Only this group; by default the name is disabled under every group."
+    ),
 ) -> None:
     """Disable a plugin. No registry seam will import it again."""
     from doberman.engine import plugin_config
 
-    names = plugin_config.disable(name)
+    names = plugin_config.disable(name, _resolve_plugin_group(group))
     typer.echo(f"Disabled {name!r}. Enabled plugins: {', '.join(names) if names else '(none)'}")
 
 

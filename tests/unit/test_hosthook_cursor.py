@@ -383,7 +383,9 @@ def test_before_read_of_control_plane_is_denied(tmp_path):
 
 def test_before_read_of_normal_file_is_allowed(tmp_path):
     payload = _load("before_read.json", tmp_path)
-    payload["file_path"] = str(tmp_path / "notes.txt")
+    # The workspace root stays isolated in tmp_path; the benign operand must not
+    # include macOS's random, potentially secret-shaped temporary directory.
+    payload["file_path"] = "notes.txt"
     assert _run(payload) == ({"permission": "allow"}, 0)
 
 
@@ -399,7 +401,7 @@ def test_before_read_with_a_credential_in_content_is_denied(tmp_path):
 
 def test_before_read_without_content_is_just_the_path_gate(tmp_path):
     payload = _load("before_read.json", tmp_path)
-    payload["file_path"] = str(tmp_path / "notes.txt")
+    payload["file_path"] = "notes.txt"
     del payload["content"]
     assert _run(payload) == ({"permission": "allow"}, 0)
 
@@ -408,7 +410,7 @@ def test_before_read_without_content_is_just_the_path_gate(tmp_path):
 @pytest.mark.guarantee("secret-egress-taint-floor", host="cursor")
 def test_read_then_send_of_the_same_value_is_confirmed_exfil(tmp_path):
     read = _load("before_read.json", tmp_path)
-    read["file_path"] = str(tmp_path / "cfg")
+    read["file_path"] = "cfg"
     read["content"] = _FINGERPRINT_SECRET
     assert _run(read) == ({"permission": "allow"}, 0)  # non-credential: the read passes
 
@@ -655,14 +657,14 @@ def test_read_pair_shares_the_path_decision_but_always_scans(tmp_path, monkeypat
     # AUTH dialog, one history row), but the content scan can never be replayed
     # away — a credential in the file still denies the read.
     calls = _count_evaluations(monkeypatch)
-    pre = _write(tmp_path, str(tmp_path / "config.ini"), tool="Read")
-    pre["tool_input"] = {"file_path": str(tmp_path / "config.ini"), "offset": 0}
+    pre = _write(tmp_path, "config.ini", tool="Read")
+    pre["tool_input"] = {"file_path": "config.ini", "offset": 0}
     before = _load("before_read.json", tmp_path)
     before["conversation_id"], before["generation_id"] = (
         pre["conversation_id"],
         pre["generation_id"],
     )
-    before["file_path"] = str(tmp_path / "config.ini")
+    before["file_path"] = "config.ini"
     before["content"] = f"aws_access_key_id={_OUTPUT_SECRET}\n"
     assert _run(pre) == ({"permission": "allow"}, 0)
     doc, code = _run(before)
@@ -670,13 +672,13 @@ def test_read_pair_shares_the_path_decision_but_always_scans(tmp_path, monkeypat
     assert _OUTPUT_SECRET not in json.dumps(doc)
     assert calls["n"] == 1
     # Benign content after a replayed path decision is allowed, still once.
-    pre2 = _write(tmp_path, str(tmp_path / "notes.txt"), tool="Read")
+    pre2 = _write(tmp_path, "notes.txt", tool="Read")
     before2 = _load("before_read.json", tmp_path)
     before2["conversation_id"], before2["generation_id"] = (
         pre2["conversation_id"],
         pre2["generation_id"],
     )
-    before2["file_path"] = str(tmp_path / "notes.txt")
+    before2["file_path"] = "notes.txt"
     assert _run(pre2) == ({"permission": "allow"}, 0)
     assert _run(before2) == ({"permission": "allow"}, 0)
     assert calls["n"] == 2
