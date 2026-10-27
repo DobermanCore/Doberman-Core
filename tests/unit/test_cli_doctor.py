@@ -852,10 +852,10 @@ def test_doctor_plugins_row_never_loads_an_installed_plugin(tmp_path, plugins_fi
 
 
 def test_plugins_enable_warns_when_nothing_installed_provides_the_name(plugins_file):
-    result = runner.invoke(app, ["plugins", "enable", "no_such_plugin"])
+    result = runner.invoke(app, ["plugins", "enable", "no_such_plugin", "--group", "rules"])
 
     assert result.exit_code == 0, result.output
-    assert plugins_file.enabled_plugins() == ["no_such_plugin"]
+    assert plugins_file.enabled_plugins() == ["doberman.rules:no_such_plugin"]
     assert "warning: no installed package provides a plugin named 'no_such_plugin'" in result.output
 
 
