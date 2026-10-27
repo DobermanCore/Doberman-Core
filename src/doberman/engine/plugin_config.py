@@ -2,11 +2,21 @@
 
 Mirrors :mod:`doberman.auth.approval_config`'s storage discipline: a per-user
 JSON file OUTSIDE any repository, written ``0600``. The file holds a list of
-enabled entry-point names, across ALL registry groups (rules, detectors,
-policy sources, auth providers, approval methods, audit sinks, algebra
-adapters, adjudicators, egress brokers, drift observers, cost observers). With
-no file, or an empty list, nothing is imported: enabling a plugin is always an
-explicit act, by name — a package merely being installed is never enough.
+enabled entries, each ``<group>:<name>`` (``doberman.rules:my_rule``): the
+entry-point group a plugin registers under (rules, detectors, policy sources,
+auth providers, approval methods, audit sinks, algebra adapters, adjudicators,
+egress brokers, drift observers, cost observers, ...) plus its entry-point
+name. Enabling ``my_rule`` as a rule never trusts a same-named detector or
+audit sink (#638). With no file, or an empty list, nothing is imported:
+enabling a plugin is always an explicit act, by name — a package merely being
+installed is never enough.
+
+**Legacy bare names.** A file written before #638 lists bare names
+(``my_rule``), which matched that name under every group. They keep working
+exactly as before, so an upgrade never silently disables a plugin, and
+:func:`legacy_entries` reports them so ``doberman plugins list`` and
+``doberman doctor`` can ask for a group. Enabling the name again for a group
+replaces the bare entry with the narrower one.
 
 Reads never raise: a missing, unreadable, or malformed file yields ``[]`` (no
 plugins) so a corrupt config can only fall back to core-only behavior, never
@@ -40,6 +50,8 @@ PLUGINS_FILE_ENV = "DOBERMAN_PLUGINS_FILE"
 
 #: An entry-point name shape (mirrors typical Python entry-point names).
 _NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+#: An entry-point group shape: every group Doberman discovers is ``doberman.<seam>``.
+_GROUP_RE = re.compile(r"^doberman\.[a-z_]{1,48}$")
 
 #: Process-wide snapshot cache — see the module docstring. ``None`` means "not
 #: yet snapshotted"; a snapshot of zero plugins is a non-``None`` empty tuple.
@@ -62,8 +74,47 @@ def _path() -> Path:
     return Path(override) if override else _default_path()
 
 
+def entry(group: str, name: str) -> str:
+    """The allowlist entry for ``name`` registered under ``group``."""
+    return f"{group}:{name}"
+
+
+def _valid_entry(value: str) -> bool:
+    group, sep, name = value.rpartition(":")
+    if not sep:
+        return bool(_NAME_RE.match(value))  # legacy bare name
+    return bool(_GROUP_RE.match(group) and _NAME_RE.match(name))
+
+
+def is_allowed(group: str, name: str, allowed: tuple[str, ...] | list[str]) -> bool:
+    """Whether ``name`` under ``group`` is opted in: by its group-qualified entry,
+    or by a legacy bare entry (which, as before #638, matches every group)."""
+    return entry(group, name) in allowed or name in allowed
+
+
+def names_for_group(group: str, allowed: tuple[str, ...] | list[str]) -> list[str]:
+    """The names ``allowed`` opts in under ``group``, in allowlist order."""
+    prefix = f"{group}:"
+    out: list[str] = []
+    for value in allowed:
+        if value.startswith(prefix):
+            name = value[len(prefix) :]
+        elif ":" not in value:
+            name = value
+        else:
+            continue
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def legacy_entries(allowed: tuple[str, ...] | list[str]) -> list[str]:
+    """Bare names from a pre-#638 file: trusted under every group until re-enabled."""
+    return [value for value in allowed if ":" not in value]
+
+
 def enabled_plugins() -> list[str]:
-    """Enabled entry-point names, de-duplicated and order-preserving (``[]`` on any error).
+    """Enabled allowlist entries, de-duplicated and order-preserving (``[]`` on any error).
 
     A LIVE read of the config file — use :func:`allowed_plugin_names` for the
     process-snapshotted view discovery actually consults.
@@ -79,7 +130,7 @@ def enabled_plugins() -> list[str]:
         seen: set[str] = set()
         out: list[str] = []
         for name in names:
-            if isinstance(name, str) and _NAME_RE.match(name) and name not in seen:
+            if isinstance(name, str) and _valid_entry(name) and name not in seen:
                 seen.add(name)
                 out.append(name)
         return out
@@ -127,24 +178,38 @@ def _write(names: list[str]) -> None:
         pass
 
 
-def enable(name: str) -> list[str]:
-    """Enable ``name`` (appended if new). Returns the new list.
+def enable(name: str, group: str | None = None) -> list[str]:
+    """Enable ``name`` under ``group`` (appended if new). Returns the new list.
 
-    Raises ``ValueError`` for a malformed name so the CLI can reject typos
-    rather than silently persisting an unusable entry. Does NOT affect the
-    current process's snapshot — see :func:`allowed_plugin_names`.
+    With a ``group`` the entry is ``<group>:<name>``, and a legacy bare entry
+    for the same name is dropped: it trusted every group, so replacing it can
+    only narrow what loads. Without a ``group`` a bare (any-group) entry is
+    written, as before #638; ``doberman plugins enable`` always passes one.
+
+    Raises ``ValueError`` for a malformed name or group so the CLI can reject
+    typos rather than silently persisting an unusable entry. Does NOT affect
+    the current process's snapshot — see :func:`allowed_plugin_names`.
     """
     if not _NAME_RE.match(name):
         raise ValueError(f"invalid plugin name: {name!r}")
+    if group is not None and not _GROUP_RE.match(group):
+        raise ValueError(f"invalid plugin group: {group!r}")
+    value = name if group is None else entry(group, name)
     names = enabled_plugins()
-    if name not in names:
-        names.append(name)
-        _write(names)
-    return names
+    updated = [n for n in names if group is None or n != name]
+    if value not in updated:
+        updated.append(value)
+    if updated != names:
+        _write(updated)
+    return updated
 
 
-def disable(name: str) -> list[str]:
-    """Disable ``name`` if present. Returns the new list."""
-    names = [n for n in enabled_plugins() if n != name]
+def disable(name: str, group: str | None = None) -> list[str]:
+    """Disable ``name``: under ``group`` only, or (no group) under every group,
+    including a legacy bare entry. Returns the new list."""
+    if group is None:
+        names = [n for n in enabled_plugins() if n != name and n.rpartition(":")[2] != name]
+    else:
+        names = [n for n in enabled_plugins() if n != entry(group, name)]
     _write(names)
     return names
