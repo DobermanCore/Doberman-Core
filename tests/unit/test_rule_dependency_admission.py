@@ -594,3 +594,299 @@ def test_bounded_on_a_one_megabyte_command():
     huge_command = "pip install " + ("a" * (1024 * 1024))
     result = rule.evaluate(_action(), _ctx(huge_command))
     assert result.verdict is Verdict.PASS
+
+
+# ── #645: npx, npm exec, and pipx run execute-on-install verbs ───────────
+
+
+def test_npx_dependency_admission():
+    # npx <pkg> fetches and runs without a subcommand: ordinary flags (e.g.
+    # --yes, -y) are skipped, known-malicious blocks, typosquats require auth,
+    # and popular/legitimate names pass.
+    rule = DependencyAdmissionRule(
+        known_malicious={"npm": frozenset({"crossenv"})},
+        popular_by_len={"npm": {7: frozenset({"request"})}},
+    )
+    segments, _, _ = walk_command("npx --yes crossenv")
+    assert _ecosystem_and_names(segments[0]) == ("npm", ["crossenv"])
+
+    result_block = rule.evaluate(_action(), _ctx("npx --yes crossenv"))
+    assert result_block.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_block.reason_codes
+
+    result_plain = rule.evaluate(_action(), _ctx("npx crossenv"))
+    assert result_plain.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_plain.reason_codes
+
+    # Option parsing stops at the app; tool arguments like --package=request do not override
+    result_args = rule.evaluate(_action(), _ctx("npx crossenv --package=request"))
+    assert result_args.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_args.reason_codes
+
+    # Runner value flags consume their argument before finding the app
+    result_loglevel = rule.evaluate(_action(), _ctx("npx --loglevel silent crossenv"))
+    assert result_loglevel.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_loglevel.reason_codes
+
+    result_loglevel_eq = rule.evaluate(_action(), _ctx("npx --loglevel=silent crossenv"))
+    assert result_loglevel_eq.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_loglevel_eq.reason_codes
+
+    # Supported value-options separate-value and equals controls (#645)
+    assert (
+        rule.evaluate(_action(), _ctx("npx --fetch-timeout 1000 crossenv")).verdict is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --fetch-timeout=1000 crossenv")).verdict is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --fetch-timeout 1000 prettier crossenv")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --fetch-timeout=1000 prettier crossenv")).verdict
+        is Verdict.PASS
+    )
+    assert rule.evaluate(_action(), _ctx("npx -C /tmp crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npx -C=/tmp crossenv")).verdict is Verdict.BLOCK
+    assert (
+        rule.evaluate(_action(), _ctx("npx --registry https://registry.npmjs.org crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --registry=https://registry.npmjs.org crossenv")).verdict
+        is Verdict.BLOCK
+    )
+
+    # Boolean flags preserved and do not consume following package operand
+    assert rule.evaluate(_action(), _ctx("npx --prefer-offline crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npx --offline crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npx -y crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npx --force crossenv")).verdict is Verdict.BLOCK
+
+    result_auth = rule.evaluate(_action(), _ctx("npx requestx"))
+    assert result_auth.verdict is Verdict.AUTH
+    assert ReasonCode.dependency_name_typosquat in result_auth.reason_codes
+
+    result_pass = rule.evaluate(_action(), _ctx("npx request"))
+    assert result_pass.verdict is Verdict.PASS
+
+    # Tool arguments are not checked as package names:
+    # "test" is 1-edit from "jest", but "npx playwright test" must pass
+    assert rule.evaluate(_action(), _ctx("npx playwright test")).verdict is Verdict.PASS
+    # "crossenv" is malicious, but "npx prettier crossenv" passes crossenv as an argument
+    assert rule.evaluate(_action(), _ctx("npx prettier crossenv")).verdict is Verdict.PASS
+    assert (
+        rule.evaluate(_action(), _ctx("npx --loglevel silent prettier crossenv")).verdict
+        is Verdict.PASS
+    )
+
+    # Explicit package flag (--package=<pkg> / --package <pkg> / -p=<pkg> / -p <pkg>)
+    assert (
+        rule.evaluate(_action(), _ctx("npx --package=crossenv -- cross-env")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --package crossenv -- cross-env")).verdict
+        is Verdict.BLOCK
+    )
+    assert rule.evaluate(_action(), _ctx("npx -p=crossenv -- cross-env")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npx -p crossenv -- cross-env")).verdict is Verdict.BLOCK
+
+    segments_bare, _, _ = walk_command("npx --yes")
+    assert _ecosystem_and_names(segments_bare[0]) is None
+
+
+def test_npm_exec_dependency_admission():
+    # npm exec <pkg> fetches and runs via exec subcommand: ordinary flags
+    # are skipped, known-malicious blocks, typosquats require auth,
+    # and popular/legitimate names pass.
+    rule = DependencyAdmissionRule(
+        known_malicious={"npm": frozenset({"crossenv"})},
+        popular_by_len={"npm": {7: frozenset({"request"})}},
+    )
+    segments, _, _ = walk_command("npm exec --yes crossenv")
+    assert _ecosystem_and_names(segments[0]) == ("npm", ["crossenv"])
+
+    result_block = rule.evaluate(_action(), _ctx("npm exec --yes crossenv"))
+    assert result_block.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_block.reason_codes
+
+    result_plain = rule.evaluate(_action(), _ctx("npm exec crossenv"))
+    assert result_plain.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_plain.reason_codes
+
+    # Option parsing stops at the app: tool arguments like -p request do not override
+    result_args = rule.evaluate(_action(), _ctx("npm exec crossenv -p request"))
+    assert result_args.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_args.reason_codes
+
+    # In npm, -p means --parseable (boolean flag, takes no argument), so crossenv is the app
+    result_p = rule.evaluate(_action(), _ctx("npm exec -p crossenv"))
+    assert result_p.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_p.reason_codes
+
+    # Runner value flags consume their argument before finding the app
+    result_loglevel = rule.evaluate(_action(), _ctx("npm exec --loglevel silent crossenv"))
+    assert result_loglevel.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_loglevel.reason_codes
+
+    # Supported value-options separate-value and equals controls (#645)
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --fetch-timeout 1000 crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --fetch-timeout=1000 crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --fetch-timeout 1000 prettier crossenv")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --fetch-timeout=1000 prettier crossenv")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --loglevel=silent crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert rule.evaluate(_action(), _ctx("npm exec -w app crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npm exec -w=app crossenv")).verdict is Verdict.BLOCK
+
+    # Boolean flags preserved and do not consume following package operand
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --prefer-offline crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert rule.evaluate(_action(), _ctx("npm exec --offline crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npm exec -y crossenv")).verdict is Verdict.BLOCK
+    assert rule.evaluate(_action(), _ctx("npm exec --force crossenv")).verdict is Verdict.BLOCK
+
+    # Explicit package flags (--package=<pkg>, --package <pkg>)
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --package=crossenv -- cross-env")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --package crossenv -- cross-env")).verdict
+        is Verdict.BLOCK
+    )
+
+    # npm exec parses options after command name until bare "--" (#645)
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec request --package=crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec request --package crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm x request --package=crossenv")).verdict is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm x request --package crossenv")).verdict is Verdict.BLOCK
+    )
+
+    # Reverse case: --package=request specifies the installed package, so crossenv command passes
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec crossenv --package=request")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec crossenv --package request")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm x crossenv --package=request")).verdict is Verdict.PASS
+    )
+
+    # Bare "--" controls: option parsing stops at "--"
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec crossenv -- --package=request")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --package=crossenv -- request")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec request -- --package=crossenv")).verdict
+        is Verdict.PASS
+    )
+
+    # Benign-argument controls
+    assert rule.evaluate(_action(), _ctx("npm exec playwright test")).verdict is Verdict.PASS
+    assert rule.evaluate(_action(), _ctx("npm exec prettier crossenv")).verdict is Verdict.PASS
+    assert rule.evaluate(_action(), _ctx("npm exec -p prettier crossenv")).verdict is Verdict.PASS
+
+    result_auth = rule.evaluate(_action(), _ctx("npm exec requestx"))
+    assert result_auth.verdict is Verdict.AUTH
+    assert ReasonCode.dependency_name_typosquat in result_auth.reason_codes
+
+    result_pass = rule.evaluate(_action(), _ctx("npm exec request"))
+    assert result_pass.verdict is Verdict.PASS
+
+    segments_bare, _, _ = walk_command("npm exec")
+    assert _ecosystem_and_names(segments_bare[0]) is None
+
+
+def test_pipx_run_dependency_admission():
+    # pipx run <pkg> fetches and runs via run subcommand: ordinary flags
+    # are skipped, known-malicious blocks, typosquats require auth,
+    # and popular/legitimate names pass.
+    rule = DependencyAdmissionRule(
+        known_malicious={"pypi": frozenset({"evilpkg-fixture"})},
+        popular_by_len={"pypi": {8: frozenset({"requests"})}},
+    )
+    segments, _, _ = walk_command("pipx run --verbose evilpkg-fixture")
+    assert _ecosystem_and_names(segments[0]) == ("pypi", ["evilpkg-fixture"])
+
+    result_block = rule.evaluate(_action(), _ctx("pipx run --verbose evilpkg-fixture"))
+    assert result_block.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_block.reason_codes
+
+    result_plain = rule.evaluate(_action(), _ctx("pipx run evilpkg-fixture"))
+    assert result_plain.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_plain.reason_codes
+
+    # pipx space-separated and equals-separated --python forms consume value before app
+    result_python_space = rule.evaluate(_action(), _ctx("pipx run --python 3.12 evilpkg-fixture"))
+    assert result_python_space.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_python_space.reason_codes
+
+    result_python_eq = rule.evaluate(_action(), _ctx("pipx run --python=3.12 evilpkg-fixture"))
+    assert result_python_eq.verdict is Verdict.BLOCK
+    assert ReasonCode.dependency_known_malicious in result_python_eq.reason_codes
+
+    # Explicit spec flags (--spec=<pkg>, --spec <pkg>)
+    assert (
+        rule.evaluate(_action(), _ctx("pipx run --spec=evilpkg-fixture app")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("pipx run --spec evilpkg-fixture app")).verdict
+        is Verdict.BLOCK
+    )
+
+    # Arguments passed to the tool are not checked
+    assert (
+        rule.evaluate(_action(), _ctx("pipx run requests evilpkg-fixture")).verdict is Verdict.PASS
+    )
+    assert rule.evaluate(_action(), _ctx("pipx run black crossenv.py")).verdict is Verdict.PASS
+    assert (
+        rule.evaluate(_action(), _ctx("pipx run --python 3.12 requests evilpkg-fixture")).verdict
+        is Verdict.PASS
+    )
+
+    result_auth = rule.evaluate(_action(), _ctx("pipx run requestx"))
+    assert result_auth.verdict is Verdict.AUTH
+    assert ReasonCode.dependency_name_typosquat in result_auth.reason_codes
+
+    result_pass = rule.evaluate(_action(), _ctx("pipx run requests"))
+    assert result_pass.verdict is Verdict.PASS
+
+    segments_bare, _, _ = walk_command("pipx run")
+    assert _ecosystem_and_names(segments_bare[0]) is None

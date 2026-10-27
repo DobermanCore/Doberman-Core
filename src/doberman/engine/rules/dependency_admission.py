@@ -107,10 +107,11 @@ _NO_VALUE_FLAGS: frozenset[str] = frozenset()
 _ECOSYSTEM_VERBS: dict[str, tuple[str, frozenset[str], frozenset[str]]] = {
     "pip": ("pypi", frozenset({"install"}), _PIP_VALUE_FLAGS),
     "pip3": ("pypi", frozenset({"install"}), _PIP_VALUE_FLAGS),
-    "pipx": ("pypi", frozenset({"install"}), _PIP_VALUE_FLAGS),
+    "pipx": ("pypi", frozenset({"install", "run"}), _PIP_VALUE_FLAGS),
     "uv": ("pypi", frozenset({"add"}), _NO_VALUE_FLAGS),
     "poetry": ("pypi", frozenset({"add"}), _NO_VALUE_FLAGS),
-    "npm": ("npm", frozenset({"install", "i", "add"}), _NPM_VALUE_FLAGS),
+    "npm": ("npm", frozenset({"install", "i", "add", "exec", "x"}), _NPM_VALUE_FLAGS),
+    "npx": ("npm", frozenset(), _NPM_VALUE_FLAGS),
     "pnpm": ("npm", frozenset({"install", "i", "add"}), _PNPM_VALUE_FLAGS),
     "yarn": ("npm", frozenset({"add"}), _YARN_VALUE_FLAGS),
     "bun": ("npm", frozenset({"install", "i", "add"}), _BUN_VALUE_FLAGS),
@@ -202,20 +203,385 @@ def _extract_names(tokens: list[str], value_flags: frozenset[str]) -> list[str]:
     return names
 
 
+_RUNNER_VERBS: frozenset[tuple[str, str | None]] = frozenset(
+    {
+        ("npx", None),
+        ("npm", "exec"),
+        ("npm", "x"),
+        ("pipx", "run"),
+    }
+)
+
+
+_NPM_VALUE_FLAGS: frozenset[str] = frozenset(
+    {
+        "-C",
+        "-L",
+        "-c",
+        "-m",
+        "-reg",
+        "-w",
+        "--_auth",
+        "--access",
+        "--also",
+        "--audit-level",
+        "--auth-type",
+        "--before",
+        "--browser",
+        "--ca",
+        "--cache",
+        "--cache-max",
+        "--cache-min",
+        "--cafile",
+        "--call",
+        "--cert",
+        "--cidr",
+        "--color",
+        "--cpu",
+        "--depth",
+        "--diff",
+        "--diff-dst-prefix",
+        "--diff-src-prefix",
+        "--diff-unified",
+        "--editor",
+        "--enjoy-by",
+        "--expect-result-count",
+        "--expect-results",
+        "--fetch-retries",
+        "--fetch-retry-factor",
+        "--fetch-retry-maxtimeout",
+        "--fetch-retry-mintimeout",
+        "--fetch-timeout",
+        "--git",
+        "--globalconfig",
+        "--heading",
+        "--https-proxy",
+        "--include",
+        "--init-author-email",
+        "--init-author-name",
+        "--init-author-url",
+        "--init-license",
+        "--init-module",
+        "--init-version",
+        "--init.author.email",
+        "--init.author.name",
+        "--init.author.url",
+        "--init.license",
+        "--init.module",
+        "--init.version",
+        "--install-strategy",
+        "--key",
+        "--libc",
+        "--local-address",
+        "--location",
+        "--lockfile-version",
+        "--loglevel",
+        "--logs-dir",
+        "--logs-max",
+        "--maxsockets",
+        "--message",
+        "--node-options",
+        "--noproxy",
+        "--omit",
+        "--only",
+        "--os",
+        "--otp",
+        "--pack-destination",
+        "--prefix",
+        "--preid",
+        "--provenance-file",
+        "--proxy",
+        "--registry",
+        "--replace-registry-host",
+        "--save-prefix",
+        "--sbom-format",
+        "--sbom-type",
+        "--scope",
+        "--script-shell",
+        "--searchexclude",
+        "--searchlimit",
+        "--searchopts",
+        "--searchstaleness",
+        "--shell",
+        "--tag",
+        "--tag-version-prefix",
+        "--umask",
+        "--user-agent",
+        "--userconfig",
+        "--viewer",
+        "--which",
+        "--workspace",
+    }
+)
+
+_NPX_VALUE_FLAGS: frozenset[str] = _NPM_VALUE_FLAGS | {"-p"}
+_NPM_EXEC_VALUE_FLAGS: frozenset[str] = _NPM_VALUE_FLAGS
+
+_PIPX_RUN_VALUE_FLAGS: frozenset[str] = frozenset(
+    {
+        "--python",
+        "--with",
+        "-i",
+        "--index-url",
+        "--pip-args",
+        "--python-args",
+    }
+)
+
+
+def _extract_npx_names(tokens: list[str]) -> list[str]:
+    """Extract package names from an npx invocation (#645).
+
+    Option parsing stops at the application operand, ensuring flags passed to the
+    underlying tool are not misread as runner options (e.g. ``npx crossenv --package=request``
+    blocks on ``crossenv``, not ``request``). Recognizes npx-specific package flags
+    (``--package``, ``-p``) and consumes runner value flags (e.g. ``--loglevel silent``).
+    """
+    explicit_packages: list[str] = []
+    app: str | None = None
+    i = 0
+    n = len(tokens)
+
+    while i < n:
+        tok = tokens[i]
+        if tok == "--":
+            i += 1
+            if i < n:
+                candidate = _strip_version(tokens[i]).lower()
+                if _is_installable_name(candidate):
+                    app = candidate
+            break
+
+        if tok.startswith("--package="):
+            pkg = tok.split("=", 1)[1]
+            cand = _strip_version(pkg).lower()
+            if _is_installable_name(cand):
+                explicit_packages.append(cand)
+            i += 1
+            continue
+        if tok == "--package":
+            if i + 1 < n:
+                cand = _strip_version(tokens[i + 1]).lower()
+                if _is_installable_name(cand):
+                    explicit_packages.append(cand)
+                i += 2
+            else:
+                i += 1
+            continue
+        if tok.startswith("-p="):
+            pkg = tok.split("=", 1)[1]
+            cand = _strip_version(pkg).lower()
+            if _is_installable_name(cand):
+                explicit_packages.append(cand)
+            i += 1
+            continue
+        if tok == "-p":
+            if i + 1 < n:
+                cand = _strip_version(tokens[i + 1]).lower()
+                if _is_installable_name(cand):
+                    explicit_packages.append(cand)
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if tok in _NPX_VALUE_FLAGS:
+            if i + 1 < n:
+                i += 2
+            else:
+                i += 1
+            continue
+        if "=" in tok and tok.split("=", 1)[0] in _NPX_VALUE_FLAGS:
+            i += 1
+            continue
+
+        if tok.startswith("-"):
+            i += 1
+            continue
+
+        cand = _strip_version(tok).lower()
+        if _is_installable_name(cand):
+            app = cand
+        break
+
+    if explicit_packages:
+        return explicit_packages
+    if app:
+        return [app]
+    return []
+
+
+def _extract_npm_exec_names(tokens: list[str]) -> list[str]:
+    """Extract package names from an npm exec / npm x invocation (#645).
+
+    Unlike npx, npm exec continues parsing options after the command name until
+    a bare ``--`` operand is encountered. The package(s) installed by npm are
+    specified via ``--package`` (or ``--package=<pkg>``); if no ``--package``
+    options are given, npm executes the first application operand.
+
+    Keeps npm's ``-p`` meaning ``--parseable`` (boolean flag taking no argument),
+    so ``npm exec crossenv -p request`` blocks on ``crossenv`` rather than
+    treating ``request`` as a package.
+    """
+    explicit_packages: list[str] = []
+    app: str | None = None
+    i = 0
+    n = len(tokens)
+
+    while i < n:
+        tok = tokens[i]
+        if tok == "--":
+            i += 1
+            if app is None and i < n:
+                candidate = _strip_version(tokens[i]).lower()
+                if _is_installable_name(candidate):
+                    app = candidate
+            break
+
+        if tok.startswith("--package="):
+            pkg = tok.split("=", 1)[1]
+            cand = _strip_version(pkg).lower()
+            if _is_installable_name(cand):
+                explicit_packages.append(cand)
+            i += 1
+            continue
+        if tok == "--package":
+            if i + 1 < n:
+                cand = _strip_version(tokens[i + 1]).lower()
+                if _is_installable_name(cand):
+                    explicit_packages.append(cand)
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if tok in _NPM_EXEC_VALUE_FLAGS:
+            if i + 1 < n:
+                i += 2
+            else:
+                i += 1
+            continue
+        if "=" in tok and tok.split("=", 1)[0] in _NPM_EXEC_VALUE_FLAGS:
+            i += 1
+            continue
+
+        if tok.startswith("-"):
+            i += 1
+            continue
+
+        cand = _strip_version(tok).lower()
+        if _is_installable_name(cand):
+            if app is None:
+                app = cand
+        i += 1
+
+    if explicit_packages:
+        return explicit_packages
+    if app:
+        return [app]
+    return []
+
+
+def _extract_pipx_run_names(tokens: list[str]) -> list[str]:
+    """Extract package names from a pipx run invocation (#645).
+
+    Option parsing stops at the application operand, ignoring arguments passed
+    to the tool. Recognizes pipx's ``--spec`` / ``--spec=<spec>`` and consumes
+    pipx options with values such as space-separated ``--python <ver>``.
+    """
+    explicit_packages: list[str] = []
+    app: str | None = None
+    i = 0
+    n = len(tokens)
+
+    while i < n:
+        tok = tokens[i]
+        if tok == "--":
+            i += 1
+            if i < n:
+                candidate = _strip_version(tokens[i]).lower()
+                if _is_installable_name(candidate):
+                    app = candidate
+            break
+
+        if tok.startswith("--spec="):
+            spec = tok.split("=", 1)[1]
+            cand = _strip_version(spec).lower()
+            if _is_installable_name(cand):
+                explicit_packages.append(cand)
+            i += 1
+            continue
+        if tok == "--spec":
+            if i + 1 < n:
+                cand = _strip_version(tokens[i + 1]).lower()
+                if _is_installable_name(cand):
+                    explicit_packages.append(cand)
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if tok in _PIPX_RUN_VALUE_FLAGS:
+            if i + 1 < n:
+                i += 2
+            else:
+                i += 1
+            continue
+        if "=" in tok and tok.split("=", 1)[0] in _PIPX_RUN_VALUE_FLAGS:
+            i += 1
+            continue
+
+        if tok.startswith("-"):
+            i += 1
+            continue
+
+        cand = _strip_version(tok).lower()
+        if _is_installable_name(cand):
+            app = cand
+        break
+
+    if explicit_packages:
+        return explicit_packages
+    if app:
+        return [app]
+    return []
+
+
 def _ecosystem_and_names(raw_tokens: list[str]) -> tuple[str, list[str]] | None:
     """One segment's ``(ecosystem, [package names])``, or ``None`` if it is
     not a recognized package-manager install/add invocation."""
     tokens = _peel_uv_pip(_peel_module_runner(argv_from_tokens(raw_tokens)))
     if not tokens:
         return None
-    entry = _ECOSYSTEM_VERBS.get(tokens[0].lower())
+    verb = tokens[0].lower()
+    entry = _ECOSYSTEM_VERBS.get(verb)
     if entry is None:
         return None
     ecosystem, subcommands, value_flags = entry
     rest = tokens[1:]
-    if not rest or rest[0].lower() not in subcommands:
+    if not rest and subcommands:
         return None
-    names = _extract_names(rest[1:], value_flags)
+    if subcommands:
+        if not rest:
+            return None
+        subcmd = rest[0].lower()
+        if subcmd not in subcommands:
+            return None
+        operand_tokens = rest[1:]
+    else:
+        subcmd = None
+        operand_tokens = rest
+    if (verb, subcmd) in _RUNNER_VERBS:
+        if verb == "npx":
+            names = _extract_npx_names(operand_tokens)
+        elif verb == "npm" and subcmd in ("exec", "x"):
+            names = _extract_npm_exec_names(operand_tokens)
+        elif verb == "pipx" and subcmd == "run":
+            names = _extract_pipx_run_names(operand_tokens)
+        else:
+            names = []
+    else:
+        names = _extract_names(operand_tokens, value_flags)
     return (ecosystem, names) if names else None
 
 
