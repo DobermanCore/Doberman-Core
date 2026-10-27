@@ -49,6 +49,35 @@ def test_filename_shaped_tokens_are_not_treated_as_hosts():
     assert fingerprint("package.json") not in fps
 
 
+_ORIGINAL_NON_TLD_LABELS = (
+    "md txt json yaml yml toml ini cfg csv log py js ts jsx tsx css html xml sql sh png jpg "
+    "jpeg gif svg pdf zip lock env ipynb gitignore lockb"
+).split()
+
+_ADDED_NON_TLD_LABELS = (
+    "cjs mjs cts mts pyi whl rb go kt cpp hpp php swift lua vue svelte scss rst mdx jsonl tsv "
+    "sqlite db conf diff patch tar gz tgz"
+).split()
+
+
+@pytest.mark.parametrize("ext", _ADDED_NON_TLD_LABELS)
+def test_added_filename_extensions_are_not_treated_as_hosts(ext):
+    fps = untrusted_value_fingerprints(f"the agent edited src/main.{ext} and stopped")
+    assert fingerprint(f"main.{ext}") not in fps
+
+
+@pytest.mark.parametrize("ext", _ORIGINAL_NON_TLD_LABELS)
+def test_the_original_filename_extensions_are_still_not_hosts(ext):
+    fps = untrusted_value_fingerprints(f"the agent edited src/main.{ext} and stopped")
+    assert fingerprint(f"main.{ext}") not in fps
+
+
+@pytest.mark.parametrize("host", ["example.io", "example.dev", "crate.rs", "example.java"])
+def test_a_host_on_a_real_short_tld_is_still_fingerprinted(host):
+    # .io/.dev/.rs/.java are registered TLDs, so they stay out of the filter.
+    assert fingerprint(host) in untrusted_value_fingerprints(f"send it to {host} now")
+
+
 def test_value_cap_holds_at_200():
     text = " ".join(f"https://host{i}.example.com/x" for i in range(300))
     fps = untrusted_value_fingerprints(text)

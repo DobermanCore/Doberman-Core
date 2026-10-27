@@ -32,6 +32,36 @@ from doberman.models import ReasonCode, SecurityObject
 logger = logging.getLogger("doberman.egress.local")
 
 
+def _probe_targets(
+    probe_target: tuple[str, int] | Sequence[tuple[str, int]],
+) -> list[tuple[str, int]]:
+    """One ``(host, port)`` or a sequence of them, as a non-empty list."""
+    if len(probe_target) == 2 and isinstance(probe_target[0], str):
+        host, port = probe_target
+        return [(host, port)]
+    targets = [(host, port) for host, port in probe_target]
+    if not targets:
+        raise ValueError("probe_target needs at least one (host, port)")
+    return targets
+
+
+async def _probe_first_reachable(proxy: ForwardProxy, targets: list[tuple[str, int]]) -> None:
+    """Probe each target through ``proxy`` in order; return on the first that connects.
+
+    Raises the last target's error when none does, so the positive half of the
+    enforcement probe is met only by a real connection.
+    """
+    error: Exception = ValueError("no probe target")
+    for host, port in targets:
+        try:
+            await proxy.probe(host, port)
+        except Exception as exc:  # noqa: BLE001 — a refused target means: try the next one
+            error = exc
+        else:
+            return
+    raise error
+
+
 class LocalEgressBroker:
     """The core reference `EgressBroker` (Option A topology, plan §3.2).
 
@@ -45,7 +75,7 @@ class LocalEgressBroker:
         allowlist: EgressAllowlist | None = None,
         probe: EnforcementProbe | None = None,
         proxy: ForwardProxy | None = None,
-        probe_target: tuple[str, int] = ("github.com", 443),
+        probe_target: tuple[str, int] | Sequence[tuple[str, int]] = ("github.com", 443),
     ) -> None:
         self._allowlist = allowlist if allowlist is not None else EgressAllowlist()
         self._proxy = proxy
@@ -54,7 +84,9 @@ class LocalEgressBroker:
         elif proxy is not None:
             # shortcut: probe one well-known allowlisted host through the
             # proxy — enough to prove "this proxy is actually enforcing
-            # egress right now" without a configurable target list. The
+            # egress right now". A caller on a network that cannot reach
+            # the default passes its own target, or several, tried in order
+            # until one connects (#627). The
             # direct connector stays at EnforcementProbe's safe default
             # (no-network, raises); only a caller building a real deployment
             # opts into the real-network `_socket_connector` explicitly.
@@ -62,9 +94,9 @@ class LocalEgressBroker:
             # target and returns its coroutine for `EnforcementProbe.refresh`
             # to await -- never call `asyncio.run()` here, this broker is
             # reached from inside the proxy's own running event loop.
-            target_host, target_port = probe_target
+            targets = _probe_targets(probe_target)
             self._probe = EnforcementProbe(
-                broker_probe=lambda: proxy.probe(target_host, target_port)
+                broker_probe=lambda: _probe_first_reachable(proxy, targets)
             )
         else:
             self._probe = EnforcementProbe()

@@ -113,6 +113,12 @@ def test_force_push_to_protected_branch_blocks(command):
     assert result.verdict is Verdict.BLOCK
 
 
+def test_push_plus_first_positional_preserves_block_verdict():
+    result = _cmd("git push +main", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -2195,3 +2201,470 @@ def test_git_attr_source_global_option_still_locates_history_rewrite_verb():
     with_global = _cmd("git --attr-source HEAD reset --hard HEAD~3")
     assert with_global.verdict == bare.verdict == Verdict.AUTH
     assert with_global.reason_codes == bare.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #726: combined short flags, abbreviated long options, and value-consuming
+# options slip past both protected-branch push checks ---
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # combined short flags: delete
+        "git push -qd origin main",
+        "git push -dq origin main",
+        "git push -ud origin main",
+        # abbreviated long options: delete
+        "git push --del origin main",
+        "git push --dele origin main",
+        "git push --delet origin main",
+    ],
+)
+def test_combined_short_flags_and_abbreviated_delete_block(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # combined short flags: force
+        "git push -fu origin main",
+        "git push -qf origin main",
+        # abbreviated long options: force
+        "git push --force-w origin main",
+        "git push --force-with origin main",
+        "git push --force-with-l origin main",
+    ],
+)
+def test_combined_short_flags_and_abbreviated_force_block(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # combined short delete on a feature branch — not protected
+        "git push -qd origin my-feature",
+        "git push -dq origin my-feature",
+        # abbreviated long delete on a feature branch
+        "git push --del origin my-feature",
+    ],
+)
+def test_combined_short_delete_of_feature_branch_is_not_blocked(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # combined short force on a feature branch — not protected
+        "git push -fu origin my-feature",
+        # abbreviated long force on a feature branch
+        "git push --force-w origin my-feature",
+    ],
+)
+def test_combined_short_force_of_feature_branch_is_not_blocked(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # benign combined short flags that should PASS
+        "git push -u origin main",
+        "git push -q origin feature",
+        "git push -qu origin main",
+        "git push -uq origin main",
+    ],
+)
+def test_benign_combined_short_flags_pass(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+def test_push_option_value_is_not_mistaken_for_refspec():
+    # ``-o main`` means ``--push-option=main``, NOT push to branch ``main``.
+    # Without value-consuming option handling, ``main`` after ``-o`` would be
+    # misread as the remote, desyncing refspec identification.
+    result = _cmd("git push -o main origin feature", action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_long_push_option_value_is_not_mistaken_for_refspec():
+    result = _cmd("git push --push-option main origin feature", action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_receive_pack_value_is_not_mistaken_for_refspec():
+    result = _cmd("git push --receive-pack main origin feature", action_type=ActionType.git_op)
+    assert result.verdict is not Verdict.BLOCK
+
+
+def test_push_option_value_does_not_hide_delete_flag():
+    result = _cmd(
+        "git push -o x --delete origin main",
+        action_type=ActionType.git_op,
+    )
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #726: --mirror and --prune should produce AUTH ---
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --mirror",
+        "git push --mirr",
+    ],
+)
+def test_push_mirror_requires_auth(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --prune",
+        "git push --pru",
+    ],
+)
+def test_push_prune_requires_auth(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #726: -c remote.*.push=... config override should produce AUTH ---
+
+
+def test_push_with_remote_push_config_override_requires_auth():
+    result = _cmd(
+        "git -c remote.origin.push=:refs/heads/main push origin",
+        action_type=ActionType.git_op,
+    )
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+def test_push_with_remote_push_config_override_different_remote_requires_auth():
+    result = _cmd(
+        "git -c remote.upstream.push=+refs/heads/*:refs/heads/* push upstream",
+        action_type=ActionType.git_op,
+    )
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+def test_push_with_non_remote_push_config_is_not_elevated():
+    # A -c key that is NOT remote.*.push should not trigger the AUTH.
+    result = _cmd(
+        "git -c core.pager=cat push origin feature",
+        action_type=ActionType.git_op,
+    )
+    assert result.verdict is Verdict.PASS
+
+
+# --- #742: bare ``--signed`` must NOT consume the following token ----------
+# ``--signed`` takes an OPTIONAL value attached via ``=`` (``--signed=yes``);
+# a bare ``--signed`` never pops the next token.  Before the fix, the parser
+# skipped the token after ``--signed``, swallowing ``--force`` or ``origin``
+# and silently PASSing a destructive push.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # --signed followed by --force: force-push to a protected branch
+        "git push --signed --force origin main",
+        # --signed followed by a remote: delete of a protected branch
+        "git push --signed origin --delete main",
+    ],
+)
+def test_bare_signed_does_not_swallow_next_token(command):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 FIX 1: value-consuming options must not swallow dash-prefixed flags --
+# When a value-consuming option (-o, --push-option, --repo, etc.) is followed
+# by a token starting with ``-``, the parser must NOT consume it as the option's
+# value.  Instead, the dash-prefixed token is parsed as its own flag on the next
+# iteration (fail-closed).
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push -o --force origin main",
+        "git push --push-option --force origin main",
+        "git push -qo --force origin main",
+        "git push --repo --force origin main",
+        "git push --repo --delete origin main",
+    ],
+)
+def test_value_option_does_not_swallow_dash_prefixed_flag(command):
+    """Dash-prefixed values after value-consuming options must still be parsed
+    as flags.  All five cases involve a destructive flag (--force or --delete)
+    targeting a protected branch and must return BLOCK."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 FIX 2: preserve base verdicts when value consumption shifts positionals
+# The PR parser correctly consumes option values, but doing so changes which
+# tokens land in ``positionals[0]`` (treated as the remote) vs
+# ``positionals[1:]`` (explicit_refs).  These tests verify that the
+# ``ambiguous_first`` tracking preserves every base-commit BLOCK verdict.
+#
+# NOTE: ``git push -f -o x main feature`` and ``git push -f --repo x main
+# feature`` intentionally preserve the base commit's false-positive BLOCK
+# verdicts.  In real Git, ``-o x`` consumes ``x`` and ``--repo x`` sets the
+# repository, so ``main`` would be the remote or a refspec — but the base
+# parser treated ``main`` as a branch refspec and BLOCKed.  We preserve that
+# stricter interpretation rather than silently loosening the guardrail.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push -f --repo x main feature",
+        "git push --repo x main --delete feature",
+        "git push --repo origin --delete main",
+        "git push -d --repo origin main feature",
+        "git push -f -o x main feature",
+        "git push --delete -o x main feature",
+        "git push -f --push-option x main feature",
+        "git push -f --receive-pack x main feature",
+        "git push -f --exec x main feature",
+    ],
+)
+def test_displaced_positional_preserves_base_block(command):
+    """Value-option consumption shifts positionals, but the displaced first
+    positional must still be checked against the protected-branch set.
+    All of these returned BLOCK on the base commit."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 FIX 2: intentional tightenings beyond base behavior ----------------
+
+
+def test_force_push_with_repo_option_bare_fallback_blocks():
+    """``git push -f --repo x origin`` — base returned PASS because the old
+    parser saw ``[x, origin]`` as positionals and matched ``origin`` (not
+    protected) as the explicit ref.  The PR parser correctly consumes ``x``
+    as ``--repo``'s value, leaving only ``origin`` as positionals[0] with no
+    explicit refs.  The bare-force fallback (``not info.explicit_refs``)
+    correctly returns BLOCK.  This stricter result is intentional: a bare
+    force-push should be blocked by the maintainer's review rule."""
+    result = _cmd("git push -f --repo x origin", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push -f -o x origin",
+        "git push -f --push-option x origin",
+    ],
+)
+def test_bare_force_push_after_consuming_option_value_blocks(command):
+    """Command forms like ``git push -f -o x origin`` and ``git push -f
+    --push-option x origin`` force-push the current branch in real Git.
+    After consuming the option value, only ``origin`` remains as the remote,
+    leaving no explicit refspec.  The bare-force fallback must BLOCK."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+def test_repo_equals_delete_protected_blocks():
+    """``git push --repo=origin --delete main`` — base returned PASS because the
+    base parser ignores dash-prefixed tokens when collecting positionals,
+    leaving ``main`` as the first positional.  The existing ``positionals[1:]``
+    extraction then drops it, so the base deletion check returns PASS.  The
+    PR parser recognizes the ``=``-joined form and correctly marks
+    ``displaced=True``, so ``main`` is checked as an ambiguous candidate
+    against the protected set.  This BLOCK is an intentional tightening for the
+    equals form."""
+    result = _cmd("git push --repo=origin --delete main", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 FIX 2: control tests — PASS verdicts that must be preserved --------
+
+
+def test_delete_unprotected_branch_via_repo_option_passes():
+    """``git push --repo origin --delete feature`` — was PASS on base and must
+    remain PASS.  ``feature`` is not a protected branch."""
+    result = _cmd("git push --repo origin --delete feature", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+def test_force_push_unprotected_branch_passes():
+    """``git push -f origin feature`` — ordinary force-push to an unprotected
+    branch.  Was PASS on base and must remain PASS.  The force and refspec
+    handling changes must not block pushes to non-protected branches."""
+    result = _cmd("git push -f origin feature", action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+# --- #742 FIX 3: --recurse-submodules consumes its space-separated value ------
+# Real Git (verified with ``git push --dry-run -f --recurse-submodules check
+# origin``) consumes ``check`` as the option value, leaving ``origin`` as the
+# remote with no explicit refspec.  That's a bare force-push of the current
+# branch — the fail-safe must BLOCK it.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Space-separated: both were PASS on base; their BLOCK verdict is an
+        # intentional tightening — the parser now correctly consumes the
+        # submodule value, exposing the bare force-push.
+        "git push -f --recurse-submodules check origin",
+        "git push -f --recurse check origin",
+        # Equals form: value is self-contained; bare-force fallback applies.
+        "git push -f --recurse-submodules=check origin",
+    ],
+)
+def test_recurse_submodules_value_consumed_bare_force_blocks(command):
+    """When --recurse-submodules (or its --recurse abbreviation) consumes the
+    value, the remaining positional is just the remote with no explicit refspec.
+    The bare-force fallback must BLOCK."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 Step 2: AUTH explanations for uninspectable push shapes -------------
+# When a push affects refs that cannot be determined statically (--mirror,
+# --prune, or a -c remote.*.push config override), the rule requires
+# authentication (AUTH) and explicitly clarifies that the affected refs aren't
+# visible on the command line.
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_explanation"),
+    [
+        (
+            "git push --mirror origin",
+            "git push --mirror can overwrite or delete remote refs that aren't "
+            "visible on the command line; authentication required.",
+        ),
+        (
+            "git push --prune origin",
+            "git push --prune can delete remote refs that aren't visible on the "
+            "command line; authentication required.",
+        ),
+        (
+            "git -c remote.origin.push=+main push origin",
+            "git push with a -c remote.*.push override can affect refs that "
+            "aren't visible on the command line; authentication required.",
+        ),
+    ],
+)
+def test_uninspectable_push_shapes_require_auth_with_explanation(command, expected_explanation):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+    assert "aren't visible on the command line" in result.explanation
+    assert result.explanation == expected_explanation
+
+
+# --- #742 FIX 4: legacy compatibility fallback for option values after remote
+# The normalized parser correctly consumes option values, but when the consumed
+# value appears AFTER the remote (e.g. ``git push -f origin -o main feature``),
+# ``main`` is consumed by ``-o`` and never reaches ``explicit_refs``.  The old
+# parser saw ``main`` as a non-dash positional and BLOCKed.  The legacy
+# compatibility fallback reproduces the old check independently so that these
+# conservative BLOCK verdicts are preserved.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Maintainer-reported regression 1: force push, option value after remote
+        "git push -f origin -o main feature",
+        # Maintainer-reported regression 2: delete, option value after remote
+        "git push --delete origin --push-option main feature",
+        # Maintainer-reported regression 3: leading '+' force signal in option value
+        "git push -o +x origin main",
+    ],
+)
+def test_legacy_fallback_preserves_base_block_for_option_values_after_remote(command):
+    """Commands where the base implementation returned BLOCK because it treated
+    an option value as a positional ref candidate.  The normalized parser
+    correctly recognises the option value, but the legacy compatibility fallback
+    must independently reproduce the old BLOCK verdict.  These are conservative
+    policy-preserving false positives, not claims about real Git behavior."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+# --- #742 FIX 4: cross-pollination control tests
+# These commands return PASS on both the base implementation and the PR's
+# normalized parser.  They MUST remain PASS to prove that newly recognized
+# combined flags (``-fu``, ``-qd``) do not activate legacy ref candidates
+# containing a protected branch name.  If these ever become BLOCK, the legacy
+# fallback is being incorrectly cross-pollinated with the normalized parser's
+# improved flag recognition.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # ``-fu`` is only recognized as force by the new parser; ``main`` is the
+        # option value to ``-o``.  Base returns PASS (it doesn't see ``-fu`` as
+        # force); the normalized parser returns PASS (``main`` is consumed by
+        # ``-o``).  Both are PASS, so the result must be PASS.
+        "git push -fu origin -o main feature",
+        # ``-qd`` is only recognized as delete by the new parser;
+        # ``--push-option main`` consumes ``main``.  Base returns PASS (it
+        # doesn't see ``-qd`` as delete); the normalized parser returns PASS
+        # (``main`` is consumed).  Both are PASS, so the result must be PASS.
+        "git push -qd origin --push-option main feature",
+    ],
+)
+def test_cross_pollination_control_combined_flag_plus_consumed_value_passes(command):
+    """When a flag is ONLY recognized by the new parser (combined cluster like
+    ``-fu`` or ``-qd``) and the option value is consumed by the normalized
+    parser, the legacy fallback must not produce a BLOCK from mixing the
+    new flag with old positional candidates.  Both checks return PASS
+    independently, so the combined result must be PASS."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+def test_generator_protected_branches_not_exhausted_by_normalized_check():
+    """Verify that passing a single-use generator for ``protected`` is not
+    exhausted by the normalized check before the legacy fallback runs.
+
+    Both force-push and delete checks must preserve their legacy fallback
+    BLOCK verdicts even when ``protected`` is a non-reusable iterator.
+    """
+    # Force push: option value after remote requires the legacy fallback
+    tokens_force = ["git", "push", "-f", "origin", "-o", "main", "feature"]
+    gen_force = (b for b in ["main"])
+    assert commands_module._git_force_push_to_protected(tokens_force, gen_force) is True
+
+    # Delete push: option value after remote requires the legacy fallback
+    tokens_del = ["git", "push", "--delete", "origin", "--push-option", "main", "feature"]
+    gen_del = (b for b in ["main"])
+    assert commands_module._git_push_deletes_protected_branch(tokens_del, gen_del) is True
