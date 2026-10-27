@@ -1,5 +1,6 @@
 """Deadline copy shared by the built-in human challenge channels."""
 
+import gc
 import io
 
 import pytest
@@ -7,6 +8,15 @@ import pytest
 from doberman import render
 from doberman.auth import gui_prompter, tty_prompter
 from doberman.auth.tty_prompter import TtyPrompter
+
+
+@pytest.fixture(autouse=True)
+def _collect_tk_garbage_on_this_thread():
+    """The real-Tk countdown test leaves its widgets in a reference cycle. Collect
+    it here, on the thread that created it, or a later test's thread does and Tcl
+    aborts the xdist worker (same fix as test_gui_prompter.py's fixture)."""
+    yield
+    gc.collect()
 
 
 class _FakeWrite:

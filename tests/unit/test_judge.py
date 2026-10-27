@@ -272,8 +272,10 @@ def test_hard_timeout_returns_none_within_bound(monkeypatch):
 
     monkeypatch.setattr(judge_module, "_JUDGE_TIMEOUT_S", 0.05)
 
+    release = threading.Event()
+
     def _slow(_kwargs):
-        time.sleep(0.3)
+        release.wait(5.0)  # far past the 0.05s timeout; released below so the thread ends
         return _FakeMessage(json.dumps({"unambiguous": True, "high_impact": False}))
 
     _install_fake_anthropic(monkeypatch, _slow)
@@ -281,10 +283,15 @@ def test_hard_timeout_returns_none_within_bound(monkeypatch):
     monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
     judge = HaikuJudgeAdjudicator()
     start = time.monotonic()
-    result = judge.adjudicate({"action_type": "file_read"}, _PASS)
-    elapsed = time.monotonic() - start
+    try:
+        result = judge.adjudicate({"action_type": "file_read"}, _PASS)
+        elapsed = time.monotonic() - start
+    finally:
+        release.set()
     assert result is None
-    assert elapsed < 0.2  # well under the fake client's 0.3s block
+    # Returned at the timeout, not when the call finished: a loaded macOS runner
+    # took 0.202s against the old 0.2s bound with a 0.3s call, too close to tell.
+    assert elapsed < 2.0
 
 
 def test_timed_out_worker_is_a_daemon_thread(monkeypatch):
