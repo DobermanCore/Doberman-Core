@@ -70,11 +70,14 @@ baseline (``numpy``/``scipy``/``river`` at module scope).
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
 from doberman.hosthooks import spine
 from doberman.models import AuthPath, Decision, Risk, SecurityObject, Verdict
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 #: Tool names that carry no path/command/network surface to gate at all - an
 #: internal status call, never a mutation, execution, or egress. Deliberately
@@ -204,6 +207,8 @@ def _record_history(
     auth_result: str,
     auth_path: str = AuthPath.host_hook_objective,
     human_confirmed: bool | None = None,
+    enforcement_effective: str | None = None,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> None:
     """Best-effort: persist one decision row to the local decision log.
 
@@ -224,6 +229,8 @@ def _record_history(
         auth_result=auth_result,
         auth_path=auth_path,
         human_confirmed=human_confirmed,
+        enforcement_effective=enforcement_effective,
+        policy_snapshot=policy_snapshot,
     )
 
 
@@ -291,6 +298,8 @@ def evaluate_before_tool_call(payload: dict[str, Any]) -> dict[str, Any]:
             # host_hook_challenge is deliberately unreachable here.
             auth_path=AuthPath.host_hook_objective,
             human_confirmed=False,
+            enforcement_effective=result.enforcement,
+            policy_snapshot=result.policy_snapshot,
         )
         return out
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error

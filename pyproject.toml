@@ -87,6 +87,7 @@ include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests", "tools"]   # tools/ holds rule-lab tooling + its co-located tests
 addopts = "-q --strict-markers --strict-config"
 # Every warning raised during collection or a test is an error — on every leg,

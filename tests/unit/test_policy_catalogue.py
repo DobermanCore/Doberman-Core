@@ -20,6 +20,7 @@ from doberman.roles.roles import RoleDefinition
 from doberman.storage.policy_catalogue import (
     CATALOGUE_SCHEMA_VERSION,
     ORIGIN_CHANGE,
+    ORIGIN_DECISION,
     ORIGIN_OBSERVED,
     SNAPSHOT_SCHEMA,
     VERSION_PREFIX,
@@ -233,19 +234,23 @@ def test_find_versions_matches_hex_prefixes(tmp_path):
 def test_verify_reports_ok_drift_and_mismatch(tmp_path):
     root = str(tmp_path)
     assert verify_catalogue(root)["status"] == "drift"  # nothing recorded yet
-    observe_current(root, origin=ORIGIN_OBSERVED, now=_T1)
+    # Issue #515: an "ok" version must come from a ledgered policy change.
+    observe_current(root, origin=ORIGIN_CHANGE, ledger_ts=_T1.isoformat(), now=_T1)
     report = verify_catalogue(root)
     assert report["status"] == "ok" and report["current"] == report["recorded"]
     assert report["versions"] == 1 and report["mismatched"] == []
     # A hand edit of policies.yaml (bypassing every gate) shows as drift ...
-    save_policy(recommend_policy().with_mode("paranoid"), root)  # records a change
+    save_policy(
+        recommend_policy().with_mode("paranoid"), root, ledger_ts=_T2.isoformat()
+    )  # records a change
     (tmp_path / ".doberman" / "policies.yaml").write_text(
         (tmp_path / ".doberman" / "policies.yaml").read_text().replace("paranoid", "light")
     )
     report = verify_catalogue(root)
     assert report["status"] == "drift" and report["current"] != report["recorded"]
     # ... and re-observing clears it.
-    observe_current(root, origin=ORIGIN_OBSERVED, now=_T2)
+    # Record the changed policy through the ledger before verifying again.
+    observe_current(root, origin=ORIGIN_CHANGE, ledger_ts=_T3.isoformat(), now=_T3)
     assert verify_catalogue(root)["status"] == "ok"
     # Tampering with stored content is a mismatch naming the id.
     conn = sqlite3.connect(str(catalogue_path(root)))
@@ -255,6 +260,28 @@ def test_verify_reports_ok_drift_and_mismatch(tmp_path):
     conn.close()
     report = verify_catalogue(root)
     assert report["status"] == "mismatch" and report["mismatched"] == [victim]
+
+
+def test_verify_reports_unledgered_change_without_ledger_ts(tmp_path):
+    root = str(tmp_path)
+
+    observe_current(root, origin=ORIGIN_CHANGE, now=_T1)
+
+    report = verify_catalogue(root)
+
+    assert report["status"] == "unledgered"
+    assert report["unledgered"] == [report["current"]]
+
+
+def test_verify_reports_unledgered_version_first_seen_by_decision(tmp_path):
+    root = str(tmp_path)
+
+    observe_current(root, origin=ORIGIN_DECISION, now=_T1)
+
+    report = verify_catalogue(root)
+
+    assert report["status"] == "unledgered"
+    assert report["unledgered"] == [report["current"]]
 
 
 def test_catalogue_schema_and_permissions(tmp_path):
@@ -324,3 +351,62 @@ def test_role_enable_default_links_its_observation_to_the_ledger(tmp_path):
     obs = read_observations(str(tmp_path))
     assert obs and obs[0]["origin"] == ORIGIN_CHANGE
     assert obs[0]["ledger_ts"] == rows[0]["ts"]
+
+
+def test_resolved_constraints_change_version_without_changing_legacy_ids():
+    from doberman.policy.sources import ResolvedPolicy
+
+    empty = ResolvedPolicy()
+    base = build_snapshot(_doc(), _ROLE, "enforce", "9.9.9")
+    assert policy_version(base) == GOLDEN
+    assert (
+        policy_version(build_snapshot(_doc(), _ROLE, "enforce", "9.9.9", resolved_policy=empty))
+        == GOLDEN
+    )
+    resolved = ResolvedPolicy(
+        blocked_globs=("private/**",),
+        sensitive_globs=("deploy/**",),
+        contributors=(("repo-file", 20),),
+    )
+    snapshot = build_snapshot(_doc(), _ROLE, "enforce", "9.9.9", resolved_policy=resolved)
+    assert policy_version(snapshot) != GOLDEN
+    assert json.loads(canonical_json(snapshot))["resolved_policy"] == resolved.model_dump(
+        mode="json"
+    )
+    restored = PolicySnapshotV1.model_validate_json(canonical_json(snapshot))
+    assert policy_version(restored) == policy_version(snapshot)
+    for update in ({"blocked_globs": ("other/**",)}, {"sensitive_globs": ("other/**",)}):
+        changed = build_snapshot(
+            _doc(), _ROLE, "enforce", "9.9.9", resolved_policy=resolved.model_copy(update=update)
+        )
+        assert policy_version(changed) != policy_version(snapshot)
+
+
+def test_catalogue_setup_write_failure_closes_connection(tmp_path, monkeypatch):
+    from doberman.storage import policy_catalogue as catalogue
+
+    connect = sqlite3.connect
+    connections = []
+    failures = []
+
+    def failing_connect(*args, **kwargs):
+        conn = connect(*args, **kwargs)
+        connections.append(conn)
+
+        def authorize(operation, arg1, arg2, database, trigger):
+            if operation == sqlite3.SQLITE_CREATE_TABLE and arg1 == "policy_versions":
+                failures.append(arg1)
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        conn.set_authorizer(authorize)
+        return conn
+
+    with monkeypatch.context() as patch:
+        patch.setattr(catalogue.sqlite3, "connect", failing_connect)
+        assert record_version(str(tmp_path), _snap(), origin=ORIGIN_DECISION) is None
+
+    assert failures == ["policy_versions"]
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")

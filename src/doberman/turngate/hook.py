@@ -21,10 +21,13 @@ an event loop should dispatch it off-thread (as ``doberman serve`` does for the
 action gate).
 """
 
+from __future__ import annotations
+
 import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from doberman.auth.challenge import (
     TIMEOUT_METHOD,
@@ -33,7 +36,7 @@ from doberman.auth.challenge import (
     human_answered,
     run_auth_challenge,
 )
-from doberman.config import load_message_tone
+from doberman.config import evaluation_snapshot, load_evaluation_policy, load_message_tone
 from doberman.engine.decision_engine import TurnGuardrail, decide_turn
 from doberman.models import (
     ActionType,
@@ -55,6 +58,9 @@ from doberman.turngate.normalize import normalize_turn
 from doberman.turngate.raw import RAW_TURN_KEY, STYLE_PVALUE_KEY
 from doberman.turngate.signatures import Tier0SignatureGuardrail
 from doberman.turngate.task_tokens import record_task_hosts as _record_task_hosts
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 logger = logging.getLogger("doberman.turngate.hook")
 
@@ -145,13 +151,16 @@ async def _enforce(
     session_id: str | None,
     entity_id: str,
     when: datetime,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> TurnGateOutcome:
     """Act on a fresh turn decision: block (and remember), challenge, or release."""
     if decision.final_verdict is Verdict.BLOCK:
         repeat.register_block(
             entity_id, turn.prompt_fingerprint, decision.reason_codes[0], now=when
         )
-        await record_turn_decision(turn, decision, repo_root=repo_root, stage="turn_block")
+        await record_turn_decision(
+            turn, decision, repo_root=repo_root, stage="turn_block", policy_snapshot=policy_snapshot
+        )
         return TurnGateOutcome(False, Verdict.BLOCK, decision, "blocked (Tier 0 signature)")
 
     if decision.final_verdict is Verdict.AUTH:
@@ -177,10 +186,13 @@ async def _enforce(
             # satisfy a challenge with nobody present, and it must not be
             # recorded as though somebody was.
             human_confirmed=approved and human_answered(result.method),
+            policy_snapshot=policy_snapshot,
         )
         return TurnGateOutcome(approved, Verdict.AUTH, decision, _AUTH_NOTES[label])
 
-    await record_turn_decision(turn, decision, repo_root=repo_root, stage="turn_pass")
+    await record_turn_decision(
+        turn, decision, repo_root=repo_root, stage="turn_pass", policy_snapshot=policy_snapshot
+    )
     return TurnGateOutcome(True, Verdict.PASS, decision, "released")
 
 
@@ -193,12 +205,19 @@ async def _handle_repeat(
     session_id: str | None,
     entity_id: str,
     when: datetime,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> TurnGateOutcome:
     """A resubmission of a recently-blocked turn: challenge, release, or lock out."""
     if repeat.disposition(record) == "lockout":
         blocked = repeat.lockout_block(record.block_reason)
         decision = _decision_from_result(turn, blocked, when)
-        await record_turn_decision(turn, decision, repo_root=repo_root, stage="turn_lockout")
+        await record_turn_decision(
+            turn,
+            decision,
+            repo_root=repo_root,
+            stage="turn_lockout",
+            policy_snapshot=policy_snapshot,
+        )
         return TurnGateOutcome(False, Verdict.BLOCK, decision, "locked out (repeat)")
 
     result = repeat.challenge_repeat(
@@ -221,6 +240,7 @@ async def _handle_repeat(
             auth_result="approved",
             auth_path=AuthPath.turn_gate,
             human_confirmed=human_answered(result.method),
+            policy_snapshot=policy_snapshot,
         )
         return TurnGateOutcome(True, Verdict.AUTH, decision, "repeat approved (released)")
 
@@ -243,6 +263,7 @@ async def _handle_repeat(
         # Nothing was approved here, so nobody confirmed anything; `auth_result`
         # still separates a human "denied" from a silent "timeout".
         human_confirmed=False,
+        policy_snapshot=policy_snapshot,
     )
     note = "repeat timed out (blocked)" if label == "timeout" else "repeat denied (blocked)"
     return TurnGateOutcome(False, Verdict.BLOCK, decision, note)
@@ -314,6 +335,17 @@ async def gate_turn(
         if style_p is not None:
             metadata[STYLE_PVALUE_KEY] = style_p
         ctx = EvalContext(metadata=metadata)
+        policy_snapshot = None
+        try:
+            policy = load_evaluation_policy(repo_root)
+            if not policy.resolved_policy.is_empty:
+                metadata["resolved_policy"] = policy.resolved_policy
+            ctx = EvalContext(role=policy.role, mode=policy.mode, metadata=metadata)
+            # Turn verdicts are fully enforced; the action gate's monitor/off
+            # softening is not applied here. Capture before evaluation or AUTH.
+            policy_snapshot = evaluation_snapshot(policy, "enforce")
+        except Exception:  # noqa: BLE001 — observational capture must not change a turn verdict
+            logger.warning("turn policy snapshot unavailable; continuing without a stamp")
         record = repeat.lookup(entity_id, turn.prompt_fingerprint, now=when)
         if record is not None:
             outcome = await _handle_repeat(
@@ -324,6 +356,7 @@ async def gate_turn(
                 session_id=session_id,
                 entity_id=entity_id,
                 when=when,
+                policy_snapshot=policy_snapshot,
             )
         else:
             decision = decide_turn(turn, tier0, tier1, ctx)
@@ -335,6 +368,7 @@ async def gate_turn(
                 session_id=session_id,
                 entity_id=entity_id,
                 when=when,
+                policy_snapshot=policy_snapshot,
             )
         if outcome.released:
             # Released turns ONLY teach the prompt-style baseline — a blocked

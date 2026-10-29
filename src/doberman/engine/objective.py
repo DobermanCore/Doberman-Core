@@ -28,9 +28,11 @@ Two safety properties this class guarantees:
 import logging
 from collections.abc import Sequence
 
+from doberman.egress.velocity import VelocityThresholds
 from doberman.engine.decision_engine import Guardrail, combine, plugin_ctx
 from doberman.engine.registry import discover_rules
 from doberman.engine.rules import BUILTIN_RULE_TYPES
+from doberman.engine.rules.destinations import ExternalDestinationRule
 from doberman.models import (
     EvalContext,
     GuardrailResult,
@@ -97,6 +99,15 @@ class ObjectiveGuardrail:
         # Built-ins (+ extra_rules) share the caller's ctx; only this trailing
         # slice (plugins) gets its own metadata copy — see plugin_ctx().
         self._plugin_start = len(builtin) + len(extra_rules)
+
+    def velocity_thresholds_match(self, configured: VelocityThresholds | None) -> bool:
+        """Whether a policy stamp would describe the active built-in trackers."""
+        expected = configured or VelocityThresholds()
+        return all(
+            rule.velocity_thresholds == expected
+            for rule in self._rules
+            if isinstance(rule, ExternalDestinationRule)
+        )
 
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         """Evaluate every rule and reduce the results raise-only.

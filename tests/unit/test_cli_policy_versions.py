@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from doberman.cli.main import app
@@ -15,8 +16,14 @@ runner = CliRunner()
 
 
 def _two_versions(tmp_path) -> list[str]:
-    save_policy(recommend_policy().with_mode("strict"), str(tmp_path))
-    save_policy(recommend_policy().with_mode("balanced"), str(tmp_path))
+    save_policy(
+        recommend_policy().with_mode("strict"), str(tmp_path), ledger_ts="2026-08-30T10:00:00+00:00"
+    )
+    save_policy(
+        recommend_policy().with_mode("balanced"),
+        str(tmp_path),
+        ledger_ts="2026-08-30T10:00:00+00:00",
+    )
     return [v["version"] for v in read_versions(str(tmp_path))]
 
 
@@ -105,3 +112,50 @@ def test_verify_is_read_only_and_reports_drift(tmp_path):
     as_json = runner.invoke(app, ["policy-versions", "--path", str(tmp_path), "--verify", "--json"])
     assert as_json.exit_code == 1
     assert json.loads(as_json.stdout)["status"] == "drift"
+
+
+def test_verify_reports_unledgered(tmp_path):
+    save_policy(recommend_policy().with_mode("strict"), str(tmp_path))
+    result = runner.invoke(app, ["policy-versions", "--path", str(tmp_path), "--verify"])
+    assert result.exit_code == 1
+    assert result.stdout.startswith("unledgered:")
+    as_json = runner.invoke(app, ["policy-versions", "--path", str(tmp_path), "--verify", "--json"])
+    assert as_json.exit_code == 1
+    report = json.loads(as_json.stdout)
+    assert report["status"] == "unledgered"
+    assert report["unledgered"]
+
+
+@pytest.mark.parametrize("change", ["missing", "strengthen", "weaken"])
+def test_verify_preserves_policy_pins_and_runtime_cache(tmp_path, change):
+    from doberman.policy import sources
+    from doberman.storage.policy_catalogue import read_observations, verify_catalogue
+
+    root = str(tmp_path)
+    policy_file = tmp_path / "doberman.policy.yaml"
+    pin_path = tmp_path / ".doberman" / "policy_file_pin.json"
+    if change != "missing":
+        policy_file.write_text('blocked: ["kept/**"]\n')
+        sources.effective_policy(root)  # establish the runtime's approved floor
+    save_policy(recommend_policy(), root)
+    policy_file.write_text(
+        "blocked: []\n" if change == "weaken" else 'blocked: ["kept/**", "new/**"]\n'
+    )
+    before_pin = pin_path.read_bytes() if pin_path.exists() else None
+    before_cache = dict(sources._effective_policy_cache)
+    before_versions = read_versions(root)
+    before_observations = read_observations(root)
+
+    verify_catalogue(root)
+    runner.invoke(app, ["policy-versions", "--path", root, "--verify", "--json"])
+
+    assert (pin_path.read_bytes() if pin_path.exists() else None) == before_pin
+    assert sources._effective_policy_cache == before_cache
+    assert read_versions(root) == before_versions
+    assert read_observations(root) == before_observations
+    # Verification must not cache a result under an unpinned state and prevent
+    # a subsequent real evaluation from establishing/tightening its pin.
+    active = sources.effective_policy(root)
+    expected = {"kept/**"} if change == "weaken" else {"kept/**", "new/**"}
+    assert set(active.blocked_globs) == expected
+    assert set(sources.read_pin(root)["blocked"]) == expected

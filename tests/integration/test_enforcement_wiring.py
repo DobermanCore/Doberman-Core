@@ -43,7 +43,7 @@ def _permission(out):
 
 
 def _force_state(monkeypatch, state):
-    monkeypatch.setattr(spine, "resolve_enforcement_sync", lambda _root: state)
+    monkeypatch.setattr(spine, "resolve_enforcement_sync", lambda _root, **_kwargs: state)
 
 
 def _fake_discretionary_auth(reason: ReasonCode):
@@ -170,6 +170,14 @@ async def test_executor_monitor_forwards_a_softened_discretionary_verdict(monkey
     async def _monitor(*_a, **_k):
         return "monitor"
 
+    forwarded = []
+    record = executor.record_decision
+
+    async def record_with_forwarding_check(*args, **kwargs):
+        forwarded.append(kwargs)
+        return await record(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "record_decision", record_with_forwarding_check)
     monkeypatch.setattr(executor, "REPO_ROOT", str(tmp_path))
     monkeypatch.setattr(executor, "effective_enforcement", _monitor)
     monkeypatch.setattr(
@@ -181,6 +189,21 @@ async def test_executor_monitor_forwards_a_softened_discretionary_verdict(monkey
         assert not result.isError
         # softened → the call reached the downstream instead of being challenged/blocked
         assert fake.calls == [("fs_write", {"path": "a.txt", "content": "x"})]
+
+    # The resolved monitor state differs from the default on-disk enforce state.
+    # Both forwarding channels are required, even though the snapshot is what
+    # determines the persisted stamp. Removing either argument must fail here.
+    assert len(forwarded) == 1
+    assert forwarded[0]["enforcement_effective"] == "monitor"
+    assert forwarded[0]["policy_snapshot"].enforcement_effective == "monitor"
+    from doberman.storage.log import read_decisions
+    from doberman.storage.policy_catalogue import read_snapshot
+
+    (row,) = await read_decisions(executor.REPO_ROOT)
+    assert (
+        read_snapshot(executor.REPO_ROOT, row["policy_version"])["enforcement_effective"]
+        == "monitor"
+    )
 
 
 async def test_executor_enforce_does_not_forward_the_same_verdict(monkeypatch, tmp_path):

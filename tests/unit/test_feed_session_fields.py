@@ -73,6 +73,7 @@ _JSONL_KEYS = {
     "human_confirmed",
     "source_context",
     "session_id",
+    "policy_version",
 }
 
 
@@ -212,6 +213,7 @@ def test_log_jsonl_exports_session_id(tmp_path):
     assert type(obj["human_confirmed"]) is int
     # Every column of a fully populated row went through the allow-list, so
     # anything beyond these keys (action_id, entity_id, ...) is a leak.
+    assert obj["policy_version"] is None  # seed has no evaluation snapshot
     assert set(obj) == _JSONL_KEYS
 
 
@@ -233,6 +235,7 @@ def test_log_jsonl_session_id_is_null_when_not_recorded(tmp_path):
     assert obj["session_id"] is None
     assert obj["auth_path"] is None
     assert obj["human_confirmed"] is None
+    assert obj["policy_version"] is None  # seed has no evaluation snapshot
     assert set(obj) == _JSONL_KEYS
 
 

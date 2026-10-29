@@ -92,6 +92,11 @@ class EgressVelocityTracker:
         self._by_entity: OrderedDict[str, deque[ConnectionEvent]] = OrderedDict()
         self._thresholds: VelocityThresholds = thresholds or VelocityThresholds()
 
+    @property
+    def thresholds(self) -> VelocityThresholds:
+        """The immutable thresholds actually in use (for policy-stamp validation)."""
+        return self._thresholds
+
     def assess(
         self,
         entity: str,

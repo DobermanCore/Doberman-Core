@@ -40,6 +40,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from doberman.policy.checklist import PolicyDoc
+from doberman.policy.sources import ResolvedPolicy
 from doberman.roles.roles import RoleDefinition
 
 logger = logging.getLogger("doberman.storage.policy_catalogue")
@@ -80,6 +81,8 @@ class PolicySnapshotV1(BaseModel):
     enforcement_effective: str
     doc: dict[str, Any]
     role: RoleSnapshot | None = None
+    #: Optional additive v1 field; absent in canonical JSON for legacy/empty sources.
+    resolved_policy: ResolvedPolicy | None = None
 
 
 def snapshot_doc(doc: PolicyDoc) -> dict[str, Any]:
@@ -99,6 +102,8 @@ def build_snapshot(
     role: RoleDefinition | None,
     enforcement_effective: str,
     engine: str,
+    *,
+    resolved_policy: ResolvedPolicy | None = None,
 ) -> PolicySnapshotV1:
     """Assemble the snapshot; an unrecognised enforcement state records as ``enforce``."""
     state = str(enforcement_effective).strip().lower()
@@ -119,13 +124,22 @@ def build_snapshot(
         enforcement_effective=state,
         doc=snapshot_doc(doc),
         role=role_snapshot,
+        resolved_policy=(
+            resolved_policy.model_copy(deep=True)
+            if resolved_policy is not None and not resolved_policy.is_empty
+            else None
+        ),
     )
 
 
 def canonical_json(snapshot: PolicySnapshotV1) -> str:
     """The bytes that are hashed: sorted keys, no whitespace, UTF-8 kept as-is."""
+    data = snapshot.model_dump(mode="json", by_alias=True)
+    # Keep the bytes (and identifiers) of existing snapshots with no sources.
+    if snapshot.resolved_policy is None:
+        data.pop("resolved_policy", None)
     return json.dumps(
-        snapshot.model_dump(mode="json", by_alias=True),
+        data,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -165,6 +179,7 @@ CATALOGUE_SCHEMA_VERSION = 1
 
 ORIGIN_CHANGE = "change"  # written by save_policy right after a gated/ledgered write
 ORIGIN_OBSERVED = "observed"  # doctor / policy-versions saw this version in force
+ORIGIN_DECISION = "decision"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -198,15 +213,19 @@ def _connect(repo_root: str) -> sqlite3.Connection:
     path = catalogue_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     conn = sqlite3.connect(str(path), timeout=3.0, isolation_level=None)
-    conn.execute("PRAGMA busy_timeout = 3000")
-    conn.executescript(_SCHEMA)
-    # Insert-if-absent keeps this module free of mutating SQL (append-only, literally).
-    conn.execute(
-        "INSERT INTO schema_version (version) SELECT ? "
-        "WHERE NOT EXISTS (SELECT 1 FROM schema_version)",
-        (CATALOGUE_SCHEMA_VERSION,),
-    )
-    _restrict_permissions(path)
+    try:
+        conn.execute("PRAGMA busy_timeout = 3000")
+        conn.executescript(_SCHEMA)
+        # Insert-if-absent keeps this module free of mutating SQL (append-only, literally).
+        conn.execute(
+            "INSERT INTO schema_version (version) SELECT ? "
+            "WHERE NOT EXISTS (SELECT 1 FROM schema_version)",
+            (CATALOGUE_SCHEMA_VERSION,),
+        )
+        _restrict_permissions(path)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -217,24 +236,34 @@ def record_version(
     origin: str,
     ledger_ts: str | None = None,
     now: datetime | None = None,
-) -> str:
+) -> str | None:
     """Store ``snapshot`` once and append an observation if the version in force changed.
 
-    Returns the version id (computed without I/O, so it is returned even when
-    the write fails). ``BEGIN IMMEDIATE`` serialises concurrent writers so two
+    Returns the version id only after the exact canonical content and its
+    observation have committed; any failure returns ``None``. An existing id
+    with different content is refused, never silently trusted or overwritten.
+    ``BEGIN IMMEDIATE`` serialises concurrent writers so two
     hook processes cannot both decide "the latest observation differs".
     """
-    version = policy_version(snapshot)
-    stamp = (now or datetime.now(timezone.utc)).isoformat()
     try:
+        # Hash and persist the same bytes, even if a caller's mutable snapshot
+        # content changes after serialization.
+        canonical = canonical_json(snapshot)
+        version = VERSION_PREFIX + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        stamp = (now or datetime.now(timezone.utc)).isoformat()
         conn = _connect(repo_root)
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "INSERT OR IGNORE INTO policy_versions (version, canonical, first_seen) "
                 "VALUES (?, ?, ?)",
-                (version, canonical_json(snapshot), stamp),
+                (version, canonical, stamp),
             )
+            stored = conn.execute(
+                "SELECT canonical FROM policy_versions WHERE version = ?", (version,)
+            ).fetchone()
+            if stored is None or stored[0] != canonical:
+                raise ValueError("catalogue content does not match the evaluation snapshot")
             latest = conn.execute(
                 "SELECT version FROM policy_observations ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -249,6 +278,7 @@ def record_version(
             conn.close()
     except Exception as exc:  # noqa: BLE001 — observational; the caller's work is already done
         logger.warning("policy catalogue write failed; continuing: %s", exc)
+        return None
     return version
 
 
@@ -264,17 +294,17 @@ def current_snapshot(
     """
     try:
         from doberman import __version__
-        from doberman.config import load_active_role, load_policy, resolve_enforcement_sync
-        from doberman.policy.checklist import recommend_policy
+        from doberman.config import load_evaluation_policy, resolve_enforcement_sync
 
-        doc = load_policy(repo_root) or recommend_policy()
-        role = load_active_role(repo_root)
+        policy = load_evaluation_policy(repo_root, read_only_sources=True)
         state = (
             enforcement_effective
             if enforcement_effective is not None
-            else resolve_enforcement_sync(repo_root)
+            else resolve_enforcement_sync(repo_root, policy_doc=policy.doc)
         )
-        return build_snapshot(doc, role, state, __version__)
+        return build_snapshot(
+            policy.doc, policy.role, state, __version__, resolved_policy=policy.resolved_policy
+        )
     except Exception as exc:  # noqa: BLE001 — never raise into a caller for a snapshot
         logger.warning("policy catalogue: could not build the current policy snapshot: %s", exc)
         return None
@@ -288,7 +318,7 @@ def observe_current(
     enforcement_effective: str | None = None,
     now: datetime | None = None,
 ) -> str | None:
-    """Record the policy in force right now; returns its version id (``None`` if unbuildable)."""
+    """Record the current policy; return its id, or ``None`` if capture or persistence fails."""
     snapshot = current_snapshot(repo_root, enforcement_effective=enforcement_effective)
     if snapshot is None:
         return None
@@ -393,7 +423,8 @@ def verify_catalogue(repo_root: str = ".") -> dict[str, Any]:
     ``status``: ``ok`` · ``mismatch`` (a stored canonical no longer hashes to its
     id — the store was altered) · ``drift`` (the policy on disk is not the last
     recorded version — a change nobody has observed yet, or no catalogue at all).
-    Read-only: it never records anything.
+    ``unledgered`` (a version was introduced without a corresponding ledgered
+    policy change). Read-only: it never records anything.
     """
     rows = _read(repo_root, "SELECT version, canonical FROM policy_versions")
     mismatched = [
@@ -405,10 +436,28 @@ def verify_catalogue(repo_root: str = ".") -> dict[str, Any]:
     current = policy_version(snapshot) if snapshot is not None else None
     latest = read_observations(repo_root, limit=1)
     recorded = latest[0]["version"] if latest else None
+
+    observations = read_observations(repo_root)
+    unledgered = []
+    seen = set()
+
+    for observation in reversed(observations):
+        version = observation["version"]
+        if version in seen:
+            continue
+        seen.add(version)
+
+        if observation["origin"] in (ORIGIN_OBSERVED, ORIGIN_DECISION):
+            unledgered.append(version)
+        elif observation["origin"] == ORIGIN_CHANGE and observation["ledger_ts"] is None:
+            unledgered.append(version)
+
     if mismatched:
         status = "mismatch"
     elif current is None or current != recorded:
         status = "drift"
+    elif unledgered:
+        status = "unledgered"
     else:
         status = "ok"
     return {
@@ -417,4 +466,5 @@ def verify_catalogue(repo_root: str = ".") -> dict[str, Any]:
         "mismatched": mismatched,
         "current": current,
         "recorded": recorded,
+        "unledgered": unledgered,
     }

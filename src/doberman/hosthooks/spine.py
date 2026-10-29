@@ -20,9 +20,14 @@ a missing storage backend must not turn an approved AUTH into a deny).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from doberman.config import load_active_role, load_mode, resolve_enforcement_sync
+from doberman.config import (
+    evaluation_snapshot,
+    load_evaluation_policy,
+    load_mode,
+    resolve_enforcement_sync,
+)
 from doberman.engine.correlator import apply_correlator
 from doberman.engine.decision_engine import PASS_STUB, decide
 from doberman.engine.objective import ObjectiveGuardrail
@@ -30,8 +35,10 @@ from doberman.engine.taint_floor import apply_echo_tripwire, apply_taint_floor
 from doberman.models import AuthPath, Decision, EvalContext, SecurityObject, Verdict
 from doberman.policy.drift import acted_verdict
 from doberman.policy.modes import DEFAULT_MODE
-from doberman.policy.sources import effective_policy
 from doberman.proxy.normalize import challenge_copy, normalize
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,7 @@ class SpineResult:
     #: rendering of the raw arguments (``proxy.normalize.challenge_copy``).
     #: Never recorded — history and the dashboard row derive from ``action``.
     challenge_action: SecurityObject
+    policy_snapshot: PolicySnapshotV1 | None = None
 
 
 def resolve_root_and_mode(cwd: object) -> tuple[str, str]:
@@ -92,7 +100,8 @@ def evaluate_action(
     raw_session_id: object,
 ) -> SpineResult:
     """Run one translated action through the full shared decision flow."""
-    repo_root, mode = resolve_root_and_mode(cwd)
+    repo_root = cwd if isinstance(cwd, str) and cwd else "."
+    evaluation_policy = load_evaluation_policy(repo_root, use_default_mode=repo_root != cwd)
     session_id = extract_session_id(raw_session_id)
     action = normalize(canonical, args, {"repo_root": repo_root})
     # The objective rules inspect the UN-redacted call via metadata['raw_arguments']
@@ -102,15 +111,18 @@ def evaluate_action(
     # #147: resolved_policy set ONLY when non-empty -- a repo with no committed
     # doberman.policy.yaml and no registered policy-source plugin is
     # byte-identical to before this seam existed (PolicySourceRule abstains).
-    policy = effective_policy(repo_root)
+    policy = evaluation_policy.resolved_policy
     if not policy.is_empty:
         metadata["resolved_policy"] = policy
     ctx = EvalContext(
-        role=load_active_role(repo_root),
-        mode=mode,
+        role=evaluation_policy.role,
+        mode=evaluation_policy.mode,
         metadata=metadata,
     )
-    decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
+    enforcement = resolve_enforcement_sync(repo_root, policy_doc=evaluation_policy.doc)
+    objective = ObjectiveGuardrail()
+    policy_snapshot = evaluation_snapshot(evaluation_policy, enforcement, evaluator=objective)
+    decision = decide(action, objective, PASS_STUB, ctx)
     decision = apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)
     # C1 — the untrusted-value echo tripwire: same scope keying, right after
     # the secret-taint floor for the identical cross-call reason (see
@@ -125,7 +137,6 @@ def evaluate_action(
     # writes below — so the correlator reads real cross-call history here and can
     # actually fire in production.
     decision = apply_correlator(action, decision, ctx.mode, repo_root, session_id)
-    enforcement = resolve_enforcement_sync(repo_root)
     acted = acted_verdict(decision, enforcement)
     if (
         acted is Verdict.PASS
@@ -148,6 +159,8 @@ def evaluate_action(
             auth_result="executed",
             auth_path=AuthPath.host_hook_monitor,
             human_confirmed=False,
+            enforcement_effective=enforcement,
+            policy_snapshot=policy_snapshot,
         )
     return SpineResult(
         decision,
@@ -157,6 +170,7 @@ def evaluate_action(
         repo_root,
         session_id,
         challenge_copy(action, args),
+        policy_snapshot,
     )
 
 
@@ -169,6 +183,8 @@ def record_history(
     auth_result: str,
     auth_path: str = AuthPath.host_hook_objective,
     human_confirmed: bool | None = None,
+    enforcement_effective: str | None = None,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> None:
     """Best-effort: persist one decision row to the local decision log.
 
@@ -197,6 +213,8 @@ def record_history(
                 session_id=session_id,
                 auth_path=auth_path,
                 human_confirmed=human_confirmed,
+                enforcement_effective=enforcement_effective,
+                policy_snapshot=policy_snapshot,
             )
         )
     except Exception:  # noqa: BLE001,S110 — history must never break a hook path

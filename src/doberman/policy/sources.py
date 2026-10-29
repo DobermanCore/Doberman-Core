@@ -426,8 +426,11 @@ def glob_state_map(snapshot: PolicySnapshot) -> dict[str, str]:
     return m
 
 
-def load_file_policy(repo_root: str) -> FilePolicySource | None:
+def load_file_policy(repo_root: str, *, read_only: bool = False) -> FilePolicySource | None:
     """Load ``doberman.policy.yaml`` layered raise-only over the local pin.
+
+    ``read_only`` computes the same constraints without establishing/tightening
+    a pin; catalogue inspection must remain observational.
 
     * No pin file and nothing in the file today -> ``None`` (nothing to
       adopt; matches today's behavior byte-for-byte with no file at all).
@@ -467,7 +470,8 @@ def load_file_policy(repo_root: str) -> FilePolicySource | None:
     if pin is None:
         if not file_snapshot.blocked_globs and not file_snapshot.sensitive_globs:
             return None
-        write_pin(repo_root, file_snapshot)
+        if not read_only:
+            write_pin(repo_root, file_snapshot)
         return FilePolicySource(file_snapshot)
 
     pin_snapshot = PolicySnapshot(blocked_globs=pin["blocked"], sensitive_globs=pin["sensitive"])
@@ -489,12 +493,12 @@ def load_file_policy(repo_root: str) -> FilePolicySource | None:
         )
         return FilePolicySource(effective)
 
-    if classification is Classification.strengthen:
+    if classification is Classification.strengthen and not read_only:
         write_pin(repo_root, file_snapshot)
     return FilePolicySource(file_snapshot)
 
 
-def effective_policy(repo_root: str) -> ResolvedPolicy:
+def effective_policy(repo_root: str, *, read_only: bool = False) -> ResolvedPolicy:
     """The merged, effective policy for *repo_root* (F4.4 layering + #147's file).
 
     Memoized per (resolved repo root, policy-file digest, pin digest) --
@@ -505,16 +509,20 @@ def effective_policy(repo_root: str) -> ResolvedPolicy:
     skip recreating it. With no file and nothing registered, sets nothing
     new: :attr:`ResolvedPolicy.is_empty` is then ``True``, exactly as it was
     before this source existed.
+
+    Read-only catalogue inspection bypasses both pin persistence and the runtime
+    cache, so a later evaluation can still establish its pin normally.
     """
     root = str(Path(repo_root).resolve())
     file_path, pin_path = _policy_file_path(root), _pin_path(root)
     lookup_key = (root, _digest(file_path), _digest(pin_path))
-    cached = _effective_policy_cache.get(lookup_key)
+    cached = _effective_policy_cache.get(lookup_key) if not read_only else None
     if cached is not None:
         return cached
 
-    file_source = load_file_policy(root)
+    file_source = load_file_policy(root, read_only=read_only)
     result = resolve_policy([file_source] if file_source else [], discover=True)
-    store_key = (root, _digest(file_path), _digest(pin_path))
-    _effective_policy_cache[store_key] = result
+    if not read_only:
+        store_key = (root, _digest(file_path), _digest(pin_path))
+        _effective_policy_cache[store_key] = result
     return result

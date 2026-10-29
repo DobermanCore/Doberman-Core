@@ -197,6 +197,13 @@ Operators can bound how many decision rows are kept with `doberman decision-log-
 only resolved decisions, never pending `AUTH` rows or the append-only policy-change ledger. See the
 [CLI reference](docs/CLI.md) for the age and row-budget options.
 
+Proxy and host-hook action logs retain the policy snapshot captured during evaluation, even when
+policy changes before logging or during an approval wait. A decision without a captured snapshot
+or a successful catalogue write has a `NULL` policy version. The decision still persists rather
+than receiving a stamp inferred from later policy files or referencing an unsaved snapshot.
+An observed mismatch between captured and active velocity thresholds also leaves the stamp `NULL`.
+`doberman policy-versions --verify` inspects provenance without changing policy pins.
+
 `doberman log --jsonl` and the dashboard's live feed carry each decision's host session id, so a
 companion tool can group decisions by the agent session that made them. A value that does not look
 like an id, such as a path, is exported as `null`. The feed also names the agent role and who
@@ -218,6 +225,9 @@ matching a Tier-0 signature (a known, deterministic prompt-injection pattern) re
 action gate described above remains the real safety guarantee: an attacker who slips past the turn
 gate still has to get past it. Full mechanism, module map, and invariants:
 [Turn gate](docs/TURN_GATE.md).
+
+Turn-decision rows also carry the policy snapshot captured before evaluation or an approval wait.
+If capture or catalogue persistence fails, the decision still records with a `NULL` policy version.
 
 ---
 

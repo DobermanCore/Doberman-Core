@@ -381,6 +381,11 @@ class ExternalDestinationRule:
         else:
             self._broker = None
 
+    @property
+    def velocity_thresholds(self) -> VelocityThresholds:
+        """The active tracker's thresholds; reading these never resets its history."""
+        return self._velocity.thresholds
+
     def evaluate(self, action: SecurityObject, ctx: EvalContext) -> GuardrailResult:
         """Static classification, then RB.3/RB.6's raise-only retrospective
         checks.

@@ -19,17 +19,23 @@ Redaction is structural and load-bearing:
   decision has already been made and enforced before this runs.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
 from doberman.models import ActionType, Decision, EffectSet, SecurityObject
 from doberman.storage.db import open_db
 from doberman.storage.device_metrics import AUTH_APPROVED, AUTH_DENIED, record_decision_metric
 from doberman.storage.fingerprint import fingerprint
 from doberman.storage.sinks import emit_to_sinks
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 logger = logging.getLogger("doberman.storage.log")
 
@@ -41,8 +47,8 @@ _INSERT_DECISION = (
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, "
     "auth_path, human_confirmed, elevation_id, "
     "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
-    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp, policy_version) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _INSERT_SHADOW = (
@@ -62,7 +68,7 @@ _SELECT_DECISIONS = (
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, "
     "auth_path, human_confirmed, elevation_id, "
     "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
-    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp "
+    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp, policy_version "
     "FROM decisions ORDER BY id DESC"
 )
 
@@ -73,7 +79,7 @@ _SELECT_DECISIONS_SINCE = (
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, "
     "auth_path, human_confirmed, elevation_id, "
     "entity_id, session_id, effects_file_count, effects_dir_count, effects_capped, "
-    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp "
+    "effects_hits_git, effects_hits_outside_repo, effects_digest_fp, policy_version "
     "FROM decisions WHERE id > ? ORDER BY id ASC"
 )
 
@@ -134,6 +140,7 @@ _DECISION_COLUMNS = [
     "effects_hits_git",
     "effects_hits_outside_repo",
     "effects_digest_fp",
+    "policy_version",
 ]
 
 
@@ -243,6 +250,7 @@ def build_record(
     auth_path: str | None = None,
     human_confirmed: bool | None = None,
     source_context_override: str | None = None,
+    policy_version: str | None = None,
 ) -> dict:
     """Build the single redacted record persisted and handed to every sink.
 
@@ -286,6 +294,7 @@ def build_record(
         "elevation_id": elevation_id,
         "entity_id": entity_id,
         "session_id": session_id,
+        "policy_version": policy_version,
     }
     record.update(_effects_fields(decision.effects))
     return record
@@ -304,12 +313,21 @@ async def record_decision(
     auth_path: str | None = None,
     human_confirmed: bool | None = None,
     source_context_override: str | None = None,
+    enforcement_effective: str | None = None,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> bool:
     """Persist one redacted decision row and fan it out to sinks (best-effort).
 
     Never raises: building the record, the storage write, and the sink fan-out
     are all inside the failure boundary, so nothing here can alter or block the
     decision (which has already been enforced).
+
+    ``policy_snapshot`` is captured by the evaluator, including its resolved
+    enforcement state. Without it the stamp is NULL: logging never reloads
+    policy files. ``enforcement_effective`` remains accepted for callers that
+    already propagate it, but cannot reconstruct missing evaluation inputs.
+    A failed catalogue write also leaves the stamp NULL without preventing
+    decision persistence.
 
     Returns whether the row was durably written to the local decision log —
     ``True`` only if both building the record and the SQL INSERT succeeded.
@@ -321,18 +339,49 @@ async def record_decision(
     it. Sink fan-out and the device-metrics rollup stay best-effort and do
     not affect this return value: the local row is what matters for retry.
     """
+
+    decision_now = now or datetime.now(timezone.utc)
+
+    try:
+        from doberman.storage.policy_catalogue import (
+            ORIGIN_DECISION,
+            VERSION_PREFIX,
+            record_version,
+        )
+
+        # No snapshot means unknown, never a guess reconstructed from current files.
+        policy_version = (
+            record_version(repo_root, policy_snapshot, origin=ORIGIN_DECISION, now=decision_now)
+            if policy_snapshot is not None
+            else None
+        )
+        digest = (
+            policy_version[len(VERSION_PREFIX) :]
+            if policy_version is not None and policy_version.startswith(VERSION_PREFIX)
+            else ""
+        )
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            policy_version = None
+    except Exception:  # noqa: BLE001 — policy stamping must never block logging
+        logger.warning(
+            "decision log: could not determine policy version for action %s; continuing",
+            decision.action_id,
+        )
+        policy_version = None
+
     try:
         record = build_record(
             decision,
             action,
             auth_result=auth_result,
             elevation_id=elevation_id,
-            now=now or datetime.now(timezone.utc),
+            now=decision_now,
             entity_id=entity_id,
             session_id=session_id,
             auth_path=auth_path,
             human_confirmed=human_confirmed,
             source_context_override=source_context_override,
+            policy_version=policy_version,
         )
     except Exception:  # noqa: BLE001 — the decision log must never break execution
         logger.warning("decision log: could not build record for action %s", decision.action_id)
@@ -368,6 +417,7 @@ async def record_decision(
                     record["effects_hits_git"],
                     record["effects_hits_outside_repo"],
                     record["effects_digest_fp"],
+                    record["policy_version"],
                 ),
             )
             for fp in action.payload_fingerprints:

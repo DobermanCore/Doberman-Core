@@ -149,7 +149,9 @@ Emits `{version, path, ok, checks[], critical_failures[]}`. `ok` is `true` only 
 
 ### `doberman log --jsonl`
 
-One redacted JSON object per decision line, newest first. Fields are an allowlist of already-redacted data: `ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id`, `agent_role`, `risk`, `auth_path`, `human_confirmed`, `source_context`, and `session_id` when present. Empty stdout when there are no rows.
+One redacted JSON object per decision line, newest first. Fields are an allowlist of already-redacted data: `ts`, `final_verdict`, `action_type`, `target_path_class`, `reason_codes`, `auth_result`, plus `id`, `agent_role`, `risk`, `auth_path`, `human_confirmed`, `source_context`, `session_id`, and `policy_version` when present. Empty stdout when there are no rows.
+
+`policy_version` is the full `pv1:` identifier of the evaluation-time policy snapshot, for action and turn decisions. It is `null` for historical rows, unavailable snapshots, failed catalogue writes, or a demonstrated mismatch between captured and active evaluator velocity thresholds. Decision persistence continues in these cases. Logging never reloads policy files or exports snapshot content; use `doberman policy-versions --show <id>` to inspect a stored snapshot.
 
 `session_id` is the host's opaque session identifier (the Claude Code session UUID for its hooks), so a consumer can group one agent session's decisions. It is `null` for a decision with no host session, such as an MCP-proxy call, or a row recorded before the column existed. The host sends this value as free text, so Doberman exports it only when it looks like an id: a letter or digit followed by up to 127 letters, digits, `.`, `_`, `:` or `-`. Anything else, such as a path, a URL or a `key=value` pair, exports as `null`; the stored value is unchanged.
 
@@ -174,9 +176,13 @@ Over a window with no `BLOCK`/`AUTH` row at all, `--why` prints one extra line a
 
 A JSON array of policy-change rows in newest-first order: each element carries the change timestamp, the changed key, the previous and new values, and the actor. No raw policy content, secret, or file path appears.
 
+Each row also includes `to_version`, the full policy-version ID linked through the catalogue observation's `ledger_ts`. It is `null` when no catalogue link exists, including older rows and denied changes that produced no saved version.
+
 ### `doberman policy-versions --json` schema
 
-A JSON array, newest first, of `{version, first_seen, engine, schema, in_force_since, origin}`. Snapshot content is never in the listing; `--show <id>` prints `{version, snapshot}` for one version. `--verify --json` prints `{status, versions, mismatched, current, recorded}`.
+A JSON array, newest first, of `{version, first_seen, engine, schema, in_force_since, origin}`. `origin` is `change` for a policy save, `observed` for doctor/listing observations, or `decision` when decision logging observes a changed version. Snapshot content is never in the listing; `--show <id>` prints `{version, snapshot}` for one version.
+
+`--verify --json` prints `{status, versions, mismatched, current, recorded, unledgered}`. Status is `ok`, `mismatch`, `drift`, or `unledgered`; `unledgered` lists versions first introduced without a ledger-linked policy change. Verification exits `1` for every non-`ok` status. It records no observations, changes no policy pins, and leaves the runtime policy cache untouched.
 
 ### `doberman tune --json`
 
@@ -226,7 +232,7 @@ Code `2` is reserved for input-validation failures that could be caught before a
 | `approvals ttl` | `2` | TTL is outside `0..900`. |
 | `revoke` | `1` | Elevation id not found, or revoke failed. |
 | `policy-versions` | `2` | `--show` given something that is not a `pv1:` id or at least 8 hex characters. |
-| `policy-versions` | `1` | `--show` matched nothing or was ambiguous; `--verify` found `mismatch` or `drift`. |
+| `policy-versions` | `1` | `--show` matched nothing or was ambiguous; `--verify` found `mismatch`, `drift`, or `unledgered`. |
 | `tui` | `2` | `--path` does not exist, exists but is not a directory, or `--last` is less than 1. |
 | `log`, `tune`, `policy-history` | `2` | `--last` is negative. `0` is allowed and means zero rows. |
 | `tui` | `1` | The optional `textual` extra is not installed. |
