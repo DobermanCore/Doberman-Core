@@ -404,6 +404,102 @@ async def test_migration_tolerates_a_racing_process_adding_pending_session_id_fi
     assert versions == [SCHEMA_VERSION]
 
 
+# --- v18 -> v19: decisions gain policy_version (#515) --------------------
+
+# Frozen main v18 table definitions: do not derive this fixture from the
+# current schema, or a missing version bump could silently evade the test.
+_V18_DECISIONS_AND_PENDING_APPROVALS = """
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version VALUES (18);
+CREATE TABLE IF NOT EXISTS decisions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                TEXT NOT NULL,
+    action_id         TEXT NOT NULL,
+    agent_role        TEXT,
+    action_type       TEXT,
+    target_path_class TEXT,
+    risk              TEXT,
+    source_context    TEXT,
+    final_verdict     TEXT NOT NULL,
+    decided_layer     TEXT,
+    reason_codes_json TEXT,
+    auth_required     INTEGER NOT NULL DEFAULT 0,
+    auth_result       TEXT,
+    auth_path         TEXT,
+    human_confirmed   INTEGER,
+    elevation_id      TEXT,
+    entity_id         TEXT,
+    session_id        TEXT,
+    effects_file_count         INTEGER,
+    effects_dir_count          INTEGER,
+    effects_capped             INTEGER,
+    effects_hits_git           INTEGER,
+    effects_hits_outside_repo  INTEGER,
+    effects_digest_fp          TEXT
+);
+CREATE TABLE IF NOT EXISTS pending_approvals (
+    id                 TEXT PRIMARY KEY,
+    action_id          TEXT NOT NULL,
+    created_at         TEXT NOT NULL,
+    expires_at         TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'pending',
+    tier               TEXT,
+    action_type        TEXT,
+    risk               TEXT,
+    reason_codes_json  TEXT,
+    explanation        TEXT,
+    target_path_class  TEXT,
+    decision           TEXT,
+    totp_code          TEXT,
+    session_id         TEXT
+);
+INSERT INTO decisions (ts, action_id, final_verdict, auth_result)
+    VALUES ('2026-01-01T00:00:00+00:00', 'historical-decision', 'PASS', 'executed');
+INSERT INTO pending_approvals (id, action_id, created_at, expires_at, session_id)
+    VALUES ('pending-v18', 'pending-action', '2026-01-01T00:00:00+00:00',
+            '2026-01-01T00:02:00+00:00', 'session-v18');
+"""
+
+
+async def test_v18_upgrade_adds_policy_version_preserves_rows_and_skips_migration_on_reopen(
+    tmp_path, monkeypatch
+):
+    from doberman.storage import db as db_module
+
+    root = str(tmp_path)
+    path = db_path(root)
+    path.parent.mkdir(parents=True)
+    async with aiosqlite.connect(str(path)) as conn:
+        await conn.executescript(_V18_DECISIONS_AND_PENDING_APPROVALS)
+        await conn.commit()
+        assert "policy_version" not in await _columns(conn, "decisions")
+        async with conn.execute("SELECT * FROM decisions") as cur:
+            original_decisions = await cur.fetchall()
+        async with conn.execute("SELECT * FROM pending_approvals") as cur:
+            original_approvals = await cur.fetchall()
+
+    async def assert_upgraded(conn):
+        cols = await _columns(conn, "decisions")
+        assert cols.count("policy_version") == 1
+        async with conn.execute("SELECT * FROM decisions") as cur:
+            decisions = await cur.fetchall()
+        assert decisions == [(*row, None) for row in original_decisions]
+        async with conn.execute("SELECT * FROM pending_approvals") as cur:
+            assert await cur.fetchall() == original_approvals
+        async with conn.execute("SELECT version FROM schema_version") as cur:
+            assert await cur.fetchall() == [(SCHEMA_VERSION,)]
+
+    async with open_db(root) as conn:
+        await assert_upgraded(conn)
+
+    async def unexpected_migration(conn):
+        pytest.fail("Reopening a current-version database must not repeat the migration")
+
+    monkeypatch.setattr(db_module, "_migrate_legacy", unexpected_migration)
+    async with open_db(root) as conn:
+        await assert_upgraded(conn)
+
+
 # --- _add_column_if_missing itself (direct unit test, review fix for #619) -
 
 
@@ -545,5 +641,5 @@ def test_schema_text_change_requires_a_version_bump():
 
     from doberman.storage.db import _SCHEMA
 
-    assert SCHEMA_VERSION == 18
+    assert SCHEMA_VERSION == 19
     assert hashlib.sha256(_SCHEMA.encode()).hexdigest()[:16] == "e4a9cccba39a3a67"

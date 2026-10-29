@@ -98,7 +98,9 @@ _ACTIVE_DB: ContextVar[
 #: Version 18 adds ``pending_approvals.session_id`` so the dashboard can show
 #: which host session a hook AUTH came from. Additive ALTER on an existing
 #: table; fresh DBs get it from _SCHEMA below. Older rows keep NULL.
-SCHEMA_VERSION = 18
+#: Version 19 adds ``decisions.policy_version`` (#515). Historical rows keep
+#: NULL because their effective policy snapshot was not recorded.
+SCHEMA_VERSION = 19
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -535,6 +537,7 @@ async def _migrate_legacy(conn: aiosqlite.Connection) -> None:
     if pending_cols and "session_id" not in pending_cols:
         await _add_column_if_missing(conn, "pending_approvals", "session_id TEXT")
 
+    # v18 -> v19: additive ALTER; never guess a historical policy version.
     decision_cols = await _table_columns(conn, "decisions")
     if decision_cols and "policy_version" not in decision_cols:
         await _add_column_if_missing(conn, "decisions", "policy_version TEXT")
