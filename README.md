@@ -224,6 +224,9 @@ action gate described above remains the real safety guarantee: an attacker who s
 gate still has to get past it. Full mechanism, module map, and invariants:
 [Turn gate](docs/TURN_GATE.md).
 
+Turn-decision rows also carry the policy snapshot captured before evaluation or an approval wait.
+If capture or catalogue persistence fails, the decision still records with a `NULL` policy version.
+
 ---
 
 ## Benchmark

@@ -51,7 +51,11 @@ flowchart LR
 - **`log.py`** records the redacted verdict into the same local `decisions` table the action path
   uses, marked `action_type='turn'`, so one `doberman log` view covers both invocation points. A
   `TurnObject` carries no raw prompt text, so a logged row holds only fingerprints (irreversible
-  stand-ins for the raw values), classes, and the verdict.
+  stand-ins for the raw values), classes, and the verdict. Its `policy_version` names the snapshot
+  captured before evaluation, including for AUTH, repeat approvals/denials, and lockouts. The turn
+  gate applies full enforcement regardless of the action gate's monitor/off dial. Logging never
+  reloads policy files; a missing snapshot or failed catalogue write leaves the stamp `NULL`
+  while preserving the decision row.
 - **`handoff.py`** (`publish_turn_context`) passes a released turn's signals forward to the
   action-path floors. A flagged turn's stylometric p-value and heuristic tags become a bounded,
   non-negative contribution to that entity's next actions, and content tracing to a flagged pasted

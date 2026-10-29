@@ -13,6 +13,7 @@ import logging
 
 from doberman.models import AuthPath, Decision, TurnObject, Verdict
 from doberman.storage.db import open_db
+from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 logger = logging.getLogger("doberman.turngate.log")
 
@@ -20,8 +21,8 @@ _INSERT = (
     "INSERT INTO decisions "
     "(ts, action_id, agent_role, action_type, target_path_class, risk, source_context, "
     "final_verdict, decided_layer, reason_codes_json, auth_required, auth_result, "
-    "auth_path, human_confirmed, elevation_id, entity_id) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "auth_path, human_confirmed, elevation_id, entity_id, policy_version) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -34,6 +35,7 @@ async def record_turn_decision(
     auth_result: str | None = None,
     auth_path: str = AuthPath.none,
     human_confirmed: bool | None = None,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> None:
     """Append one redacted row for a turn decision (best-effort; never raises).
 
@@ -42,8 +44,22 @@ async def record_turn_decision(
     was involved", which is correct for every stage that does not challenge
     (``turn_block``, ``turn_pass``, ``turn_lockout``); the two challenging
     stages pass their own values.
+
+    The caller captures ``policy_snapshot`` during evaluation. Missing snapshots
+    and failed catalogue writes leave a NULL stamp, never a reconstructed policy
+    or a dropped decision row.
     """
     auth_required = int(decision.final_verdict in (Verdict.AUTH, Verdict.BLOCK))
+    policy_version = None
+    try:
+        from doberman.storage.policy_catalogue import ORIGIN_DECISION, record_version
+
+        if policy_snapshot is not None:
+            policy_version = record_version(
+                repo_root, policy_snapshot, origin=ORIGIN_DECISION, now=decision.decided_at
+            )
+    except Exception:  # noqa: BLE001 — stamping must never prevent decision persistence
+        logger.warning("turn policy stamping failed (turn %s); continuing", turn.id[:12])
     try:
         async with open_db(repo_root) as conn:
             await conn.execute(
@@ -67,6 +83,7 @@ async def record_turn_decision(
                     None if human_confirmed is None else int(human_confirmed),
                     None,
                     turn.entity_id,
+                    policy_version,
                 ),
             )
             await conn.commit()
