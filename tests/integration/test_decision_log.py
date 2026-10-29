@@ -3,6 +3,8 @@
 import inspect
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.engine.effects import compute_delete_effects
 from doberman.models import (
@@ -631,3 +633,109 @@ async def test_persist_decision_failure_does_not_affect_shadow_log(monkeypatch):
     assert live_v == "AUTH"
     assert shadow_v == "BLOCK"
     assert entity == "ent-shadow-ok"
+
+
+@pytest.mark.parametrize("failure", ["snapshot_insert", "observation_insert", "commit"])
+@pytest.mark.parametrize("verdict", [Verdict.PASS, Verdict.AUTH, Verdict.BLOCK])
+async def test_catalogue_sqlite_failure_keeps_decision_unstamped_and_recovers(
+    tmp_path, monkeypatch, failure, verdict
+):
+    import json
+    import sqlite3
+
+    from doberman.storage import policy_catalogue as catalogue
+
+    root = str(tmp_path)
+    # Capture once before any failure; neither failure handling nor retry may
+    # substitute a snapshot reloaded from policy files.
+    snapshot = current_snapshot(root)
+    expected_version = catalogue.policy_version(snapshot)
+    connect = catalogue._connect
+    failures = []
+
+    def failing_connect(repo_root):
+        conn = connect(repo_root)
+
+        def authorize(operation, arg1, arg2, database, trigger):
+            denied = (
+                (
+                    failure == "snapshot_insert"
+                    and operation == sqlite3.SQLITE_INSERT
+                    and arg1 == "policy_versions"
+                )
+                or (
+                    failure == "observation_insert"
+                    and operation == sqlite3.SQLITE_INSERT
+                    and arg1 == "policy_observations"
+                )
+                or (
+                    failure == "commit"
+                    and operation == sqlite3.SQLITE_TRANSACTION
+                    and arg1 == "COMMIT"
+                )
+            )
+            if denied:
+                failures.append(failure)
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        # SQLite itself rejects the write/commit inside the real transaction.
+        conn.set_authorizer(authorize)
+        return conn
+
+    decision, action = _decision_and_action(verdict, "catalogue-failed")
+    with monkeypatch.context() as patch:
+        patch.setattr(catalogue, "_connect", failing_connect)
+        assert catalogue.record_version(root, snapshot, origin=catalogue.ORIGIN_DECISION) is None
+        assert await record_decision(decision, action, repo_root=root, policy_snapshot=snapshot)
+
+    assert failures == [failure, failure]
+    (row,) = await read_decisions(root)
+    assert row["action_id"] == decision.action_id
+    assert row["final_verdict"] == verdict.value
+    assert row["policy_version"] is None
+    # Even when INSERTs succeeded before a denied COMMIT, the catalogue must
+    # not retain a partial snapshot/observation or a lock preventing retry.
+    assert catalogue.read_versions(root) == []
+    assert catalogue.read_observations(root) == []
+
+    retry_decision, retry_action = _decision_and_action(verdict, "catalogue-recovered")
+    assert await record_decision(
+        retry_decision, retry_action, repo_root=root, policy_snapshot=snapshot
+    )
+    rows = {row["action_id"]: row for row in await read_decisions(root)}
+    assert rows[decision.action_id]["policy_version"] is None
+    assert rows[retry_decision.action_id]["policy_version"] == expected_version
+    assert catalogue.read_snapshot(root, expected_version) == json.loads(
+        catalogue.canonical_json(snapshot)
+    )
+    assert len(catalogue.read_observations(root)) == 1
+
+
+async def test_existing_catalogue_id_with_different_content_does_not_stamp_decision(tmp_path):
+    import sqlite3
+
+    from doberman.storage import policy_catalogue as catalogue
+
+    root = str(tmp_path)
+    snapshot = current_snapshot(root)
+    version = catalogue.record_version(root, snapshot, origin=catalogue.ORIGIN_DECISION)
+    conn = sqlite3.connect(str(catalogue.catalogue_path(root)))
+    try:
+        conn.execute("UPDATE policy_versions SET canonical = '{}' WHERE version = ?", (version,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    decision, action = _decision_and_action(Verdict.PASS, "catalogue-content-mismatch")
+    assert await record_decision(decision, action, repo_root=root, policy_snapshot=snapshot)
+    (row,) = await read_decisions(root)
+    assert row["policy_version"] is None
+    # The append-only writer must neither trust nor silently overwrite corrupt content.
+    conn = sqlite3.connect(str(catalogue.catalogue_path(root)))
+    try:
+        assert conn.execute(
+            "SELECT canonical FROM policy_versions WHERE version = ?", (version,)
+        ).fetchone() == ("{}",)
+    finally:
+        conn.close()

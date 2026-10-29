@@ -199,7 +199,8 @@ only resolved decisions, never pending `AUTH` rows or the append-only policy-cha
 
 Proxy and host-hook action logs retain the policy snapshot captured during evaluation, even when
 policy changes before logging or during an approval wait. A decision without a captured snapshot
-has a `NULL` policy version rather than a stamp inferred from later policy files.
+or a successful catalogue write has a `NULL` policy version. The decision still persists rather
+than receiving a stamp inferred from later policy files or referencing an unsaved snapshot.
 
 `doberman log --jsonl` and the dashboard's live feed carry each decision's host session id, so a
 companion tool can group decisions by the agent session that made them. A value that does not look

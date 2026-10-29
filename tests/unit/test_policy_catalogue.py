@@ -380,3 +380,33 @@ def test_resolved_constraints_change_version_without_changing_legacy_ids():
             _doc(), _ROLE, "enforce", "9.9.9", resolved_policy=resolved.model_copy(update=update)
         )
         assert policy_version(changed) != policy_version(snapshot)
+
+
+def test_catalogue_setup_write_failure_closes_connection(tmp_path, monkeypatch):
+    from doberman.storage import policy_catalogue as catalogue
+
+    connect = sqlite3.connect
+    connections = []
+    failures = []
+
+    def failing_connect(*args, **kwargs):
+        conn = connect(*args, **kwargs)
+        connections.append(conn)
+
+        def authorize(operation, arg1, arg2, database, trigger):
+            if operation == sqlite3.SQLITE_CREATE_TABLE and arg1 == "policy_versions":
+                failures.append(arg1)
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        conn.set_authorizer(authorize)
+        return conn
+
+    with monkeypatch.context() as patch:
+        patch.setattr(catalogue.sqlite3, "connect", failing_connect)
+        assert record_version(str(tmp_path), _snap(), origin=ORIGIN_DECISION) is None
+
+    assert failures == ["policy_versions"]
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")

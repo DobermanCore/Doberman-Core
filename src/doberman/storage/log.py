@@ -321,6 +321,8 @@ async def record_decision(
     enforcement state. Without it the stamp is NULL: logging never reloads
     policy files. ``enforcement_effective`` remains accepted for callers that
     already propagate it, but cannot reconstruct missing evaluation inputs.
+    A failed catalogue write also leaves the stamp NULL without preventing
+    decision persistence.
 
     Returns whether the row was durably written to the local decision log —
     ``True`` only if both building the record and the SQL INSERT succeeded.

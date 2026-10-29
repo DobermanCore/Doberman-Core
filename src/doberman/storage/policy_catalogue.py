@@ -235,15 +235,19 @@ def _connect(repo_root: str) -> sqlite3.Connection:
     path = catalogue_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     conn = sqlite3.connect(str(path), timeout=3.0, isolation_level=None)
-    conn.execute("PRAGMA busy_timeout = 3000")
-    conn.executescript(_SCHEMA)
-    # Insert-if-absent keeps this module free of mutating SQL (append-only, literally).
-    conn.execute(
-        "INSERT INTO schema_version (version) SELECT ? "
-        "WHERE NOT EXISTS (SELECT 1 FROM schema_version)",
-        (CATALOGUE_SCHEMA_VERSION,),
-    )
-    _restrict_permissions(path)
+    try:
+        conn.execute("PRAGMA busy_timeout = 3000")
+        conn.executescript(_SCHEMA)
+        # Insert-if-absent keeps this module free of mutating SQL (append-only, literally).
+        conn.execute(
+            "INSERT INTO schema_version (version) SELECT ? "
+            "WHERE NOT EXISTS (SELECT 1 FROM schema_version)",
+            (CATALOGUE_SCHEMA_VERSION,),
+        )
+        _restrict_permissions(path)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -254,24 +258,34 @@ def record_version(
     origin: str,
     ledger_ts: str | None = None,
     now: datetime | None = None,
-) -> str:
+) -> str | None:
     """Store ``snapshot`` once and append an observation if the version in force changed.
 
-    Returns the version id (computed without I/O, so it is returned even when
-    the write fails). ``BEGIN IMMEDIATE`` serialises concurrent writers so two
+    Returns the version id only after the exact canonical content and its
+    observation have committed; any failure returns ``None``. An existing id
+    with different content is refused, never silently trusted or overwritten.
+    ``BEGIN IMMEDIATE`` serialises concurrent writers so two
     hook processes cannot both decide "the latest observation differs".
     """
-    version = policy_version(snapshot)
-    stamp = (now or datetime.now(timezone.utc)).isoformat()
     try:
+        # Hash and persist the same bytes, even if a caller's mutable snapshot
+        # content changes after serialization.
+        canonical = canonical_json(snapshot)
+        version = VERSION_PREFIX + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        stamp = (now or datetime.now(timezone.utc)).isoformat()
         conn = _connect(repo_root)
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "INSERT OR IGNORE INTO policy_versions (version, canonical, first_seen) "
                 "VALUES (?, ?, ?)",
-                (version, canonical_json(snapshot), stamp),
+                (version, canonical, stamp),
             )
+            stored = conn.execute(
+                "SELECT canonical FROM policy_versions WHERE version = ?", (version,)
+            ).fetchone()
+            if stored is None or stored[0] != canonical:
+                raise ValueError("catalogue content does not match the evaluation snapshot")
             latest = conn.execute(
                 "SELECT version FROM policy_observations ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -286,6 +300,7 @@ def record_version(
             conn.close()
     except Exception as exc:  # noqa: BLE001 — observational; the caller's work is already done
         logger.warning("policy catalogue write failed; continuing: %s", exc)
+        return None
     return version
 
 
@@ -325,7 +340,7 @@ def observe_current(
     enforcement_effective: str | None = None,
     now: datetime | None = None,
 ) -> str | None:
-    """Record the policy in force right now; returns its version id (``None`` if unbuildable)."""
+    """Record the current policy; return its id, or ``None`` if capture or persistence fails."""
     snapshot = current_snapshot(repo_root, enforcement_effective=enforcement_effective)
     if snapshot is None:
         return None
