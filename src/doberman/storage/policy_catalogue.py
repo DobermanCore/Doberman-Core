@@ -35,12 +35,16 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from doberman.policy.checklist import PolicyDoc
+from doberman.policy.sources import ResolvedPolicy
 from doberman.roles.roles import RoleDefinition
+
+if TYPE_CHECKING:
+    from doberman.config import EvaluationPolicy
 
 logger = logging.getLogger("doberman.storage.policy_catalogue")
 
@@ -80,6 +84,8 @@ class PolicySnapshotV1(BaseModel):
     enforcement_effective: str
     doc: dict[str, Any]
     role: RoleSnapshot | None = None
+    #: Optional additive v1 field; absent in canonical JSON for legacy/empty sources.
+    resolved_policy: ResolvedPolicy | None = None
 
 
 def snapshot_doc(doc: PolicyDoc) -> dict[str, Any]:
@@ -99,6 +105,8 @@ def build_snapshot(
     role: RoleDefinition | None,
     enforcement_effective: str,
     engine: str,
+    *,
+    resolved_policy: ResolvedPolicy | None = None,
 ) -> PolicySnapshotV1:
     """Assemble the snapshot; an unrecognised enforcement state records as ``enforce``."""
     state = str(enforcement_effective).strip().lower()
@@ -119,17 +127,45 @@ def build_snapshot(
         enforcement_effective=state,
         doc=snapshot_doc(doc),
         role=role_snapshot,
+        resolved_policy=(
+            resolved_policy.model_copy(deep=True)
+            if resolved_policy is not None and not resolved_policy.is_empty
+            else None
+        ),
     )
 
 
 def canonical_json(snapshot: PolicySnapshotV1) -> str:
     """The bytes that are hashed: sorted keys, no whitespace, UTF-8 kept as-is."""
+    data = snapshot.model_dump(mode="json", by_alias=True)
+    # Keep the bytes (and identifiers) of existing snapshots with no sources.
+    if snapshot.resolved_policy is None:
+        data.pop("resolved_policy", None)
     return json.dumps(
-        snapshot.model_dump(mode="json", by_alias=True),
+        data,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
     )
+
+
+def evaluation_snapshot(
+    policy: EvaluationPolicy, enforcement_effective: str
+) -> PolicySnapshotV1 | None:
+    """Capture evaluation inputs, never rereading policy files or affecting a verdict."""
+    try:
+        from doberman import __version__
+
+        return build_snapshot(
+            policy.doc,
+            policy.role,
+            enforcement_effective,
+            __version__,
+            resolved_policy=policy.resolved_policy,
+        )
+    except Exception:  # noqa: BLE001 — stamping is observational
+        logger.warning("policy catalogue: could not capture evaluation snapshot")
+        return None
 
 
 def policy_version(snapshot: PolicySnapshotV1) -> str:
@@ -265,17 +301,17 @@ def current_snapshot(
     """
     try:
         from doberman import __version__
-        from doberman.config import load_active_role, load_policy, resolve_enforcement_sync
-        from doberman.policy.checklist import recommend_policy
+        from doberman.config import load_evaluation_policy, resolve_enforcement_sync
 
-        doc = load_policy(repo_root) or recommend_policy()
-        role = load_active_role(repo_root)
+        policy = load_evaluation_policy(repo_root)
         state = (
             enforcement_effective
             if enforcement_effective is not None
-            else resolve_enforcement_sync(repo_root)
+            else resolve_enforcement_sync(repo_root, policy_doc=policy.doc)
         )
-        return build_snapshot(doc, role, state, __version__)
+        return build_snapshot(
+            policy.doc, policy.role, state, __version__, resolved_policy=policy.resolved_policy
+        )
     except Exception as exc:  # noqa: BLE001 — never raise into a caller for a snapshot
         logger.warning("policy catalogue: could not build the current policy snapshot: %s", exc)
         return None

@@ -29,6 +29,7 @@ from doberman.models import ActionType, Decision, EffectSet, SecurityObject
 from doberman.storage.db import open_db
 from doberman.storage.device_metrics import AUTH_APPROVED, AUTH_DENIED, record_decision_metric
 from doberman.storage.fingerprint import fingerprint
+from doberman.storage.policy_catalogue import PolicySnapshotV1
 from doberman.storage.sinks import emit_to_sinks
 
 logger = logging.getLogger("doberman.storage.log")
@@ -308,12 +309,18 @@ async def record_decision(
     human_confirmed: bool | None = None,
     source_context_override: str | None = None,
     enforcement_effective: str | None = None,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> bool:
     """Persist one redacted decision row and fan it out to sinks (best-effort).
 
     Never raises: building the record, the storage write, and the sink fan-out
     are all inside the failure boundary, so nothing here can alter or block the
     decision (which has already been enforced).
+
+    ``policy_snapshot`` is captured by the evaluator, including its resolved
+    enforcement state. Without it the stamp is NULL: logging never reloads
+    policy files. ``enforcement_effective`` remains accepted for callers that
+    already propagate it, but cannot reconstruct missing evaluation inputs.
 
     Returns whether the row was durably written to the local decision log —
     ``True`` only if both building the record and the SQL INSERT succeeded.
@@ -332,18 +339,18 @@ async def record_decision(
         from doberman.storage.policy_catalogue import (
             ORIGIN_DECISION,
             VERSION_PREFIX,
-            observe_current,
+            record_version,
         )
 
-        policy_version = observe_current(
-            repo_root,
-            origin=ORIGIN_DECISION,
-            enforcement_effective=enforcement_effective,
-            now=decision_now,
+        # No snapshot means unknown, never a guess reconstructed from current files.
+        policy_version = (
+            record_version(repo_root, policy_snapshot, origin=ORIGIN_DECISION, now=decision_now)
+            if policy_snapshot is not None
+            else None
         )
         digest = (
             policy_version[len(VERSION_PREFIX) :]
-            if policy_version.startswith(VERSION_PREFIX)
+            if policy_version is not None and policy_version.startswith(VERSION_PREFIX)
             else ""
         )
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):

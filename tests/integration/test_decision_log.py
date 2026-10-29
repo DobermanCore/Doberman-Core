@@ -23,6 +23,7 @@ from doberman.storage.log import (
     recent_session_decisions,
     record_decision,
 )
+from doberman.storage.policy_catalogue import current_snapshot
 
 from .test_proxy_passthrough import proxied_session
 
@@ -183,7 +184,7 @@ async def test_decision_persists_policy_version(tmp_path):
     root = str(tmp_path)
     decision, action = _decision_and_action(Verdict.PASS, "policy-version")
 
-    await record_decision(decision, action, repo_root=root)
+    await record_decision(decision, action, repo_root=root, policy_snapshot=current_snapshot(root))
 
     rows = await read_decisions(root)
 
@@ -197,12 +198,14 @@ async def test_policy_version_failure_keeps_decision_row(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("failed to determine policy version")
 
-    monkeypatch.setattr(catalogue, "observe_current", boom)
+    monkeypatch.setattr(catalogue, "record_version", boom)
 
     root = str(tmp_path)
     decision, action = _decision_and_action(Verdict.PASS, "policy-version-failure")
 
-    result = await record_decision(decision, action, repo_root=root)
+    result = await record_decision(
+        decision, action, repo_root=root, policy_snapshot=current_snapshot(root)
+    )
 
     assert result is True
 
@@ -218,13 +221,15 @@ async def test_invalid_policy_version_is_not_persisted(tmp_path, monkeypatch):
     import doberman.storage.policy_catalogue as catalogue
 
     monkeypatch.setattr(
-        catalogue, "observe_current", lambda *args, **kwargs: "pv1:not-a-valid-digest"
+        catalogue, "record_version", lambda *args, **kwargs: "pv1:not-a-valid-digest"
     )
 
     root = str(tmp_path)
     decision, action = _decision_and_action(Verdict.PASS, "invalid-policy-version")
 
-    result = await record_decision(decision, action, repo_root=root)
+    result = await record_decision(
+        decision, action, repo_root=root, policy_snapshot=current_snapshot(root)
+    )
 
     assert result is True
 
@@ -244,12 +249,16 @@ async def test_decision_after_policy_change_gets_new_policy_version(tmp_path):
     save_policy(recommend_policy().with_mode("balanced"), root)
 
     decision1, action1 = _decision_and_action(Verdict.PASS, "policy-version-before")
-    assert await record_decision(decision1, action1, repo_root=root)
+    assert await record_decision(
+        decision1, action1, repo_root=root, policy_snapshot=current_snapshot(root)
+    )
 
     save_policy(recommend_policy().with_mode("strict"), root)
 
     decision2, action2 = _decision_and_action(Verdict.PASS, "policy-version-after")
-    assert await record_decision(decision2, action2, repo_root=root)
+    assert await record_decision(
+        decision2, action2, repo_root=root, policy_snapshot=current_snapshot(root)
+    )
 
     rows = await read_decisions(root)
 

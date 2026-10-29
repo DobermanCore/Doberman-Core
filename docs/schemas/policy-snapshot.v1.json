@@ -1,5 +1,45 @@
 {
   "$defs": {
+    "ResolvedPolicy": {
+      "description": "The merged effective policy across all sources (immutable, raise-only).\n\n``blocked_globs`` and ``sensitive_globs`` are the unions across sources,\nwith ``blocked`` taking precedence (a glob blocked by any source is removed\nfrom ``sensitive``). ``contributors`` records ``(name, authority)`` per\nsource in ascending-authority order for audit/explainability.",
+      "properties": {
+        "blocked_globs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Blocked Globs",
+          "type": "array"
+        },
+        "contributors": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Contributors",
+          "type": "array"
+        },
+        "sensitive_globs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Sensitive Globs",
+          "type": "array"
+        }
+      },
+      "title": "ResolvedPolicy",
+      "type": "object"
+    },
     "RoleSnapshot": {
       "description": "The verdict-relevant part of the active role (globs only, no description).",
       "properties": {
@@ -53,6 +93,17 @@
     "engine": {
       "title": "Engine",
       "type": "string"
+    },
+    "resolved_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ResolvedPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "role": {
       "anyOf": [

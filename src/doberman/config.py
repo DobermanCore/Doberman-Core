@@ -29,6 +29,7 @@ This module is policy core: it must never import ``doberman.proxy``.
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -38,6 +39,7 @@ import yaml
 from doberman.policy.checklist import PolicyDoc, recommend_policy
 from doberman.policy.modes import DEFAULT_MODE, resolve_mode
 from doberman.policy.preferences import PreferenceVector, vector_for
+from doberman.policy.sources import ResolvedPolicy, effective_policy
 from doberman.roles.roles import (
     MOST_RESTRICTIVE_ROLE,
     RoleDefinition,
@@ -81,7 +83,9 @@ def _parse_role_yaml_data(raw: bytes) -> dict:
     return yaml.safe_load(raw.decode("utf-8")) or {}
 
 
-def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
+def load_active_role(
+    repo_root: str = ".", *, policy_doc: PolicyDoc | None = None
+) -> RoleDefinition | None:
     """Resolve the repo's active role, or ``None`` if none is configured.
 
     Never raises: a malformed config fails closed to the most-restrictive role
@@ -92,7 +96,12 @@ def load_active_role(repo_root: str = ".") -> RoleDefinition | None:
         # No explicit role file: fall to the D1 opt-in default (still None
         # unless a human explicitly turned it on) — byte-identical to today
         # for anyone who hasn't opted in.
-        if not default_role_enabled(repo_root):
+        enabled = (
+            default_role_enabled(repo_root)
+            if policy_doc is None
+            else policy_doc.default_role_enabled
+        )
+        if not enabled:
             return None
         return load_builtin_roles().get(DEFAULT_ROLE_NAME, MOST_RESTRICTIVE_ROLE)
 
@@ -277,6 +286,7 @@ def _record_policy_version(doc: PolicyDoc, repo_root: str, ledger_ts: str | None
             load_active_role(repo_root),
             effective_enforcement_at_save(doc, now),
             __version__,
+            resolved_policy=effective_policy(repo_root),
         )
         record_version(repo_root, snapshot, origin=ORIGIN_CHANGE, ledger_ts=ledger_ts, now=now)
     except Exception as exc:  # noqa: BLE001 — the catalogue is observational; a save must never fail for it
@@ -315,7 +325,7 @@ def load_enforcement(repo_root: str = ".") -> tuple[str, float | None, str]:
     return doc.enforcement, doc.enforcement_expires_at, doc.enforcement_revert
 
 
-def resolve_enforcement_sync(repo_root: str = ".") -> str:
+def resolve_enforcement_sync(repo_root: str = ".", *, policy_doc: PolicyDoc | None = None) -> str:
     """Synchronous resolution of the effective enforcement state for sync callers.
 
     The host-hook decision path (``evaluate_pre``) runs synchronously in a
@@ -325,10 +335,21 @@ def resolve_enforcement_sync(repo_root: str = ".") -> str:
     hot path is untouched; only a softened deployment pays one ``asyncio.run``.
     Any failure — including being called while an event loop is already running —
     fails closed to ``enforce``.
+
+    Evaluation callers supply their captured ``policy_doc`` so enforcement
+    resolves the same document as the other evaluation inputs.
     """
     from doberman.policy.drift import effective_enforcement
 
-    enforcement, expires_at, revert = load_enforcement(repo_root)
+    enforcement, expires_at, revert = (
+        load_enforcement(repo_root)
+        if policy_doc is None
+        else (
+            policy_doc.enforcement,
+            policy_doc.enforcement_expires_at,
+            policy_doc.enforcement_revert,
+        )
+    )
     if str(enforcement).strip().lower() == "enforce":
         return "enforce"
     try:
@@ -356,6 +377,39 @@ def load_preferences(repo_root: str = ".") -> PreferenceVector:
     if doc is not None and doc.preferences is not None:
         return doc.preferences
     return vector_for(load_mode(repo_root))
+
+
+@dataclass(frozen=True)
+class EvaluationPolicy:
+    """Configuration captured for one evaluation, also used to stamp its decision."""
+
+    doc: PolicyDoc
+    role: RoleDefinition | None
+    mode: str
+    preferences: PreferenceVector
+    resolved_policy: ResolvedPolicy
+
+
+def load_evaluation_policy(
+    repo_root: str = ".", *, use_default_mode: bool = False
+) -> EvaluationPolicy:
+    """Read the policy once; derive evaluation inputs without later policy reads.
+
+    Hooks without a valid cwd retain their default-mode behavior (#51).
+    The role returned here is the same object supplied to the engine and snapshot.
+    """
+    doc = load_policy(repo_root) or recommend_policy()
+    try:
+        mode = DEFAULT_MODE.value if use_default_mode else resolve_mode(doc.mode).value
+    except ValueError:
+        mode = DEFAULT_MODE.value
+    return EvaluationPolicy(
+        doc=doc.with_mode(mode),
+        role=load_active_role(repo_root, policy_doc=doc),
+        mode=mode,
+        preferences=doc.preferences if doc.preferences is not None else vector_for(mode),
+        resolved_policy=effective_policy(repo_root),
+    )
 
 
 def save_preferences(

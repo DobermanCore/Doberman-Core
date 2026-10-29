@@ -43,13 +43,19 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
-from doberman.config import load_active_role, load_message_tone
+from doberman.config import (
+    EvaluationPolicy,
+    load_evaluation_policy,
+    load_message_tone,
+    resolve_enforcement_sync,
+)
 from doberman.engine.decision_engine import PASS_STUB, decide, max_risk
 from doberman.engine.objective import ObjectiveGuardrail
 from doberman.engine.taint_floor import UNTRUSTED_READ_TOOLS as _UNTRUSTED_READ_TOOLS
 from doberman.hosthooks import hookio, spine
 from doberman.models import AuthPath, Decision, EvalContext, Risk, SecurityObject, Verdict
 from doberman.proxy.normalize import normalize
+from doberman.storage.policy_catalogue import PolicySnapshotV1, evaluation_snapshot
 
 if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth stack
     from doberman.auth.challenge import Prompter
@@ -257,6 +263,7 @@ def evaluate_pre(payload: dict[str, Any]) -> dict[str, Any] | None:
             auth_path=auth_path,
             human_confirmed=human_confirmed,
             enforcement_effective=result.enforcement,
+            policy_snapshot=result.policy_snapshot,
         )
         return hook_result
     except Exception:  # noqa: BLE001 — fail closed; never surface the payload in an error
@@ -281,6 +288,7 @@ def _record_pre_history(
     auth_path: str = AuthPath.host_hook_objective,
     human_confirmed: bool | None = None,
     enforcement_effective: str | None = None,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> None:
     """Best-effort: record a PreToolUse AUTH/BLOCK decision in ``doberman log``.
 
@@ -306,6 +314,7 @@ def _record_pre_history(
             auth_path=auth_path,
             human_confirmed=human_confirmed,
             enforcement_effective=enforcement_effective,
+            policy_snapshot=policy_snapshot,
         )
     except Exception:  # noqa: BLE001,S110 — history must never alter the hook's return value
         pass
@@ -499,7 +508,11 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
             return None
 
         cwd = payload.get("cwd")
-        repo_root, mode = _resolve_root_and_mode(cwd)
+        repo_root = cwd if isinstance(cwd, str) and cwd else "."
+        policy = load_evaluation_policy(repo_root, use_default_mode=repo_root != cwd)
+        mode = policy.mode
+        enforcement = resolve_enforcement_sync(repo_root, policy_doc=policy.doc)
+        policy_snapshot = evaluation_snapshot(policy, enforcement)
         raw_session = payload.get("session_id")
         session_id = raw_session if isinstance(raw_session, str) and raw_session else None
 
@@ -548,14 +561,30 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
                     action_id=action.id,
                     explanation=(scan_result.explanation or "").strip() or "no further detail",
                 )
-                _record_blocked_post_history(scan_result, action, repo_root, session_id)
+                _record_blocked_post_history(
+                    scan_result,
+                    action,
+                    repo_root,
+                    session_id,
+                    enforcement_effective=enforcement,
+                    policy_snapshot=policy_snapshot,
+                )
                 return _post_block(reason)
 
         except Exception:  # noqa: BLE001 — scan failure → fail closed
             return _post_block(_POST_FAILSAFE_REASON)
 
         # --- History (best-effort, never raises, never blocks) ---------------
-        _record_post_history(tool_name, tool_input, repo_root, mode, session_id)
+        _record_post_history(
+            tool_name,
+            tool_input,
+            repo_root,
+            mode,
+            session_id,
+            policy=policy,
+            enforcement_effective=enforcement,
+            policy_snapshot=policy_snapshot,
+        )
 
         return None  # clean output — abstain
 
@@ -569,6 +598,10 @@ def _record_post_history(
     repo_root: str,
     mode: str,
     session_id: str | None,
+    *,
+    policy: EvaluationPolicy | None = None,
+    enforcement_effective: str | None = None,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> None:
     """Best-effort: normalize + decide + record_decision for history.
 
@@ -580,12 +613,16 @@ def _record_post_history(
     real-input action as evaluate_pre, just recomputed post-execution for the log.
     """
     try:
+        policy = policy or load_evaluation_policy(repo_root)
         canonical, args = to_normalize_input(tool_name, tool_input)
         action = normalize(canonical, args)
+        metadata = {"raw_arguments": args, "repo_root": repo_root}
+        if not policy.resolved_policy.is_empty:
+            metadata["resolved_policy"] = policy.resolved_policy
         ctx = EvalContext(
-            role=load_active_role(repo_root),
+            role=policy.role,
             mode=mode,
-            metadata={"raw_arguments": args, "repo_root": repo_root},
+            metadata=metadata,
         )
         decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
         # PostToolUse history for a call that already ran: no challenge was
@@ -598,6 +635,8 @@ def _record_post_history(
             auth_result="executed",
             auth_path=AuthPath.host_hook_objective,
             human_confirmed=False,
+            enforcement_effective=enforcement_effective,
+            policy_snapshot=policy_snapshot,
         )
     except Exception:  # noqa: BLE001,S110 — history must never break the execution path
         pass
@@ -608,6 +647,9 @@ def _record_blocked_post_history(
     action: SecurityObject,
     repo_root: str,
     session_id: str | None,
+    *,
+    enforcement_effective: str | None = None,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> None:
     """Best-effort: record a PostToolUse output-scan block in ``doberman log``.
 
@@ -634,6 +676,8 @@ def _record_blocked_post_history(
             auth_result="blocked",
             auth_path=AuthPath.host_hook_objective,
             human_confirmed=False,
+            enforcement_effective=enforcement_effective,
+            policy_snapshot=policy_snapshot,
         )
     except Exception:  # noqa: BLE001,S110 — history must never break the block path
         pass

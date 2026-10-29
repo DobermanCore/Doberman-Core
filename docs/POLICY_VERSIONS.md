@@ -16,9 +16,16 @@ can later be matched to the policy that produced it.
 | `enforcement_effective` | `enforce` / `monitor` / `off` | The state actually acted on (ledger-verified, timer applied), not just the field on disk. |
 | `doc` | `.doberman/policies.yaml` as saved, minus `message_tone` and every item `description` | Everything else in the file can change a verdict. Those two cannot, so a wording change never mints a version. |
 | `role` | the active role's `name`, `allowed`, `suspicious`, `blocked` globs, or `null` | Role boundaries decide out-of-scope step-ups. |
+| `resolved_policy` (optional) | the captured repo-file/plugin constraints: blocked and sensitive globs, plus source contributors | These constraints also affect the verdict. Omitted when no source contributes constraints, preserving existing version IDs. |
 
 Canonical form: `json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`,
 UTF-8 encoded. The published JSON Schema is [`schemas/policy-snapshot.v1.json`](schemas/policy-snapshot.v1.json).
+
+Evaluation and stamping share the same captured resolved policy; logging never resolves sources
+again. After AUTH approval, the proxy refreshes the policy and runs its BLOCK check under full
+enforcement, even if the enforcement dial has changed. A BLOCK from that check carries the refreshed
+snapshot with `enforcement_effective: enforce`; a row recording the original AUTH keeps its original
+snapshot and resolved enforcement state.
 
 Plain SHA-256 rather than Doberman's keyed HMAC (a hash tied to a secret key) on purpose: anyone
 holding the snapshot (an auditor, a central verifier) can recompute the id without the local key.

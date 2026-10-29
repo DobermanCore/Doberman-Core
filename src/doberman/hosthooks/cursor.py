@@ -344,6 +344,7 @@ def evaluate(payload: dict[str, Any]) -> dict[str, Any]:
                 auth_path=auth_path,
                 human_confirmed=human_confirmed,
                 enforcement_effective=result.enforcement,
+                policy_snapshot=result.policy_snapshot,
             )
             response = _from_host_output(host_out)
 

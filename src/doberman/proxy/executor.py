@@ -35,11 +35,10 @@ from doberman.auth.challenge import (
 )
 from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import (
-    load_active_role,
-    load_enforcement,
+    EvaluationPolicy,
+    load_evaluation_policy,
     load_message_tone,
     load_mode,
-    load_preferences,
 )
 from doberman.egress.artifact import ArtifactPinStore, ArtifactVerdict
 from doberman.engine.correlator import DecisionRow, correlate
@@ -71,7 +70,6 @@ from doberman.models import (
     Verdict,
 )
 from doberman.policy.drift import acted_verdict, effective_enforcement
-from doberman.policy.sources import effective_policy
 from doberman.proxy.interception_log import log_action
 from doberman.proxy.normalize import challenge_copy, normalize
 from doberman.storage import tool_pins
@@ -87,6 +85,7 @@ from doberman.storage.log import (
     record_decision,
     record_shadow,
 )
+from doberman.storage.policy_catalogue import PolicySnapshotV1, evaluation_snapshot
 from doberman.subjective.baseline import (
     budget_allows_step_up,
     entity_id,
@@ -190,7 +189,9 @@ _TOOL_SCHEMA_CHANGED_EXPLANATION = (
 )
 
 
-async def _apply_tool_pin_floor(tool_name: str, decision: Decision) -> Decision:
+async def _apply_tool_pin_floor(
+    tool_name: str, decision: Decision, *, mode: str | None = None
+) -> Decision:
     """Raise a changed tool contract to AUTH, or BLOCK in strict/paranoid."""
     if await tool_pins.pin_status(tool_name, repo_root=REPO_ROOT) != "changed":
         return decision
@@ -198,7 +199,7 @@ async def _apply_tool_pin_floor(tool_name: str, decision: Decision) -> Decision:
     # tokens for this tool, for every entity — a token granted against the old
     # schema must not mute the step-up on the new one. Idempotent; raise-only.
     revoke_tool_scope_tokens(tool_name)
-    floor = Verdict.BLOCK if load_mode(REPO_ROOT) in _STRICT_MODES else Verdict.AUTH
+    floor = Verdict.BLOCK if (mode or load_mode(REPO_ROOT)) in _STRICT_MODES else Verdict.AUTH
     risk = Risk.critical if floor is Verdict.BLOCK else Risk.high
     reasons = list(dict.fromkeys([*decision.reason_codes, ReasonCode.tool_schema_changed]))
     explanation = " ".join(
@@ -304,6 +305,7 @@ def _build_ctx(
     budget_ok: bool = True,
     eid: str = "",
     scope_token: bool = False,
+    policy: EvaluationPolicy | None = None,
 ) -> EvalContext:
     """Assemble the EvalContext for one decision.
 
@@ -318,6 +320,7 @@ def _build_ctx(
     committed ``doberman.policy.yaml`` and no registered policy-source plugin
     is byte-identical to before this seam existed (``PolicySourceRule`` abstains).
     """
+    policy = policy or load_evaluation_policy(REPO_ROOT)
     metadata = {
         "raw_arguments": dict(arguments or {}),
         "repo_root": REPO_ROOT,
@@ -326,14 +329,14 @@ def _build_ctx(
         "budget_ok": budget_ok,
         "scope_token": scope_token,
         "entity_id": eid,
-        "preferences": load_preferences(REPO_ROOT),
+        "preferences": policy.preferences,
     }
-    policy = effective_policy(REPO_ROOT)
-    if not policy.is_empty:
-        metadata["resolved_policy"] = policy
+    resolved = policy.resolved_policy
+    if not resolved.is_empty:
+        metadata["resolved_policy"] = resolved
     return EvalContext(
-        role=load_active_role(REPO_ROOT),
-        mode=load_mode(REPO_ROOT),
+        role=policy.role,
+        mode=policy.mode,
         metadata=metadata,
     )
 
@@ -548,6 +551,8 @@ async def _scan_output_for_secrets(
     arguments: dict | None,
     action: SecurityObject,
     result: CallToolResult,
+    *,
+    mode: str | None = None,
 ) -> Decision | None:
     """Port of the host-hook's PostToolUse output-scan gate (parity-1).
 
@@ -579,7 +584,7 @@ async def _scan_output_for_secrets(
         # meaningless against scan text.
         scan_ctx = EvalContext(
             role=None,
-            mode=load_mode(REPO_ROOT),
+            mode=mode or load_mode(REPO_ROOT),
             metadata={"raw_arguments": scan_args, "repo_root": REPO_ROOT},
         )
         scan_result = DEFAULT_OBJECTIVE.evaluate(scan_action, scan_ctx)
@@ -756,6 +761,7 @@ async def _persist(
     auth_path: str = AuthPath.none,
     human_confirmed: bool | None = None,
     enforcement_effective: str | None = None,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> None:
     """Append one redacted row to the local decision log (best-effort).
 
@@ -781,6 +787,7 @@ async def _persist(
             auth_path=auth_path,
             human_confirmed=human_confirmed,
             enforcement_effective=enforcement_effective,
+            policy_snapshot=policy_snapshot,
         )
     except Exception:  # noqa: BLE001 — logging must never break the execution path
         _engine_logger.warning("decision log persist failed (action %s); continuing", action.id)
@@ -805,6 +812,7 @@ async def _handle_auth(
     surprise_score: float,
     eid: str,
     enforcement_effective: str,
+    policy_snapshot: PolicySnapshotV1 | None = None,
 ) -> CallToolResult:
     """Run the tiered challenge for an AUTH decision and act on the outcome."""
     # C2 (ADR 0094): before the challenge is rendered, compute a bounded,
@@ -878,6 +886,7 @@ async def _handle_auth(
             # narrower question its name asks — did a person approve this.
             human_confirmed=False,
             enforcement_effective=enforcement_effective,
+            policy_snapshot=policy_snapshot,
         )
         return _verdict_result(decision)
 
@@ -899,6 +908,7 @@ async def _handle_auth(
                 auth_path=AuthPath.proxy_elevation,
                 human_confirmed=human_answered(auth_result.method),
                 enforcement_effective=enforcement_effective,
+                policy_snapshot=policy_snapshot,
             )
             return _verdict_result(decision)
         try:
@@ -920,14 +930,21 @@ async def _handle_auth(
                 auth_path=AuthPath.proxy_elevation,
                 human_confirmed=human_answered(auth_result.method),
                 enforcement_effective=enforcement_effective,
+                policy_snapshot=policy_snapshot,
             )
             return _verdict_result(decision)
 
     # TOCTOU guard: re-decide with refreshed elevations. A change to BLOCK must
     # block even post-approval; otherwise the human-approved action is released.
     grants = tuple(await active_elevations(REPO_ROOT, now))
-    redecision = _safe_decide(action, _build_ctx(arguments, grants, surprise_score, eid=eid))
-    redecision = await _apply_tool_pin_floor(tool_name, redecision)
+    refreshed_policy = load_evaluation_policy(REPO_ROOT)
+    refreshed_ctx = _build_ctx(arguments, grants, surprise_score, eid=eid, policy=refreshed_policy)
+    # This gate intentionally enforces every BLOCK, without monitor/off
+    # softening. Stamp the state actually applied here, not the original dial.
+    post_approval_enforcement = "enforce"
+    refreshed_snapshot = evaluation_snapshot(refreshed_policy, post_approval_enforcement)
+    redecision = _safe_decide(action, refreshed_ctx)
+    redecision = await _apply_tool_pin_floor(tool_name, redecision, mode=refreshed_ctx.mode)
     if redecision.final_verdict is Verdict.BLOCK:
         log_action(action, redecision.final_verdict)
         await _revoke_granted_elevation(elevation_id)
@@ -939,7 +956,8 @@ async def _handle_auth(
             eid=eid,
             auth_path=AuthPath.proxy_post_approval_gate,
             human_confirmed=human_answered(auth_result.method),
-            enforcement_effective=enforcement_effective,
+            enforcement_effective=post_approval_enforcement,
+            policy_snapshot=refreshed_snapshot,
         )
         return _verdict_result(redecision)
 
@@ -966,7 +984,8 @@ async def _handle_auth(
                 eid=eid,
                 auth_path=AuthPath.proxy_post_approval_gate,
                 human_confirmed=human_answered(auth_result.method),
-                enforcement_effective=enforcement_effective,
+                enforcement_effective=post_approval_enforcement,
+                policy_snapshot=refreshed_snapshot,
             )
             return _verdict_result(diverged)
 
@@ -989,7 +1008,8 @@ async def _handle_auth(
             eid=eid,
             auth_path=AuthPath.proxy_post_approval_gate,
             human_confirmed=human_answered(auth_result.method),
-            enforcement_effective=enforcement_effective,
+            enforcement_effective=post_approval_enforcement,
+            policy_snapshot=refreshed_snapshot,
         )
         return _verdict_result(denial)
     result = await _forward(downstream, tool_name, arguments, action)
@@ -1000,7 +1020,9 @@ async def _handle_auth(
     # clean result) and two concurrent calls covered by one grant can't both
     # release.
     await _record_result_taint(result, tool_name)
-    gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
+    gate = await _scan_output_for_secrets(
+        tool_name, arguments, action, result, mode=refreshed_ctx.mode
+    )
     if gate is not None:
         # Output-scan parity (parity-1): a secret in the RESULT must not reach
         # the model even though the call itself was approved. Log only the block
@@ -1014,7 +1036,8 @@ async def _handle_auth(
             eid=eid,
             auth_path=AuthPath.proxy_post_approval_gate,
             human_confirmed=human_answered(auth_result.method),
-            enforcement_effective=enforcement_effective,
+            enforcement_effective=post_approval_enforcement,
+            policy_snapshot=refreshed_snapshot,
         )
         return _verdict_result(gate)
     if not result.isError:
@@ -1031,10 +1054,14 @@ async def _handle_auth(
                 eid=eid,
                 auth_path=AuthPath.proxy_post_approval_gate,
                 human_confirmed=human_answered(auth_result.method),
-                enforcement_effective=enforcement_effective,
+                enforcement_effective=post_approval_enforcement,
+                policy_snapshot=refreshed_snapshot,
             )
             return _verdict_result(artifact_gate)
         await _observe_allowed(action, eid, surprise_score)
+    # This row records the original AUTH, not the successful re-evaluation.
+    # Keep the snapshot that produced that AUTH; post-approval BLOCKs above
+    # instead carry the snapshot from their refreshed evaluation.
     await _persist(
         decision,
         action,
@@ -1044,6 +1071,7 @@ async def _handle_auth(
         auth_path=AuthPath.proxy_challenge,
         human_confirmed=human_answered(auth_result.method),
         enforcement_effective=enforcement_effective,
+        policy_snapshot=policy_snapshot,
     )
     return result
 
@@ -1085,11 +1113,26 @@ async def _decide_and_execute(
     score = await _surprise_or_caution(action, eid)
     budget_ok = await _budget_or_surface(eid)
     token = has_scope_token(action, entity_id=eid)
-    decision = _safe_decide(
-        action,
-        _build_ctx(arguments, grants, score, budget_ok=budget_ok, eid=eid, scope_token=token),
+    policy = load_evaluation_policy(REPO_ROOT)
+    ctx = _build_ctx(
+        arguments, grants, score, budget_ok=budget_ok, eid=eid, scope_token=token, policy=policy
     )
-    decision = await _apply_tool_pin_floor(tool_name, decision)
+    # F10: honor the enforcement dial (Option A). monitor/off soften a
+    # DISCRETIONARY AUTH/BLOCK to observe-only (forward); the objective floor
+    # (secrets / exfil / taint / destructive / role / policy / trifecta) stays live
+    # in every state. Resolve through the ledger-verified clamp — a hand-edited
+    # `enforcement: off` with no matching approved ledger row is clamped back to
+    # enforce. The post-approval TOCTOU re-decision inside _handle_auth is left
+    # fully live on purpose (a released action must still re-check the floor).
+    state = await effective_enforcement(
+        REPO_ROOT,
+        enforcement=policy.doc.enforcement,
+        expires_at=policy.doc.enforcement_expires_at,
+        revert=policy.doc.enforcement_revert,
+    )
+    policy_snapshot = evaluation_snapshot(policy, state)
+    decision = _safe_decide(action, ctx)
+    decision = await _apply_tool_pin_floor(tool_name, decision, mode=ctx.mode)
 
     # HK.5.2/5.2b cross-call exfil floor: raise-only, awaited directly (this
     # function already runs inside a live event loop — see taint_floor.py's
@@ -1097,14 +1140,14 @@ async def _decide_and_execute(
     # `session_id=None`: the proxy has no session id of its own, so the floor falls
     # back to the per-repo entity scope.
     decision = await apply_taint_floor_async(
-        action, decision, load_mode(REPO_ROOT), REPO_ROOT, None, arguments or {}
+        action, decision, ctx.mode, REPO_ROOT, None, arguments or {}
     )
 
     # C1 — the untrusted-value echo tripwire, same session_id=None gap as the
     # taint floor above (see its comment): the pure-MCP proxy has no session
     # concept of its own.
     decision = await apply_echo_tripwire_async(
-        action, decision, load_mode(REPO_ROOT), REPO_ROOT, None, arguments or {}
+        action, decision, ctx.mode, REPO_ROOT, None, arguments or {}
     )
 
     # C3.1 session correlator: cross-call PATTERN raise (raise-only), run right
@@ -1120,33 +1163,33 @@ async def _decide_and_execute(
     # (Claude Code, OpenClaw, Codex) fires the correlator for real; only the raw
     # MCP-proxy entry point remains session-less by design, exactly like the
     # taint floor above.
-    decision = await _apply_correlator(action, decision, load_mode(REPO_ROOT), None)
+    decision = await _apply_correlator(action, decision, ctx.mode, None)
 
     # Record every intercepted action with its REAL verdict. Logged before the
     # gate — safe because log_action swallows its own failures and forwards
     # nothing.
     log_action(action, decision.final_verdict)
 
-    # F10: honor the enforcement dial (Option A). monitor/off soften a
-    # DISCRETIONARY AUTH/BLOCK to observe-only (forward); the objective floor
-    # (secrets / exfil / taint / destructive / role / policy / trifecta) stays live
-    # in every state. Resolve through the ledger-verified clamp — a hand-edited
-    # `enforcement: off` with no matching approved ledger row is clamped back to
-    # enforce. The post-approval TOCTOU re-decision inside _handle_auth is left
-    # fully live on purpose (a released action must still re-check the floor).
-    enforcement, expires_at, revert = load_enforcement(REPO_ROOT)
-    state = await effective_enforcement(
-        REPO_ROOT, enforcement=enforcement, expires_at=expires_at, revert=revert
-    )
     acted = acted_verdict(decision, state)
 
     if acted is Verdict.BLOCK:
-        await _persist(decision, action, eid=eid, enforcement_effective=state)
+        await _persist(
+            decision, action, eid=eid, enforcement_effective=state, policy_snapshot=policy_snapshot
+        )
         return _verdict_result(decision)
 
     if acted is Verdict.AUTH:
         return await _handle_auth(
-            downstream, tool_name, arguments, action, decision, now, score, eid, state
+            downstream,
+            tool_name,
+            arguments,
+            action,
+            decision,
+            now,
+            score,
+            eid,
+            state,
+            policy_snapshot,
         )
 
     # PASS — real, or a discretionary verdict softened by monitor/off — claim
@@ -1158,7 +1201,12 @@ async def _decide_and_execute(
         )
         denial = _single_use_unclaimable_decision(action)
         await _persist(
-            denial, action, auth_result="unclaimable", eid=eid, enforcement_effective=state
+            denial,
+            action,
+            auth_result="unclaimable",
+            eid=eid,
+            enforcement_effective=state,
+            policy_snapshot=policy_snapshot,
         )
         return _verdict_result(denial)
     result = await _forward(downstream, tool_name, arguments, action)
@@ -1169,13 +1217,20 @@ async def _decide_and_execute(
     # clean result) and two concurrent calls covered by one grant can't both
     # release.
     await _record_result_taint(result, tool_name)
-    gate = await _scan_output_for_secrets(tool_name, arguments, action, result)
+    gate = await _scan_output_for_secrets(tool_name, arguments, action, result, mode=ctx.mode)
     if gate is not None:
         # Output-scan parity (parity-1): a secret in the RESULT must not reach
         # the model even though the call itself was PASS. Log only the block —
         # skip the baseline "allowed" observation below, since the outcome is
         # not confirmed safe (mirrors the host-hook: one log row, the block).
-        await _persist(gate, action, auth_result="blocked", eid=eid, enforcement_effective=state)
+        await _persist(
+            gate,
+            action,
+            auth_result="blocked",
+            eid=eid,
+            enforcement_effective=state,
+            policy_snapshot=policy_snapshot,
+        )
         return _verdict_result(gate)
     if not result.isError:
         artifact_gate = await _verify_artifact_digest(action, result)
@@ -1184,7 +1239,12 @@ async def _decide_and_execute(
             # expected digest — withhold it from the agent, same shape as the
             # secret-scan gate above (one log row, the block, not a clean one).
             await _persist(
-                artifact_gate, action, auth_result="blocked", eid=eid, enforcement_effective=state
+                artifact_gate,
+                action,
+                auth_result="blocked",
+                eid=eid,
+                enforcement_effective=state,
+                policy_snapshot=policy_snapshot,
             )
             return _verdict_result(artifact_gate)
         if not softened:
@@ -1198,5 +1258,7 @@ async def _decide_and_execute(
     # (monitor's whole value is showing what would have happened); `off` is the
     # silent, non-recording state — matching the host-hook pre path.
     if not softened or state == "monitor":
-        await _persist(decision, action, eid=eid, enforcement_effective=state)
+        await _persist(
+            decision, action, eid=eid, enforcement_effective=state, policy_snapshot=policy_snapshot
+        )
     return result

@@ -43,7 +43,7 @@ def _permission(out):
 
 
 def _force_state(monkeypatch, state):
-    monkeypatch.setattr(spine, "resolve_enforcement_sync", lambda _root: state)
+    monkeypatch.setattr(spine, "resolve_enforcement_sync", lambda _root, **_kwargs: state)
 
 
 def _fake_discretionary_auth(reason: ReasonCode):

@@ -351,3 +351,32 @@ def test_role_enable_default_links_its_observation_to_the_ledger(tmp_path):
     obs = read_observations(str(tmp_path))
     assert obs and obs[0]["origin"] == ORIGIN_CHANGE
     assert obs[0]["ledger_ts"] == rows[0]["ts"]
+
+
+def test_resolved_constraints_change_version_without_changing_legacy_ids():
+    from doberman.policy.sources import ResolvedPolicy
+
+    empty = ResolvedPolicy()
+    base = build_snapshot(_doc(), _ROLE, "enforce", "9.9.9")
+    assert policy_version(base) == GOLDEN
+    assert (
+        policy_version(build_snapshot(_doc(), _ROLE, "enforce", "9.9.9", resolved_policy=empty))
+        == GOLDEN
+    )
+    resolved = ResolvedPolicy(
+        blocked_globs=("private/**",),
+        sensitive_globs=("deploy/**",),
+        contributors=(("repo-file", 20),),
+    )
+    snapshot = build_snapshot(_doc(), _ROLE, "enforce", "9.9.9", resolved_policy=resolved)
+    assert policy_version(snapshot) != GOLDEN
+    assert json.loads(canonical_json(snapshot))["resolved_policy"] == resolved.model_dump(
+        mode="json"
+    )
+    restored = PolicySnapshotV1.model_validate_json(canonical_json(snapshot))
+    assert policy_version(restored) == policy_version(snapshot)
+    for update in ({"blocked_globs": ("other/**",)}, {"sensitive_globs": ("other/**",)}):
+        changed = build_snapshot(
+            _doc(), _ROLE, "enforce", "9.9.9", resolved_policy=resolved.model_copy(update=update)
+        )
+        assert policy_version(changed) != policy_version(snapshot)
