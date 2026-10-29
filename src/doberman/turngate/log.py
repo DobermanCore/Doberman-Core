@@ -8,12 +8,17 @@ carries no raw prompt text, so a row can hold only fingerprints/classes/verdicts
 decision (logging is observational).
 """
 
+from __future__ import annotations
+
 import json
 import logging
+from typing import TYPE_CHECKING
 
 from doberman.models import AuthPath, Decision, TurnObject, Verdict
 from doberman.storage.db import open_db
-from doberman.storage.policy_catalogue import PolicySnapshotV1
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 logger = logging.getLogger("doberman.turngate.log")
 

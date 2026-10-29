@@ -201,6 +201,8 @@ Proxy and host-hook action logs retain the policy snapshot captured during evalu
 policy changes before logging or during an approval wait. A decision without a captured snapshot
 or a successful catalogue write has a `NULL` policy version. The decision still persists rather
 than receiving a stamp inferred from later policy files or referencing an unsaved snapshot.
+An observed mismatch between captured and active velocity thresholds also leaves the stamp `NULL`.
+`doberman policy-versions --verify` inspects provenance without changing policy pins.
 
 `doberman log --jsonl` and the dashboard's live feed carry each decision's host session id, so a
 companion tool can group decisions by the agent session that made them. A value that does not look

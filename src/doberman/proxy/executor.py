@@ -17,11 +17,14 @@ Any engine failure is itself a ``BLOCK`` (fail closed). The approval is bound to
 exactly one action id (no replay onto a different call).
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from mcp.client.session import ClientSession
 from mcp.types import CallToolResult, EmbeddedResource, TextContent, TextResourceContents
@@ -36,6 +39,7 @@ from doberman.auth.challenge import (
 from doberman.auth.elevation import find_cover, scope_for_target
 from doberman.config import (
     EvaluationPolicy,
+    evaluation_snapshot,
     load_evaluation_policy,
     load_message_tone,
     load_mode,
@@ -85,7 +89,6 @@ from doberman.storage.log import (
     record_decision,
     record_shadow,
 )
-from doberman.storage.policy_catalogue import PolicySnapshotV1, evaluation_snapshot
 from doberman.subjective.baseline import (
     budget_allows_step_up,
     entity_id,
@@ -102,6 +105,9 @@ from doberman.subjective.revealed import (
     revoke_tool_scope_tokens,
 )
 from doberman.subjective.score import inherit_turn_provenance, raised_surprise
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 _engine_logger = logging.getLogger("doberman.proxy.engine")
 
@@ -942,7 +948,9 @@ async def _handle_auth(
     # This gate intentionally enforces every BLOCK, without monitor/off
     # softening. Stamp the state actually applied here, not the original dial.
     post_approval_enforcement = "enforce"
-    refreshed_snapshot = evaluation_snapshot(refreshed_policy, post_approval_enforcement)
+    refreshed_snapshot = evaluation_snapshot(
+        refreshed_policy, post_approval_enforcement, evaluator=DEFAULT_OBJECTIVE
+    )
     redecision = _safe_decide(action, refreshed_ctx)
     redecision = await _apply_tool_pin_floor(tool_name, redecision, mode=refreshed_ctx.mode)
     if redecision.final_verdict is Verdict.BLOCK:
@@ -1130,7 +1138,7 @@ async def _decide_and_execute(
         expires_at=policy.doc.enforcement_expires_at,
         revert=policy.doc.enforcement_revert,
     )
-    policy_snapshot = evaluation_snapshot(policy, state)
+    policy_snapshot = evaluation_snapshot(policy, state, evaluator=DEFAULT_OBJECTIVE)
     decision = _safe_decide(action, ctx)
     decision = await _apply_tool_pin_floor(tool_name, decision, mode=ctx.mode)
 

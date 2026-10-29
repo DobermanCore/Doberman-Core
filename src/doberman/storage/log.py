@@ -19,18 +19,23 @@ Redaction is structural and load-bearing:
   decision has already been made and enforced before this runs.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
 from doberman.models import ActionType, Decision, EffectSet, SecurityObject
 from doberman.storage.db import open_db
 from doberman.storage.device_metrics import AUTH_APPROVED, AUTH_DENIED, record_decision_metric
 from doberman.storage.fingerprint import fingerprint
-from doberman.storage.policy_catalogue import PolicySnapshotV1
 from doberman.storage.sinks import emit_to_sinks
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 logger = logging.getLogger("doberman.storage.log")
 

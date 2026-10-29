@@ -20,9 +20,14 @@ a missing storage backend must not turn an approved AUTH into a deny).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from doberman.config import load_evaluation_policy, load_mode, resolve_enforcement_sync
+from doberman.config import (
+    evaluation_snapshot,
+    load_evaluation_policy,
+    load_mode,
+    resolve_enforcement_sync,
+)
 from doberman.engine.correlator import apply_correlator
 from doberman.engine.decision_engine import PASS_STUB, decide
 from doberman.engine.objective import ObjectiveGuardrail
@@ -31,7 +36,9 @@ from doberman.models import AuthPath, Decision, EvalContext, SecurityObject, Ver
 from doberman.policy.drift import acted_verdict
 from doberman.policy.modes import DEFAULT_MODE
 from doberman.proxy.normalize import challenge_copy, normalize
-from doberman.storage.policy_catalogue import PolicySnapshotV1, evaluation_snapshot
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 
 @dataclass(frozen=True)
@@ -113,8 +120,9 @@ def evaluate_action(
         metadata=metadata,
     )
     enforcement = resolve_enforcement_sync(repo_root, policy_doc=evaluation_policy.doc)
-    policy_snapshot = evaluation_snapshot(evaluation_policy, enforcement)
-    decision = decide(action, ObjectiveGuardrail(), PASS_STUB, ctx)
+    objective = ObjectiveGuardrail()
+    policy_snapshot = evaluation_snapshot(evaluation_policy, enforcement, evaluator=objective)
+    decision = decide(action, objective, PASS_STUB, ctx)
     decision = apply_taint_floor(action, decision, ctx.mode, repo_root, session_id, args)
     # C1 — the untrusted-value echo tripwire: same scope keying, right after
     # the secret-taint floor for the identical cross-call reason (see

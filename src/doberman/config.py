@@ -27,12 +27,15 @@ Resolution rules for the active role (fail toward restriction):
 This module is policy core: it must never import ``doberman.proxy``.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
@@ -45,6 +48,9 @@ from doberman.roles.roles import (
     RoleDefinition,
     load_builtin_roles,
 )
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 logger = logging.getLogger("doberman.config")
 
@@ -286,7 +292,7 @@ def _record_policy_version(doc: PolicyDoc, repo_root: str, ledger_ts: str | None
             load_active_role(repo_root),
             effective_enforcement_at_save(doc, now),
             __version__,
-            resolved_policy=effective_policy(repo_root),
+            resolved_policy=effective_policy(repo_root, read_only=True),
         )
         record_version(repo_root, snapshot, origin=ORIGIN_CHANGE, ledger_ts=ledger_ts, now=now)
     except Exception as exc:  # noqa: BLE001 — the catalogue is observational; a save must never fail for it
@@ -391,7 +397,7 @@ class EvaluationPolicy:
 
 
 def load_evaluation_policy(
-    repo_root: str = ".", *, use_default_mode: bool = False
+    repo_root: str = ".", *, use_default_mode: bool = False, read_only_sources: bool = False
 ) -> EvaluationPolicy:
     """Read the policy once; derive evaluation inputs without later policy reads.
 
@@ -408,8 +414,33 @@ def load_evaluation_policy(
         role=load_active_role(repo_root, policy_doc=doc),
         mode=mode,
         preferences=doc.preferences if doc.preferences is not None else vector_for(mode),
-        resolved_policy=effective_policy(repo_root),
+        resolved_policy=effective_policy(repo_root, read_only=read_only_sources),
     )
+
+
+def evaluation_snapshot(
+    policy: EvaluationPolicy, enforcement_effective: str, *, evaluator: object | None = None
+) -> PolicySnapshotV1 | None:
+    """Capture evaluation inputs, never rereading policy files or affecting a verdict."""
+    try:
+        from doberman import __version__
+        from doberman.storage.policy_catalogue import build_snapshot
+
+        matches = getattr(evaluator, "velocity_thresholds_match", None)
+        if matches is not None and not matches(policy.doc.egress_velocity_thresholds):
+            # Stamping must not claim newly configured thresholds were used by
+            # an evaluator still holding its previous/default thresholds.
+            return None
+        return build_snapshot(
+            policy.doc,
+            policy.role,
+            enforcement_effective,
+            __version__,
+            resolved_policy=policy.resolved_policy,
+        )
+    except Exception:  # noqa: BLE001 — stamping is observational
+        logger.warning("policy catalogue: could not capture evaluation snapshot")
+        return None
 
 
 def save_preferences(

@@ -35,16 +35,13 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from doberman.policy.checklist import PolicyDoc
 from doberman.policy.sources import ResolvedPolicy
 from doberman.roles.roles import RoleDefinition
-
-if TYPE_CHECKING:
-    from doberman.config import EvaluationPolicy
 
 logger = logging.getLogger("doberman.storage.policy_catalogue")
 
@@ -147,25 +144,6 @@ def canonical_json(snapshot: PolicySnapshotV1) -> str:
         separators=(",", ":"),
         ensure_ascii=False,
     )
-
-
-def evaluation_snapshot(
-    policy: EvaluationPolicy, enforcement_effective: str
-) -> PolicySnapshotV1 | None:
-    """Capture evaluation inputs, never rereading policy files or affecting a verdict."""
-    try:
-        from doberman import __version__
-
-        return build_snapshot(
-            policy.doc,
-            policy.role,
-            enforcement_effective,
-            __version__,
-            resolved_policy=policy.resolved_policy,
-        )
-    except Exception:  # noqa: BLE001 — stamping is observational
-        logger.warning("policy catalogue: could not capture evaluation snapshot")
-        return None
 
 
 def policy_version(snapshot: PolicySnapshotV1) -> str:
@@ -318,7 +296,7 @@ def current_snapshot(
         from doberman import __version__
         from doberman.config import load_evaluation_policy, resolve_enforcement_sync
 
-        policy = load_evaluation_policy(repo_root)
+        policy = load_evaluation_policy(repo_root, read_only_sources=True)
         state = (
             enforcement_effective
             if enforcement_effective is not None

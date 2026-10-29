@@ -70,12 +70,14 @@ baseline (``numpy``/``scipy``/``river`` at module scope).
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from doberman.branding import DOG
 from doberman.hosthooks import spine
 from doberman.models import AuthPath, Decision, Risk, SecurityObject, Verdict
-from doberman.storage.policy_catalogue import PolicySnapshotV1
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 #: Tool names that carry no path/command/network surface to gate at all - an
 #: internal status call, never a mutation, execution, or egress. Deliberately

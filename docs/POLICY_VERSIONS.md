@@ -27,6 +27,16 @@ enforcement, even if the enforcement dial has changed. A BLOCK from that check c
 snapshot with `enforcement_effective: enforce`; a row recording the original AUTH keeps its original
 snapshot and resolved enforcement state.
 
+Turn-gate decisions also retain their captured snapshot across approvals and repeat challenges.
+The turn gate always applies full enforcement and stamps `enforcement_effective: enforce`.
+
+`doberman log --jsonl` includes `policy_version`, the full ID of the exact captured snapshot once
+it has committed to the catalogue. A missing snapshot, failed catalogue transaction, or demonstrated
+mismatch between captured and active evaluator velocity thresholds leaves this field `null`.
+Historical decisions also retain `null`; logging never reconstructs a policy from later files.
+These stamping failures do not prevent decision persistence. This does not change how evaluator
+thresholds are loaded or reset their history.
+
 Plain SHA-256 rather than Doberman's keyed HMAC (a hash tied to a secret key) on purpose: anyone
 holding the snapshot (an auditor, a central verifier) can recompute the id without the local key.
 Nothing in a snapshot is secret. It is configuration that already lives in `.doberman/`.
@@ -44,7 +54,8 @@ doberman policy-versions --show <id> | python -c "import json,sys,hashlib; s=jso
 - `policy_versions`: each snapshot once, with the exact bytes that were hashed and when it was first seen.
 - `policy_observations`: an append-only row every time the version in force was seen to change:
   `origin` is `change` (written by every gated policy save, with `ledger_ts` pointing at the
-  `policy_changes` row that authorised it) or `observed` (`doberman doctor` and
+  `policy_changes` row that authorised it), `decision` (decision logging records its captured
+  evaluation snapshot), or `observed` (`doberman doctor` and
   `doberman policy-versions` record what they find, which is how a hand edit of `role.yaml` or
   `policies.yaml` enters the timeline).
 
@@ -56,18 +67,24 @@ The version in force at a time `T` is the latest observation at or before `T`.
 - time → version: the observation timeline (`doberman policy-versions --json` lists each version with
   `in_force_since`).
 - ledger ↔ version: an observation's `ledger_ts` equals the `ts` of the `policy-history` row that
-  produced it.
+  produced it. `doberman policy-history --json` exposes that link as `to_version`, or `null` when
+  no linked catalogue observation exists.
 
 ## Checking
 
 `doberman policy-versions --verify` recomputes every stored digest and compares the policy on disk with
 the last recorded version. It reports `ok`, `mismatch` (stored content no longer hashes to its id: the
-store was altered), or `drift` (the policy on disk is not the last recorded version: a change nobody has
-observed yet, or no catalogue at all). It exits `1` on anything but `ok` and never records.
+store was altered), `drift` (the policy on disk is not the last recorded version: a change nobody has
+observed yet, or no catalogue at all), or `unledgered` (at least one version was first introduced
+without a ledger-linked policy change). Its JSON report includes an `unledgered` list of version IDs.
+It exits `1` on anything but `ok`; mismatches take precedence over drift, which takes precedence over
+unledgered provenance. Verification records no observations, writes no policy pins, and does not
+populate or consume the runtime policy cache.
 
 ## What this does not prove
 
 An observation records when a change was *seen*, not that nothing changed between two observations.
-Stamping the version on every decision row closes that gap. Until then, run `doberman doctor` (or
-the listing) after any manual edit. The catalogue is observational: it never alters a verdict, and a
-catalogue failure never blocks a policy save.
+A stamped decision identifies the snapshot captured for its evaluation; a `null` stamp means that
+snapshot is unavailable, not that a later observation proves which policy was used. The catalogue
+is observational: it never alters a verdict, and a catalogue failure never blocks a policy save
+or prevents a decision row from being recorded.

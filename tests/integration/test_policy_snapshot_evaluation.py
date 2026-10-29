@@ -344,3 +344,40 @@ async def test_auth_recheck_captures_changed_resolved_policy(tmp_path, monkeypat
     assert read_snapshot(root, row["policy_version"])["resolved_policy"]["blocked_globs"] == [
         "target.txt"
     ]
+
+
+async def test_velocity_threshold_mismatch_nulls_stamp_without_resetting_tracker(
+    tmp_path, monkeypatch
+):
+    from doberman.egress.velocity import VelocityThresholds
+    from doberman.engine.objective import ObjectiveGuardrail
+    from doberman.engine.rules.destinations import ExternalDestinationRule
+
+    root = str(tmp_path)
+    active = VelocityThresholds(burst=2)
+    original = recommend_policy().with_egress_velocity_thresholds(active)
+    save_policy(original, root)
+    rule = ExternalDestinationRule(velocity_thresholds=active)
+    tracker = rule._velocity
+    history = tracker._track("existing-entity")
+    objective = ObjectiveGuardrail(rules=[rule], load_plugins=False)
+    monkeypatch.setattr(executor, "REPO_ROOT", root)
+    monkeypatch.setattr(executor, "DEFAULT_OBJECTIVE", objective)
+    monkeypatch.setattr(executor, "DEFAULT_SUBJECTIVE", PASS_STUB)
+
+    async def forward(*args):
+        return CallToolResult(content=[], isError=False)
+
+    monkeypatch.setattr(executor, "_forward", forward)
+    assert not (await executor.decide_and_execute(None, "bash", {"command": "echo first"})).isError
+    # Change configuration while keeping the running evaluator and its history.
+    save_policy(original.with_egress_velocity_thresholds(VelocityThresholds(burst=1)), root)
+    assert not (await executor.decide_and_execute(None, "bash", {"command": "echo second"})).isError
+
+    rows = sorted(await read_decisions(root), key=lambda row: row["id"])
+    assert rows[0]["policy_version"] == _version(original)
+    assert rows[1]["policy_version"] is None
+    assert executor.DEFAULT_OBJECTIVE is objective
+    assert rule._velocity is tracker
+    assert tracker._track("existing-entity") is history
+    assert tracker.thresholds == active

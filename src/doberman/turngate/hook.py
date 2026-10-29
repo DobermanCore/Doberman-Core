@@ -21,10 +21,13 @@ an event loop should dispatch it off-thread (as ``doberman serve`` does for the
 action gate).
 """
 
+from __future__ import annotations
+
 import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from doberman.auth.challenge import (
     TIMEOUT_METHOD,
@@ -33,7 +36,7 @@ from doberman.auth.challenge import (
     human_answered,
     run_auth_challenge,
 )
-from doberman.config import load_evaluation_policy, load_message_tone
+from doberman.config import evaluation_snapshot, load_evaluation_policy, load_message_tone
 from doberman.engine.decision_engine import TurnGuardrail, decide_turn
 from doberman.models import (
     ActionType,
@@ -47,7 +50,6 @@ from doberman.models import (
     TurnObject,
     Verdict,
 )
-from doberman.storage.policy_catalogue import PolicySnapshotV1, evaluation_snapshot
 from doberman.turngate import repeat, stylometry
 from doberman.turngate.handoff import publish_turn_context
 from doberman.turngate.heuristics import Tier1HeuristicGuardrail
@@ -56,6 +58,9 @@ from doberman.turngate.normalize import normalize_turn
 from doberman.turngate.raw import RAW_TURN_KEY, STYLE_PVALUE_KEY
 from doberman.turngate.signatures import Tier0SignatureGuardrail
 from doberman.turngate.task_tokens import record_task_hosts as _record_task_hosts
+
+if TYPE_CHECKING:
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 logger = logging.getLogger("doberman.turngate.hook")
 

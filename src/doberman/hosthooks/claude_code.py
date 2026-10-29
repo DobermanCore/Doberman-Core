@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 from doberman.branding import DOG
 from doberman.config import (
     EvaluationPolicy,
+    evaluation_snapshot,
     load_evaluation_policy,
     load_message_tone,
     resolve_enforcement_sync,
@@ -55,10 +56,10 @@ from doberman.engine.taint_floor import UNTRUSTED_READ_TOOLS as _UNTRUSTED_READ_
 from doberman.hosthooks import hookio, spine
 from doberman.models import AuthPath, Decision, EvalContext, Risk, SecurityObject, Verdict
 from doberman.proxy.normalize import normalize
-from doberman.storage.policy_catalogue import PolicySnapshotV1, evaluation_snapshot
 
 if TYPE_CHECKING:  # annotations only — keeps the hot path free of the auth stack
     from doberman.auth.challenge import Prompter
+    from doberman.storage.policy_catalogue import PolicySnapshotV1
 
 #: Claude Code built-in tools whose *action* we gate before execution. Pure reads
 #: (Read / Glob / Grep) are deliberately NOT gated here — a read cannot destroy or
@@ -512,7 +513,8 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
         policy = load_evaluation_policy(repo_root, use_default_mode=repo_root != cwd)
         mode = policy.mode
         enforcement = resolve_enforcement_sync(repo_root, policy_doc=policy.doc)
-        policy_snapshot = evaluation_snapshot(policy, enforcement)
+        objective = ObjectiveGuardrail()
+        policy_snapshot = evaluation_snapshot(policy, enforcement, evaluator=objective)
         raw_session = payload.get("session_id")
         session_id = raw_session if isinstance(raw_session, str) and raw_session else None
 
@@ -541,7 +543,7 @@ def evaluate_post(payload: dict[str, Any]) -> dict[str, Any] | None:
                 metadata={"raw_arguments": scan_args, "repo_root": repo_root},
             )
 
-            scan_result = ObjectiveGuardrail().evaluate(action, ctx)
+            scan_result = objective.evaluate(action, ctx)
             fired_codes = {rc.value for rc in scan_result.reason_codes}
 
             # Sticky taint ledger (HK.5.1): record the multi-step-exfil

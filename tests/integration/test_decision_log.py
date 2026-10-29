@@ -270,7 +270,7 @@ async def test_decision_after_policy_change_gets_new_policy_version(tmp_path):
     assert rows[0]["policy_version"] != rows[1]["policy_version"]
 
 
-async def test_effect_set_from_real_walk_never_leaboomks_secret_or_raw_path(tmp_path):
+async def test_effect_set_from_real_walk_never_leaks_secret_or_raw_path(tmp_path):
     # A synthetic secret AND a raw absolute path both live in the delete-class
     # operand this EffectSet was computed from. Neither may reach any column.
     secret = "AKIA-FAKE-EFFECTSET-SECRET-9999"  # noqa: S105 — synthetic test value
