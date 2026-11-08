@@ -53,7 +53,7 @@ from typing import Protocol, runtime_checkable
 
 from doberman.auth import password, totp
 from doberman.auth.challenge import Prompter
-from doberman.config import load_mode, load_policy, save_mode
+from doberman.config import ensure_policy_saveable, load_mode, load_policy, save_mode
 from doberman.models import Decision, ReasonCode, Verdict
 from doberman.policy.modes import resolve_mode
 from doberman.storage.db import db_path, open_db
@@ -495,9 +495,15 @@ async def apply_mode_change(
     existing one. Once a policy exists, even an ``establish_ok`` caller falls
     through to the gate, so first-run onboarding can never be replayed to bypass
     the possession factor on a later lowering.
+
+    Raises :class:`~doberman.config.PolicyFileUnreadableError` (a ``ValueError``)
+    before the gate or the ledger when a policy file exists but can't be read,
+    since the save would replace it with defaults (#759). That also keeps a corrupt
+    file from passing as "no policy yet" in the ``establish_ok`` branch.
     """
     old = load_mode(repo_root)
     new = resolve_mode(name).value  # raises ValueError for an unknown mode
+    ensure_policy_saveable(repo_root)
     if old == new:
         return save_mode(name, repo_root)
     if establish_ok and load_policy(repo_root) is None:
