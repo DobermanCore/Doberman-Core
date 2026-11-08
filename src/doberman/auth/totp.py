@@ -79,8 +79,9 @@ def _acquire_step_lock(lock_path: Path) -> bool:
     The same portable primitive the monitor daemon's lock and the fingerprint
     key use, so the hooks, the MCP proxy and the CLI share one lock on every
     platform. Waits up to ``_STEP_LOCK_TIMEOUT_SECONDS``; a lock older than
-    ``_STEP_LOCK_STALE_SECONDS`` is removed once, since its holder crashed.
-    ``False`` means the lock was not won and the caller must deny.
+    ``_STEP_LOCK_STALE_SECONDS`` was left by a crashed holder and is taken over
+    through :func:`_remove_stale_lock`. ``False`` means the lock was not won and
+    the caller must deny.
     """
     deadline = time.monotonic() + _STEP_LOCK_TIMEOUT_SECONDS
     while True:
@@ -90,21 +91,50 @@ def _acquire_step_lock(lock_path: Path) -> bool:
             os.close(fd)
             return True
         except FileExistsError:
-            try:
-                age = time.time() - lock_path.stat().st_mtime
-            except OSError:
-                age = 0.0  # vanished between the create and the stat: just retry
-            if age > _STEP_LOCK_STALE_SECONDS:
-                try:
-                    lock_path.unlink()
-                except OSError:
-                    pass
+            if _lock_age(lock_path) > _STEP_LOCK_STALE_SECONDS and _remove_stale_lock(lock_path):
                 continue
         except OSError:
             return False
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.005)
+
+
+def _lock_age(path: Path) -> float:
+    """Seconds since ``path`` was written; 0 if it is gone (so never stale)."""
+    try:
+        return time.time() - path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _remove_stale_lock(lock_path: Path) -> bool:
+    """Remove a crashed holder's lock, one process at a time (#781).
+
+    Two processes that both saw the stale lock used to remove it in turn, so
+    the second could remove the fresh lock the first had just created, and both
+    held it. A ``.takeover`` guard (the same ``O_EXCL`` create) now serializes the
+    removal, and the lock's age is checked again under it, so a lock that was
+    taken over in the meantime is left alone. ``True`` means retry the create now.
+    """
+    guard = lock_path.with_name(lock_path.name + ".takeover")
+    try:
+        fd = os.open(str(guard), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+    except FileExistsError:
+        if _lock_age(guard) > _STEP_LOCK_STALE_SECONDS:
+            _release_step_lock(guard)  # its holder crashed mid-takeover
+        return False
+    except OSError:
+        return False
+    try:
+        if _lock_age(lock_path) > _STEP_LOCK_STALE_SECONDS:
+            lock_path.unlink()
+        return True
+    except OSError:
+        return False
+    finally:
+        _release_step_lock(guard)
 
 
 def _release_step_lock(lock_path: Path) -> None:
