@@ -12,6 +12,7 @@ hot path never loads the heavy numeric stack.
 
 import asyncio
 import json
+import re
 import subprocess
 import sys
 
@@ -393,3 +394,27 @@ def test_role_boundary_is_a_noop_with_no_role_policy(cwd):
         cwd=cwd,
     )
     assert out["verdict"] == "allow"
+
+
+# --- approvals are single-use and bound to one action id (#407) ---------------
+# OpenClaw never runs Doberman's own challenge: an AUTH verdict is handed to the
+# host's /approve flow, which resolves after this hook process has exited. So the
+# guarantee rests on two halves Doberman controls: it keeps no approval state of
+# its own (a replayed call is re-gated under a fresh action id, proven here), and
+# the shim only lets the host grant a single call (proven in
+# adapters/openclaw/index.test.js).
+
+_ACTION_ID_RE = re.compile(r"action ([0-9a-f]{32})\)")
+
+
+@pytest.mark.guarantee("auth-action-bound", host="openclaw")
+def test_a_replayed_auth_call_is_gated_again_under_a_fresh_action_id(cwd):
+    first = _call("web_fetch", {"url": "https://93.184.216.34/"}, cwd=cwd)
+    replay = _call("web_fetch", {"url": "https://93.184.216.34/"}, cwd=cwd)
+
+    assert first["verdict"] == "auth"
+    assert replay["verdict"] == "auth"  # nothing Doberman holds lets the repeat through
+    first_id = _ACTION_ID_RE.search(first["description"])
+    replay_id = _ACTION_ID_RE.search(replay["description"])
+    assert first_id is not None and replay_id is not None
+    assert first_id.group(1) != replay_id.group(1)  # each approval names only its own call

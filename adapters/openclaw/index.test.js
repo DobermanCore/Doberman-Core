@@ -4,10 +4,15 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 
 const capturedPayloads = [];
+let dobermanVerdict = { verdict: "allow" };
 
 globalThis.__openclawTestMocks = {
   reset() {
     capturedPayloads.length = 0;
+    dobermanVerdict = { verdict: "allow" };
+  },
+  setVerdict(verdict) {
+    dobermanVerdict = verdict;
   },
   getPayloads() {
     return capturedPayloads;
@@ -32,7 +37,7 @@ globalThis.__openclawTestMocks = {
           capturedPayloads.push(stdinData);
         }
         process.nextTick(() => {
-          stdout.emit("data", JSON.stringify({ verdict: "allow" }));
+          stdout.emit("data", JSON.stringify(dobermanVerdict));
           child.emit("close", 0);
         });
       },
@@ -233,4 +238,23 @@ test("ignores non-string workspace directory and falls back to process.cwd()", a
   assert.equal(payloads.length, 1);
   assert.equal(payloads[0].cwd, process.cwd());
   assert.equal(payloads[0].session_id, sessionId);
+});
+
+test("an auth verdict asks OpenClaw for a single-call approval only (#407)", async () => {
+  const hooks = createAdapterHooks();
+  globalThis.__openclawTestMocks.setVerdict({
+    verdict: "auth",
+    title: "Doberman approval required (high risk)",
+    description: "Doberman [AUTH]: ... (action 0123456789abcdef0123456789abcdef)",
+  });
+
+  const result = await hooks.before_tool_call(
+    { toolName: "web_fetch", params: { url: "https://93.184.216.34/" } },
+    { sessionId: "session-auth" }
+  );
+
+  // No "allow-always": a standing approval would let the host replay this call
+  // (or any later one) without Doberman seeing it again.
+  assert.deepEqual(result.requireApproval.allowedDecisions, ["allow-once", "deny"]);
+  assert.match(result.requireApproval.description, /action 0123456789abcdef0123456789abcdef/);
 });
