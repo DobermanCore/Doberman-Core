@@ -99,7 +99,9 @@ is the [Setup guide](docs/SETUP.md).
 pip install doberman-core
 ```
 
-After installing, run `doberman --install-completion` to enable shell tab completion.
+After installing, run `doberman --install-completion` to enable shell tab completion. If your shell
+can't find `doberman` (a `pip install --user` on Windows often leaves its Scripts folder off PATH),
+`python -m doberman` runs the same CLI.
 
 > **Note**
 > Run `doberman uninstall --global` to remove Doberman from the whole machine. It removes the
