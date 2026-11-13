@@ -624,7 +624,7 @@ def _check_agent_sandbox(
             name,
             CheckStatus.WARN,
             f"Claude Code runs commands unsandboxed on native Windows, so {tail}. For a hard "
-            "boundary run the agent in WSL2, a container, or as another OS user (docs/SETUP.md §4)",
+            "boundary run the agent in WSL2, a container, or as another OS user (docs/SETUP.md section 4)",
         )
     if secret_dir is None:
         from doberman.auth import totp
@@ -660,7 +660,7 @@ def _check_agent_sandbox(
         return CheckResult(
             name,
             CheckStatus.WARN,
-            f"Claude Code's command sandbox is off, so {tail} (docs/SETUP.md §4)",
+            f"Claude Code's command sandbox is off, so {tail} (docs/SETUP.md section 4)",
         )
     missing = []
     if sandbox.get("allowUnsandboxedCommands") is not False:
@@ -673,7 +673,7 @@ def _check_agent_sandbox(
         return CheckResult(
             name,
             CheckStatus.WARN,
-            f"sandbox is on but can be bypassed; set {', '.join(missing)} (docs/SETUP.md §4)",
+            f"sandbox is on but can be bypassed; set {', '.join(missing)} (docs/SETUP.md section 4)",
         )
     target = os.path.normcase(os.path.abspath(secret_dir))
     # a relative deny is anchored differently per settings file, so only ~ and absolute entries count
@@ -685,7 +685,7 @@ def _check_agent_sandbox(
             name,
             CheckStatus.WARN,
             f"sandbox is on but its commands can still read {secret_dir}; add it to "
-            "sandbox.filesystem.denyRead (docs/SETUP.md §4)",
+            "sandbox.filesystem.denyRead (docs/SETUP.md section 4)",
         )
     return CheckResult(
         name, CheckStatus.OK, f"on; the agent's commands can't read the 2FA secret in {secret_dir}"
