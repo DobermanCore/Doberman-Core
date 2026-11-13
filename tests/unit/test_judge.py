@@ -188,9 +188,9 @@ def _install_fake_anthropic(monkeypatch, responder, *, constructed: list | None 
     fake_module = types.ModuleType("anthropic")
     fake_module.__spec__ = importlib.machinery.ModuleSpec("anthropic", loader=None)
 
-    def _ctor():
+    def _ctor(**kwargs):
         if constructed is not None:
-            constructed.append(True)
+            constructed.append(kwargs)
         return _FakeAnthropicClient(responder)
 
     fake_module.Anthropic = _ctor
@@ -220,6 +220,33 @@ def test_judge_enabled_mirrors_the_gate(monkeypatch):
     monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
     _install_fake_anthropic(monkeypatch, _never_called)
     assert judge_enabled() is True
+
+
+def _valid_reply(_kwargs):
+    return _FakeMessage(json.dumps({"unambiguous": False, "high_impact": False}))
+
+
+def test_dedicated_key_enables_the_judge_without_anthropic_api_key(monkeypatch):
+    # A user should never have to export ANTHROPIC_API_KEY (it can change how their own
+    # Claude Code session authenticates and bills) just to turn the judge on.
+    constructed: list = []
+    _install_fake_anthropic(monkeypatch, _valid_reply, constructed=constructed)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("DOBERMAN_JUDGE_API_KEY", "sk-judge")
+    monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
+    assert judge_enabled() is True
+    assert HaikuJudgeAdjudicator().adjudicate({"action_type": "file_read"}, _PASS) is not None
+    assert constructed == [{"api_key": "sk-judge"}]
+
+
+def test_dedicated_key_wins_over_anthropic_api_key(monkeypatch):
+    constructed: list = []
+    _install_fake_anthropic(monkeypatch, _valid_reply, constructed=constructed)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-general")
+    monkeypatch.setenv("DOBERMAN_JUDGE_API_KEY", "sk-judge")
+    monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
+    HaikuJudgeAdjudicator().adjudicate({"action_type": "file_read"}, _PASS)
+    assert constructed == [{"api_key": "sk-judge"}]
 
 
 @pytest.mark.parametrize(

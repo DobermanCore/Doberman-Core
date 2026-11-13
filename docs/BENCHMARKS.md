@@ -217,7 +217,7 @@ This section measures, offline, whether it is even worth wiring in.
   0.50, Cohen's kappa 0.26 against the labels, with different scores on
   identical inputs. Consistent with that, the judge here is advisory and never
   decides a verdict alone.
-- **Opt-in, never a live call in CI.** Requires `ANTHROPIC_API_KEY` and
+- **Opt-in, never a live call in CI.** Requires `DOBERMAN_JUDGE_API_KEY` (or `ANTHROPIC_API_KEY`) and
   `DOBERMAN_JUDGE_ENABLED=1` (the same three-way gate
   `HaikuJudgeAdjudicator.adjudicate()` itself enforces: installed, keyed, and
   explicitly flagged). With either missing, the module prints a skip message
@@ -238,7 +238,7 @@ Reproduce (needs a key; never runs in CI):
 
 ```bash
 pip install -e ".[judge]"
-export ANTHROPIC_API_KEY=sk-...
+export DOBERMAN_JUDGE_API_KEY=sk-...
 export DOBERMAN_JUDGE_ENABLED=1
 python -m tests.benchmarks.suites.judge_agreement
 ```

@@ -414,7 +414,7 @@ shell rules, is a roadmap item.
 
 ## An optional AI judge exists for measurement only, not for live decisions
 
-Installing `pip install "doberman-core[judge]"`, setting an `ANTHROPIC_API_KEY`, and setting
+Installing `pip install "doberman-core[judge]"`, setting a `DOBERMAN_JUDGE_API_KEY`, and setting
 `DOBERMAN_JUDGE_ENABLED=1` enables `doberman.judge.HaikuJudgeAdjudicator`, a second-opinion
 classifier. It sees only a redacted, class-only summary (`redacted_features()`, the same limited
 envelope the shadow-adjudicator design allows: no path, command, argument, or secret is ever
