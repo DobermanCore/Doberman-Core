@@ -552,7 +552,7 @@ Doberman does stop the direct versions. Reading those files or writing `.doberma
 is blocked, and posting to a local approval endpoint needs your approval.
 
 You can close part of this. Claude Code's command sandbox, set up as in SETUP §4, stops the
-agent's commands from reading your 2FA secret, so 2FA prompts can only be answered by you.
+agent's shell commands from reading the 2FA secret file, so they can't generate a code.
 `doberman doctor` reports whether that is in place. The sandbox still lets commands write inside
 the repo, so confirmation-only prompts stay answerable by a script. It doesn't run on native
 Windows. If a task needs a human in the loop that the agent cannot reach at all, run the agent as

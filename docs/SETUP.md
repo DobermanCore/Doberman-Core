@@ -428,6 +428,8 @@ way out of it, and deny reads of that folder, in `~/.claude/settings.json`:
 }
 ```
 
+Leave `excludedCommands` empty: commands listed there run outside the sandbox. If you set
+`XDG_CONFIG_HOME` or `DOBERMAN_TOTP_FILE`, deny the folder `doberman doctor` names instead.
 The sandbox allows reads anywhere unless you deny them, and it does not run on native Windows,
 so there use WSL2, a container, or a separate OS user for the agent. You run `doberman` yourself,
 outside the agent's sandbox, so this doesn't get in its way. `doberman doctor` reports whether

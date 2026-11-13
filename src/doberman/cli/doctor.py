@@ -639,6 +639,7 @@ def _check_agent_sandbox(
     sandbox: dict = {}
     deny: list[str] = []
     allow: list[str] = []
+    excluded: list = []
     for file in files:  # lowest precedence first, so later files override scalar keys
         try:
             data = json.loads(file.read_text(encoding="utf-8"))
@@ -648,9 +649,13 @@ def _check_agent_sandbox(
         if not isinstance(section, dict):
             continue
         sandbox.update({k: v for k, v in section.items() if k != "filesystem"})
+        excluded += section.get("excludedCommands") or []
         fs_cfg = section.get("filesystem") or {}
-        deny += [str(e) for e in fs_cfg.get("denyRead") or []]
-        allow += [str(e) for e in fs_cfg.get("allowRead") or []]
+        for key, into in (("denyRead", deny), ("allowRead", allow)):
+            entries = fs_cfg.get(key) or []
+            if not isinstance(entries, list) or not all(isinstance(e, str) for e in entries):
+                raise ValueError(f"sandbox.filesystem.{key} is not a list of paths")
+            into += entries
     if sandbox.get("enabled") is not True:
         return CheckResult(
             name,
@@ -662,6 +667,8 @@ def _check_agent_sandbox(
         missing.append("allowUnsandboxedCommands: false")
     if sandbox.get("failIfUnavailable") is not True:
         missing.append("failIfUnavailable: true")
+    if excluded:
+        missing.append("excludedCommands: [] (listed commands run outside the sandbox)")
     if missing:
         return CheckResult(
             name,
@@ -669,7 +676,9 @@ def _check_agent_sandbox(
             f"sandbox is on but can be bypassed; set {', '.join(missing)} (docs/SETUP.md §4)",
         )
     target = os.path.normcase(os.path.abspath(secret_dir))
-    denied = any(_under(target, _abs(e, home, path)) for e in deny)
+    # a relative deny is anchored differently per settings file, so only ~ and absolute entries count
+    anchored = [e for e in deny if e == "~" or e.startswith(("~/", "~\\")) or os.path.isabs(e)]
+    denied = any(_under(target, _abs(e, home, path)) for e in anchored)
     reopened = any(_under(target, _abs(e, home, path)) for e in allow)
     if not denied or reopened:
         return CheckResult(
@@ -678,7 +687,9 @@ def _check_agent_sandbox(
             f"sandbox is on but its commands can still read {secret_dir}; add it to "
             "sandbox.filesystem.denyRead (docs/SETUP.md §4)",
         )
-    return CheckResult(name, CheckStatus.OK, "on; the agent's commands can't read the 2FA secret")
+    return CheckResult(
+        name, CheckStatus.OK, f"on; the agent's commands can't read the 2FA secret in {secret_dir}"
+    )
 
 
 def _check_fingerprint_key() -> CheckResult:

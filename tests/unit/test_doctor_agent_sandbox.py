@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from doberman.cli.doctor import CheckStatus, _check_agent_sandbox, run_checks
+from doberman.cli.doctor import CheckStatus, _check_agent_sandbox, _safe_check, run_checks
 
 _SAFE = {
     "enabled": True,
@@ -103,3 +103,29 @@ def test_corrupt_settings_never_report_ok(tmp_path):
     names = {r.name: r for r in run_checks(str(tmp_path / "repo"))}
     assert names["Agent sandbox"].status is not CheckStatus.OK
     assert names["Agent sandbox"].critical is False
+
+
+def test_deny_read_written_as_a_string_never_reports_ok(tmp_path):
+    # a bare string would iterate character by character, and "~" alone covers the whole home
+    _write(
+        tmp_path / "home" / ".claude" / "settings.json",
+        {**_SAFE, "filesystem": {"denyRead": "~/.ssh"}},
+    )
+    # run as doctor runs it: a malformed setting is indeterminate, which reports WARN
+    assert _safe_check("Agent sandbox", False, lambda: _check(tmp_path)).status is CheckStatus.WARN
+
+
+def test_excluded_commands_run_outside_the_sandbox_so_warn(tmp_path):
+    _write(tmp_path / "home" / ".claude" / "settings.json", {**_SAFE, "excludedCommands": ["node"]})
+    result = _check(tmp_path)
+    assert result.status is CheckStatus.WARN
+    assert "excludedCommands" in result.detail
+
+
+def test_relative_deny_entries_never_count_as_denying_the_secret(tmp_path):
+    # where Claude Code anchors a relative entry depends on the settings file; don't guess
+    _write(
+        tmp_path / "home" / ".claude" / "settings.json",
+        {**_SAFE, "filesystem": {"denyRead": ["../home/secrets-home"]}},
+    )
+    assert _check(tmp_path).status is CheckStatus.WARN
