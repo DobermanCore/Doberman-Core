@@ -16,7 +16,9 @@ from doberman.storage.db import open_db
 
 runner = CliRunner()
 
-_NOW = datetime(2026, 8, 13, tzinfo=timezone.utc)
+# Real now: the CLI prunes against the wall clock, so a fixed date expires
+# (it did on 2026-11-11, 90 days after the old fixed stamp).
+_NOW = datetime.now(timezone.utc)
 
 
 async def _seed(root: str, eid: str, touched: datetime) -> None:
