@@ -536,3 +536,24 @@ One host adapter is still outside this: OpenClaw hands an `AUTH` to its own `/ap
 resolves outside Doberman's process, so there is no moment inside the hook where a recheck could run.
 Claude Code, Codex, and Cursor all route their approval through the shared host-hook path and are
 covered.
+
+## An agent that writes a script and runs it can answer its own prompts
+
+When Doberman asks you to approve something, it stops the agent from doing that thing directly.
+It isn't a boundary against code running as you. An agent that can write a file and then run it
+can read and write anything your user account can, and Doberman reads the command, not what the
+script does once it runs. That script can:
+
+- read your 2FA secret, which is a file in your profile, and generate a valid code;
+- write an answer for a confirmation-only prompt into the repo's `.doberman/` database;
+- read the key of a local companion app and approve through it.
+
+Doberman does stop the direct versions. Reading those files or writing `.doberman/` with a command
+is blocked, and posting to a local approval endpoint needs your approval.
+
+You can close part of this. Claude Code's command sandbox, set up as in SETUP §4, stops the
+agent's shell commands from reading the 2FA secret file, so they can't generate a code.
+`doberman doctor` reports whether that is in place. The sandbox still lets commands write inside
+the repo, so confirmation-only prompts stay answerable by a script. It doesn't run on native
+Windows. If a task needs a human in the loop that the agent cannot reach at all, run the agent as
+a different OS user or in a container that can't see your profile or Doberman's database.
