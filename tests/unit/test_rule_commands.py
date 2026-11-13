@@ -1440,6 +1440,25 @@ def test_git_c_option_relative_versus_absolute_root():
         assert ReasonCode.test_file_removal in res_mv_test.reason_codes
 
 
+def test_git_c_option_unresolvable_cwd_preserves_chained_block(monkeypatch):
+    # If Path.resolve raises (e.g. symlink loop or resolution error), cwd resolution must be
+    # nonthrowing so the command rule continues scanning subsequent segments and preserves BLOCK (#647/#747).
+    from pathlib import Path
+
+    orig_resolve = Path.resolve
+
+    def mock_resolve(self, *args, **kwargs):
+        if "unresolvable-fixture" in str(self):
+            raise RuntimeError("simulated symlink loop or resolution fault")
+        return orig_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", mock_resolve)
+
+    result = _cmd("git -C unresolvable-fixture rm ordinary.txt; rm -rf /")
+    assert result.verdict is Verdict.BLOCK
+    assert ReasonCode.destructive_command in result.reason_codes
+
+
 @pytest.mark.parametrize(
     "command",
     [

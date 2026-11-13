@@ -2813,16 +2813,27 @@ def _effective_git_cwd(cwd_paths: list[str], root: str) -> str:
     unchanged. An absolute path replaces the current working directory.
     Anchors to the absolute repository root so path resolution is consistent
     whether the configured repository root is relative or absolute.
+    Catches filesystem and resolution errors (such as symlink loops or fault
+    injection) so cwd resolution is nonthrowing.
     """
-    effective = Path(root).resolve()
+    try:
+        effective = Path(root).resolve()
+    except Exception:  # noqa: BLE001 -- nonthrowing fallback if root cannot be resolved
+        effective = Path(root)
     for p in cwd_paths:
         if not p:
             continue
         p_path = Path(p)
-        if p_path.is_absolute():
-            effective = p_path.resolve()
-        else:
-            effective = (effective / p_path).resolve()
+        try:
+            if p_path.is_absolute():
+                effective = p_path.resolve()
+            else:
+                effective = (effective / p_path).resolve()
+        except Exception:  # noqa: BLE001 -- nonthrowing fallback if path cannot be resolved
+            if p_path.is_absolute():
+                effective = p_path
+            else:
+                effective = effective / p_path
     return str(effective)
 
 
@@ -2832,13 +2843,20 @@ def _resolve_operand_cwd(operand: str, effective_cwd: str, root: str) -> str:
     If the effective working directory differs from the repository root and the
     operand is a relative path, prefix it with the effective working directory
     so subsequent canonicalization resolves against the repository root.
+    Catches resolution errors so operand resolution is nonthrowing.
     """
-    if Path(operand).is_absolute():
+    try:
+        if Path(operand).is_absolute():
+            return operand
+        try:
+            abs_root = str(Path(root).resolve())
+        except Exception:  # noqa: BLE001
+            abs_root = str(Path(root))
+        if effective_cwd in (root, abs_root):
+            return operand
+        return str(Path(effective_cwd) / operand)
+    except Exception:  # noqa: BLE001
         return operand
-    abs_root = str(Path(root).resolve())
-    if effective_cwd in (root, abs_root):
-        return operand
-    return str(Path(effective_cwd) / operand)
 
 
 def _delete_operands(tokens: list[str], root: str = ".") -> list[str]:
