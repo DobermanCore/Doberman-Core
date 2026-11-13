@@ -2663,7 +2663,12 @@ def dash(
     # access_log=False: the single-use token rides in the URL query string, so
     # uvicorn's request access log would write it verbatim into a log line.
     # Disable it so the bearer token never lands in a log.
-    uvicorn.run(create_app(token, path), host=_DASH_HOST, port=port, access_log=False)
+    # Loopback Host headers only: a DNS-rebinding page reaches 127.0.0.1 under its
+    # own hostname, so a foreign Host gets a 400 on every route, the shell included.
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+    served = TrustedHostMiddleware(create_app(token, path), allowed_hosts=[_DASH_HOST, "localhost"])
+    uvicorn.run(served, host=_DASH_HOST, port=port, access_log=False)
 
 
 @app.command(rich_help_panel="Getting started")

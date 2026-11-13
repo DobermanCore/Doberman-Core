@@ -248,3 +248,31 @@ def test_shell_light_mode_verdict_colors_pass_wcag_aa_contrast():
     assert "--auth: #7d5200;" in light
     assert "--block: #a40e26;" in light
     assert "--neutral: #424a53;" in light
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("127.0.0.1", 200),
+        ("localhost", 200),
+        ("evil.example", 400),  # a DNS-rebinding page arrives with its own Host
+        ("127.0.0.1.evil.example", 400),
+    ],
+)
+def test_dash_served_app_rejects_a_foreign_host_header(monkeypatch, tmp_path, host, expected):
+    # Defense in depth against DNS rebinding: the app `doberman dash` actually
+    # serves answers only to a loopback Host header, on every route (the
+    # unauthenticated shell included). The bearer token still guards /api/*.
+    import uvicorn
+
+    from doberman.cli.main import app as cli_app
+
+    served: list = []
+    monkeypatch.setattr(uvicorn, "run", lambda app_, **kwargs: served.append(app_))
+    monkeypatch.setattr("doberman.storage.heartbeat.touch_heartbeat", lambda _path: None)
+
+    result = runner.invoke(cli_app, ["dash", "--port", str(_free_port()), "--path", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    response = TestClient(served[0], base_url=f"http://{host}:8642").get("/")
+    assert response.status_code == expected
