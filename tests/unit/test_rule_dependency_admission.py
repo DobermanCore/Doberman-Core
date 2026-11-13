@@ -668,8 +668,14 @@ def test_npx_dependency_admission():
     assert rule.evaluate(_action(), _ctx("npx --no-color crossenv")).verdict is Verdict.BLOCK
     assert rule.evaluate(_action(), _ctx("npx --expect-results crossenv")).verdict is Verdict.BLOCK
     assert rule.evaluate(_action(), _ctx("npx --color request crossenv")).verdict is Verdict.PASS
-    assert rule.evaluate(_action(), _ctx("npx --color=always request crossenv")).verdict is Verdict.PASS
-    assert rule.evaluate(_action(), _ctx("npx --expect-results request crossenv")).verdict is Verdict.PASS
+    assert (
+        rule.evaluate(_action(), _ctx("npx --color=always request crossenv")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npx --expect-results request crossenv")).verdict
+        is Verdict.PASS
+    )
 
     result_auth = rule.evaluate(_action(), _ctx("npx requestx"))
     assert result_auth.verdict is Verdict.AUTH
@@ -771,12 +777,25 @@ def test_npm_exec_dependency_admission():
     assert rule.evaluate(_action(), _ctx("npm exec -y crossenv")).verdict is Verdict.BLOCK
     assert rule.evaluate(_action(), _ctx("npm exec --force crossenv")).verdict is Verdict.BLOCK
     assert rule.evaluate(_action(), _ctx("npm exec --color crossenv")).verdict is Verdict.BLOCK
-    assert rule.evaluate(_action(), _ctx("npm exec --color=always crossenv")).verdict is Verdict.BLOCK
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --color=always crossenv")).verdict is Verdict.BLOCK
+    )
     assert rule.evaluate(_action(), _ctx("npm exec --no-color crossenv")).verdict is Verdict.BLOCK
-    assert rule.evaluate(_action(), _ctx("npm exec --expect-results crossenv")).verdict is Verdict.BLOCK
-    assert rule.evaluate(_action(), _ctx("npm exec --color request crossenv")).verdict is Verdict.PASS
-    assert rule.evaluate(_action(), _ctx("npm exec --color=always request crossenv")).verdict is Verdict.PASS
-    assert rule.evaluate(_action(), _ctx("npm exec --expect-results request crossenv")).verdict is Verdict.PASS
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --expect-results crossenv")).verdict
+        is Verdict.BLOCK
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --color request crossenv")).verdict is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --color=always request crossenv")).verdict
+        is Verdict.PASS
+    )
+    assert (
+        rule.evaluate(_action(), _ctx("npm exec --expect-results request crossenv")).verdict
+        is Verdict.PASS
+    )
 
     # Explicit package flags (--package=<pkg>, --package <pkg>)
     assert (
