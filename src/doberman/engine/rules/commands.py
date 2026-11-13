@@ -1720,7 +1720,7 @@ def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
     :func:`_git_push_risky_config_or_bulk` can inspect ``remote.*.push``
     overrides without re-calling ``_git_leading_globals``.
     """
-    argv, assignments = _git_leading_globals(tokens)
+    argv, assignments, _ = _git_leading_globals(tokens)
     if not argv or argv[0] != "push":
         return None
 
