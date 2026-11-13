@@ -20,7 +20,7 @@ lift over the deterministic rules on the class-only
 :func:`doberman.engine.adjudicator.redacted_features` envelope.
 
 Mirrors ``doberman.explain``'s proven three-way opt-in gate (``anthropic``
-installed AND ``ANTHROPIC_API_KEY`` set AND an explicit env flag) and its lazy
+installed AND ``DOBERMAN_JUDGE_API_KEY`` (or ``ANTHROPIC_API_KEY``) set AND an explicit env flag) and its lazy
 ``import anthropic`` (only reached after the gate passes, so the optional
 ``[judge]`` extra is completely inert with nothing set).
 
@@ -67,11 +67,18 @@ _JUDGE_SYSTEM_PROMPT = (
 )
 
 
+def _api_key() -> str | None:
+    """The judge's key: ``DOBERMAN_JUDGE_API_KEY`` first, so a user never has to export
+    ``ANTHROPIC_API_KEY`` (which can change how their own Claude Code session bills);
+    ``ANTHROPIC_API_KEY`` stays as a fallback for existing setups."""
+    return os.environ.get("DOBERMAN_JUDGE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or None
+
+
 def _judge_enabled() -> bool:
     """The three-way opt-in gate: installed + API key + explicit env flag."""
     if importlib.util.find_spec("anthropic") is None:
         return False
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not _api_key():
         return False
     return os.environ.get("DOBERMAN_JUDGE_ENABLED", "").strip().lower() in {
         "1",
@@ -173,7 +180,7 @@ def _call_judge(features: Mapping[str, Any]) -> dict[str, bool]:
     """
     import anthropic  # lazy - see module docstring
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=_api_key())
     message = client.messages.create(
         model=_JUDGE_MODEL,
         max_tokens=_JUDGE_MAX_TOKENS,
