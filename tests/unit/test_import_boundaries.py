@@ -66,7 +66,9 @@ def test_contract_is_kept_against_the_real_codebase():
 
 def _synthetic_graph(*modules: str) -> grimp.ImportGraph:
     graph = grimp.ImportGraph()
-    for module in modules:
+    # import-linter >= 2.16 refuses a contract whose internal forbidden module is
+    # absent from the graph, so the synthetic graph always carries both.
+    for module in (*modules, "doberman.engine.subjective", "doberman.engine.detectors"):
         graph.add_module(module)
     return graph
 

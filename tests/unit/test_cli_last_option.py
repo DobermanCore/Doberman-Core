@@ -4,6 +4,7 @@
 and quietly showed nothing, and `tune` had no `-n` short form.
 """
 
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -17,10 +18,16 @@ _COMMANDS = ["log", "tune", "policy-history"]
 @pytest.mark.parametrize("command", _COMMANDS)
 @pytest.mark.parametrize("flag", ["--last", "-n"])
 def test_a_negative_last_is_a_usage_error(tmp_path, command, flag):
-    result = runner.invoke(app, [command, "--path", str(tmp_path), flag, "-1"])
+    # Wide and colourless: newer Typer/Rich truncate the error panel at 80 columns.
+    result = runner.invoke(
+        app,
+        [command, "--path", str(tmp_path), flag, "-1"],
+        env={"COLUMNS": "200", "NO_COLOR": "1"},
+    )
 
     assert result.exit_code == 2, result.output
-    assert "-1" in result.output
+    # Newer Click no longer echoes the bad value; it names the option instead.
+    assert "--last" in click.unstyle(result.output)
 
 
 @pytest.mark.parametrize("command", _COMMANDS)

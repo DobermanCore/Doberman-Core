@@ -425,6 +425,10 @@ runs today is an offline replay, `tests/benchmarks/suites/judge_agreement.py`, o
 benchmark corpus, measuring whether adding a language model improves on the deterministic rules
 working from that same limited summary. See [`BENCHMARKS.md`](BENCHMARKS.md).
 
+Before #794 the judge abstained on every live call: Haiku wraps its JSON reply in a markdown fence
+and the parser rejected it. The first run after that fix found no lift over the rules on this
+class-only summary (0 of 62 rule-missed attack rows).
+
 Wiring any judge into a live decision would need its own design decision. Doberman's raise-only
 guarantee (an automatic change can only tighten a rule, never loosen it) governs which *direction* a
 verdict can move, not whether the system becomes dependent on a network call to an outside model,

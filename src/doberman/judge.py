@@ -145,6 +145,25 @@ def _recommend(unambiguous: bool, high_impact: bool, current: GuardrailResult) -
     )
 
 
+def _strip_code_fence(text: str) -> str:
+    """Unwrap a reply that is exactly one markdown code fence (```json ... ```).
+
+    Haiku 4.5 fences its JSON despite the prompt, so without this every live call
+    failed to parse and abstained. Anything else (prose around the fence, two
+    fences, an unterminated fence) is returned unchanged and fails ``json.loads``.
+    """
+    body = text.strip()
+    if not body.startswith("```") or not body.endswith("```") or len(body) < 6:
+        return text
+    inner = body[3:-3]
+    if "```" in inner:
+        return text
+    first_line, _, rest = inner.partition("\n")
+    if first_line.strip().lower() in {"", "json"}:
+        return rest
+    return inner
+
+
 def _call_judge(features: Mapping[str, Any]) -> dict[str, bool]:
     """Ask the judge model for the two booleans. Raises on ANY anomaly (bad
     JSON, missing/non-bool field, empty response, SDK error) - the caller
@@ -171,7 +190,7 @@ def _call_judge(features: Mapping[str, Any]) -> dict[str, bool]:
     text = "".join(
         block.text for block in message.content if getattr(block, "type", None) == "text"
     )
-    parsed = json.loads(text)
+    parsed = json.loads(_strip_code_fence(text))
     if not isinstance(parsed, dict):
         raise ValueError("judge response is not a JSON object")
     unambiguous = parsed["unambiguous"]

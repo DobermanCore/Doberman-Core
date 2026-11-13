@@ -224,8 +224,15 @@ This section measures, offline, whether it is even worth wiring in.
   and exits 0; `tests/unit/test_judge.py` asserts that skip path so CI stays
   green with no credentials. The prompt is frozen in
   `src/doberman/judge.py`'s `_JUDGE_SYSTEM_PROMPT` before the first measured
-  run and reported as-is. This is a directional n=137 read, not a
-  prompt-tuned result.
+  run and reported as-is. This is a directional read on the 168-row
+  corpus, not a prompt-tuned result.
+- **Measured (2026-11-12, Haiku 4.5, frozen prompt, 3 runs, 504 calls,
+  USD 0.22).** Lift on attacks the rules missed: **0 of 62**. Benign false
+  raise: 1 of 38 rows. Every reply parsed (#794 fixed a fenced-JSON parse
+  failure that had made every earlier live call abstain); no row changed
+  verdict across runs; p95 latency 0.67 s against the 1.5 s bound. This run
+  measured no lift over the deterministic rules on the class-only envelope
+  (one model, one frozen prompt). It stays shadow-only.
 
 Reproduce (needs a key; never runs in CI):
 
