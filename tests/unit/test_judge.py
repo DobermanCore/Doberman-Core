@@ -270,6 +270,7 @@ def test_fenced_json_reply_is_parsed(monkeypatch, response_text):
         '```json\n{"unambiguous": true}\n```',  # fenced, missing a field
         "```json\n" + _VALID,  # unterminated fence
         "Sure! ```json\n" + _VALID + "\n```",  # prose before the fence
+        "```json\n" + _VALID + "\n```\nHope that helps!",  # prose after the fence
         "```json\n" + _VALID + "\n```\n```json\n{}\n```",  # two fenced blocks
     ],
 )
