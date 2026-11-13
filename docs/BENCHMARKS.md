@@ -230,9 +230,9 @@ This section measures, offline, whether it is even worth wiring in.
   USD 0.22).** Lift on attacks the rules missed: **0 of 62**. Benign false
   raise: 1 of 38 rows. Every reply parsed (#794 fixed a fenced-JSON parse
   failure that had made every earlier live call abstain); no row changed
-  verdict across runs; p95 latency 0.67 s against the 1.5 s bound. On this
-  class-only envelope the judge adds nothing over the deterministic rules,
-  which is what the limit above predicts. It stays shadow-only.
+  verdict across runs; p95 latency 0.67 s against the 1.5 s bound. This run
+  measured no lift over the deterministic rules on the class-only envelope
+  (one model, one frozen prompt). It stays shadow-only.
 
 Reproduce (needs a key; never runs in CI):
 
