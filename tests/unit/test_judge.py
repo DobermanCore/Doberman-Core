@@ -243,6 +243,43 @@ def test_malformed_response_abstains_never_raises(monkeypatch, response_text):
     assert result is None
 
 
+_VALID = '{"unambiguous": true, "high_impact": false}'
+
+
+@pytest.mark.parametrize(
+    "response_text",
+    [
+        "```json\n" + _VALID + "\n```",  # the real Haiku 4.5 reply shape
+        "```\n" + _VALID + "\n```",
+        "  ```JSON\n" + _VALID + "```  ",
+    ],
+)
+def test_fenced_json_reply_is_parsed(monkeypatch, response_text):
+    # Haiku 4.5 wraps its JSON in a markdown fence; before this fix every live
+    # call abstained (168/168 parse errors on the corpus bench, 2026-11-12).
+    _install_fake_anthropic(monkeypatch, lambda kwargs: _FakeMessage(response_text))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
+    result = HaikuJudgeAdjudicator().adjudicate({"action_type": "file_read"}, _PASS)
+    assert result == _recommend(True, False, _PASS)
+
+
+@pytest.mark.parametrize(
+    "response_text",
+    [
+        '```json\n{"unambiguous": true}\n```',  # fenced, missing a field
+        "```json\n" + _VALID,  # unterminated fence
+        "Sure! ```json\n" + _VALID + "\n```",  # prose before the fence
+        "```json\n" + _VALID + "\n```\n```json\n{}\n```",  # two fenced blocks
+    ],
+)
+def test_fence_tolerance_stays_strict(monkeypatch, response_text):
+    _install_fake_anthropic(monkeypatch, lambda kwargs: _FakeMessage(response_text))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("DOBERMAN_JUDGE_ENABLED", "1")
+    assert HaikuJudgeAdjudicator().adjudicate({"action_type": "file_read"}, _PASS) is None
+
+
 def test_client_raising_abstains(monkeypatch):
     def _boom(_kwargs):
         raise RuntimeError("network error")
