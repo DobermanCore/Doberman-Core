@@ -592,6 +592,95 @@ def _check_password() -> CheckResult:
     )
 
 
+def _abs(entry: str, home: Path, root: str) -> str:
+    """A sandbox path entry (``~/x``, absolute, or repo-relative) as a normalized absolute path."""
+    if entry == "~" or entry.startswith(("~/", "~\\")):
+        p = home / entry[2:]
+    else:
+        p = Path(entry) if os.path.isabs(entry) else Path(root) / entry
+    return os.path.normcase(os.path.abspath(p))
+
+
+def _under(target: str, prefix: str) -> bool:
+    return target == prefix or target.startswith(prefix.rstrip("\\/") + os.sep)
+
+
+def _check_agent_sandbox(
+    path: str,
+    *,
+    home: Path | None = None,
+    platform: str | None = None,
+    secret_dir: Path | None = None,
+) -> CheckResult:
+    """Can a script the agent writes read Doberman's 2FA secret? Claude Code's command sandbox
+    stops that only when it is on, cannot be escaped, and denies reads of the secret's folder
+    (it allows reads anywhere by default, and does not run on native Windows)."""
+    import json
+
+    name = "Agent sandbox"
+    tail = "a script the agent writes can read Doberman's 2FA secret and answer its own prompts"
+    if (platform or sys.platform) == "win32":
+        return CheckResult(
+            name,
+            CheckStatus.WARN,
+            f"Claude Code runs commands unsandboxed on native Windows, so {tail}. For a hard "
+            "boundary run the agent in WSL2, a container, or as another OS user (docs/SETUP.md §4)",
+        )
+    if secret_dir is None:
+        from doberman.auth import totp
+
+        secret_dir = totp.resolve_path().parent
+    home = home or Path.home()
+    files = [
+        home / ".claude" / "settings.json",
+        Path(path) / ".claude" / "settings.json",
+        Path(path) / ".claude" / "settings.local.json",
+    ]
+    sandbox: dict = {}
+    deny: list[str] = []
+    allow: list[str] = []
+    for file in files:  # lowest precedence first, so later files override scalar keys
+        try:
+            data = json.loads(file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        section = data.get("sandbox") if isinstance(data, dict) else None
+        if not isinstance(section, dict):
+            continue
+        sandbox.update({k: v for k, v in section.items() if k != "filesystem"})
+        fs_cfg = section.get("filesystem") or {}
+        deny += [str(e) for e in fs_cfg.get("denyRead") or []]
+        allow += [str(e) for e in fs_cfg.get("allowRead") or []]
+    if sandbox.get("enabled") is not True:
+        return CheckResult(
+            name,
+            CheckStatus.WARN,
+            f"Claude Code's command sandbox is off, so {tail} (docs/SETUP.md §4)",
+        )
+    missing = []
+    if sandbox.get("allowUnsandboxedCommands") is not False:
+        missing.append("allowUnsandboxedCommands: false")
+    if sandbox.get("failIfUnavailable") is not True:
+        missing.append("failIfUnavailable: true")
+    if missing:
+        return CheckResult(
+            name,
+            CheckStatus.WARN,
+            f"sandbox is on but can be bypassed; set {', '.join(missing)} (docs/SETUP.md §4)",
+        )
+    target = os.path.normcase(os.path.abspath(secret_dir))
+    denied = any(_under(target, _abs(e, home, path)) for e in deny)
+    reopened = any(_under(target, _abs(e, home, path)) for e in allow)
+    if not denied or reopened:
+        return CheckResult(
+            name,
+            CheckStatus.WARN,
+            f"sandbox is on but its commands can still read {secret_dir}; add it to "
+            "sandbox.filesystem.denyRead (docs/SETUP.md §4)",
+        )
+    return CheckResult(name, CheckStatus.OK, "on; the agent's commands can't read the 2FA secret")
+
+
 def _check_fingerprint_key() -> CheckResult:
     from doberman.storage.fingerprint import _key_path
 
@@ -638,6 +727,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("2FA", False, _check_2fa),
         _safe_check("Phone approvals", False, _check_phone_approvals),
         _safe_check("Password", False, _check_password),
+        _safe_check("Agent sandbox", False, lambda: _check_agent_sandbox(path)),
         _safe_check("Fingerprint key", False, _check_fingerprint_key),
         _safe_check("Codex CLI", False, _check_codex_version),
         _safe_check("Dash extra", False, _check_dash_extra),

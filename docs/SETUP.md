@@ -409,6 +409,31 @@ reset. If that's expected and you want the repo's egress back to the mode defaul
 clear` wipes both taint stores after the same TOTP-or-password check. It still fails closed with
 neither factor enrolled, and a denied or failed check leaves everything untouched.
 
+### Keep the agent's own scripts away from your 2FA secret
+
+Your 2FA secret is a file in your user profile (`~/.config/doberman/` on macOS and Linux,
+`%LOCALAPPDATA%\doberman\` on Windows). Doberman blocks an agent that reads it with a command, but
+an agent that writes a script and runs it can read anything your account can, generate a code,
+and approve its own prompt. To stop that on Claude Code, turn on its command sandbox, close the
+way out of it, and deny reads of that folder, in `~/.claude/settings.json`:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true,
+    "filesystem": { "denyRead": ["~/.config/doberman"] }
+  }
+}
+```
+
+The sandbox allows reads anywhere unless you deny them, and it does not run on native Windows,
+so there use WSL2, a container, or a separate OS user for the agent. You run `doberman` yourself,
+outside the agent's sandbox, so this doesn't get in its way. `doberman doctor` reports whether
+this is in place. It protects 2FA prompts only; see LIMITATIONS for what a script can still
+answer.
+
 ## 5. Check its health
 
 One read-only self-check that answers whether Doberman is wired up and healthy: host
