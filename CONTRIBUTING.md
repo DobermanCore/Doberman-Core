@@ -47,7 +47,8 @@ treated as errors, production-size half-space trees, and a dependency vulnerabil
 nightly means a bug in the suite or a dependency, not something to just rerun.
 
 The optional extras `explain` (the Anthropic SDK) and `winhello` (Windows Hello) are not installed
-in CI. Their tests use fakes there, so exercise the real thing locally when you touch them.
+in CI. Their tests use fakes there, so exercise the real thing locally when you touch them
+(for Hello, [docs/HELLO-HARDWARE-CHECKS.md](docs/HELLO-HARDWARE-CHECKS.md)).
 
 `-n auto` runs the suite in parallel (pytest-xdist ships in the `dev` extra), the
 same way CI runs it.
