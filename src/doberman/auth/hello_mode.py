@@ -157,6 +157,9 @@ def admin_marker_path() -> Path:
             raise HelloModeError(
                 f"{MARKER_ENV} is set; it is a test-only override, so unset it and run again"
             )
+        # %ProgramData% alone is user-controlled; only the shell's known folder is trusted here
+        if _known_program_data() is None:
+            raise HelloModeError("cannot locate ProgramData through Windows; nothing changed")
         return machine[0]
     override = _override_path()
     if override is None:
@@ -408,7 +411,8 @@ def write_marker(path: Path, public_key: bytes, *, now: datetime | None = None) 
         "public_key": base64.b64encode(public_key).decode("ascii"),
         "enrolled_at": when,
     }
-    if path in _machine_marker_paths():
+    machine = path in _machine_marker_paths()
+    if machine:
         _secure_marker_dir(path.parent)
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -421,6 +425,12 @@ def write_marker(path: Path, public_key: bytes, *, now: datetime | None = None) 
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    if machine:
+        # where policy makes the creator the owner, the user could later rewrite the file's ACL
+        problem = _dir_problem(path)
+        if problem:
+            path.unlink(missing_ok=True)
+            raise HelloModeError(f"{problem}; nothing was enrolled")
 
 
 def remove_markers() -> list[Path]:
