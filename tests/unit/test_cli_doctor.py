@@ -897,3 +897,205 @@ def test_doctor_refuses_a_file_path(tmp_path):
 
     assert result.exit_code == 2
     assert f"error: --path {a_file} is not a directory" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Gitignore (#809): warn when `.doberman/` is not ignored by git
+# ---------------------------------------------------------------------------
+
+
+def _git_init(root: Path) -> None:
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git binary is required for real git check-ignore integration")
+    subprocess.run(  # noqa: S603
+        [git, "-C", str(root), "init", "-q"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _gitignore_row(path: Path | str) -> doctor_mod.CheckResult:
+    return next(r for r in run_checks(str(path)) if r.name == "Gitignore")
+
+
+def test_doctor_gitignore_warns_when_doberman_dir_not_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    _git_init(repo)
+    _make_healthy(str(repo))
+
+    row = _gitignore_row(repo)
+    assert row.status is CheckStatus.WARN
+    assert row.critical is False
+    assert ".doberman/" in row.detail
+    assert ".gitignore" in row.detail
+    assert not (repo / ".gitignore").exists()
+
+    result = runner.invoke(app, ["doctor", "--path", str(repo)])
+    assert result.exit_code == 0, result.output
+    health_idx = result.stdout.index("-- Health --")
+    assert "[warn] Gitignore:" in result.stdout[health_idx:]
+    assert ".doberman/" in result.stdout[health_idx:]
+    assert not (repo / ".gitignore").exists()
+
+
+def test_doctor_gitignore_never_edits_existing_gitignore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    _git_init(repo)
+    (repo / ".doberman").mkdir()
+    gitignore = repo / ".gitignore"
+    gitignore.write_text("*.pyc\n", encoding="utf-8")
+
+    row = _gitignore_row(repo)
+
+    assert row.status is CheckStatus.WARN
+    assert row.critical is False
+    assert gitignore.read_text(encoding="utf-8") == "*.pyc\n"
+
+
+def test_doctor_gitignore_ok_when_doberman_dir_is_ignored(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    _git_init(repo)
+    (repo / ".doberman").mkdir()
+    (repo / ".gitignore").write_text(".doberman/\n", encoding="utf-8")
+
+    row = _gitignore_row(repo)
+
+    assert row.status is CheckStatus.OK
+    assert row.critical is False
+
+
+def test_doctor_gitignore_ok_when_doberman_dir_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    _git_init(repo)
+
+    row = _gitignore_row(repo)
+
+    assert row.status is CheckStatus.OK
+    assert row.critical is False
+
+
+def test_doctor_gitignore_ok_outside_git_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    repo = tmp_path / "not-a-repo"
+    repo.mkdir()
+    (repo / ".doberman").mkdir()
+
+    row = _gitignore_row(repo)
+
+    assert row.status is CheckStatus.OK
+    assert row.critical is False
+
+
+def test_doctor_gitignore_ok_when_git_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    (tmp_path / ".doberman").mkdir()
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: None if name == "git" else real_which(name, *a, **k),
+    )
+
+    row = _gitignore_row(tmp_path)
+
+    assert row.status is CheckStatus.OK
+    assert row.critical is False
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        "timeout",
+        "oserror",
+    ],
+)
+def test_doctor_gitignore_ok_and_never_raises_on_subprocess_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: str
+) -> None:
+    import shutil
+    import subprocess
+
+    (tmp_path / ".doberman").mkdir()
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: "/usr/bin/git" if name == "git" else real_which(name, *a, **k),
+    )
+    real_run = subprocess.run
+
+    def _fail_git(argv, *a, **k):
+        if argv and argv[0] == "/usr/bin/git":
+            if exc == "timeout":
+                raise subprocess.TimeoutExpired(cmd=argv, timeout=2)
+            raise OSError("git execution failed")
+        return real_run(argv, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", _fail_git)
+
+    direct = doctor_mod._check_gitignore(str(tmp_path))
+    assert direct.status is CheckStatus.OK
+    assert direct.critical is False
+
+    row = _gitignore_row(tmp_path)
+    assert row.status is CheckStatus.OK
+    assert row.critical is False
+
+
+def test_doctor_gitignore_ignores_repo_planted_git_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    (repo / ".doberman").mkdir()
+    planted = repo / "git.bat"
+    planted.write_text("@echo off\n", encoding="utf-8")
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: str(planted) if name == "git" else real_which(name, *a, **k),
+    )
+    real_run = subprocess.run
+
+    def _forbid_planted(argv, *a, **k):
+        if argv and argv[0] == str(planted):
+            raise AssertionError("doctor must never execute a git binary inside the target repo")
+        return real_run(argv, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", _forbid_planted)
+
+    row = _gitignore_row(repo)
+
+    assert row.status is CheckStatus.OK
+    assert row.critical is False

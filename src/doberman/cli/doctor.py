@@ -23,6 +23,7 @@ import os
 import shutil
 import sqlite3
 import stat
+import subprocess
 import sys
 import sysconfig
 from dataclasses import dataclass
@@ -516,6 +517,59 @@ def _check_db(path: str) -> CheckResult:
     return CheckResult("Decision DB", CheckStatus.OK, f"reachable ({p})")
 
 
+_GIT_CHECK_IGNORE_TIMEOUT_S = 2
+
+
+def _check_gitignore(path: str) -> CheckResult:
+    """#809: warn when a git repo has a ``.doberman/`` directory that git does not ignore.
+
+    Always non-critical and strictly read-only: ``doctor`` never edits ``.gitignore``.
+    No ``.doberman/``, no ``git`` binary, outside a git repo, or a timeout/error is ``OK``.
+    """
+    from doberman.config import CONFIG_DIR
+
+    name = "Gitignore"
+    try:
+        if not (Path(path) / CONFIG_DIR).exists():
+            return CheckResult(
+                name, CheckStatus.OK, "nothing to check (.doberman/ not created yet)"
+            )
+        resolved = shutil.which("git")
+        if resolved is None:
+            return CheckResult(name, CheckStatus.OK, "git not found")
+        resolved_norm = os.path.normcase(os.path.realpath(resolved))
+        roots = (
+            os.path.normcase(os.path.realpath(path)),
+            os.path.normcase(os.path.realpath(os.getcwd())),
+        )
+        if any(_under(resolved_norm, r) for r in roots):
+            return CheckResult(name, CheckStatus.OK, "git not found")
+        # core.fsmonitor=false mirrors engine.rules.commands._run_git: never execute a
+        # repo-configured monitor command or let its daemon hold pipes past the timeout.
+        proc = subprocess.run(  # noqa: S603
+            [resolved, "-c", "core.fsmonitor=false", "check-ignore", "-q", ".doberman/"],
+            cwd=path,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_GIT_CHECK_IGNORE_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return CheckResult(name, CheckStatus.OK, "git check-ignore timed out")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return CheckResult(name, CheckStatus.OK, "git check-ignore unavailable")
+
+    if proc.returncode == 0:
+        return CheckResult(name, CheckStatus.OK, ".doberman/ is ignored by git")
+    if proc.returncode == 1:
+        return CheckResult(
+            name,
+            CheckStatus.WARN,
+            ".doberman/ is not ignored by git - add `.doberman/` to .gitignore",
+        )
+    return CheckResult(name, CheckStatus.OK, "not a git repository")
+
+
 def _check_enforcement(path: str) -> CheckResult:
     from doberman.config import load_mode, resolve_enforcement_sync
 
@@ -773,6 +827,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("Hook timeout", True, lambda: _check_hook_timeout(path)),
         _safe_check("Config", True, lambda: _check_config(path)),
         _safe_check("Decision DB", True, lambda: _check_db(path)),
+        _safe_check("Gitignore", False, lambda: _check_gitignore(path)),
         _safe_check("Enforcement", False, lambda: _check_enforcement(path)),
         _safe_check("Policy version", False, lambda: _check_policy_versions(path)),
         _safe_check("2FA", False, _check_2fa),
