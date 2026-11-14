@@ -31,7 +31,9 @@ from doberman.cli import telemetry_cmd
 from doberman.config import (
     CONFIG_DIR,
     MESSAGE_TONES,
+    PolicyFileUnreadableError,
     default_role_enabled,
+    ensure_policy_saveable,
     load_active_role,
     load_approval_memory_seconds,
     load_enforcement,
@@ -533,6 +535,7 @@ def review(
     typer.echo(f"\nMode: {doc.mode}")
 
     if yes:
+        _refuse_unreadable_policy(path)
         save_policy(doc, path)
         typer.echo(f"\nSaved policy to {path}/.doberman/policies.yaml")
     else:
@@ -743,6 +746,20 @@ def _dim_label(name: str, value: float) -> str:
     if name == "blast_radius":
         token += " (actions affecting many targets)"
     return token
+
+
+def _refuse_unreadable_policy(path: str) -> None:
+    """Exit 2 with a one-line error if ``policies.yaml`` exists but can't be read (#759).
+
+    Every command that saves the policy calls this before its gate, so a corrupt
+    file is never replaced with defaults and never costs a 2FA prompt or a ledger
+    row for a change that could not be saved.
+    """
+    try:
+        ensure_policy_saveable(path)
+    except PolicyFileUnreadableError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
 
 
 def _apply_mode_change(
@@ -979,6 +996,7 @@ def enforcement(
     if new == current:
         typer.echo(f"enforcement already {current}")
         return
+    _refuse_unreadable_policy(path)
     # Route through the gated chokepoint: it confirms a soften behind the
     # strongest enrolled possession factor (fails closed if none is enrolled),
     # auto-approves a re-arm, and records every attempt to the ledger. Persist the
@@ -1015,6 +1033,7 @@ def role_enable_default(
     if was:
         typer.echo("the default role is already enabled")
         return
+    _refuse_unreadable_policy(path)
     # A strengthen: apply_change auto-approves (no gate) and still records the
     # attempt to the append-only ledger.
     outcome = asyncio.run(
@@ -1095,6 +1114,7 @@ def prefs(
     except (KeyError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
+    _refuse_unreadable_policy(path)
     outcome = asyncio.run(
         apply_preferences_change(
             current.to_mapping(),
@@ -1179,6 +1199,7 @@ def egress_velocity(
     key = knob.replace("-", "_")
     after = {**before, key: value}
 
+    _refuse_unreadable_policy(path)
     outcome = asyncio.run(
         apply_egress_velocity_change(
             before,
@@ -2267,6 +2288,7 @@ def approvals_ttl(
 ) -> None:
     """Set the 0-900 second TTL; raising it is a gated weakening."""
     current = load_approval_memory_seconds(path)
+    _refuse_unreadable_policy(path)
     outcome = asyncio.run(
         apply_approval_memory_change(
             current,
@@ -4227,6 +4249,12 @@ def setup(
         except ValueError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(2) from exc
+
+    # A corrupt policies.yaml loads as None, which `first_run` below would read as
+    # a fresh repo and establish defaults over without the gate (#759). Refuse
+    # before wiring anything; a --dry-run preview persists nothing, so it may run.
+    if not dry_run:
+        _refuse_unreadable_policy(path)
 
     # A non-interactive preview: `--dry-run` with no `--yes` and no TTY on
     # stdin has nothing to read from (item 12) - rather than let the first
