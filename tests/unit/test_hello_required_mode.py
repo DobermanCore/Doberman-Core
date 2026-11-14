@@ -695,6 +695,7 @@ def machine_dir(tmp_path, monkeypatch):
     target = tmp_path / "ProgramData" / "doberman" / "proof.json"
     target.parent.parent.mkdir()
     monkeypatch.setattr(hello_mode, "_machine_marker_paths", lambda: [target])
+    monkeypatch.setattr(hello_mode, "_known_program_data", lambda: target.parent.parent)
     monkeypatch.delenv(hello_mode.MARKER_ENV, raising=False)
     calls: dict[str, list] = {"created": [], "acl": []}
     owner = {"sid": hello_mode.ADMINS_SID}
