@@ -257,6 +257,13 @@ def enroll(
     against the existing secret. The returned URI embeds the secret for
     QR/manual entry and MUST NOT be logged by the caller.
     """
+    from doberman.auth import hello_mode  # lazy: hello_mode imports the auth stack
+
+    if hello_mode.is_on():
+        raise RuntimeError(
+            "Hello-required mode is on, so TOTP is refused; run "
+            "`doberman 2fa hello leave` from an administrator terminal first"
+        )
     path = _secret_path()
     if path.exists():
         if not force:
@@ -315,6 +322,15 @@ def unenroll(*, current_code: str) -> None:
     _clear_used_step(path)
 
 
+def delete_secret() -> None:
+    """Delete the secret and its attempt state without a code (Hello enroll already
+    proved one). Raises ``OSError`` if the secret file exists and cannot be removed."""
+    path = _secret_path()
+    path.unlink(missing_ok=True)
+    _clear_lockout(path)
+    _clear_used_step(path)
+
+
 def reset_attempts() -> None:
     """Clear the persisted consecutive-failure/lockout state for the active
     secret file (future ``doberman 2fa reset-lockout`` calls this)."""
@@ -348,7 +364,14 @@ def verify(code: str, *, at: int | None = None) -> bool:
     survives a process restart (H5) instead of resetting for free, and the
     cooldown gives it a bounded, self-service recovery instead of the
     previous in-process design's permanent softlock (W2).
+
+    In Hello-required mode (ADR 0119) every code is refused before the secret is read,
+    so a planted ``totp.secret`` approves nothing and no attempt is counted.
     """
+    from doberman.auth import hello_mode  # lazy: hello_mode imports the auth stack
+
+    if hello_mode.is_on():
+        return False
     secret = _read_secret()
     if secret is None:
         return False

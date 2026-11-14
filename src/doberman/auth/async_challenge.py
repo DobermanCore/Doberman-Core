@@ -61,6 +61,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import AwareDatetime
 
+from doberman.auth import hello_mode
 from doberman.auth.challenge import (
     AuthResult,
     AuthTier,
@@ -562,7 +563,16 @@ def resolve_challenge(
         from the ``approved`` parameter when TOTP verification fails.
     """
     _backend = backend or active_async_backend()
+    refused = handle.tier in (AuthTier.two_factor, AuthTier.role_elevation) and hello_mode.is_on()
+    if refused:
+        # ADR 0119: a remote answer cannot satisfy proof tier in Hello-required mode, for
+        # any backend, so the handle settles as a denial.
+        approved, totp_code = False, None
     result = _backend.resolve(handle, approved=approved, totp_code=totp_code, at=at)
+    if refused:
+        result = result.model_copy(
+            update={"approved": False, "method": hello_mode.HELLO_REQUIRED_METHOD}
+        )
     logger.info(
         "async auth challenge resolved: handle=%s action=%s approved=%s method=%s",
         handle.handle_id,

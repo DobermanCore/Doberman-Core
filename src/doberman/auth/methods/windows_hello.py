@@ -59,6 +59,10 @@ class HelloBackend(Protocol):
         """Show the prompt. May raise ``TimeoutError`` (a deny) or anything else."""
         ...
 
+    def ensure_key(self) -> None:
+        """Create the ``doberman-proof`` key if it does not exist (may show a gesture)."""
+        ...
+
     def sign(self, data: bytes) -> bytes: ...
 
     def public_key(self) -> bytes: ...
@@ -137,6 +141,25 @@ class WinRTHelloBackend:
         if _name(res.status) != "success":
             raise HelloError(f"Hello key {KEY_NAME!r} not usable: {_name(res.status)}")
         return res.credential
+
+    def ensure_key(self) -> None:
+        mods = _load_winrt()
+        if mods is None:
+            raise HelloError("Windows Hello (winrt) is not available")
+        _, cred = mods
+
+        async def _open_or_create():
+            res = await cred.KeyCredentialManager.open_async(KEY_NAME)
+            if _name(res.status) == "notfound":
+                # FAIL_IF_EXISTS: never silently replace a key someone already pinned.
+                res = await cred.KeyCredentialManager.request_create_async(
+                    KEY_NAME, cred.KeyCredentialCreationOption.FAIL_IF_EXISTS
+                )
+            return res
+
+        res = asyncio.run(_open_or_create())
+        if _name(res.status) != "success":
+            raise HelloError(f"Hello key {KEY_NAME!r} could not be created: {_name(res.status)}")
 
     def sign(self, data: bytes) -> bytes:
         key = self._open_key()

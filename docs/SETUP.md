@@ -436,6 +436,33 @@ outside the agent's sandbox, so this doesn't get in its way. `doberman doctor` r
 this is in place. It protects 2FA prompts only; see LIMITATIONS for what a script can still
 answer.
 
+### Windows: approve with Windows Hello instead of a code (opt-in)
+
+On Windows you can remove the 2FA secret altogether. In Hello-required mode, every prompt that
+would ask for a 2FA code asks for a Windows Hello gesture (fingerprint, face or PIN) instead,
+and TOTP codes are refused everywhere, including the phone and the dashboard. It needs the
+`winhello` extra, Windows Hello set up, a TPM, and an administrator terminal for one step.
+From a terminal opened with "Run as administrator", signed in as your usual account:
+
+```bash
+doberman 2fa hello enroll
+```
+
+It asks for your current 2FA code and a Hello gesture, refuses a Hello key that isn't TPM-backed,
+writes `%ProgramData%\doberman\proof.json` (only administrators can change it), and then deletes
+your `totp.secret`. If Hello can't run (no sensor, a remote session, a broken PIN), proof-tier
+actions are denied, not sent back to TOTP. The Hello prompt can open behind other windows; look
+for it on the taskbar before it times out. To turn the mode off, again as administrator:
+
+```bash
+doberman 2fa hello leave
+```
+
+That needs a Hello gesture; afterwards run `doberman 2fa setup` to enroll a new TOTP secret. If
+Hello is broken and you can't leave, an administrator can delete the `proof.json` file.
+`doberman doctor` shows the mode under Auth. This narrows what a script can do; it doesn't close
+the gap (see LIMITATIONS).
+
 ## 5. Check its health
 
 One read-only self-check that answers whether Doberman is wired up and healthy: host

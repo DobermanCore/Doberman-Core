@@ -18,6 +18,7 @@ import pytest
 from typer.testing import Result
 
 from doberman import config as _config_module
+from doberman.auth import hello_mode as _hello_mode
 from doberman.auth.password import PASSWORD_FILE_ENV
 from doberman.auth.totp import TOTP_FILE_ENV
 from doberman.egress import artifact as _artifact_module
@@ -184,6 +185,17 @@ def isolated_password_hash(tmp_path, monkeypatch):
     hash_path = tmp_path / "doberman-password.hash"
     monkeypatch.setenv(PASSWORD_FILE_ENV, str(hash_path))
     return hash_path
+
+
+@pytest.fixture(autouse=True)
+def isolated_hello_marker(monkeypatch):
+    """Hello-required mode stays off unless a test turns it on (ADR 0119).
+
+    A developer's real machine marker (ProgramData/doberman/proof.json) would otherwise
+    switch every proof-tier test to Hello. Tests turn the mode on through ``DOBERMAN_HELLO_MARKER``.
+    """
+    monkeypatch.setattr(_hello_mode, "_machine_marker_paths", lambda: [])
+    monkeypatch.delenv(_hello_mode.MARKER_ENV, raising=False)
 
 
 @pytest.fixture(autouse=True)

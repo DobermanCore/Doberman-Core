@@ -25,7 +25,8 @@ TPM 2.0, and the date.
    script can delete the key and force re-enrollment.
 5. **Does the prompt show from a hook process?** Trigger a 2FA-tier action from a coding agent so the
    prompt comes from Doberman's hook, which has no console window. Does the prompt appear in front,
-   behind other windows, or not at all? Doberman falls back to TOTP when the prompt cannot run.
+   behind other windows, or not at all? Doberman falls back to TOTP when the prompt cannot run,
+   except in Hello-required mode, where it denies.
 6. **Is the key TPM-backed or software-only?** After creating the key, does
    `KeyCredential.GetAttestationAsync` return `Success` (TPM attestation) or `NotSupported`
    (no TPM attestation)? Doberman treats anything else as unknown, never as TPM-backed.

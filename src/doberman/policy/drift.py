@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-from doberman.auth import password, totp
+from doberman.auth import hello_mode, password, totp
 from doberman.auth.challenge import Prompter
 from doberman.config import load_mode, load_policy, save_mode
 from doberman.models import Decision, ReasonCode, Verdict
@@ -215,7 +215,15 @@ def _render_diff(before: dict, after: dict, reason: str) -> str:
 def _verify_possession_factor(
     prompter: Prompter, *, action_label: str = "this policy weakening"
 ) -> tuple[bool, str]:
-    """Verify the strongest enrolled factor; never fall back after a failure."""
+    """Verify the strongest enrolled factor; never fall back after a failure.
+
+    In Hello-required mode (ADR 0119) the only factor is a Hello gesture: no TOTP code,
+    no password.
+    """
+    if hello_mode.is_on():
+        return hello_mode.verify(
+            f"Approve {action_label} with Windows Hello", action_id="policy-weaken"
+        )
     if totp.is_enrolled():
         code = prompter.read_code(f"Enter your 2FA code to authorize {action_label}")
         return (True, "two_factor") if totp.verify(code) else (False, "denied")
@@ -303,7 +311,7 @@ async def _run_gate_if_weaken(
     the setup wizard's own deferred mode/prefs gates) gets this for free.
     """
     if classification is Classification.weaken:
-        if not (totp.is_enrolled() or password.is_enrolled()):
+        if not (hello_mode.is_on() or totp.is_enrolled() or password.is_enrolled()):
             return False, "no_factor_enrolled"
         from doberman.auth.provider import CliPrompter
 

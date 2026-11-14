@@ -145,7 +145,9 @@ real verdicts with `doberman demo`. MCP-proxy wiring, the dashboard, the TUI, sc
 dashboard can copy their already-redacted decision details as JSON for review handoffs without
 exposing raw targets or paths. A script the agent writes and runs can answer its own prompts
 ([Limitations](docs/LIMITATIONS.md)); `doberman doctor` checks whether Claude Code's sandbox keeps
-your 2FA secret out of its reach, and [Setup §4](docs/SETUP.md) shows the settings.
+your 2FA secret out of its reach, and [Setup §4](docs/SETUP.md) shows the settings. On Windows,
+an opt-in Hello-required mode (`doberman 2fa hello enroll`) replaces the 2FA secret with a Windows
+Hello gesture, so no secret exists to steal; it narrows that gap, not closes it.
 
 Terminal explanations wrap to 60–78 columns. Paths and URLs remain intact, while other overlong
 tokens are split to stay within the configured width.

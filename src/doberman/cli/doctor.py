@@ -569,6 +569,38 @@ def _check_2fa() -> CheckResult:
     )
 
 
+def _check_hello_mode() -> CheckResult:
+    """ADR 0119: report Hello-required mode; flag a corrupt marker, a reappeared
+    ``totp.secret`` and the test-only marker override."""
+    from doberman.auth import hello_mode, totp
+
+    name = "Hello mode"
+    mode = hello_mode.mode()
+    if mode is hello_mode.Mode.off:
+        detail = "off (proof tier uses TOTP or an approval method)"
+        status = CheckStatus.OK
+    elif mode is hello_mode.Mode.corrupt:
+        detail = (
+            "corrupt marker - proof tier is refused until it is fixed; run "
+            "`doberman 2fa hello leave` from an administrator terminal, then enroll again"
+        )
+        status = CheckStatus.FAIL
+    elif totp.resolve_path().exists():
+        detail = (
+            "on, but a totp.secret file exists again - it is ignored; delete it "
+            "(something wrote it after enrollment)"
+        )
+        status = CheckStatus.FAIL
+    else:
+        detail = "on: proof tier needs a Windows Hello gesture; TOTP is refused"
+        status = CheckStatus.OK
+    if hello_mode.override_set():
+        detail += f"; {hello_mode.MARKER_ENV} is set (test-only marker override)"
+        if status is CheckStatus.OK:
+            status = CheckStatus.WARN
+    return CheckResult(name, status, detail)
+
+
 def _check_phone_approvals() -> CheckResult:
     from doberman.auth import approval_config, ntfy
 
@@ -738,6 +770,7 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("2FA", False, _check_2fa),
         _safe_check("Phone approvals", False, _check_phone_approvals),
         _safe_check("Password", False, _check_password),
+        _safe_check("Hello mode", False, _check_hello_mode),
         _safe_check("Agent sandbox", False, lambda: _check_agent_sandbox(path)),
         _safe_check("Fingerprint key", False, _check_fingerprint_key),
         _safe_check("Codex CLI", False, _check_codex_version),
