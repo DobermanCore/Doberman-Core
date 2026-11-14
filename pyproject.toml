@@ -52,7 +52,14 @@ dash = ["starlette", "uvicorn"]
 sbom = ["pip-audit"]
 # Windows Hello biometric approval (2FA). Windows-only; the backend degrades to a
 # TOTP fallback when this is absent or off-Windows, so it is never a hard dependency.
-winhello = ["winsdk; sys_platform == 'win32'"]
+# PyWinRT replaced winsdk (no wheels past CPython 3.12); winrt-runtime ships 3.11+ wheels.
+winhello = [
+    "winrt-runtime>=3,<5; sys_platform == 'win32'",
+    "winrt-Windows.Foundation; sys_platform == 'win32'",
+    "winrt-Windows.Security.Credentials; sys_platform == 'win32'",
+    "winrt-Windows.Security.Credentials.UI; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams; sys_platform == 'win32'",
+]
 
 [project.scripts]
 doberman = "doberman.cli.main:app"

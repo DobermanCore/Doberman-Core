@@ -1,23 +1,25 @@
 """Windows Hello approval method — a local biometric (face / fingerprint / PIN) tap.
 
-Uses the WinRT ``UserConsentVerifier`` API through the optional ``winsdk`` package
-(``pip install doberman-core[winhello]``). The verifier shows the system Windows
-Hello prompt carrying the action text; a successful verification is the possession
-+ inherence factor that replaces the TOTP code.
+The method talks to Windows through an injected :class:`HelloBackend`. The real one,
+:class:`WinRTHelloBackend`, uses the PyWinRT ``winrt-*`` packages
+(``pip install doberman-core[winhello]``): ``UserConsentVerifier`` shows the system
+Windows Hello prompt carrying the action text, and ``KeyCredentialManager`` holds the
+``doberman-proof`` key for :meth:`HelloBackend.sign` / :meth:`HelloBackend.public_key`
+(not used by any caller yet).
 
-This backend is **best-effort and fail-safe**:
+This method is **best-effort and fail-safe**:
 
-* Not Windows, ``winsdk`` not installed, or no Hello device enrolled →
-  :meth:`is_available` returns ``False`` (the challenge falls back to TOTP).
+* Not Windows, ``winrt`` not installed, or no Hello device enrolled →
+  :meth:`WindowsHelloMethod.is_available` returns ``False`` (the challenge falls back
+  to TOTP).
 * The verifier runs but the human cancels / fails / times out → ``denied``.
-* The prompt cannot be displayed at all (a console-process / windowing quirk of
-  the WinRT consent UI) → ``unavailable`` (fall back to TOTP), never ``approved``.
+* The prompt cannot be displayed at all, or the backend raises →
+  ``unavailable`` (fall back to TOTP), never ``approved``.
 
-The WinRT consent dialog historically prefers an owning window; from a bare
-console process it may report itself unusable, in which case this method defers to
-TOTP rather than blocking the human. Verify on a real Hello-enrolled machine — CI
-has neither ``winsdk`` nor a Hello device, so there ``is_available`` is ``False``
-and only the non-Windows path is exercised.
+The WinRT consent dialog historically prefers an owning window; from a bare console
+process it may report itself unusable, in which case this method defers to TOTP
+rather than blocking the human. Verify on a real Hello-enrolled machine
+(``docs/HELLO-HARDWARE-CHECKS.md``) — CI has neither ``winrt`` nor a Hello device.
 """
 
 from __future__ import annotations
@@ -25,35 +27,147 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from enum import Enum
+from typing import Protocol
 
 from doberman.auth.approval import ApprovalOutcome
 
 logger = logging.getLogger("doberman.auth.methods.windows_hello")
 
+#: The ``KeyCredentialManager`` key name Doberman signs proofs with.
+KEY_NAME = "doberman-proof"
 
-def _load_ui():  # pragma: no cover - requires winsdk on Windows
-    """Return the WinRT UserConsentVerifier UI module, or ``None`` if unavailable."""
+
+class HelloVerdict(Enum):
+    """What one Hello prompt produced. Only ``verified`` ever approves."""
+
+    verified = "verified"
+    cancelled = "cancelled"  # a real "no": cancel, failed match, retries exhausted
+    unavailable = "unavailable"  # the prompt could not run at all
+
+
+class HelloError(RuntimeError):
+    """Hello could not do what was asked (not installed, no key, refused)."""
+
+
+class HelloBackend(Protocol):
+    """The Windows Hello operations Doberman needs. Injected so tests can fake it."""
+
+    def available(self) -> bool: ...
+
+    def verify(self, prompt: str, *, timeout_s: float) -> HelloVerdict:
+        """Show the prompt. May raise ``TimeoutError`` (a deny) or anything else."""
+        ...
+
+    def sign(self, data: bytes) -> bytes: ...
+
+    def public_key(self) -> bytes: ...
+
+    def tpm_backed(self) -> bool | None:
+        """``True`` only when Windows attests the key; ``None`` when unknown."""
+        ...
+
+
+def _name(value: object) -> str:
+    """An enum's name, lowercased with ``_`` dropped (PyWinRT spells ``NOT_SUPPORTED``,
+    older bindings ``NotSupported``)."""
+    return str(getattr(value, "name", value)).lower().replace("_", "")
+
+
+def tpm_backed_from_attestation(status: object) -> bool | None:
+    """Map a ``KeyCredentialAttestationStatus`` to TPM-backed yes / no / unknown.
+
+    ``Success`` means Windows produced a TPM attestation (the certificate chain is
+    not verified here). ``NotSupported`` means the key has no TPM attestation.
+    Anything else is unknown — never "yes".
+    """
+    if status is None:
+        return None
+    return {"success": True, "notsupported": False}.get(_name(status))
+
+
+def _load_winrt():  # pragma: no cover - requires winrt on Windows
+    """Return ``(ui, credentials)`` WinRT modules, or ``None`` if unavailable."""
     if sys.platform != "win32":
         return None
     try:
-        from winsdk.windows.security.credentials import ui  # type: ignore
+        from winrt.windows.security import credentials  # type: ignore
+        from winrt.windows.security.credentials import ui  # type: ignore
     except Exception:  # noqa: BLE001 — any import failure means "not available"
         return None
-    return ui
+    return ui, credentials
 
 
-def _availability_is_available(ui) -> bool:  # pragma: no cover - requires winsdk
-    """Await ``UserConsentVerifier.check_availability_async`` and test == Available.
+class WinRTHelloBackend:
+    """The real backend over PyWinRT. Every method is safe to call off-Windows."""
 
-    Robust to winsdk enum spelling: compares the result's name case-insensitively
-    to ``available`` rather than pinning a specific enum member object.
-    """
+    def available(self) -> bool:
+        mods = _load_winrt()
+        if mods is None:
+            return False
+        ui, _ = mods  # pragma: no cover - requires winrt on Windows
 
-    async def _check():
-        return await ui.UserConsentVerifier.check_availability_async()
+        async def _check():  # pragma: no cover
+            return await ui.UserConsentVerifier.check_availability_async()
 
-    result = asyncio.run(_check())
-    return str(getattr(result, "name", result)).lower() == "available"
+        return _name(asyncio.run(_check())) == "available"  # pragma: no cover
+
+    def verify(self, prompt: str, *, timeout_s: float) -> HelloVerdict:
+        mods = _load_winrt()
+        if mods is None:
+            return HelloVerdict.unavailable
+        ui, _ = mods  # pragma: no cover - requires winrt on Windows
+
+        async def _verify():  # pragma: no cover
+            return await ui.UserConsentVerifier.request_verification_async(prompt)
+
+        result = asyncio.run(asyncio.wait_for(_verify(), timeout=timeout_s))  # pragma: no cover
+        return (  # pragma: no cover
+            HelloVerdict.verified if _name(result) == "verified" else HelloVerdict.cancelled
+        )
+
+    def _open_key(self):
+        mods = _load_winrt()
+        if mods is None:
+            raise HelloError("Windows Hello (winrt) is not available")
+        _, cred = mods  # pragma: no cover - requires winrt on Windows
+
+        async def _open():  # pragma: no cover
+            return await cred.KeyCredentialManager.open_async(KEY_NAME)
+
+        res = asyncio.run(_open())  # pragma: no cover
+        if _name(res.status) != "success":  # pragma: no cover
+            raise HelloError(f"Hello key {KEY_NAME!r} not usable: {_name(res.status)}")
+        return res.credential  # pragma: no cover
+
+    def sign(self, data: bytes) -> bytes:
+        key = self._open_key()
+
+        async def _sign():  # pragma: no cover - requires winrt on Windows
+            return await key.request_sign_async(data)
+
+        res = asyncio.run(_sign())  # pragma: no cover
+        if _name(res.status) != "success":  # pragma: no cover
+            raise HelloError(f"Hello signing refused: {_name(res.status)}")
+        return bytes(res.result)  # pragma: no cover
+
+    def public_key(self) -> bytes:
+        # X.509 SubjectPublicKeyInfo DER (the WinRT default blob type).
+        return bytes(self._open_key().retrieve_public_key())
+
+    def tpm_backed(self) -> bool | None:
+        try:
+            key = self._open_key()
+        except Exception:  # noqa: BLE001 — no key / no winrt: unknown, never yes
+            return None
+
+        async def _attest():  # pragma: no cover - requires winrt on Windows
+            return await key.get_attestation_async()
+
+        try:  # pragma: no cover
+            return tpm_backed_from_attestation(asyncio.run(_attest()).status)
+        except Exception:  # noqa: BLE001  # pragma: no cover
+            return None
 
 
 class WindowsHelloMethod:
@@ -61,45 +175,35 @@ class WindowsHelloMethod:
 
     name = "windows_hello"
 
+    def __init__(self, backend: HelloBackend | None = None) -> None:
+        self._backend: HelloBackend = backend if backend is not None else WinRTHelloBackend()
+
     def is_available(self) -> bool:
-        """True only on Windows with ``winsdk`` installed and Hello reporting
-        available. Conservative and never raises: any failure returns ``False``."""
-        ui = _load_ui()
-        if ui is None:
-            return False
-        try:  # pragma: no cover - requires winsdk on Windows
-            return _availability_is_available(ui)
+        """True only when the backend says Hello is available. Conservative and never
+        raises: any failure or non-``True`` answer returns ``False``."""
+        try:
+            return self._backend.available() is True
         except Exception:  # noqa: BLE001 — any doubt means not available
             logger.debug("Windows Hello availability check failed; treating as unavailable")
             return False
 
-    def request(
-        self, prompt: str, *, action_id: str, timeout_s: float
-    ) -> ApprovalOutcome:  # pragma: no cover - requires winsdk on Windows
+    def request(self, prompt: str, *, action_id: str, timeout_s: float) -> ApprovalOutcome:
         """Show the Hello prompt for ``prompt`` and map the result.
 
-        ``Verified`` → approved; any other result (cancel/fail/retries-exhausted)
-        → denied; a timeout → denied; a display/interop failure → unavailable so
-        the caller falls back to TOTP. Never raises (the resolver would deny it
-        anyway, but returning cleanly lets the unavailable→TOTP path work).
+        ``verified`` → approved; ``unavailable`` → unavailable (the caller falls back
+        to TOTP); a timeout → denied; the backend raising → unavailable; anything
+        else (cancel, failed match, an unexpected value) → denied. Never raises.
         """
-        ui = _load_ui()
-        if ui is None:
-            return ApprovalOutcome.unavailable
-
-        async def _verify():
-            return await ui.UserConsentVerifier.request_verification_async(prompt)
-
         try:
-            result = asyncio.run(asyncio.wait_for(_verify(), timeout=timeout_s))
-        except asyncio.TimeoutError:
+            verdict = self._backend.verify(prompt, timeout_s=timeout_s)
+        except TimeoutError:
             logger.info("Windows Hello verification timed out; denying")
             return ApprovalOutcome.denied
         except Exception:  # noqa: BLE001 — could not display/run the prompt → defer to TOTP
             logger.info("Windows Hello could not run the prompt; falling back", exc_info=True)
             return ApprovalOutcome.unavailable
-        return (
-            ApprovalOutcome.approved
-            if str(getattr(result, "name", result)).lower() == "verified"
-            else ApprovalOutcome.denied
-        )
+        if verdict is HelloVerdict.verified:
+            return ApprovalOutcome.approved
+        if verdict is HelloVerdict.unavailable:
+            return ApprovalOutcome.unavailable
+        return ApprovalOutcome.denied

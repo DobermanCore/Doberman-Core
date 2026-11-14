@@ -15,6 +15,7 @@ Use this index to find the right Doberman documentation for your task.
 | [CONNECTOR_MEMO_202_HOSTS.md](CONNECTOR_MEMO_202_HOSTS.md) | Open this before picking up the rest of #202: why the generic MCP bridge is mostly `doberman serve` already (transport gap only), why Continue CLI waits on upstream wiring, and why Aider has no supported interception surface. |
 | [AUTHORITY_TIERS.md](AUTHORITY_TIERS.md) | Open this when you need to know which layer of a Doberman decision is allowed to `BLOCK` versus only ever step up to `AUTH`, and why. |
 | [BENCHMARKS.md](BENCHMARKS.md) | Open this when evaluating Doberman's protection results, reproducing benchmark numbers, or understanding what those metrics do and do not prove. |
+| [HELLO-HARDWARE-CHECKS.md](HELLO-HARDWARE-CHECKS.md) | Open this when testing the Windows Hello approval method on a real machine and recording what it does. |
 | [RELEASING.md](RELEASING.md) | Open this when preparing and publishing a Doberman-Core release and verifying the required checks and evidence. |
 | [ROADMAP.md](../ROADMAP.md) | Open this for a quick summary of what's planned or in progress, with a link to the full GitHub roadmap board. |
 | [audit_otel.md](audit_otel.md) | Open this when sending Doberman's redacted decision records to an OpenTelemetry-compatible collector. |
