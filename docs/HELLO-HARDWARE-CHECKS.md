@@ -39,5 +39,10 @@ TPM 2.0, and the date.
 | --- | --- | --- | --- | --- |
 | 2026-11-14 | Windows 11 Home 10.0.26200 | 7 | `pip install` of the `winrt-*` packages on CPython 3.13 succeeded; the import failed with "An Application Control policy has blocked this file" for `_winrt`. | Claude |
 | 2026-11-14 | Windows 11 Home 10.0.26200 | Availability only | From Windows PowerShell 5.1 (not Doberman's Python path): `UserConsentVerifier` reports `Available`, `KeyCredentialManager.IsSupportedAsync` is `True`, no `doberman-proof` key exists. | Claude |
+| 2026-11-14 | Windows 11 Home 10.0.26200 | 1 | From a second process at the same user's normal (medium) integrity, posting Escape or close to the prompt window failed with access denied, and ending the prompt's process failed too. A global synthetic keypress went to the window in front, not the prompt, because the prompt was behind other windows. Typing into the prompt while it is in front was not tried. | Claude |
+| 2026-11-14 | Windows 11 Home 10.0.26200 | 2 | The prompt was an ordinary window on the normal desktop, listed by other programs as "Windows Security". The screen did not switch to the secure desktop. | Claude |
+| 2026-11-14 | Windows 11 Home 10.0.26200 | 5 | A prompt started from a process with no console window opened behind other windows and was never answered. The request timed out after 40 seconds, and Doberman denies on a timeout. | Claude |
+| 2026-11-14 | Windows 11 Home 10.0.26200 | 6 | TPM 2.0 present and ready for attestation. No `doberman-proof` key was created, because creating one needs a gesture. | Claude |
+| 2026-11-14 | Windows 11 Home 10.0.26200 | 3, 4 | Not run: each needs a person. The machine has an IR camera with Hello face sign-in and a fingerprint reader. | Claude |
 
-Checks 1 to 6 have not been run yet. They each need a person to make or withhold a Hello gesture.
+Checks 3 and 4 still need a person. Check 1 is only partly answered: a same-user program could not message or end the prompt, but nobody tried typing into it while it was in front.
