@@ -2132,8 +2132,9 @@ def twofa_remove() -> None:
         )
 
 
-def _hello_preflight(verb: str) -> None:
-    """Shared refusals for `2fa hello enroll|leave`: Windows only, and elevated."""
+def _hello_preflight(verb: str) -> Path:
+    """Shared refusals for `2fa hello enroll|leave`: Windows only, elevated, and the
+    machine marker location (never the test override on a real machine). Returns it."""
     from doberman.auth import hello_mode
 
     if not hello_mode.supported():
@@ -2147,6 +2148,11 @@ def _hello_preflight(verb: str) -> None:
             err=True,
         )
         raise typer.Exit(code=1)
+    try:
+        return hello_mode.admin_marker_path()
+    except (hello_mode.HelloModeError, OSError) as exc:
+        typer.echo(f"error: {exc}; nothing was changed", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @hello_app.command("enroll")
@@ -2158,7 +2164,7 @@ def twofa_hello_enroll() -> None:
     """
     from doberman.auth import hello_mode
 
-    _hello_preflight("enroll")
+    path = _hello_preflight("enroll")
     if hello_mode.is_on():
         typer.echo("error: Hello-required mode is already on (or its marker is corrupt)", err=True)
         raise typer.Exit(code=1)
@@ -2193,12 +2199,10 @@ def twofa_hello_enroll() -> None:
         )
         raise typer.Exit(code=1)
     try:
-        path = hello_mode.marker_path()
-        if path is None:
-            raise OSError("no marker location")
         hello_mode.write_marker(path, public_key)
     except Exception as exc:  # noqa: BLE001 - no marker means the mode stays off
-        typer.echo(f"error: could not write the marker ({type(exc).__name__})", err=True)
+        why = str(exc) if isinstance(exc, hello_mode.HelloModeError) else type(exc).__name__
+        typer.echo(f"error: could not write the marker ({why}); nothing was changed", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Hello-required mode is on (marker: {path}).")
     try:

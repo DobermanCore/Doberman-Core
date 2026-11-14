@@ -25,7 +25,7 @@ from doberman.auth.provider import LocalAuthProvider
 from doberman.cli import doctor
 from doberman.cli.main import app
 from doberman.hosthooks import hookio
-from doberman.models import ReasonCode
+from doberman.models import ReasonCode, Risk
 from doberman.policy import drift
 from doberman.storage import approvals
 from doberman.storage.heartbeat import touch_heartbeat
@@ -546,6 +546,7 @@ def test_doctor_reports_on_without_override(tmp_path, monkeypatch):
     machine = tmp_path / "proof.json"
     _write_marker(machine)
     monkeypatch.setattr(hello_mode, "_machine_marker_paths", lambda: [machine])
+    monkeypatch.setattr(hello_mode, "_owner_sid", lambda d: hello_mode.ADMINS_SID)
     monkeypatch.delenv(hello_mode.MARKER_ENV, raising=False)
     check = _hello_check()
     assert (check.status, check.detail.split()[0]) == (doctor.CheckStatus.OK, "on:")
@@ -668,37 +669,247 @@ def test_machine_locations_unknown_is_an_error_so_the_mode_is_on(real_locations,
     assert hello_mode.is_on() is True
 
 
-def test_marker_path_prefers_the_override_then_the_machine(real_locations, monkeypatch, tmp_path):
+def test_override_is_the_admin_path_only_without_a_machine_location(marker):
+    assert hello_mode.admin_marker_path() == marker
+
+
+def test_machine_location_is_the_admin_path(real_locations, monkeypatch, tmp_path):
     monkeypatch.setattr(hello_mode, "supported", lambda: True)
     monkeypatch.setattr(hello_mode, "_known_program_data", lambda: tmp_path)
     monkeypatch.delenv(hello_mode.MARKER_ENV, raising=False)
-    assert hello_mode.marker_path() == tmp_path / "doberman" / "proof.json"
-    monkeypatch.setenv(hello_mode.MARKER_ENV, str(tmp_path / "o.json"))
-    assert hello_mode.marker_path() == tmp_path / "o.json"
+    assert hello_mode.admin_marker_path() == tmp_path / "doberman" / "proof.json"
 
 
-def test_machine_marker_write_sets_the_acl_first(real_locations, monkeypatch, tmp_path):
-    calls = []
-    monkeypatch.setattr(hello_mode, "_restrict_dir", lambda d: calls.append(d))
+def test_override_with_a_machine_location_is_refused(real_locations, monkeypatch, tmp_path):
+    """A script can `setx` the override; an elevated terminal would inherit it."""
+    monkeypatch.setattr(hello_mode, "supported", lambda: True)
+    monkeypatch.setattr(hello_mode, "_known_program_data", lambda: tmp_path)
+    monkeypatch.setenv(hello_mode.MARKER_ENV, str(tmp_path / "user" / "o.json"))
+    with pytest.raises(hello_mode.HelloModeError, match=hello_mode.MARKER_ENV):
+        hello_mode.admin_marker_path()
+
+
+@pytest.fixture
+def machine_dir(tmp_path, monkeypatch):
+    """A machine marker location with the Windows security helpers faked."""
+    target = tmp_path / "ProgramData" / "doberman" / "proof.json"
+    target.parent.parent.mkdir()
+    monkeypatch.setattr(hello_mode, "_machine_marker_paths", lambda: [target])
     monkeypatch.delenv(hello_mode.MARKER_ENV, raising=False)
-    target = tmp_path / "doberman" / "proof.json"
+    calls: dict[str, list] = {"created": [], "acl": []}
+    owner = {"sid": hello_mode.ADMINS_SID}
+
+    def _create(d):
+        d.mkdir()
+        calls["created"].append(d)
+
+    monkeypatch.setattr(hello_mode, "_create_secure_dir", _create)
+    monkeypatch.setattr(hello_mode, "_apply_marker_acl", lambda d: calls["acl"].append(d))
+    monkeypatch.setattr(hello_mode, "_owner_sid", lambda d: owner["sid"])
+    monkeypatch.setattr(hello_mode, "_is_reparse_point", lambda d: False)
+    return target, calls, owner
+
+
+def test_machine_marker_dir_is_created_with_its_security(machine_dir):
+    target, calls, _ = machine_dir
     hello_mode.write_marker(target, _PUBKEY)
-    assert calls == [target.parent]
+    assert calls["created"] == [target.parent]
     assert hello_mode._state_of(target) is hello_mode.Mode.on
 
 
-def test_machine_marker_acl_failure_writes_nothing(real_locations, monkeypatch, tmp_path):
-    def _fail(d):
-        raise OSError("icacls failed")
+def test_existing_admin_owned_dir_gets_the_acl_reapplied(machine_dir):
+    target, calls, _ = machine_dir
+    target.parent.mkdir()
+    hello_mode.write_marker(target, _PUBKEY)
+    assert calls == {"created": [], "acl": [target.parent]}
+    assert hello_mode._state_of(target) is hello_mode.Mode.on
 
-    monkeypatch.setattr(hello_mode, "_restrict_dir", _fail)
-    monkeypatch.delenv(hello_mode.MARKER_ENV, raising=False)
-    target = tmp_path / "doberman" / "proof.json"
+
+def test_dir_a_user_created_first_is_refused(machine_dir):
+    target, calls, owner = machine_dir
+    target.parent.mkdir()
+    owner["sid"] = "S-1-5-21-1-2-3-1001"
+    with pytest.raises(hello_mode.HelloModeError, match="not owned by Administrators"):
+        hello_mode.write_marker(target, _PUBKEY)
+    assert not target.exists() and calls["acl"] == []
+
+
+def test_dir_that_is_a_reparse_point_is_refused(machine_dir, monkeypatch):
+    target, calls, _ = machine_dir
+    target.parent.mkdir()
+    monkeypatch.setattr(hello_mode, "_is_reparse_point", lambda d: True)
+    with pytest.raises(hello_mode.HelloModeError, match="reparse point"):
+        hello_mode.write_marker(target, _PUBKEY)
+    assert not target.exists() and calls["acl"] == []
+
+
+def test_dir_securing_failure_writes_nothing(machine_dir, monkeypatch):
+    target, _, _ = machine_dir
+
+    def _fail(d):
+        raise OSError("CreateDirectoryW failed")
+
+    monkeypatch.setattr(hello_mode, "_create_secure_dir", _fail)
     with pytest.raises(OSError):
         hello_mode.write_marker(target, _PUBKEY)
     assert not target.exists()
 
 
+def test_a_planted_tmp_file_is_never_reused(machine_dir):
+    target, _, _ = machine_dir
+    target.parent.mkdir()
+    planted = target.with_name(target.name + ".tmp")
+    planted.write_text("planted", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        hello_mode.write_marker(target, _PUBKEY)
+    assert planted.read_text(encoding="utf-8") == "planted"
+    assert not target.exists()
+
+
+def test_reparse_check_sees_a_symlink(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create a symlink here")
+    assert hello_mode._is_reparse_point(link) is True
+    assert hello_mode._is_reparse_point(real) is False
+
+
+@pytest.mark.parametrize("cmd", ["enroll", "leave"])
+def test_cli_refuses_while_the_override_is_set_on_a_machine(
+    machine_dir, windows, backend, enrolled_totp, monkeypatch, tmp_path, cmd
+):
+    target, _, _ = machine_dir
+    if cmd == "leave":
+        target.parent.mkdir()
+        _write_marker(target)
+    user_marker = tmp_path / "user" / "proof.json"
+    monkeypatch.setenv(hello_mode.MARKER_ENV, str(user_marker))
+    result, out = _cli(["2fa", "hello", cmd], _valid_code() + "\n")
+    assert result.exit_code == 1
+    assert hello_mode.MARKER_ENV in out
+    assert not user_marker.exists()
+    assert enrolled_totp.exists()
+    assert target.exists() is (cmd == "leave")
+
+
+def test_cli_enroll_writes_only_the_machine_path(machine_dir, windows, backend, enrolled_totp):
+    target, calls, _ = machine_dir
+    result, out = _cli(["2fa", "hello", "enroll"], _valid_code() + "\n")
+    assert result.exit_code == 0, out
+    assert hello_mode._state_of(target) is hello_mode.Mode.on
+    assert calls["created"] == [target.parent]
+    assert not enrolled_totp.exists()
+
+
+@pytest.mark.parametrize("problem", ["reparse", "owner"])
+def test_doctor_fails_on_an_unsafe_marker_dir(machine_dir, monkeypatch, problem):
+    target, _, owner = machine_dir
+    target.parent.mkdir()
+    if problem == "reparse":
+        monkeypatch.setattr(hello_mode, "_is_reparse_point", lambda d: True)
+    else:
+        owner["sid"] = "S-1-5-21-1-2-3-1001"
+    check = _hello_check()
+    assert check.status is doctor.CheckStatus.FAIL
+    assert ("reparse" if problem == "reparse" else "not owned") in check.detail
+
+
+def test_doctor_says_any_marker_forces_the_mode_on(mode_on):
+    detail = _hello_check().detail
+    assert "even one" in detail and "administrator" in detail
+
+
 def test_is_elevated_is_false_off_windows(monkeypatch):
     monkeypatch.setattr(hello_mode, "supported", lambda: False)
     assert hello_mode.is_elevated() is False
+
+
+# --- approval memory never covers proof tier in the mode -----------------------------------
+
+
+def _memory_case(tmp_path):
+    from tests.unit.test_approval_memory import NOW, _remember
+    from tests.unit.test_approval_memory import _action as mem_action
+    from tests.unit.test_approval_memory import _decision as mem_decision
+
+    root = str(tmp_path)
+    action = mem_action()
+    decision = mem_decision(risk=Risk.high, reasons=[ReasonCode.sensitive_secret_access])
+    return root, action, decision, NOW, _remember
+
+
+def test_memory_hit_in_the_mode_still_needs_hello(mode_on, backend, tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    from doberman.auth.challenge import run_auth_challenge
+    from doberman.auth.provider import LOCAL_PROVIDER
+
+    root, action, decision, now, remember = _memory_case(tmp_path)
+    asyncio.run(
+        remember(
+            root,
+            action.action_fingerprint,
+            required_tier=AuthTier.two_factor.value,
+            approved_at=now - timedelta(minutes=2),
+        )
+    )
+    monkeypatch.setattr("doberman.auth.provider.active_provider", lambda: LOCAL_PROVIDER)
+    backend(available=False)
+    prompter = CodePrompter()
+    result = run_auth_challenge(
+        decision, action, prompter=prompter, at=now, repo_root=root, session_id="session-a"
+    )
+    assert result.approved is False
+    assert result.tier is AuthTier.two_factor
+    assert prompter.asked == []
+
+
+def test_a_hello_approval_is_not_remembered_in_the_mode(mode_on, backend, tmp_path, monkeypatch):
+    from doberman.auth.challenge import run_auth_challenge
+    from doberman.auth.provider import LOCAL_PROVIDER
+    from doberman.storage.approval_memory import lookup
+
+    root, action, decision, now, _ = _memory_case(tmp_path)
+    monkeypatch.setattr("doberman.auth.provider.active_provider", lambda: LOCAL_PROVIDER)
+    result = run_auth_challenge(
+        decision, action, prompter=CodePrompter(), at=now, repo_root=root, session_id="session-a"
+    )
+    assert result.approved is True and result.method == "windows_hello"
+    stored = asyncio.run(
+        lookup(action.action_fingerprint, repo_root=root, session_id="session-a", now=now)
+    )
+    assert stored is None
+
+
+# --- the hook deny message can never raise ------------------------------------------------
+
+
+def test_hook_deny_message_survives_hello_mode_failing_to_import(monkeypatch):
+    import sys
+
+    import doberman.auth
+
+    monkeypatch.delattr(doberman.auth, "hello_mode")
+    monkeypatch.setitem(sys.modules, "doberman.auth.hello_mode", None)  # import now raises
+    text = hookio._auth_denied_reason(_decision(), channel_error=False, method="hello_required")
+    assert "Next step" in text
+
+
+# --- async: the stored challenge's tier decides ------------------------------------------
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_a_lower_tier_handle_copy_cannot_approve_without_proof(marker, on):
+    import dataclasses
+
+    if on:
+        _write_marker(marker)
+    be, handle = _issue(AuthTier.two_factor)
+    forged = dataclasses.replace(handle, tier=AuthTier.local_auth)
+    result = async_challenge.resolve_challenge(forged, approved=True, backend=be)
+    assert result.approved is False
+    assert result.tier is AuthTier.two_factor

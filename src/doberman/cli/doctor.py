@@ -571,7 +571,7 @@ def _check_2fa() -> CheckResult:
 
 def _check_hello_mode() -> CheckResult:
     """ADR 0119: report Hello-required mode; flag a corrupt marker, a reappeared
-    ``totp.secret`` and the test-only marker override."""
+    ``totp.secret``, an unsafe marker folder and the test-only marker override."""
     from doberman.auth import hello_mode, totp
 
     name = "Hello mode"
@@ -592,8 +592,16 @@ def _check_hello_mode() -> CheckResult:
         )
         status = CheckStatus.FAIL
     else:
-        detail = "on: proof tier needs a Windows Hello gesture; TOTP is refused"
+        detail = (
+            "on: proof tier needs a Windows Hello gesture; TOTP is refused. Any marker "
+            "file turns this on, even one never enrolled here; turning it off needs an "
+            "administrator (`doberman 2fa hello leave`)"
+        )
         status = CheckStatus.OK
+    problems = hello_mode.marker_dir_problems()
+    if problems:
+        detail += "; unsafe marker folder: " + "; ".join(problems)
+        status = CheckStatus.FAIL
     if hello_mode.override_set():
         detail += f"; {hello_mode.MARKER_ENV} is set (test-only marker override)"
         if status is CheckStatus.OK:

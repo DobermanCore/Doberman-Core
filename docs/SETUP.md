@@ -450,7 +450,9 @@ doberman 2fa hello enroll
 
 It asks for your current 2FA code and a Hello gesture, refuses a Hello key that isn't TPM-backed,
 writes `%ProgramData%\doberman\proof.json` (only administrators can change it), and then deletes
-your `totp.secret`. If Hello can't run (no sensor, a remote session, a broken PIN), proof-tier
+your `totp.secret`. It refuses if that folder already exists but isn't owned by Administrators,
+or is a link. Any `proof.json` there turns the mode on, even one you never enrolled; only an
+administrator can remove it. If Hello can't run (no sensor, a remote session, a broken PIN), proof-tier
 actions are denied, not sent back to TOTP. The Hello prompt can open behind other windows; look
 for it on the taskbar before it times out. To turn the mode off, again as administrator:
 

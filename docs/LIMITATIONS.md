@@ -571,5 +571,4 @@ UAC at its default level can be bypassed on an administrator account, so the mar
 the mode on is only as strong as your elevation boundary.
 
 If a task needs a human in the loop that the agent cannot reach at all, run the agent as a
-different OS user or in a container that can't see your profile or Doberman's database. needs a human in the loop that the agent cannot reach at all, run the agent as
-a different OS user or in a container that can't see your profile or Doberman's database.
+different OS user or in a container that can't see your profile or Doberman's database.

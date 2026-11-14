@@ -17,8 +17,9 @@ This narrows the "a script can answer its own prompt" gap (no 2FA secret exists 
 it does not close it. See docs/LIMITATIONS.md.
 
 ``DOBERMAN_HELLO_MARKER`` is a TEST-ONLY override. It can only ADD a marker location: it
-never hides a machine marker, so setting it cannot turn the mode off. ``doctor`` warns when
-it is set.
+never hides a machine marker, so setting it cannot turn the mode off, and ``enroll`` /
+``leave`` refuse to run while it is set on a machine that has a machine location (a script can
+``setx`` it, and an elevated terminal would inherit it). ``doctor`` warns when it is set.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import binascii
 import json
 import logging
 import os
-import subprocess  # noqa: S404 - icacls with a fixed argument list
+import stat
 import sys
 from datetime import datetime, timezone
 from enum import Enum
@@ -63,8 +64,13 @@ FIX_HINT = (
     "with `doberman 2fa hello leave`."
 )
 
-# Administrators, SYSTEM, Users: well-known SIDs, so the ACL does not depend on the locale.
-_ADMINS, _SYSTEM, _USERS = "*S-1-5-32-544", "*S-1-5-18", "*S-1-5-32-545"
+ADMINS_SID, SYSTEM_SID = "S-1-5-32-544", "S-1-5-18"
+#: Owner Administrators; protected DACL: Administrators and SYSTEM full, Users read+execute.
+_MARKER_DIR_SDDL = "O:BAG:SYD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)"
+
+
+class HelloModeError(RuntimeError):
+    """Enroll or leave cannot safely proceed (nothing was changed)."""
 
 
 class Mode(str, Enum):
@@ -139,13 +145,23 @@ def override_set() -> bool:
     return _override_path() is not None
 
 
-def marker_path() -> Path | None:
-    """Where enroll writes: the test override when set, else the machine location."""
-    override = _override_path()
-    if override is not None:
-        return override
+def admin_marker_path() -> Path:
+    """Where enroll writes and what leave removes.
+
+    Always the machine location when one exists, and then the test override is refused
+    outright. The override is used only where no machine location exists (tests).
+    """
     machine = _machine_marker_paths()
-    return machine[0] if machine else None
+    if machine:
+        if override_set():
+            raise HelloModeError(
+                f"{MARKER_ENV} is set; it is a test-only override, so unset it and run again"
+            )
+        return machine[0]
+    override = _override_path()
+    if override is None:
+        raise HelloModeError("there is no marker location on this machine")
+    return override
 
 
 def _candidates() -> list[Path]:
@@ -245,35 +261,146 @@ def is_elevated() -> bool:
         return False
 
 
-def _icacls(*args: str) -> None:  # pragma: no cover - Windows only
-    subprocess.run(["icacls", *args, "/C", "/Q"], check=True, capture_output=True)  # noqa: S603 S607
-
-
-def _restrict_dir(directory: Path) -> None:  # pragma: no cover - Windows only
-    """Administrators own the folder and alone may write it; Users may only read.
-
-    Ownership moves to Administrators first, so a folder a user pre-created cannot keep
-    its owner's implicit right to rewrite the ACL; explicit entries are then reset and
-    inheritance from ProgramData (which lets Users create files) is cut.
-    """
-    target = str(directory)
-    _icacls(target, "/setowner", _ADMINS, "/T")
-    _icacls(target, "/reset", "/T")
-    _icacls(
-        target,
-        "/inheritance:r",
-        "/grant:r",
-        f"{_ADMINS}:(OI)(CI)F",
-        f"{_SYSTEM}:(OI)(CI)F",
-        f"{_USERS}:(OI)(CI)RX",
+def _is_reparse_point(path: Path) -> bool:
+    """True for a junction, symlink or other reparse point (never followed)."""
+    st = os.lstat(path)
+    return stat.S_ISLNK(st.st_mode) or bool(
+        getattr(st, "st_file_attributes", 0) & 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
     )
+
+
+def _owner_sid(path: Path) -> str:  # pragma: no cover - Windows only
+    """The owner SID of ``path`` as a string (``S-1-5-32-544``)."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32, kernel32 = ctypes.WinDLL("advapi32"), ctypes.WinDLL("kernel32")
+    owner, sd = ctypes.c_void_p(), ctypes.c_void_p()
+    # SE_FILE_OBJECT = 1, OWNER_SECURITY_INFORMATION = 1
+    err = advapi32.GetNamedSecurityInfoW(
+        str(path), 1, 1, ctypes.byref(owner), None, None, None, ctypes.byref(sd)
+    )
+    if err:
+        raise ctypes.WinError(err)
+    try:
+        text = wintypes.LPWSTR()
+        if not advapi32.ConvertSidToStringSidW(owner, ctypes.byref(text)):
+            raise ctypes.WinError()
+        try:
+            return str(text.value)
+        finally:
+            kernel32.LocalFree(text)
+    finally:
+        kernel32.LocalFree(sd)
+
+
+class _SecurityDescriptor:  # pragma: no cover - Windows only
+    """The marker folder's descriptor from :data:`_MARKER_DIR_SDDL`, freed on exit."""
+
+    def __enter__(self):
+        import ctypes
+
+        self._ctypes = ctypes
+        self.sd = ctypes.c_void_p()
+        if not ctypes.WinDLL("advapi32").ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            _MARKER_DIR_SDDL, 1, ctypes.byref(self.sd), None
+        ):
+            raise ctypes.WinError()
+        return self.sd
+
+    def __exit__(self, *exc):
+        self._ctypes.WinDLL("kernel32").LocalFree(self.sd)
+
+
+def _create_secure_dir(directory: Path) -> None:  # pragma: no cover - Windows only
+    """Create the folder with its descriptor applied at creation (fails if it exists)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _SA(ctypes.Structure):
+        _fields_ = [
+            ("nLength", wintypes.DWORD),
+            ("lpSecurityDescriptor", ctypes.c_void_p),
+            ("bInheritHandle", wintypes.BOOL),
+        ]
+
+    with _SecurityDescriptor() as sd:
+        sa = _SA(ctypes.sizeof(_SA), sd, False)
+        if not ctypes.WinDLL("kernel32").CreateDirectoryW(str(directory), ctypes.byref(sa)):
+            raise ctypes.WinError()
+
+
+def _apply_marker_acl(directory: Path) -> None:  # pragma: no cover - Windows only
+    """Replace an existing admin-owned folder's owner and DACL with the marker descriptor."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32")
+    with _SecurityDescriptor() as sd:
+        owner, dacl = ctypes.c_void_p(), ctypes.c_void_p()
+        defaulted, present = wintypes.BOOL(), wintypes.BOOL()
+        if not advapi32.GetSecurityDescriptorOwner(
+            sd, ctypes.byref(owner), ctypes.byref(defaulted)
+        ):
+            raise ctypes.WinError()
+        if not advapi32.GetSecurityDescriptorDacl(
+            sd, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)
+        ):
+            raise ctypes.WinError()
+        # OWNER | DACL | PROTECTED_DACL security information, on SE_FILE_OBJECT.
+        err = advapi32.SetNamedSecurityInfoW(
+            str(directory), 1, 0x1 | 0x4 | 0x80000000, owner, None, dacl, None
+        )
+        if err:
+            raise ctypes.WinError(err)
+
+
+def _dir_problem(directory: Path) -> str | None:
+    """Why an existing marker folder cannot be trusted, or ``None``."""
+    if _is_reparse_point(directory):
+        return f"{directory} is a reparse point (junction or link)"
+    if _owner_sid(directory) not in (ADMINS_SID, SYSTEM_SID):
+        return f"{directory} is not owned by Administrators"
+    return None
+
+
+def marker_dir_problems() -> list[str]:
+    """Doctor: problems with any existing machine marker folder."""
+    problems = []
+    for p in _machine_marker_paths():
+        if os.path.lexists(p.parent):
+            problem = _dir_problem(p.parent)
+            if problem:
+                problems.append(problem)
+    return problems
+
+
+def _secure_marker_dir(directory: Path) -> None:
+    """Make sure only administrators can change the marker folder, or raise.
+
+    A folder that already exists (Users may create folders in ProgramData) is refused if it
+    is a reparse point or not owned by Administrators/SYSTEM; an admin-owned one gets the
+    marker descriptor reapplied. A missing one is created with the descriptor applied at
+    creation, so there is no moment with a weaker ACL. Checked again afterwards.
+    """
+    if os.path.lexists(directory):
+        problem = _dir_problem(directory)
+        if problem:
+            raise HelloModeError(f"{problem}; delete it from an administrator terminal first")
+        _apply_marker_acl(directory)
+    else:
+        _create_secure_dir(directory)
+    problem = _dir_problem(directory)
+    if problem:
+        raise HelloModeError(f"could not secure the marker folder: {problem}")
 
 
 def write_marker(path: Path, public_key: bytes, *, now: datetime | None = None) -> None:
     """Write a v1 marker holding the pinned public key (slice 3 verifies against it).
 
-    A machine location gets an admins-only ACL BEFORE the file is written; if that fails
-    nothing is written. The test override location is written as a plain file.
+    A machine location's folder is secured BEFORE anything is written; if that fails,
+    nothing is written. The temp file is created exclusively, so a planted one is never
+    reused. The test override location (no machine location exists) is a plain file.
     """
     when = (now or datetime.now(timezone.utc)).isoformat()
     body = {
@@ -281,12 +408,19 @@ def write_marker(path: Path, public_key: bytes, *, now: datetime | None = None) 
         "public_key": base64.b64encode(public_key).decode("ascii"),
         "enrolled_at": when,
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path != _override_path():
-        _restrict_dir(path.parent)
+    if path in _machine_marker_paths():
+        _secure_marker_dir(path.parent)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(body, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(body, sort_keys=True))
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def remove_markers() -> list[Path]:

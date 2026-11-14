@@ -368,7 +368,8 @@ class InMemoryAsyncBackend:
         # hosted TOTP service — that is intentionally out of scope for this module.
         method: str
         actual_approved: bool
-        if approved and handle.tier in (AuthTier.two_factor, AuthTier.role_elevation):
+        # The tier comes from the stored challenge, never from the caller's handle copy.
+        if approved and stored.tier in (AuthTier.two_factor, AuthTier.role_elevation):
             if not totp_code:
                 # Tier requires a code but none was supplied — deny (fail closed).
                 logger.warning(
@@ -382,7 +383,7 @@ class InMemoryAsyncBackend:
 
                 code_ok = totp_mod.verify(totp_code)
                 actual_approved = code_ok
-                method = "totp" if handle.tier is AuthTier.two_factor else "totp+elevation"
+                method = "totp" if stored.tier is AuthTier.two_factor else "totp+elevation"
                 if not code_ok:
                     logger.warning(
                         "async resolve for handle %s denied: TOTP verification failed",
@@ -390,14 +391,14 @@ class InMemoryAsyncBackend:
                     )
         elif approved:
             actual_approved = True
-            method = handle.tier.value
+            method = stored.tier.value
         else:
             actual_approved = False
             method = ASYNC_DENIED_METHOD
 
         result = AuthResult(
             approved=actual_approved,
-            tier=handle.tier,
+            tier=stored.tier,
             method=method,
             at=when,
             action_id=handle.action_id,
@@ -563,13 +564,15 @@ def resolve_challenge(
         from the ``approved`` parameter when TOTP verification fails.
     """
     _backend = backend or active_async_backend()
-    refused = handle.tier in (AuthTier.two_factor, AuthTier.role_elevation) and hello_mode.is_on()
-    if refused:
+    proof = (AuthTier.two_factor, AuthTier.role_elevation)
+    mode_on = hello_mode.is_on()
+    if mode_on and handle.tier in proof:
         # ADR 0119: a remote answer cannot satisfy proof tier in Hello-required mode, for
         # any backend, so the handle settles as a denial.
         approved, totp_code = False, None
     result = _backend.resolve(handle, approved=approved, totp_code=totp_code, at=at)
-    if refused:
+    # The result's tier is the backend's stored one, so a lower-tier handle copy is caught.
+    if mode_on and (handle.tier in proof or result.tier in proof):
         result = result.model_copy(
             update={"approved": False, "method": hello_mode.HELLO_REQUIRED_METHOD}
         )

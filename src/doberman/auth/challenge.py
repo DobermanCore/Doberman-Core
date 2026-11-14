@@ -507,8 +507,14 @@ def run_auth_challenge(
 
         ttl_seconds = load_approval_memory_seconds(repo_root)
 
+    from doberman.auth import hello_mode  # lazy, like the provider import above
+
     memory_hit = None
-    eligible = required_tier in (AuthTier.local_auth, AuthTier.two_factor)
+    # ADR 0119: in Hello-required mode a proof tier is never remembered or recalled; a hit
+    # would downgrade it to a confirm that the phone or dashboard could answer.
+    eligible = required_tier is AuthTier.local_auth or (
+        required_tier is AuthTier.two_factor and not hello_mode.is_on()
+    )
     if (
         ttl_seconds > 0
         and eligible

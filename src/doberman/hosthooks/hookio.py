@@ -391,10 +391,13 @@ def _auth_denied_reason(
     own next-step wording so the log/message distinguishes silence from a refusal
     (AN-4a, ADR 0046)."""
     reason = format_reason(decision, "AUTH")
-    from doberman.auth import hello_mode
+    try:
+        from doberman.auth import hello_mode
 
-    if method == hello_mode.HELLO_REQUIRED_METHOD:
-        return f"{reason} Next step: {hello_mode.FIX_HINT}"
+        if method == hello_mode.HELLO_REQUIRED_METHOD:
+            return f"{reason} Next step: {hello_mode.FIX_HINT}"
+    except Exception:  # noqa: BLE001, S110 - a messaging aid must never raise; use the old text
+        pass
     if channel_error:
         tail = (
             "Next step: Doberman's approval dialog could not be shown (no GUI or "
