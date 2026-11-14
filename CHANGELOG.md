@@ -6,6 +6,32 @@ gets its own [notes on GitHub](https://github.com/DobermanCore/Doberman-Core/rel
 
 Not yet released: [`changelog.d/`](changelog.d/), compiled into the next version.
 
+## v0.20.0 — 2026-11-13
+Safer dashboard approvals, single-use 2FA codes, and a shadow judge that works
+
+### Security
+- Fixed Git push protected-branch bypasses from option variants (`-qd`, `--del`, `--force-w`) and indeterminate refs (#742, thanks @shravan606756)
+- `WebhookAuditSink` logs only the webhook host, never the full URL, when a POST fails (#775, thanks @harmehak0173)
+- A TOTP code is accepted once: a code that already approved an action, or an older one, is refused while still in its window (#776, thanks @dchaudhari7177)
+- `doberman plugins enable` trusts a plugin for one entry-point group, so a same-named plugin elsewhere stays off; old bare names still work (#779, thanks @dchaudhari7177)
+- `doberman dash` answers only loopback Host headers, so a DNS-rebinding page gets a 400 instead of the dashboard (#793)
+
+### Added
+- Deleting a gitignored directory that git never committed now needs authentication; build and cache directories are exempt (#653, thanks @harshitagrawal2O)
+- `doberman dash` answers `AUTH` prompts from Claude Code, Codex and Cursor hooks; an approval expires when its 90-second window closes (#764)
+- Payment-card detection now recognises Diners Club, JCB and UnionPay numbers, from the Discover Global Network IIN table; Luhn still required (#777, thanks @dchaudhari7177)
+- `LocalEgressBroker` takes a list of enforcement probe targets, tried in order, so the self-check works where github.com is unreachable (#780, thanks @dchaudhari7177)
+- `python -m doberman` runs the CLI when the `doberman` command is not on PATH (#795)
+- `doberman doctor` checks whether Claude Code's sandbox keeps your 2FA secret from the agent; Limitations explains how a script can answer its own prompts (#797)
+
+### Changed
+- The optional judge reads its key from `DOBERMAN_JUDGE_API_KEY`, so you never need to export `ANTHROPIC_API_KEY` (#796)
+
+### Fixed
+- Fixed OpenClaw workspace policy resolution (#745, thanks @shravan606756)
+- Bare-host fingerprinting skips 29 more filename extensions such as .mjs, .pyi, .db and .patch; no registered TLD added (#778, thanks @dchaudhari7177)
+- The optional shadow judge now parses Haiku's fenced JSON reply; before, every live call abstained (#794)
+
 ## v0.19.0 — 2026-10-18
 An ambient activity monitor, tighter command and hook checks, and a wave of contributor fixes
 

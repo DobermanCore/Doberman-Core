@@ -322,7 +322,7 @@ Numbers refresh **per release** as a documented release step (see
 
 ### Synthetic suite (deterministic CI gate, n = 3 attack / 3 benign)
 
-Run: `python -m tests.benchmarks.run --suite synthetic --profile before_after` (2026-10-18, doberman-core 0.19.0).
+Run: `python -m tests.benchmarks.run --suite synthetic --profile before_after` (2026-11-13, doberman-core 0.20.0).
 
 | Metric | Before (no guardrail) | After (Doberman built-ins) |
 |---|---|---|
