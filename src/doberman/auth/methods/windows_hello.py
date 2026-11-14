@@ -105,51 +105,49 @@ class WinRTHelloBackend:
         mods = _load_winrt()
         if mods is None:
             return False
-        ui, _ = mods  # pragma: no cover - requires winrt on Windows
+        ui, _ = mods
 
-        async def _check():  # pragma: no cover
+        async def _check():
             return await ui.UserConsentVerifier.check_availability_async()
 
-        return _name(asyncio.run(_check())) == "available"  # pragma: no cover
+        return _name(asyncio.run(_check())) == "available"
 
     def verify(self, prompt: str, *, timeout_s: float) -> HelloVerdict:
         mods = _load_winrt()
         if mods is None:
             return HelloVerdict.unavailable
-        ui, _ = mods  # pragma: no cover - requires winrt on Windows
+        ui, _ = mods
 
-        async def _verify():  # pragma: no cover
+        async def _verify():
             return await ui.UserConsentVerifier.request_verification_async(prompt)
 
-        result = asyncio.run(asyncio.wait_for(_verify(), timeout=timeout_s))  # pragma: no cover
-        return (  # pragma: no cover
-            HelloVerdict.verified if _name(result) == "verified" else HelloVerdict.cancelled
-        )
+        result = asyncio.run(asyncio.wait_for(_verify(), timeout=timeout_s))
+        return HelloVerdict.verified if _name(result) == "verified" else HelloVerdict.cancelled
 
     def _open_key(self):
         mods = _load_winrt()
         if mods is None:
             raise HelloError("Windows Hello (winrt) is not available")
-        _, cred = mods  # pragma: no cover - requires winrt on Windows
+        _, cred = mods
 
-        async def _open():  # pragma: no cover
+        async def _open():
             return await cred.KeyCredentialManager.open_async(KEY_NAME)
 
-        res = asyncio.run(_open())  # pragma: no cover
-        if _name(res.status) != "success":  # pragma: no cover
+        res = asyncio.run(_open())
+        if _name(res.status) != "success":
             raise HelloError(f"Hello key {KEY_NAME!r} not usable: {_name(res.status)}")
-        return res.credential  # pragma: no cover
+        return res.credential
 
     def sign(self, data: bytes) -> bytes:
         key = self._open_key()
 
-        async def _sign():  # pragma: no cover - requires winrt on Windows
+        async def _sign():
             return await key.request_sign_async(data)
 
-        res = asyncio.run(_sign())  # pragma: no cover
-        if _name(res.status) != "success":  # pragma: no cover
+        res = asyncio.run(_sign())
+        if _name(res.status) != "success":
             raise HelloError(f"Hello signing refused: {_name(res.status)}")
-        return bytes(res.result)  # pragma: no cover
+        return bytes(res.result)
 
     def public_key(self) -> bytes:
         # X.509 SubjectPublicKeyInfo DER (the WinRT default blob type).
@@ -161,12 +159,12 @@ class WinRTHelloBackend:
         except Exception:  # noqa: BLE001 — no key / no winrt: unknown, never yes
             return None
 
-        async def _attest():  # pragma: no cover - requires winrt on Windows
+        async def _attest():
             return await key.get_attestation_async()
 
-        try:  # pragma: no cover
+        try:
             return tpm_backed_from_attestation(asyncio.run(_attest()).status)
-        except Exception:  # noqa: BLE001  # pragma: no cover
+        except Exception:  # noqa: BLE001
             return None
 
 

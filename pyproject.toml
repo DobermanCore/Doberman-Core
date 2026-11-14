@@ -53,12 +53,13 @@ sbom = ["pip-audit"]
 # Windows Hello biometric approval (2FA). Windows-only; the backend degrades to a
 # TOTP fallback when this is absent or off-Windows, so it is never a hard dependency.
 # PyWinRT replaced winsdk (no wheels past CPython 3.12); winrt-runtime ships 3.11+ wheels.
+# One series: runtime 4.x pairs with the namespace packages' epoch-4 "4!10.0.*" releases.
 winhello = [
-    "winrt-runtime>=3,<5; sys_platform == 'win32'",
-    "winrt-Windows.Foundation; sys_platform == 'win32'",
-    "winrt-Windows.Security.Credentials; sys_platform == 'win32'",
-    "winrt-Windows.Security.Credentials.UI; sys_platform == 'win32'",
-    "winrt-Windows.Storage.Streams; sys_platform == 'win32'",
+    "winrt-runtime>=4,<5; sys_platform == 'win32'",
+    "winrt-Windows.Foundation>=4!10.0,<5!0; sys_platform == 'win32'",
+    "winrt-Windows.Security.Credentials>=4!10.0,<5!0; sys_platform == 'win32'",
+    "winrt-Windows.Security.Credentials.UI>=4!10.0,<5!0; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams>=4!10.0,<5!0; sys_platform == 'win32'",
 ]
 
 [project.scripts]
