@@ -555,5 +555,20 @@ You can close part of this. Claude Code's command sandbox, set up as in SETUP §
 agent's shell commands from reading the 2FA secret file, so they can't generate a code.
 `doberman doctor` reports whether that is in place. The sandbox still lets commands write inside
 the repo, so confirmation-only prompts stay answerable by a script. It doesn't run on native
-Windows. If a task needs a human in the loop that the agent cannot reach at all, run the agent as
-a different OS user or in a container that can't see your profile or Doberman's database.
+Windows.
+
+On Windows there is an opt-in mode where no 2FA secret exists to steal: Hello-required mode
+(SETUP §4) deletes the secret and makes 2FA prompts ask for a Windows Hello gesture. That
+narrows the gap; it doesn't close it. A script running as you can still:
+
+- answer confirmation-only prompts through `.doberman/`, as above;
+- change Doberman itself, since its install and hooks live in folders your account can write;
+- possibly drive the Hello dialog with synthetic input (not yet tested);
+- get an approval from face sign-in when your face is in front of the camera, without you
+  meaning yes.
+
+UAC at its default level can be bypassed on an administrator account, so the marker that turns
+the mode on is only as strong as your elevation boundary.
+
+If a task needs a human in the loop that the agent cannot reach at all, run the agent as a
+different OS user or in a container that can't see your profile or Doberman's database.

@@ -31,7 +31,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
-from doberman.auth import totp
+from doberman.auth import hello_mode, totp
 from doberman.auth.approval import ApprovalOutcome, request_approval, resolve_approval_method
 from doberman.auth.challenge import (
     EFFECT_SET_LABEL,
@@ -373,6 +373,13 @@ class LocalAuthProvider:
 
         # two_factor and role_elevation require presence AND possession.
         elevation = tier is AuthTier.role_elevation
+        if hello_mode.is_on():
+            # ADR 0119: only a Hello gesture; no approval method, no TOTP, no fallback.
+            approved, method_name = hello_mode.verify(message, action_id=action_id)
+            _notify("approved" if approved else "denied")
+            if approved and elevation:
+                return True, f"{method_name}+elevation"
+            return approved, method_name
         method = resolve_approval_method()
         if method is not None:
             outcome = request_approval(method, message, action_id=action_id)

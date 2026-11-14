@@ -157,6 +157,11 @@ methods_app = typer.Typer(
     no_args_is_help=True,
 )
 twofa_app.add_typer(methods_app, name="methods")
+hello_app = typer.Typer(
+    help="Hello-required mode (Windows): proof tier becomes a Windows Hello gesture.",
+    no_args_is_help=True,
+)
+twofa_app.add_typer(hello_app, name="hello")
 
 phone_app = typer.Typer(
     help="Phone approvals via ntfy push notifications (tap Approve/Deny from your phone).",
@@ -1593,6 +1598,7 @@ def doctor(
         "2FA": "Auth",
         "Phone approvals": "Auth",
         "Password": "Auth",
+        "Hello mode": "Auth",
         "Fingerprint key": "Auth",
     }
     by_section: dict[str, list] = {}
@@ -2124,6 +2130,117 @@ def twofa_remove() -> None:
             "restore one.",
             err=True,
         )
+
+
+def _hello_preflight(verb: str) -> Path:
+    """Shared refusals for `2fa hello enroll|leave`: Windows only, elevated, and the
+    machine marker location (never the test override on a real machine). Returns it."""
+    from doberman.auth import hello_mode
+
+    if not hello_mode.supported():
+        typer.echo("error: Hello-required mode is Windows-only; nothing was changed", err=True)
+        raise typer.Exit(code=1)
+    if not hello_mode.is_elevated():
+        typer.echo(
+            "error: this needs administrator rights (one UAC prompt). Open a terminal with "
+            "'Run as administrator', signed in as this same Windows account, and run:\n"
+            f"    doberman 2fa hello {verb}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    try:
+        return hello_mode.admin_marker_path()
+    except (hello_mode.HelloModeError, OSError) as exc:
+        typer.echo(f"error: {exc}; nothing was changed", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@hello_app.command("enroll")
+def twofa_hello_enroll() -> None:
+    """Turn on Hello-required mode: proof tier needs a Windows Hello gesture, TOTP is refused.
+
+    Needs a current 2FA code, a Hello gesture, a TPM-backed Hello key and an administrator
+    terminal. Writes the machine marker with the key's public key, then deletes totp.secret.
+    """
+    from doberman.auth import hello_mode
+
+    path = _hello_preflight("enroll")
+    if hello_mode.is_on():
+        typer.echo("error: Hello-required mode is already on (or its marker is corrupt)", err=True)
+        raise typer.Exit(code=1)
+    if not totp.is_enrolled():
+        typer.echo(
+            "error: enrolling needs your current 2FA code; run `doberman 2fa setup` first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if not totp.verify(CliPrompter().read_code("Current 2FA code")):
+        typer.echo("error: that 2FA code is not valid; nothing was changed", err=True)
+        raise typer.Exit(code=1)
+    approved, _ = hello_mode.verify(
+        "Turn on Doberman Hello-required mode", action_id="hello-enroll"
+    )
+    if not approved:
+        typer.echo("error: Windows Hello did not verify you; nothing was changed", err=True)
+        raise typer.Exit(code=1)
+    try:
+        backend = hello_mode.backend()
+        backend.ensure_key()
+        tpm = backend.tpm_backed()
+        public_key = backend.public_key() if tpm is True else b""
+    except Exception as exc:  # noqa: BLE001 - any key failure refuses enrollment
+        typer.echo(f"error: the Hello key is not usable ({type(exc).__name__})", err=True)
+        raise typer.Exit(code=1) from exc
+    if tpm is not True:
+        typer.echo(
+            "error: the Hello key is not TPM-backed (or Windows could not attest it); "
+            "Hello-required mode needs a TPM. Nothing was changed.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    try:
+        hello_mode.write_marker(path, public_key)
+    except Exception as exc:  # noqa: BLE001 - no marker means the mode stays off
+        why = str(exc) if isinstance(exc, hello_mode.HelloModeError) else type(exc).__name__
+        typer.echo(f"error: could not write the marker ({why}); nothing was changed", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Hello-required mode is on (marker: {path}).")
+    try:
+        totp.delete_secret()
+    except OSError:
+        typer.echo(
+            f"warning: could not delete {totp.resolve_path()}; it is ignored in this mode, "
+            "but delete it yourself",
+            err=True,
+        )
+    else:
+        typer.echo("The TOTP secret was deleted; remove Doberman from your authenticator app.")
+
+
+@hello_app.command("leave")
+def twofa_hello_leave() -> None:
+    """Turn off Hello-required mode (administrator terminal + a Hello gesture)."""
+    from doberman.auth import hello_mode
+
+    _hello_preflight("leave")
+    if not hello_mode.is_on():
+        typer.echo("error: Hello-required mode is not on; nothing to leave", err=True)
+        raise typer.Exit(code=1)
+    approved, _ = hello_mode.verify(
+        "Turn off Doberman Hello-required mode", action_id="hello-leave"
+    )
+    if not approved:
+        typer.echo("error: Windows Hello did not verify you; the mode stays on", err=True)
+        raise typer.Exit(code=1)
+    try:
+        hello_mode.remove_markers()
+    except OSError as exc:
+        typer.echo(f"error: could not remove the marker ({type(exc).__name__})", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        "Hello-required mode is off. TOTP is not enrolled; run `doberman 2fa setup` to "
+        "enroll a new secret in your authenticator app."
+    )
 
 
 @twofa_app.command("reset-lockout")

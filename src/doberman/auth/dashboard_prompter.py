@@ -34,7 +34,13 @@ import asyncio
 import threading
 import time
 
-from doberman.auth.challenge import EFFECT_SET_LABEL, current_challenge, format_effect_set
+from doberman.auth import hello_mode
+from doberman.auth.challenge import (
+    EFFECT_SET_LABEL,
+    AuthTier,
+    current_challenge,
+    format_effect_set,
+)
 from doberman.auth.gui_prompter import PrompterUnavailableError
 from doberman.storage import approvals
 from doberman.storage.heartbeat import DEFAULT_HEARTBEAT_MAX_AGE_S, heartbeat_is_fresh
@@ -94,6 +100,11 @@ class DashboardPrompter:
             # have nothing redaction-safe to queue. Fall back rather than guess.
             raise PrompterUnavailableError("no active challenge context for the dashboard")
         decision, action, tier = challenge
+        if tier in (AuthTier.two_factor, AuthTier.role_elevation) and hello_mode.is_on():
+            # ADR 0119: the dashboard cannot satisfy proof tier here, so no row is queued.
+            raise PrompterUnavailableError(
+                "Hello-required mode: approve at the local Windows Hello prompt"
+            )
 
         # ADR 0094: the same shared blast-radius display string every other
         # prompter renders (doberman.auth.challenge.format_effect_set),

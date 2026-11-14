@@ -344,6 +344,7 @@ def resolve_auth_result(
                 decision,
                 channel_error=result.method == "error",
                 timed_out=result.method == TIMEOUT_METHOD,
+                method=result.method,
             ),
         ),
         method,
@@ -381,13 +382,22 @@ def _default_auth_prompter(
     return FallbackPrompter(chain)
 
 
-def _auth_denied_reason(decision: Decision, *, channel_error: bool, timed_out: bool = False) -> str:
+def _auth_denied_reason(
+    decision: Decision, *, channel_error: bool, timed_out: bool = False, method: str = ""
+) -> str:
     """A denied-AUTH message that names how to actually complete the approval
     (issues #65/#67). Redaction-safe; adds the exact 2FA-enrollment command when an
     un-enrolled 2FA tier is why the action can't be authenticated. A timeout gets its
     own next-step wording so the log/message distinguishes silence from a refusal
     (AN-4a, ADR 0046)."""
     reason = format_reason(decision, "AUTH")
+    try:
+        from doberman.auth import hello_mode
+
+        if method == hello_mode.HELLO_REQUIRED_METHOD:
+            return f"{reason} Next step: {hello_mode.FIX_HINT}"
+    except Exception:  # noqa: BLE001, S110 - a messaging aid must never raise; use the old text
+        pass
     if channel_error:
         tail = (
             "Next step: Doberman's approval dialog could not be shown (no GUI or "
@@ -425,6 +435,10 @@ def _needs_unenrolled_2fa(decision: Decision) -> bool:
         from doberman.auth.challenge import AuthTier, select_tier
 
         tier = select_tier(decision)
+        from doberman.auth import hello_mode
+
+        if hello_mode.is_on():  # TOTP is refused there; `2fa setup` is the wrong advice
+            return False
         return tier in (AuthTier.two_factor, AuthTier.role_elevation) and not totp.is_enrolled()
     except Exception:  # noqa: BLE001 — a messaging aid must never affect the decision
         return False
