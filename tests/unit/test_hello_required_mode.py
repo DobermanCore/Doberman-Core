@@ -695,6 +695,7 @@ def machine_dir(tmp_path, monkeypatch):
     target = tmp_path / "ProgramData" / "doberman" / "proof.json"
     target.parent.parent.mkdir()
     monkeypatch.setattr(hello_mode, "_machine_marker_paths", lambda: [target])
+    monkeypatch.setattr(hello_mode, "_known_program_data", lambda: target.parent.parent)
     monkeypatch.delenv(hello_mode.MARKER_ENV, raising=False)
     calls: dict[str, list] = {"created": [], "acl": []}
     owner = {"sid": hello_mode.ADMINS_SID}
@@ -913,3 +914,27 @@ def test_a_lower_tier_handle_copy_cannot_approve_without_proof(marker, on):
     result = async_challenge.resolve_challenge(forged, approved=True, backend=be)
     assert result.approved is False
     assert result.tier is AuthTier.two_factor
+
+
+def test_marker_file_not_admin_owned_is_removed_and_refused(machine_dir, monkeypatch):
+    """Where policy makes the creator the owner, the user could later rewrite its ACL."""
+    target, _, _ = machine_dir
+    target.parent.mkdir()
+    monkeypatch.setattr(
+        hello_mode,
+        "_owner_sid",
+        lambda p: hello_mode.ADMINS_SID if p == target.parent else "S-1-5-21-1-2-3-1001",
+    )
+    with pytest.raises(hello_mode.HelloModeError, match="not owned by Administrators"):
+        hello_mode.write_marker(target, _PUBKEY)
+    assert not target.exists()
+
+
+def test_admin_path_refuses_without_the_shell_known_folder(real_locations, monkeypatch, tmp_path):
+    """%ProgramData% alone is user-controlled, so enroll and leave never trust it."""
+    monkeypatch.setattr(hello_mode, "supported", lambda: True)
+    monkeypatch.setattr(hello_mode, "_known_program_data", lambda: None)
+    monkeypatch.setenv("ProgramData", str(tmp_path / "env"))
+    monkeypatch.delenv(hello_mode.MARKER_ENV, raising=False)
+    with pytest.raises(hello_mode.HelloModeError, match="ProgramData"):
+        hello_mode.admin_marker_path()
