@@ -104,9 +104,11 @@ public static class DobermanHelloWindow {
     public static object VerifyForWindow(object factory, IntPtr window, string message, Guid riid) {
         return ((IUserConsentVerifierInterop)factory).RequestVerificationForWindowAsync(window, message, ref riid);
     }
+    public static bool CanVerifyForWindow(object factory) { return factory is IUserConsentVerifierInterop; }
     public static void Raise(IntPtr dialog) {
         if (dialog == IntPtr.Zero || dialog == GetForegroundWindow()) { return; }
         SetForegroundWindow(dialog);
+        // shortcut: FlashWindowEx returned FALSE (error 87) on this dialog in the 2026-11-14 probe; revisit after the hardware rerun
         FlashInfo info = new FlashInfo();
         info.Size = (uint)Marshal.SizeOf(typeof(FlashInfo));
         info.Window = dialog;
@@ -128,6 +130,7 @@ function Get-Front {
 }
 
 # The front window as a WinRT WindowId, or $null (no window, or no WindowId on this Windows).
+# Without the helper there is no foreground window handle at all, so no call can be bound.
 function Get-FrontWindowId {
     $hwnd = Get-Front
     if ($hwnd -eq [IntPtr]::Zero) { return $null }
@@ -140,11 +143,17 @@ function Get-FrontWindowId {
 
 # A class-name window search does not see the Hello dialog; its CredentialUIBroker process lists it.
 function Find-Dialog {
-    $broker = Get-Process CredentialUIBroker -ErrorAction SilentlyContinue | Where-Object {
-        $_.StartTime -ge $script:started -and $_.MainWindowHandle -ne [IntPtr]::Zero
-    } | Sort-Object StartTime -Descending | Select-Object -First 1
-    if ($broker) { return $broker.MainWindowHandle }
-    [IntPtr]::Zero
+    $found = [IntPtr]::Zero
+    $newest = $script:started
+    foreach ($broker in @(Get-Process CredentialUIBroker -ErrorAction SilentlyContinue)) {
+        try {
+            if ($broker.StartTime -ge $newest -and $broker.MainWindowHandle -ne [IntPtr]::Zero) {
+                $newest = $broker.StartTime
+                $found = $broker.MainWindowHandle
+            }
+        } catch { }
+    }
+    $found
 }
 
 function Wait-Op($operation, [Type]$resultType, [int]$ms) {
@@ -152,7 +161,11 @@ function Wait-Op($operation, [Type]$resultType, [int]$ms) {
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $raised = [IntPtr]::Zero
     while (-not $task.Wait(250)) {
-        if ($clock.ElapsedMilliseconds -ge $ms) { throw [TimeoutException]::new('timeout') }
+        if ($clock.ElapsedMilliseconds -ge $ms) {
+            # close the prompt so it does not linger after the deny; the deny stands either way
+            try { $null = [Windows.Foundation.IAsyncInfo,Windows.Foundation,ContentType=WindowsRuntime].GetMethod('Cancel').Invoke($operation, $null) } catch { }
+            throw [TimeoutException]::new('timeout')
+        }
         if ($script:canRaise) {
             try {
                 $dialog = Find-Dialog
@@ -166,7 +179,7 @@ function Wait-Op($operation, [Type]$resultType, [int]$ms) {
 function Invoke-HelloOp($request) {
     $op = [string]$request.op
     $ms = [int]$request.timeout_ms
-    if ($op -notin 'ping', 'available', 'verify', 'open', 'create', 'public_key', 'attest', 'sign') { throw 'unknown op' }
+    if ($op -notin 'ping', 'available', 'selftest', 'verify', 'open', 'create', 'public_key', 'attest', 'sign') { throw 'unknown op' }
     if ($ms -le 0) { throw 'bad timeout' }
     if ($op -eq 'ping') { return @{ status = 'ok'; value = $null } }
 
@@ -183,6 +196,18 @@ function Invoke-HelloOp($request) {
     if ($op -eq 'available') {
         $availability = Wait-Op ($verifier::CheckAvailabilityAsync()) ([Windows.Security.Credentials.UI.UserConsentVerifierAvailability]) $ms
         return @{ status = [string]$availability; value = $null }
+    }
+    if ($op -eq 'selftest') {
+        # what binding a prompt needs, resolved without calling anything that prompts
+        Enable-Raise
+        if (-not $script:canRaise) { return @{ status = 'helper'; value = $null } }
+        $factory = [Runtime.InteropServices.WindowsRuntime.WindowsRuntimeMarshal]::GetActivationFactory($verifier)
+        if (-not [DobermanHelloWindow]::CanVerifyForWindow($factory)) { return @{ status = 'interop'; value = $null } }
+        $null = [Activator]::CreateInstance([Windows.UI.WindowId,Windows.UI,ContentType=WindowsRuntime])
+        $create = $manager.GetMethod('RequestCreateForWindowAsync')
+        $sign = [Windows.Security.Credentials.KeyCredential].GetMethod('RequestSignForWindowAsync')
+        if (-not $create -or -not $sign) { return @{ status = 'window_calls'; value = $null } }
+        return @{ status = 'ok'; value = $null }
     }
     if ($op -eq 'verify') {
         Enable-Raise
@@ -481,6 +506,12 @@ class PowerShellHelloBackend:
         status, _ = _call("ping", timeout_s=_QUICK_TIMEOUT_S)
         if status != "ok":
             raise HelloError("Windows PowerShell gave an unexpected answer")
+
+    def window_binding(self) -> str:
+        """Doctor: ``"ok"`` when prompts can be bound to the window in front, else what is
+        missing (``helper``, ``interop`` or ``window_calls``). Never prompts."""
+        status, _ = _call("selftest", timeout_s=_QUICK_TIMEOUT_S)
+        return status
 
 
 class WindowsHelloMethod:

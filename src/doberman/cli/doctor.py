@@ -647,6 +647,17 @@ def _check_hello_powershell() -> CheckResult:
             return CheckResult(name, CheckStatus.OK, f"{why}; Windows Hello is not in use here")
         detail = f"{why}, so Windows Hello cannot run; approvals use TOTP"
         return CheckResult(name, CheckStatus.WARN, detail)
+    if mode_on or approval_config.is_enabled(WindowsHelloMethod.name):
+        try:
+            binding = PowerShellHelloBackend().window_binding()
+        except Exception as exc:  # noqa: BLE001 - unknown binding: say so, Hello still runs
+            binding = type(exc).__name__
+        if binding != "ok":
+            detail = (
+                "Windows PowerShell 5.1 runs in FullLanguage mode, but Hello prompts may open "
+                f"behind other windows (window binding: {binding})"
+            )
+            return CheckResult(name, CheckStatus.WARN, detail)
     return CheckResult(
         name, CheckStatus.OK, "Windows PowerShell 5.1 runs in FullLanguage mode", critical=mode_on
     )

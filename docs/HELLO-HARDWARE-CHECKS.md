@@ -30,8 +30,10 @@ TPM 2.0, and the date.
    that binds it to the window in front where Windows allows (verify through
    `IUserConsentVerifierInterop::RequestVerificationForWindowAsync`, key creation through
    `RequestCreateForWindowAsync`, signing through `RequestSignForWindowAsync`), and, while the
-   dialog is open and not in front, asks Windows to raise it and flash its taskbar button. Run
-   this check again in the mode.
+   dialog is open and not in front, asks Windows to raise it and flash its taskbar button. On a
+   timeout it cancels the request, which should close the dialog; does it? `doberman doctor`
+   warns on the "Hello PowerShell" row when prompts cannot be bound. Run this check again in
+   the mode.
 6. **Is the key TPM-backed or software-only?** After creating the key, does
    `KeyCredential.GetAttestationAsync` return `Success` (TPM attestation) or `NotSupported`
    (no TPM attestation)? Doberman treats anything else as unknown, never as TPM-backed.
