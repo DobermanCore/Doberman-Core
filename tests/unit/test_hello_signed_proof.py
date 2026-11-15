@@ -443,6 +443,8 @@ def test_mode_off_results_carry_no_proof(tmp_path, monkeypatch, signer):
 
 def test_the_challenge_stores_the_proof_and_it_checks_later(marker, signer, tmp_path, monkeypatch):
     monkeypatch.setattr("doberman.auth.provider.active_provider", lambda: LOCAL_PROVIDER)
+    # a cold first database open can take longer than the production 5 s bound on slow CI
+    monkeypatch.setattr("doberman.auth.challenge._MEMORY_IO_TIMEOUT_S", 120.0)
     action = _action()
     root = str(tmp_path / "repo")
     result = run_auth_challenge(_decision(), action, prompter=Prompter(), repo_root=root)
@@ -617,6 +619,8 @@ def test_the_proof_is_stored_when_the_challenge_runs_on_an_event_loop(
     marker, signer, tmp_path, monkeypatch
 ):
     monkeypatch.setattr("doberman.auth.provider.active_provider", lambda: LOCAL_PROVIDER)
+    # a cold first database open can take longer than the production 5 s bound on slow CI
+    monkeypatch.setattr("doberman.auth.challenge._MEMORY_IO_TIMEOUT_S", 120.0)
     action = _action()
     root = str(tmp_path / "repo")
 
