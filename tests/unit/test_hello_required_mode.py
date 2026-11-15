@@ -20,7 +20,7 @@ from doberman.auth import async_challenge, dashboard_prompter, hello_mode, passw
 from doberman.auth.approval import ApprovalOutcome
 from doberman.auth.challenge import AuthTier, _current_challenge
 from doberman.auth.gui_prompter import PrompterUnavailableError
-from doberman.auth.methods.windows_hello import HelloVerdict
+from doberman.auth.methods.windows_hello import HelloError, HelloVerdict
 from doberman.auth.provider import LocalAuthProvider
 from doberman.cli import doctor
 from doberman.cli.main import app
@@ -29,21 +29,26 @@ from doberman.models import ReasonCode, Risk
 from doberman.policy import drift
 from doberman.storage import approvals
 from doberman.storage.heartbeat import touch_heartbeat
+from tests.unit._hello_rsa import keypair
 from tests.unit.test_async_challenge import _action as _async_action
 from tests.unit.test_async_challenge import _auth_decision as _async_decision
 from tests.unit.test_auth_provider import _action
 from tests.unit.test_auth_provider import _auth_decision as _decision
 
-_PUBKEY = b"\x30\x59fake-spki-public-key"
+_KEY = keypair("a")
+_PUBKEY = _KEY.public_key
 
 
 class FakeBackend:
+    """A Hello key in software. ``verdict``/``available``/``raises`` make signing fail the
+    ways a real gesture can; ``prompts`` records every message it was asked to sign."""
+
     def __init__(self, *, available=True, verdict=HelloVerdict.verified, raises=None, tpm=True):
         self._available = available
         self._verdict = verdict
         self._raises = raises
         self._tpm = tpm
-        self.prompts: list[str] = []
+        self.prompts: list[bytes] = []
         self.key_ensured = False
 
     def available(self):
@@ -51,17 +56,18 @@ class FakeBackend:
             raise self._available
         return self._available
 
-    def verify(self, prompt, *, timeout_s):
-        self.prompts.append(prompt)
-        if self._raises is not None:
-            raise self._raises
-        return self._verdict
-
     def ensure_key(self):
         self.key_ensured = True
 
-    def sign(self, data):  # pragma: no cover - slice 3
-        raise AssertionError("sign is slice 3")
+    def sign(self, data, *, timeout_s=None):
+        self.prompts.append(data)
+        if self.available() is not True:
+            raise HelloError("Hello is not available")
+        if self._raises is not None:
+            raise self._raises
+        if self._verdict is not HelloVerdict.verified:
+            raise HelloError(f"signing refused: {self._verdict.value}")
+        return _KEY.sign(data)
 
     def public_key(self):
         return _PUBKEY
@@ -220,7 +226,7 @@ def test_provider_refuses_a_valid_totp_code_in_the_mode(mode_on, enrolled_totp, 
     result = _authenticate(tier, prompter)
     assert result.approved is False
     assert result.method == hello_mode.HELLO_REQUIRED_METHOD
-    assert prompter.asked == []  # never asked for a code
+    assert prompter.asked == ["confirm"]  # shown the action, never asked for a code
 
 
 def test_provider_valid_totp_still_works_with_the_mode_off(marker, enrolled_totp, backend):
@@ -239,8 +245,8 @@ def test_provider_hello_gesture_approves_in_the_mode(mode_on, backend, tier, met
     result = _authenticate(tier, prompter)
     assert result.approved is True
     assert result.method == method
-    assert prompter.asked == []
-    assert backend.current().prompts and "Approve" in backend.current().prompts[0]
+    assert prompter.asked == ["confirm"]  # the action is shown before the gesture
+    assert backend.current().prompts[0].startswith(b"doberman-proof-v1\naction_id=act-7\n")
 
 
 @pytest.mark.parametrize(
@@ -440,6 +446,23 @@ def test_enroll_refuses_without_a_tpm_key(marker, windows, backend, enrolled_tot
     assert result.exit_code == 1
     assert "TPM" in out
     assert not marker.exists() and enrolled_totp.exists()
+
+
+def test_enroll_refuses_a_key_whose_signature_does_not_verify(
+    marker, windows, backend, enrolled_totp, monkeypatch
+):
+    # e.g. a key type or signature scheme the verifier does not support: never pinned
+    monkeypatch.setattr(backend.current(), "public_key", lambda: keypair("b").public_key)
+    result, out = _cli(["2fa", "hello", "enroll"], _valid_code() + "\n")
+    assert result.exit_code == 1
+    assert "did not verify" in out
+    assert not marker.exists() and enrolled_totp.exists()
+
+
+def test_enroll_signs_a_probe_with_the_key_it_pins(marker, windows, backend, enrolled_totp):
+    result, out = _cli(["2fa", "hello", "enroll"], _valid_code() + "\n")
+    assert result.exit_code == 0, out
+    assert backend.current().prompts[0].startswith(b"doberman-proof-v1\naction_id=hello-enroll\n")
 
 
 def test_enroll_refuses_a_wrong_totp_code(marker, windows, backend, enrolled_totp):
@@ -866,7 +889,7 @@ def test_memory_hit_in_the_mode_still_needs_hello(mode_on, backend, tmp_path, mo
     )
     assert result.approved is False
     assert result.tier is AuthTier.two_factor
-    assert prompter.asked == []
+    assert prompter.asked == ["confirm"]  # full proof tier: no code, no memory shortcut
 
 
 def test_a_hello_approval_is_not_remembered_in_the_mode(mode_on, backend, tmp_path, monkeypatch):

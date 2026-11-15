@@ -98,7 +98,9 @@ _ACTIVE_DB: ContextVar[
 #: Version 18 adds ``pending_approvals.session_id`` so the dashboard can show
 #: which host session a hook AUTH came from. Additive ALTER on an existing
 #: table; fresh DBs get it from _SCHEMA below. Older rows keep NULL.
-SCHEMA_VERSION = 18
+#: Version 19 adds ``hello_proofs`` (ADR 0119 slice 3): signed Hello proofs kept as
+#: audit evidence. Additive CREATE TABLE IF NOT EXISTS; no legacy migration needed.
+SCHEMA_VERSION = 19
 
 # Every table uses CREATE TABLE IF NOT EXISTS so opening an older DB transparently
 # adds the new tables (a forward-only, additive migration; the one re-shape —
@@ -396,6 +398,22 @@ CREATE TABLE IF NOT EXISTS monitor_state (
     last_id     INTEGER NOT NULL DEFAULT 0,
     updated_at  TEXT NOT NULL
 );
+
+-- ADR 0119 slice 3: signed Windows Hello proofs, one per proof-tier approval in
+-- Hello-required mode, joined to decisions by action_id. Only the signed fields
+-- (action_hash is a keyed HMAC, never the action), the pinned key's id and the
+-- base64 signature, so a proof can be re-checked later against the pinned key.
+CREATE TABLE IF NOT EXISTS hello_proofs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_id    TEXT NOT NULL,
+    action_hash  TEXT NOT NULL,
+    signed_at    INTEGER NOT NULL,
+    nonce        TEXT NOT NULL UNIQUE,
+    key_id       TEXT NOT NULL,
+    signature    TEXT NOT NULL UNIQUE,
+    stored_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hello_proofs_action ON hello_proofs (action_id);
 """
 
 

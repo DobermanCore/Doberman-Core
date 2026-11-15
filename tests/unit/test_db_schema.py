@@ -545,5 +545,5 @@ def test_schema_text_change_requires_a_version_bump():
 
     from doberman.storage.db import _SCHEMA
 
-    assert SCHEMA_VERSION == 18
-    assert hashlib.sha256(_SCHEMA.encode()).hexdigest()[:16] == "aa6b3558b8fc6774"
+    assert SCHEMA_VERSION == 19
+    assert hashlib.sha256(_SCHEMA.encode()).hexdigest()[:16] == "e76fbed8b5f3a771"

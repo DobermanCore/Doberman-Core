@@ -26,13 +26,19 @@ TPM 2.0, and the date.
 5. **Does the prompt show from a hook process?** Trigger a 2FA-tier action from a coding agent so the
    prompt comes from Doberman's hook, which has no console window. Does the prompt appear in front,
    behind other windows, or not at all? Doberman falls back to TOTP when the prompt cannot run,
-   except in Hello-required mode, where it denies.
+   except in Hello-required mode, where it denies. In that mode the signing prompt runs in a child
+   process that binds it to the foreground window (`RequestSignForWindowAsync`, where Windows has
+   it) and pulls the dialog to the front; run this check again in the mode.
 6. **Is the key TPM-backed or software-only?** After creating the key, does
    `KeyCredential.GetAttestationAsync` return `Success` (TPM attestation) or `NotSupported`
    (no TPM attestation)? Doberman treats anything else as unknown, never as TPM-backed.
 7. **Does the `winhello` extra load at all?** With Smart App Control or another App Control policy
    on, does `import winrt.windows.security.credentials` work, or does Windows block the `_winrt` DLL?
    If it is blocked, Hello is reported unavailable and Doberman uses TOTP.
+8. **Does the Hello key's signature verify?** `doberman 2fa hello enroll` signs a test message and
+   checks it with Doberman's own verifier (RSA PKCS#1 v1.5 with SHA-256 over the key's
+   SubjectPublicKeyInfo) before pinning the key. Does enrollment pass that step? If it refuses with
+   "did not verify", the key type or signature format differs from what Doberman expects.
 
 ## Results
 

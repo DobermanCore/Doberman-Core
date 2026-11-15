@@ -31,7 +31,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
-from doberman.auth import hello_mode, totp
+from doberman.auth import hello_mode, hello_proof, totp
 from doberman.auth.approval import ApprovalOutcome, request_approval, resolve_approval_method
 from doberman.auth.challenge import (
     EFFECT_SET_LABEL,
@@ -285,10 +285,12 @@ class LocalAuthProvider:
         message = _message_from_parts(parts)
 
         try:
-            approved, method = self._run_tier(tier, message, prompter, action.id, parts=parts)
+            approved, method, proof = self._collect(
+                tier, message, prompter, action.id, parts=parts, action=action
+            )
         except Exception:  # noqa: BLE001 — any input/timeout error is a denial
             logger.info("local auth challenge failed for action %s; denying", action.id)
-            approved, method = False, "error"
+            approved, method, proof = False, "error", None
 
         return AuthResult(
             approved=approved,
@@ -296,6 +298,7 @@ class LocalAuthProvider:
             method=method,
             at=when,
             action_id=action.id,
+            proof=proof if approved else None,
         )
 
     @staticmethod
@@ -307,7 +310,27 @@ class LocalAuthProvider:
         *,
         parts: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
-        """Collect tier-appropriate proof. Returns (approved, method).
+        """:meth:`_collect` without an action object, so never a Hello-mode proof tier."""
+        approved, method, _ = LocalAuthProvider._collect(
+            tier, message, prompter, action_id, parts=parts
+        )
+        return approved, method
+
+    @staticmethod
+    def _collect(
+        tier: AuthTier,
+        message: str,
+        prompter: Prompter,
+        action_id: str = "",
+        *,
+        parts: dict[str, Any] | None = None,
+        action: SecurityObject | None = None,
+    ) -> tuple[bool, str, Any]:
+        """Collect tier-appropriate proof. Returns (approved, method, Hello proof or None).
+
+        In Hello-required mode (ADR 0119) the proof tiers show the exact action through the
+        prompter's confirm, then need a Hello-key signature over that action (``action``)
+        that verifies against the pinned key; nothing else approves them.
 
         For the 2FA tiers, a configured approval method (a Windows Hello / Touch ID
         biometric, a phone push — :mod:`doberman.auth.approval`) is presence AND
@@ -369,32 +392,41 @@ class LocalAuthProvider:
         if tier in (AuthTier.soft_confirm, AuthTier.local_auth):
             approved = _confirm()
             _notify("approved" if approved else _deny_outcome())
-            return approved, tier.value
+            return approved, tier.value, None
 
         # two_factor and role_elevation require presence AND possession.
         elevation = tier is AuthTier.role_elevation
         if hello_mode.is_on():
-            # ADR 0119: only a Hello gesture; no approval method, no TOTP, no fallback.
-            approved, method_name = hello_mode.verify(message, action_id=action_id)
+            # ADR 0119: show the exact action, then a Hello-key signature over it that
+            # verifies against the pinned key. No approval method, no TOTP, no fallback.
+            if action is None:
+                return False, hello_mode.HELLO_REQUIRED_METHOD, None
+            if not _confirm():
+                outcome = _deny_outcome()
+                _notify(outcome)
+                return False, outcome, None
+            approved, method_name, proof = hello_mode.prove(
+                action_id=action.id, action_hash=hello_proof.action_hash(action)
+            )
             _notify("approved" if approved else "denied")
             if approved and elevation:
-                return True, f"{method_name}+elevation"
-            return approved, method_name
+                return True, f"{method_name}+elevation", proof
+            return approved, method_name, proof
         method = resolve_approval_method()
         if method is not None:
             outcome = request_approval(method, message, action_id=action_id)
             if outcome is ApprovalOutcome.approved:
                 _notify("approved")
-                return True, f"{method.name}+elevation" if elevation else method.name
+                return True, f"{method.name}+elevation" if elevation else method.name, None
             if outcome is ApprovalOutcome.denied:
                 _notify("denied")
-                return False, "denied"
+                return False, "denied", None
             # ApprovalOutcome.unavailable -> fall through to the TOTP path below.
 
         if not _confirm():
             outcome = _deny_outcome()
             _notify(outcome)
-            return False, outcome
+            return False, outcome, None
         # Names the exact target, mirroring the GUI's structured code dialog
         # (item 8) -- a human landing on a bare terminal code prompt should
         # not have to trust that it's still about the same action the first
@@ -407,7 +439,7 @@ class LocalAuthProvider:
         code = _read_code(code_prompt)
         verified = totp.verify(code)
         _notify("approved" if verified else "code_rejected")
-        return verified, "totp+elevation" if elevation else "totp"
+        return verified, "totp+elevation" if elevation else "totp", None
 
 
 #: The single built-in provider, constructed once.
@@ -470,6 +502,7 @@ class CoGatedProvider:
             method=f"{result.method}+local",
             at=when,
             action_id=action.id,
+            proof=local_result.proof if local_result.approved else None,
         )
 
 

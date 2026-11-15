@@ -1,11 +1,12 @@
-"""Hello-required mode (ADR 0119, slice 2): proof tier becomes a Windows Hello gesture.
+"""Hello-required mode (ADR 0119, slices 2-3): proof tier becomes a signed Windows Hello gesture.
 
 Opt-in, Windows only. An elevated ``doberman 2fa hello enroll`` writes a machine marker,
-``%ProgramData%\\doberman\\proof.json``, that only administrators can change. While a
-marker exists:
+``%ProgramData%\\doberman\\proof.json``, that only administrators can change and that pins
+the public key of the ``doberman-proof`` Hello key. While a marker exists:
 
-* the proof tiers (``two_factor``, ``role_elevation``) are satisfied ONLY by a Windows Hello
-  verification through the :class:`~doberman.auth.methods.windows_hello.HelloBackend`;
+* the proof tiers (``two_factor``, ``role_elevation``) are satisfied ONLY by a signature of
+  that Hello key over a message naming the action (:mod:`doberman.auth.hello_proof`), which
+  must verify against the pinned key (:func:`prove`);
 * TOTP is refused on every channel (:func:`doberman.auth.totp.verify` returns ``False``), so
   a planted ``totp.secret`` approves nothing;
 * Hello being unavailable, cancelled, timing out or raising is a denial, never a fallback.
@@ -31,19 +32,17 @@ import logging
 import os
 import stat
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from doberman.auth.approval import (
-    DEFAULT_APPROVAL_TIMEOUT_S,
-    ApprovalOutcome,
-    request_approval,
-)
+from doberman.auth import hello_proof
+from doberman.auth.approval import DEFAULT_APPROVAL_TIMEOUT_S
 from doberman.auth.methods.windows_hello import (
     HelloBackend,
+    SignerProcessBackend,
     WindowsHelloMethod,
-    WinRTHelloBackend,
 )
 
 logger = logging.getLogger("doberman.auth.hello_mode")
@@ -226,30 +225,54 @@ def is_on() -> bool:
 
 
 def backend() -> HelloBackend:
-    """The Hello backend this mode uses. Tests replace this function."""
-    return WinRTHelloBackend()
+    """The Hello backend this mode uses (signing runs in a child process). Tests replace it."""
+    return SignerProcessBackend()
 
 
-def verify(
-    prompt: str,
+def pinned_public_key() -> bytes:
+    """The one public key the markers pin. Raises if none is pinned, any marker is
+    unreadable or corrupt, or two markers pin different keys."""
+    keys = set()
+    for path in _candidates():
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            continue
+        keys.add(base64.b64decode(parse_marker(raw)["public_key"], validate=True))
+    if len(keys) != 1:
+        raise ValueError("no single pinned Hello key")
+    return keys.pop()
+
+
+def prove(
     *,
     action_id: str,
+    action_hash: str,
     timeout_s: float = DEFAULT_APPROVAL_TIMEOUT_S,
-) -> tuple[bool, str]:
-    """One Hello gesture for ``prompt``: ``(True, "windows_hello")`` only on ``verified``.
+) -> tuple[bool, str, hello_proof.Proof | None]:
+    """One Hello gesture that signs this action: ``(True, "windows_hello", proof)`` only when
+    the signature verifies against the pinned key (see :func:`hello_proof.accept`).
 
-    Unavailable, cancelled, timed out, a raising backend, or no backend at all all return
-    ``(False, HELLO_REQUIRED_METHOD)``. There is no fallback. Never raises.
+    No pinned key, a malformed action, a cancelled or failed gesture, a timeout, a signature
+    by any other key or over any other message, or any error: ``(False,
+    HELLO_REQUIRED_METHOD, None)``. There is no fallback. Never raises.
     """
     try:
-        method = WindowsHelloMethod(backend())
-        outcome = request_approval(method, prompt, action_id=action_id, timeout_s=timeout_s)
-    except Exception:  # noqa: BLE001 - no backend: deny
-        outcome = ApprovalOutcome.unavailable
-    if outcome is ApprovalOutcome.approved:
-        return True, WindowsHelloMethod.name
-    logger.warning("proof tier refused for action %s (%s). %s", action_id, outcome.value, FIX_HINT)
-    return False, HELLO_REQUIRED_METHOD
+        public_key = pinned_public_key()
+        challenge = hello_proof.new_challenge(action_id, action_hash)
+        signature = backend().sign(challenge.message(), timeout_s=timeout_s)
+        proof = replace(
+            challenge, signature=bytes(signature), key_id=hello_proof.key_id(public_key)
+        )
+        if hello_proof.accept(
+            proof, action_id=action_id, action_hash=action_hash, public_key=public_key
+        ):
+            return True, WindowsHelloMethod.name, proof
+        why = "the signature did not verify against the pinned key"
+    except Exception as exc:  # noqa: BLE001 - no key, no backend, no gesture: deny
+        why = type(exc).__name__
+    logger.warning("proof tier refused for action %r (%s). %s", action_id, why, FIX_HINT)
+    return False, HELLO_REQUIRED_METHOD, None
 
 
 def is_elevated() -> bool:
