@@ -41,6 +41,8 @@ from pathlib import Path
 from doberman.auth import hello_proof
 from doberman.auth.approval import DEFAULT_APPROVAL_TIMEOUT_S
 from doberman.auth.methods.windows_hello import (
+    _CHILD_START_S,
+    _QUICK_TIMEOUT_S,
     HelloBackend,
     PowerShellHelloBackend,
     WindowsHelloMethod,
@@ -52,8 +54,9 @@ logger = logging.getLogger("doberman.auth.hello_mode")
 MARKER_ENV = "DOBERMAN_HELLO_MARKER"
 MARKER_VERSION = 1
 
-#: Longest wait for the Hello availability check before calling Hello unavailable.
-_AVAILABLE_TIMEOUT_S = 15.0
+#: Longest wait for the Hello availability check before calling Hello unavailable: as long
+#: as its PowerShell child may run, so doctor and this pre-check agree.
+_AVAILABLE_TIMEOUT_S = _QUICK_TIMEOUT_S + _CHILD_START_S
 
 #: The ``AuthResult.method`` of a proof-tier denial in this mode.
 HELLO_REQUIRED_METHOD = "hello_required"

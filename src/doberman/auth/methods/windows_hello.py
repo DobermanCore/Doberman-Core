@@ -80,36 +80,98 @@ $ProgressPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { '{"error":"language_mode"}'; exit 0 }
 
-# Bring the Hello dialog to the front: started from a process with no foreground window it
-# opens behind other windows (Chromium does the same, crypto/user_verifying_key_win.cc).
+# Started from a process with no foreground window, the Hello dialog opens behind other
+# windows, and Windows will not let this process raise it. So each prompt is bound to the
+# window in front (the one the person is using), and an unfocused dialog is flashed.
 $windowSource = @'
 using System;
 using System.Runtime.InteropServices;
 public static class DobermanHelloWindow {
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    static extern IntPtr FindWindowW(string windowClass, string title);
+    // userconsentverifierinterop.h (Windows build 22000+)
+    [ComImport, Guid("39E050C3-4E74-441A-8DC0-B81104DF949C"), InterfaceType(ComInterfaceType.InterfaceIsIInspectable)]
+    interface IUserConsentVerifierInterop {
+        [return: MarshalAs(UnmanagedType.IInspectable)]
+        object RequestVerificationForWindowAsync(IntPtr appWindow, [MarshalAs(UnmanagedType.HString)] string message, [In] ref Guid riid);
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct FlashInfo { public uint Size; public IntPtr Window; public uint Flags; public uint Count; public uint Timeout; }
     [DllImport("user32.dll")]
     static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")]
+    static extern bool FlashWindowEx(ref FlashInfo info);
+    [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
-    public static void Raise() {
-        IntPtr dialog = FindWindowW("Credential Dialog Xaml Host", null);
-        if (dialog != IntPtr.Zero) { SetForegroundWindow(dialog); }
+    public static object VerifyForWindow(object factory, IntPtr window, string message, Guid riid) {
+        return ((IUserConsentVerifierInterop)factory).RequestVerificationForWindowAsync(window, message, ref riid);
+    }
+    public static bool CanVerifyForWindow(object factory) { return factory is IUserConsentVerifierInterop; }
+    public static void Raise(IntPtr dialog) {
+        if (dialog == IntPtr.Zero || dialog == GetForegroundWindow()) { return; }
+        SetForegroundWindow(dialog);
+        // shortcut: FlashWindowEx returned FALSE (error 87) on this dialog in the 2026-11-14 probe; revisit after the hardware rerun
+        FlashInfo info = new FlashInfo();
+        info.Size = (uint)Marshal.SizeOf(typeof(FlashInfo));
+        info.Window = dialog;
+        info.Flags = 15; // FLASHW_ALL | FLASHW_TIMERNOFG: flash the taskbar button until focused
+        FlashWindowEx(ref info);
     }
 }
 '@
 $script:canRaise = $false
 
 function Enable-Raise {
+    $script:started = [DateTime]::Now
     try { Add-Type -TypeDefinition $windowSource; $script:canRaise = $true } catch { $script:canRaise = $false }
+}
+
+function Get-Front {
+    if ($script:canRaise) { return [DobermanHelloWindow]::GetForegroundWindow() }
+    [IntPtr]::Zero
+}
+
+# The front window as a WinRT WindowId, or $null (no window, or no WindowId on this Windows).
+# Without the helper there is no foreground window handle at all, so no call can be bound.
+function Get-FrontWindowId {
+    $hwnd = Get-Front
+    if ($hwnd -eq [IntPtr]::Zero) { return $null }
+    try {
+        $window = [Activator]::CreateInstance([Windows.UI.WindowId,Windows.UI,ContentType=WindowsRuntime])
+        $window.Value = [uint64]$hwnd.ToInt64()
+        return $window
+    } catch { return $null }
+}
+
+# A class-name window search does not see the Hello dialog; its CredentialUIBroker process lists it.
+function Find-Dialog {
+    $found = [IntPtr]::Zero
+    $newest = $script:started
+    foreach ($broker in @(Get-Process CredentialUIBroker -ErrorAction SilentlyContinue)) {
+        try {
+            if ($broker.StartTime -ge $newest -and $broker.MainWindowHandle -ne [IntPtr]::Zero) {
+                $newest = $broker.StartTime
+                $found = $broker.MainWindowHandle
+            }
+        } catch { }
+    }
+    $found
 }
 
 function Wait-Op($operation, [Type]$resultType, [int]$ms) {
     $task = $script:asTask.MakeGenericMethod($resultType).Invoke($null, @($operation))
     $clock = [Diagnostics.Stopwatch]::StartNew()
+    $raised = [IntPtr]::Zero
     while (-not $task.Wait(250)) {
-        if ($clock.ElapsedMilliseconds -ge $ms) { throw [TimeoutException]::new('timeout') }
-        if ($script:canRaise) { try { [DobermanHelloWindow]::Raise() } catch { } }
+        if ($clock.ElapsedMilliseconds -ge $ms) {
+            # close the prompt so it does not linger after the deny; the deny stands either way
+            try { $null = [Windows.Foundation.IAsyncInfo,Windows.Foundation,ContentType=WindowsRuntime].GetMethod('Cancel').Invoke($operation, $null) } catch { }
+            throw [TimeoutException]::new('timeout')
+        }
+        if ($script:canRaise) {
+            try {
+                $dialog = Find-Dialog
+                if ($dialog -ne $raised) { [DobermanHelloWindow]::Raise($dialog); $raised = $dialog }
+            } catch { }
+        }
     }
     $task.Result
 }
@@ -117,7 +179,7 @@ function Wait-Op($operation, [Type]$resultType, [int]$ms) {
 function Invoke-HelloOp($request) {
     $op = [string]$request.op
     $ms = [int]$request.timeout_ms
-    if ($op -notin 'ping', 'available', 'verify', 'open', 'create', 'public_key', 'attest', 'sign') { throw 'unknown op' }
+    if ($op -notin 'ping', 'available', 'selftest', 'verify', 'open', 'create', 'public_key', 'attest', 'sign') { throw 'unknown op' }
     if ($ms -le 0) { throw 'bad timeout' }
     if ($op -eq 'ping') { return @{ status = 'ok'; value = $null } }
 
@@ -135,16 +197,46 @@ function Invoke-HelloOp($request) {
         $availability = Wait-Op ($verifier::CheckAvailabilityAsync()) ([Windows.Security.Credentials.UI.UserConsentVerifierAvailability]) $ms
         return @{ status = [string]$availability; value = $null }
     }
+    if ($op -eq 'selftest') {
+        # what binding a prompt needs, resolved without calling anything that prompts
+        Enable-Raise
+        if (-not $script:canRaise) { return @{ status = 'helper'; value = $null } }
+        $factory = [Runtime.InteropServices.WindowsRuntime.WindowsRuntimeMarshal]::GetActivationFactory($verifier)
+        if (-not [DobermanHelloWindow]::CanVerifyForWindow($factory)) { return @{ status = 'interop'; value = $null } }
+        $null = [Activator]::CreateInstance([Windows.UI.WindowId,Windows.UI,ContentType=WindowsRuntime])
+        $create = $manager.GetMethod('RequestCreateForWindowAsync')
+        $sign = [Windows.Security.Credentials.KeyCredential].GetMethod('RequestSignForWindowAsync')
+        if (-not $create -or -not $sign) { return @{ status = 'window_calls'; value = $null } }
+        return @{ status = 'ok'; value = $null }
+    }
     if ($op -eq 'verify') {
         Enable-Raise
         $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$request.prompt))
-        $verdict = Wait-Op ($verifier::RequestVerificationAsync($text)) ([Windows.Security.Credentials.UI.UserConsentVerificationResult]) $ms
+        $verdictType = [Windows.Security.Credentials.UI.UserConsentVerificationResult]
+        $pending = $null
+        $hwnd = Get-Front
+        if ($hwnd -ne [IntPtr]::Zero) {
+            try {
+                $riid = [Windows.Foundation.IAsyncOperation`1,Windows.Foundation,ContentType=WindowsRuntime].MakeGenericType($verdictType).GUID
+                $factory = [Runtime.InteropServices.WindowsRuntime.WindowsRuntimeMarshal]::GetActivationFactory($verifier)
+                $pending = [DobermanHelloWindow]::VerifyForWindow($factory, $hwnd, $text, $riid)
+            } catch { $pending = $null }
+        }
+        if ($null -eq $pending) { $pending = $verifier::RequestVerificationAsync($text) }
+        $verdict = Wait-Op $pending $verdictType $ms
         return @{ status = [string]$verdict; value = $null }
     }
     $key = [string]$request.key
     if ($op -eq 'create') {
         Enable-Raise
-        $created = Wait-Op ($manager::RequestCreateAsync($key, [Windows.Security.Credentials.KeyCredentialCreationOption]::FailIfExists)) $retrieval $ms
+        $option = [Windows.Security.Credentials.KeyCredentialCreationOption]::FailIfExists
+        $pending = $null
+        $window = Get-FrontWindowId
+        if ($null -ne $window) {
+            try { $pending = $manager::RequestCreateForWindowAsync($window, $key, $option) } catch { $pending = $null }
+        }
+        if ($null -eq $pending) { $pending = $manager::RequestCreateAsync($key, $option) }
+        $created = Wait-Op $pending $retrieval $ms
         return @{ status = [string]$created.Status; value = $null }
     }
     $opened = Wait-Op ($manager::OpenAsync($key)) $retrieval $ms
@@ -161,16 +253,12 @@ function Invoke-HelloOp($request) {
     # sign: bound to the foreground window where Windows offers it, else the plain call
     Enable-Raise
     $data = $buffers::CreateFromByteArray([Convert]::FromBase64String([string]$request.data))
-    $forWindow = [Windows.Security.Credentials.KeyCredential].GetMethod('RequestSignForWindowAsync')
-    $hwnd = [IntPtr]::Zero
-    if ($script:canRaise) { $hwnd = [DobermanHelloWindow]::GetForegroundWindow() }
-    if ($forWindow -and $hwnd -ne [IntPtr]::Zero) {
-        $window = [Activator]::CreateInstance($forWindow.GetParameters()[0].ParameterType)
-        $window.Value = [uint64]$hwnd.ToInt64()
-        $pending = $credential.RequestSignForWindowAsync($window, $data)
-    } else {
-        $pending = $credential.RequestSignAsync($data)
+    $pending = $null
+    $window = Get-FrontWindowId
+    if ($null -ne $window) {
+        try { $pending = $credential.RequestSignForWindowAsync($window, $data) } catch { $pending = $null }
     }
+    if ($null -eq $pending) { $pending = $credential.RequestSignAsync($data) }
     $signed = Wait-Op $pending ([Windows.Security.Credentials.KeyCredentialOperationResult]) $ms
     if ([string]$signed.Status -ne 'Success') { return @{ status = [string]$signed.Status; value = $null } }
     return @{ status = 'Success'; value = $buffers::EncodeToBase64String($signed.Result) }
@@ -418,6 +506,12 @@ class PowerShellHelloBackend:
         status, _ = _call("ping", timeout_s=_QUICK_TIMEOUT_S)
         if status != "ok":
             raise HelloError("Windows PowerShell gave an unexpected answer")
+
+    def window_binding(self) -> str:
+        """Doctor: ``"ok"`` when prompts can be bound to the window in front, else what is
+        missing (``helper``, ``interop`` or ``window_calls``). Never prompts."""
+        status, _ = _call("selftest", timeout_s=_QUICK_TIMEOUT_S)
+        return status
 
 
 class WindowsHelloMethod:
