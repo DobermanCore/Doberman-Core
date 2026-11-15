@@ -265,10 +265,51 @@ def test_the_script_checks_its_language_mode_before_doing_anything():
 
 def test_the_script_binds_the_window_and_raises_the_dialog():
     assert "RequestSignForWindowAsync" in HELLO_SCRIPT
-    assert "RequestSignAsync" in HELLO_SCRIPT  # the fallback
+    assert "RequestSignAsync(" in HELLO_SCRIPT  # the fallback
     assert "GetForegroundWindow" in HELLO_SCRIPT
-    assert "Credential Dialog Xaml Host" in HELLO_SCRIPT
     assert "FailIfExists" in HELLO_SCRIPT  # create never replaces a pinned key
+
+
+def test_verify_is_bound_to_the_foreground_window_with_a_plain_fallback():
+    # userconsentverifierinterop.h: IUserConsentVerifierInterop : IInspectable
+    assert "39E050C3-4E74-441A-8DC0-B81104DF949C" in HELLO_SCRIPT
+    assert "InterfaceIsIInspectable" in HELLO_SCRIPT
+    assert "RequestVerificationForWindowAsync" in HELLO_SCRIPT
+    assert "GetActivationFactory" in HELLO_SCRIPT
+    assert "RequestVerificationAsync(" in HELLO_SCRIPT  # the fallback
+
+
+def test_create_is_bound_to_the_foreground_window_with_a_plain_fallback():
+    assert "RequestCreateForWindowAsync" in HELLO_SCRIPT
+    assert "RequestCreateAsync(" in HELLO_SCRIPT  # the fallback
+
+
+def test_an_unfocused_dialog_is_flashed_and_found_by_its_process():
+    assert "FlashWindowEx" in HELLO_SCRIPT
+    assert "SetForegroundWindow" in HELLO_SCRIPT
+    # FindWindowW cannot see the Hello dialog (hardware run 2026-11-14); its broker can.
+    assert "FindWindow" not in HELLO_SCRIPT
+    assert "CredentialUIBroker" in HELLO_SCRIPT
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        "SendInput",
+        "keybd_event",
+        "mouse_event",
+        "AttachThreadInput",
+        "PostMessage",
+        "SendMessage",
+        "SendNotifyMessage",
+        "AllowSetForegroundWindow",
+        "LockSetForegroundWindow",
+        "SystemParametersInfo",
+        "SendKeys",
+    ],
+)
+def test_the_script_never_synthesizes_input_or_messages(api):
+    assert api.lower() not in HELLO_SCRIPT.lower()
 
 
 # --- strict replies -----------------------------------------------------------------------
@@ -525,6 +566,12 @@ def test_mode_on_uses_this_backend():
     assert isinstance(WindowsHelloMethod()._backend, PowerShellHelloBackend)
 
 
+def test_mode_availability_waits_as_long_as_a_quick_child_may_run():
+    # doctor and the loosening pre-check must agree on when Hello counts as unavailable
+    quick_process_bound = windows_hello._QUICK_TIMEOUT_S + windows_hello._CHILD_START_S
+    assert hello_mode._AVAILABLE_TIMEOUT_S == quick_process_bound
+
+
 def test_mode_on_constrained_language_denies(mode_on, child):
     child(sign={"error": "language_mode"}, available={"error": "language_mode"})
     assert hello_mode.available() is False
@@ -602,8 +649,14 @@ def test_doctor_row_ok_when_powershell_runs_in_full_language(monkeypatch):
 def test_doctor_row_warns_off_mode_and_fails_critically_in_it(
     monkeypatch, tmp_path, outcome, words
 ):
+    from doberman.auth import approval_config
     from doberman.cli.doctor import CheckStatus
 
+    monkeypatch.setenv(approval_config.APPROVAL_FILE_ENV, str(tmp_path / "approval.json"))
+    row = _doctor_row(monkeypatch, outcome)  # Hello not in use: informational only
+    assert (row.status, row.critical) == (CheckStatus.OK, False)
+    assert words in row.detail and "not in use" in row.detail
+    approval_config.enable("windows_hello")
     row = _doctor_row(monkeypatch, outcome)
     assert (row.status, row.critical) == (CheckStatus.WARN, False)
     assert words in row.detail and "TOTP" in row.detail

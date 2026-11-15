@@ -27,8 +27,11 @@ TPM 2.0, and the date.
    prompt comes from Doberman's hook, which has no console window. Does the prompt appear in front,
    behind other windows, or not at all? Doberman falls back to TOTP when the prompt cannot run,
    except in Hello-required mode, where it denies. Every prompt runs in a `powershell.exe` child
-   that pulls the dialog to the front; the signing prompt is also bound to the foreground window
-   (`RequestSignForWindowAsync`, where Windows has it). Run this check again in the mode.
+   that binds it to the window in front where Windows allows (verify through
+   `IUserConsentVerifierInterop::RequestVerificationForWindowAsync`, key creation through
+   `RequestCreateForWindowAsync`, signing through `RequestSignForWindowAsync`), and, while the
+   dialog is open and not in front, asks Windows to raise it and flash its taskbar button. Run
+   this check again in the mode.
 6. **Is the key TPM-backed or software-only?** After creating the key, does
    `KeyCredential.GetAttestationAsync` return `Success` (TPM attestation) or `NotSupported`
    (no TPM attestation)? Doberman treats anything else as unknown, never as TPM-backed.
@@ -57,5 +60,8 @@ TPM 2.0, and the date.
 | 2026-11-14 | Windows 11 Home 10.0.26200 | 5 | A prompt started from a process with no console window opened behind other windows and was never answered. The request timed out after 40 seconds, and Doberman denies on a timeout. | Claude |
 | 2026-11-14 | Windows 11 Home 10.0.26200 | 6 | TPM 2.0 present and ready for attestation. No `doberman-proof` key was created, because creating one needs a gesture. | Claude |
 | 2026-11-14 | Windows 11 Home 10.0.26200 | 3, 4 | Not run: each needs a person. The machine has an IR camera with Hello face sign-in and a fingerprint reader. | Claude |
+| 2026-11-14 | Windows 11 Home 10.0.26200 | 5 (PowerShell path) | At 22:10 PST, through the PowerShell backend with no window binding for verify or create: each opened a visible "Windows Security" dialog (a `CredentialUIBroker` process), but the browser stayed the foreground window for the whole 60 s (verify) and 90 s (create). Both timed out and were denied. The raise step never found the dialog: `FindWindowW` does not see it, though its process's main window handle does. Both dialogs were still open long after their requests timed out. | Claude |
+| 2026-11-14 | Windows 11 Home 10.0.26200 | 3, 4, 6, 8 | Same run. Check 3 inconclusive: the verify prompt never came to the front, so nobody could see whether the face sign-in approves without a deliberate act. Checks 4, 6 and 8 not reached: the key was never created. | Claude |
+| 2026-11-14 | Windows 11 Home 10.0.26200 | 5 (raise and flash) | Against those two open dialogs, from a program at the same user's normal integrity: `SetForegroundWindow` returned false and the foreground window did not change. `FlashWindowEx` (flash caption and taskbar button until focused) and `FlashWindow` returned false with error 87 (invalid parameter), while the same `FlashWindowEx` call on the probe's own window worked. So raising and flashing may do nothing for this dialog; binding the prompt to the window in front is the fix, and it has not been tried with a real prompt yet. | Claude |
 
-Checks 3 and 4 still need a person. Check 1 is only partly answered: a same-user program could not message or end the prompt, but nobody tried typing into it while it was in front.
+Checks 3 and 4 still need a person, and check 5 needs a rerun with the window-bound prompts. Check 1 is only partly answered: a same-user program could not message or end the prompt, but nobody tried typing into it while it was in front.

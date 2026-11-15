@@ -622,11 +622,13 @@ def _check_hello_mode() -> CheckResult:
 
 def _check_hello_powershell() -> CheckResult:
     """Windows Hello runs in Windows PowerShell 5.1, which must resolve from System32 and run
-    in FullLanguage mode. Critical only in Hello-required mode, where no fallback exists."""
-    from doberman.auth import hello_mode
+    in FullLanguage mode. Critical only in Hello-required mode, where no fallback exists, and
+    informational when Hello approvals are not in use at all."""
+    from doberman.auth import approval_config, hello_mode
     from doberman.auth.methods.windows_hello import (
         HelloLanguageModeError,
         PowerShellHelloBackend,
+        WindowsHelloMethod,
     )
 
     name = "Hello PowerShell"
@@ -641,6 +643,8 @@ def _check_hello_powershell() -> CheckResult:
         if mode_on:
             detail = f"{why}, so Windows Hello cannot run and proof tier is refused"
             return CheckResult(name, CheckStatus.FAIL, detail, critical=True)
+        if not approval_config.is_enabled(WindowsHelloMethod.name):
+            return CheckResult(name, CheckStatus.OK, f"{why}; Windows Hello is not in use here")
         detail = f"{why}, so Windows Hello cannot run; approvals use TOTP"
         return CheckResult(name, CheckStatus.WARN, detail)
     return CheckResult(
