@@ -561,7 +561,7 @@ def test_mode_on_a_child_signature_by_another_key_is_refused(mode_on, child):
 @pytest.mark.skipif(sys.platform != "win32", reason="needs Windows PowerShell 5.1")
 def test_the_real_child_runs_non_prompting_operations(monkeypatch):
     monkeypatch.setattr(windows_hello, "system_powershell", _REAL_SYSTEM_POWERSHELL)
-    # A cold Windows PowerShell 5.1 took 12-90 s to start on windows-latest (0.3 s on a desktop);
+    # A cold Windows PowerShell 5.1 took 12-165 s to start on windows-latest (0.3 s on a desktop);
     # this test checks the real path and protocol, not the production start-up bound.
     monkeypatch.setattr(windows_hello, "_CHILD_START_S", 240.0)
     backend = PowerShellHelloBackend()

@@ -584,6 +584,11 @@ The mode has other limits:
 - Hello runs through the built-in Windows PowerShell 5.1. Where an App Control policy puts
   PowerShell in Constrained Language Mode (common under enterprise WDAC), Hello can't run, so
   proof tier is refused in the mode, with no TOTP fallback. `doberman doctor` reports it.
+- If Windows PowerShell takes more than about 15 seconds to start (seen on cold CI machines),
+  Doberman treats Hello as unavailable: refused in the mode, TOTP outside it.
+- To bring the prompt to the front, the PowerShell step compiles a small helper into your temp
+  folder. Outside the mode, a program running as you could swap it and fake a "verified"
+  answer; in the mode a fake answer still needs a signature from your Hello key.
 - If the database write fails, the approval still stands without a stored signature, and
   Doberman logs a warning.
 - Some hardware behaviors haven't been checked on a real machine: the synthetic-input and face
