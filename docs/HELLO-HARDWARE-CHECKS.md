@@ -1,7 +1,7 @@
 # Windows Hello hardware checks
 
-Doberman's opt-in Windows Hello approval (`pip install "doberman-core[winhello]"`, then
-`doberman 2fa methods enable windows_hello`) cannot be tested in CI: CI has no Hello device. Before any
+Doberman's opt-in Windows Hello approval (`doberman 2fa methods enable windows_hello`; it runs
+through the built-in Windows PowerShell 5.1, so no extra package is needed) cannot be tested in CI: CI has no Hello device. Before any
 release claims more about Hello than "it shows a prompt", someone runs these checks on a real Windows
 11 machine and writes down what they saw. An unchecked box means unknown, not "fine".
 
@@ -26,15 +26,17 @@ TPM 2.0, and the date.
 5. **Does the prompt show from a hook process?** Trigger a 2FA-tier action from a coding agent so the
    prompt comes from Doberman's hook, which has no console window. Does the prompt appear in front,
    behind other windows, or not at all? Doberman falls back to TOTP when the prompt cannot run,
-   except in Hello-required mode, where it denies. In that mode the signing prompt runs in a child
-   process that binds it to the foreground window (`RequestSignForWindowAsync`, where Windows has
-   it) and pulls the dialog to the front; run this check again in the mode.
+   except in Hello-required mode, where it denies. Every prompt runs in a `powershell.exe` child
+   that pulls the dialog to the front; the signing prompt is also bound to the foreground window
+   (`RequestSignForWindowAsync`, where Windows has it). Run this check again in the mode.
 6. **Is the key TPM-backed or software-only?** After creating the key, does
    `KeyCredential.GetAttestationAsync` return `Success` (TPM attestation) or `NotSupported`
    (no TPM attestation)? Doberman treats anything else as unknown, never as TPM-backed.
-7. **Does the `winhello` extra load at all?** With Smart App Control or another App Control policy
-   on, does `import winrt.windows.security.credentials` work, or does Windows block the `_winrt` DLL?
-   If it is blocked, Hello is reported unavailable and Doberman uses TOTP.
+7. **Does PowerShell's Hello path run under App Control?** With Smart App Control or another App
+   Control policy on, does `doberman doctor` show the "Hello PowerShell" row as OK (Windows
+   PowerShell 5.1 resolved from System32 and running in FullLanguage mode)? Under an enterprise
+   policy that puts PowerShell in Constrained Language Mode, Hello cannot run: Doberman uses TOTP
+   outside Hello-required mode and refuses proof tier in it.
 8. **Does the Hello key's signature verify?** `doberman 2fa hello enroll` signs a test message and
    checks it with Doberman's own verifier (RSA PKCS#1 v1.5 with SHA-256 over the key's
    SubjectPublicKeyInfo) before pinning the key. Does enrollment pass that step? If it refuses with
@@ -48,6 +50,7 @@ TPM 2.0, and the date.
 | Date | Build | Check | Observed | By |
 | --- | --- | --- | --- | --- |
 | 2026-11-14 | Windows 11 Home 10.0.26200 | 7 | `pip install` of the `winrt-*` packages on CPython 3.13 succeeded; the import failed with "An Application Control policy has blocked this file" for `_winrt`. | Claude |
+| 2026-11-14 | Windows 11 Home 10.0.26200 | 7 (PowerShell path) | Smart App Control on. `powershell.exe` from System32 is Microsoft-signed (Authenticode valid) and ran Doberman's Hello script in FullLanguage mode: ping OK, `UserConsentVerifier` availability `Available`, opening `doberman-proof` returned `NotFound`, each in about 0.3 s. No key was created and no prompt was shown. | Claude |
 | 2026-11-14 | Windows 11 Home 10.0.26200 | Availability only | From Windows PowerShell 5.1 (not Doberman's Python path): `UserConsentVerifier` reports `Available`, `KeyCredentialManager.IsSupportedAsync` is `True`, no `doberman-proof` key exists. | Claude |
 | 2026-11-14 | Windows 11 Home 10.0.26200 | 1 | From a second process at the same user's normal (medium) integrity, posting Escape or close to the prompt window failed with access denied, and ending the prompt's process failed too. A global synthetic keypress went to the window in front, not the prompt, because the prompt was behind other windows. Typing into the prompt while it is in front was not tried. | Claude |
 | 2026-11-14 | Windows 11 Home 10.0.26200 | 2 | The prompt was an ordinary window on the normal desktop, listed by other programs as "Windows Security". The screen did not switch to the secure desktop. | Claude |

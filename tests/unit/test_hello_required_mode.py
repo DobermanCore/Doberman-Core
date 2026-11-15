@@ -268,7 +268,7 @@ def test_provider_any_hello_failure_denies(mode_on, enrolled_totp, backend, kwar
 
 def test_provider_backend_construction_failing_denies(mode_on, monkeypatch):
     def _boom():
-        raise ImportError("no winrt")
+        raise ImportError("no PowerShell")
 
     monkeypatch.setattr(hello_mode, "backend", _boom)
     assert _authenticate(AuthTier.two_factor).approved is False
@@ -587,71 +587,6 @@ def test_doctor_fails_when_a_totp_secret_reappears(mode_on):
     check = _hello_check()
     assert check.status is doctor.CheckStatus.FAIL
     assert "ignored" in check.detail
-
-
-# --- WinRT ensure_key over stub modules ----------------------------------------------------
-
-
-def _stub_key_manager(monkeypatch, *, open_status, create_status="SUCCESS"):
-    from doberman.auth.methods import windows_hello
-
-    class _St:
-        def __init__(self, name):
-            self.status = type("E", (), {"name": name})()
-
-    class KeyCredentialManager:
-        created: list[tuple[str, object]] = []
-
-        @staticmethod
-        async def open_async(name):
-            return _St(open_status)
-
-        @staticmethod
-        async def request_create_async(name, option):
-            KeyCredentialManager.created.append((name, option))
-            return _St(create_status)
-
-    options = type("Opt", (), {"FAIL_IF_EXISTS": "fail-if-exists"})
-    cred = type("cred", (), {"KeyCredentialManager": KeyCredentialManager})
-    cred.KeyCredentialCreationOption = options
-    monkeypatch.setattr(windows_hello, "_load_winrt", lambda: (object(), cred))
-    return KeyCredentialManager
-
-
-def test_ensure_key_creates_a_missing_key_without_replacing(monkeypatch):
-    from doberman.auth.methods.windows_hello import KEY_NAME, WinRTHelloBackend
-
-    mgr = _stub_key_manager(monkeypatch, open_status="NOT_FOUND")
-    WinRTHelloBackend().ensure_key()
-    assert mgr.created == [(KEY_NAME, "fail-if-exists")]
-
-
-def test_ensure_key_keeps_an_existing_key(monkeypatch):
-    from doberman.auth.methods.windows_hello import WinRTHelloBackend
-
-    mgr = _stub_key_manager(monkeypatch, open_status="SUCCESS")
-    WinRTHelloBackend().ensure_key()
-    assert mgr.created == []
-
-
-@pytest.mark.parametrize(
-    ("open_status", "create_status"),
-    [("NOT_FOUND", "USER_CANCELED"), ("SECURITY_DEVICE_LOCKED", "SUCCESS")],
-)
-def test_ensure_key_failure_raises(monkeypatch, open_status, create_status):
-    from doberman.auth.methods.windows_hello import HelloError, WinRTHelloBackend
-
-    _stub_key_manager(monkeypatch, open_status=open_status, create_status=create_status)
-    with pytest.raises(HelloError):
-        WinRTHelloBackend().ensure_key()
-
-
-def test_ensure_key_without_winrt_raises(monkeypatch):
-    from doberman.auth.methods import windows_hello
-
-    monkeypatch.setattr(windows_hello, "_load_winrt", lambda: None)
-    with pytest.raises(windows_hello.HelloError):
-        windows_hello.WinRTHelloBackend().ensure_key()
 
 
 # --- machine marker locations --------------------------------------------------------------
@@ -983,7 +918,7 @@ def test_weaken_refusal_in_the_mode_needs_hello_not_a_factor_file(mode_on, backe
     method, message = drift.weaken_refusal("clearing taint")
     assert method == "hello_unavailable"
     assert "Windows Hello" in message and "2fa setup" not in message
-    backend(available=RuntimeError("winrt blocked"))
+    backend(available=RuntimeError("PowerShell blocked"))
     assert drift.weaken_refusal("clearing taint")[0] == "hello_unavailable"
 
 

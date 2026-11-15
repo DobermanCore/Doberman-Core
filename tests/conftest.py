@@ -19,6 +19,7 @@ from typer.testing import Result
 
 from doberman import config as _config_module
 from doberman.auth import hello_mode as _hello_mode
+from doberman.auth.methods import windows_hello as _windows_hello
 from doberman.auth.password import PASSWORD_FILE_ENV
 from doberman.auth.totp import TOTP_FILE_ENV
 from doberman.egress import artifact as _artifact_module
@@ -196,6 +197,19 @@ def isolated_hello_marker(monkeypatch):
     """
     monkeypatch.setattr(_hello_mode, "_machine_marker_paths", lambda: [])
     monkeypatch.delenv(_hello_mode.MARKER_ENV, raising=False)
+
+
+def _no_real_powershell() -> str:
+    raise _windows_hello.HelloError("tests never start a real Hello child")
+
+
+@pytest.fixture(autouse=True)
+def no_real_hello_child(monkeypatch):
+    """No test starts a real ``powershell.exe`` Hello child, which could show a prompt.
+
+    Tests fake ``subprocess.run``; the one real-child test (non-prompting ops) opts back in.
+    """
+    monkeypatch.setattr(_windows_hello, "system_powershell", _no_real_powershell)
 
 
 @pytest.fixture(autouse=True)

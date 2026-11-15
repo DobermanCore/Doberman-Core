@@ -1,37 +1,40 @@
 """Windows Hello approval method — a local biometric (face / fingerprint / PIN) tap.
 
 The method talks to Windows through an injected :class:`HelloBackend`. The real one,
-:class:`WinRTHelloBackend`, uses the PyWinRT ``winrt-*`` packages
-(``pip install doberman-core[winhello]``): ``UserConsentVerifier`` shows the system
-Windows Hello prompt carrying the action text, and ``KeyCredentialManager`` holds the
-``doberman-proof`` key for :meth:`HelloBackend.sign` / :meth:`HelloBackend.public_key`.
-Hello-required mode (:mod:`doberman.auth.hello_mode`) signs proofs with that key through
-:class:`SignerProcessBackend`, in a child process.
+:class:`PowerShellHelloBackend`, runs every operation in a short-lived child of the
+Microsoft-signed Windows PowerShell 5.1 (``powershell.exe``), which drives WinRT:
+``UserConsentVerifier`` shows the system Windows Hello prompt carrying the action text, and
+``KeyCredentialManager`` holds the ``doberman-proof`` key for :meth:`HelloBackend.sign` /
+:meth:`HelloBackend.public_key`. No extra Python package is needed, so an App Control policy
+that blocks unsigned native modules (Smart App Control) does not block Hello.
+
+The child runs a fixed script (:data:`HELLO_SCRIPT`, passed with ``-EncodedCommand``); every
+caller value (operation, prompt text, message bytes, key name) goes on stdin as JSON, never
+into the script. It answers with one JSON line; anything else is an error. The child is not
+trusted for proofs: Hello-required mode checks each signature against the pinned key.
 
 This method is **best-effort and fail-safe**:
 
-* Not Windows, ``winrt`` not installed, or no Hello device enrolled →
+* Not Windows, PowerShell missing or not in FullLanguage mode, or no Hello device enrolled →
   :meth:`WindowsHelloMethod.is_available` returns ``False`` (the challenge falls back
-  to TOTP).
+  to TOTP; in Hello-required mode it is a denial).
 * The verifier runs but the human cancels / fails / times out → ``denied``.
 * The prompt cannot be displayed at all, or the backend raises →
   ``unavailable`` (fall back to TOTP), never ``approved``.
 
-The WinRT consent dialog historically prefers an owning window; from a bare console
-process it may report itself unusable, in which case this method defers to TOTP
-rather than blocking the human. Verify on a real Hello-enrolled machine
-(``docs/HELLO-HARDWARE-CHECKS.md``) — CI has neither ``winrt`` nor a Hello device.
+Verify on a real Hello-enrolled machine (``docs/HELLO-HARDWARE-CHECKS.md``) — CI has no
+Hello device.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
+import binascii
 import json
 import logging
+import os
 import subprocess
 import sys
-import threading
 from enum import Enum
 from typing import Protocol
 
@@ -42,12 +45,157 @@ logger = logging.getLogger("doberman.auth.methods.windows_hello")
 #: The ``KeyCredentialManager`` key name Doberman signs proofs with.
 KEY_NAME = "doberman-proof"
 
-#: The child process Hello-required mode signs in (see :class:`SignerProcessBackend`).
-SIGNER_MODULE = "doberman.auth.hello_signer"
-#: Extra seconds the child gets over its own signing timeout, to start up.
+#: Seconds the child may wait on a non-prompting WinRT call (availability, open key).
+_QUICK_TIMEOUT_S = 10.0
+#: Seconds the child may wait for a TPM attestation.
+_ATTEST_TIMEOUT_S = 60.0
+#: Extra seconds the process gets over the child's own wait, to start up.
 _CHILD_START_S = 15.0
-#: The Hello dialog's window class (Chromium foregrounds the same one for the same bug).
-_HELLO_DIALOG_CLASS = "Credential Dialog Xaml Host"
+#: Largest stdout accepted from the child; a real reply is well under 1 KiB.
+_MAX_REPLY_BYTES = 16 * 1024
+_CREATE_NO_WINDOW = 0x08000000
+#: The only variables the child keeps from this process (temp folder and profile paths).
+_PASS_ENV = (
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "USERNAME",
+    "USERDOMAIN",
+    "COMPUTERNAME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
+)
+_MAX_PATH = 260
+
+#: The one script the child runs. Constant: caller data arrives on stdin, never in here.
+#: Replies: ``{"status": <WinRT status name>, "value": <string or null>}`` or
+#: ``{"error": "language_mode" | "timeout" | "failed"}``, as one line.
+HELLO_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$WarningPreference = 'SilentlyContinue'
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { '{"error":"language_mode"}'; exit 0 }
+
+# Bring the Hello dialog to the front: started from a process with no foreground window it
+# opens behind other windows (Chromium does the same, crypto/user_verifying_key_win.cc).
+$windowSource = @'
+using System;
+using System.Runtime.InteropServices;
+public static class DobermanHelloWindow {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr FindWindowW(string windowClass, string title);
+    [DllImport("user32.dll")]
+    static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    public static void Raise() {
+        IntPtr dialog = FindWindowW("Credential Dialog Xaml Host", null);
+        if (dialog != IntPtr.Zero) { SetForegroundWindow(dialog); }
+    }
+}
+'@
+$script:canRaise = $false
+
+function Enable-Raise {
+    try { Add-Type -TypeDefinition $windowSource; $script:canRaise = $true } catch { $script:canRaise = $false }
+}
+
+function Wait-Op($operation, [Type]$resultType, [int]$ms) {
+    $task = $script:asTask.MakeGenericMethod($resultType).Invoke($null, @($operation))
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    while (-not $task.Wait(250)) {
+        if ($clock.ElapsedMilliseconds -ge $ms) { throw [TimeoutException]::new('timeout') }
+        if ($script:canRaise) { try { [DobermanHelloWindow]::Raise() } catch { } }
+    }
+    $task.Result
+}
+
+function Invoke-HelloOp($request) {
+    $op = [string]$request.op
+    $ms = [int]$request.timeout_ms
+    if ($op -notin 'ping', 'available', 'verify', 'open', 'create', 'public_key', 'attest', 'sign') { throw 'unknown op' }
+    if ($ms -le 0) { throw 'bad timeout' }
+    if ($op -eq 'ping') { return @{ status = 'ok'; value = $null } }
+
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+    $script:asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+        $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+        $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+    } | Select-Object -First 1
+    $manager = [Windows.Security.Credentials.KeyCredentialManager,Windows.Security.Credentials,ContentType=WindowsRuntime]
+    $verifier = [Windows.Security.Credentials.UI.UserConsentVerifier,Windows.Security.Credentials.UI,ContentType=WindowsRuntime]
+    $buffers = [Windows.Security.Cryptography.CryptographicBuffer,Windows.Security.Cryptography,ContentType=WindowsRuntime]
+    $retrieval = [Windows.Security.Credentials.KeyCredentialRetrievalResult]
+
+    if ($op -eq 'available') {
+        $availability = Wait-Op ($verifier::CheckAvailabilityAsync()) ([Windows.Security.Credentials.UI.UserConsentVerifierAvailability]) $ms
+        return @{ status = [string]$availability; value = $null }
+    }
+    if ($op -eq 'verify') {
+        Enable-Raise
+        $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$request.prompt))
+        $verdict = Wait-Op ($verifier::RequestVerificationAsync($text)) ([Windows.Security.Credentials.UI.UserConsentVerificationResult]) $ms
+        return @{ status = [string]$verdict; value = $null }
+    }
+    $key = [string]$request.key
+    if ($op -eq 'create') {
+        Enable-Raise
+        $created = Wait-Op ($manager::RequestCreateAsync($key, [Windows.Security.Credentials.KeyCredentialCreationOption]::FailIfExists)) $retrieval $ms
+        return @{ status = [string]$created.Status; value = $null }
+    }
+    $opened = Wait-Op ($manager::OpenAsync($key)) $retrieval $ms
+    if ($op -eq 'open' -or [string]$opened.Status -ne 'Success') { return @{ status = [string]$opened.Status; value = $null } }
+    $credential = $opened.Credential
+    if ($op -eq 'public_key') {
+        return @{ status = 'Success'; value = $buffers::EncodeToBase64String($credential.RetrievePublicKey()) }
+    }
+    if ($op -eq 'attest') {
+        $attestation = Wait-Op ($credential.GetAttestationAsync()) ([Windows.Security.Credentials.KeyCredentialAttestationResult]) $ms
+        return @{ status = 'Success'; value = [string]$attestation.Status }
+    }
+
+    # sign: bound to the foreground window where Windows offers it, else the plain call
+    Enable-Raise
+    $data = $buffers::CreateFromByteArray([Convert]::FromBase64String([string]$request.data))
+    $forWindow = [Windows.Security.Credentials.KeyCredential].GetMethod('RequestSignForWindowAsync')
+    $hwnd = [IntPtr]::Zero
+    if ($script:canRaise) { $hwnd = [DobermanHelloWindow]::GetForegroundWindow() }
+    if ($forWindow -and $hwnd -ne [IntPtr]::Zero) {
+        $window = [Activator]::CreateInstance($forWindow.GetParameters()[0].ParameterType)
+        $window.Value = [uint64]$hwnd.ToInt64()
+        $pending = $credential.RequestSignForWindowAsync($window, $data)
+    } else {
+        $pending = $credential.RequestSignAsync($data)
+    }
+    $signed = Wait-Op $pending ([Windows.Security.Credentials.KeyCredentialOperationResult]) $ms
+    if ([string]$signed.Status -ne 'Success') { return @{ status = [string]$signed.Status; value = $null } }
+    return @{ status = 'Success'; value = $buffers::EncodeToBase64String($signed.Result) }
+}
+
+try {
+    $reply = Invoke-HelloOp ([Console]::In.ReadToEnd() | ConvertFrom-Json)
+} catch [TimeoutException] {
+    $reply = @{ error = 'timeout' }
+} catch {
+    $reply = @{ error = 'failed' }
+}
+[Console]::Out.Write(($reply | ConvertTo-Json -Compress) + "`n")
+exit 0
+"""
+
+_PS_ARGS = (
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+)
+_ENCODED_SCRIPT = base64.b64encode(HELLO_SCRIPT.encode("utf-16-le")).decode("ascii")
 
 
 class HelloVerdict(Enum):
@@ -59,7 +207,11 @@ class HelloVerdict(Enum):
 
 
 class HelloError(RuntimeError):
-    """Hello could not do what was asked (not installed, no key, refused)."""
+    """Hello could not do what was asked (no PowerShell, no key, refused, bad reply)."""
+
+
+class HelloLanguageModeError(HelloError):
+    """PowerShell is not in FullLanguage mode (Constrained Language under App Control)."""
 
 
 class HelloBackend(Protocol):
@@ -87,8 +239,7 @@ class HelloBackend(Protocol):
 
 
 def _name(value: object) -> str:
-    """An enum's name, lowercased with ``_`` dropped (PyWinRT spells ``NOT_SUPPORTED``,
-    older bindings ``NotSupported``)."""
+    """A status name, lowercased with ``_`` dropped (``NotSupported`` → ``notsupported``)."""
     return str(getattr(value, "name", value)).lower().replace("_", "")
 
 
@@ -104,189 +255,169 @@ def tpm_backed_from_attestation(status: object) -> bool | None:
     return {"success": True, "notsupported": False}.get(_name(status))
 
 
-def _load_winrt():  # pragma: no cover - requires winrt on Windows
-    """Return ``(ui, credentials)`` WinRT modules, or ``None`` if unavailable."""
-    if sys.platform != "win32":
-        return None
-    try:
-        from winrt.windows.security import credentials  # type: ignore
-        from winrt.windows.security.credentials import ui  # type: ignore
-    except Exception:  # noqa: BLE001 — any import failure means "not available"
-        return None
-    return ui, credentials
-
-
-def _foreground_window() -> int:  # pragma: no cover - Windows only
-    """The foreground window's handle (0 when there is none or it cannot be read)."""
-    if sys.platform != "win32":
-        return 0
+def _system_directory() -> str | None:
+    """System32 as Windows reports it (``GetSystemDirectoryW``), or ``None``."""
     try:
         import ctypes
 
-        user32 = ctypes.WinDLL("user32")
-        user32.GetForegroundWindow.restype = ctypes.c_void_p
-        return int(user32.GetForegroundWindow() or 0)
-    except Exception:  # noqa: BLE001 - no owner window: the plain prompt still works
-        return 0
+        kernel32 = ctypes.WinDLL("kernel32")
+        buf = ctypes.create_unicode_buffer(_MAX_PATH)
+        n = kernel32.GetSystemDirectoryW(buf, len(buf))
+    except Exception:  # noqa: BLE001 - not Windows, no kernel32: no system directory
+        return None
+    return buf.value if 0 < n < len(buf) else None
 
 
-def _raise_hello_dialog(stop: threading.Event) -> None:  # pragma: no cover - Windows only
-    """Best effort, signing child only: bring the Hello dialog to the front until ``stop``.
+def system_powershell() -> str:
+    """Windows PowerShell 5.1 under the real System32. Raises :class:`HelloError` if absent.
 
-    Windows opens it under other windows for a caller without a foreground window;
-    Chromium works around the same bug this way (``crypto/user_verifying_key_win.cc``).
+    Never from ``%SystemRoot%`` or ``PATH``: the user (and so the agent) controls those, and
+    outside Hello-required mode the consent prompt's answer is trusted.
     """
     if sys.platform != "win32":
-        return
+        raise HelloError("Windows Hello needs Windows")
+    system = _system_directory()
+    if not system:
+        raise HelloError("cannot locate the Windows system directory")
+    exe = os.path.join(system, "WindowsPowerShell", "v1.0", "powershell.exe")
+    if not os.path.isfile(exe):
+        raise HelloError("Windows PowerShell 5.1 is not installed")
+    return exe
+
+
+def _parse_reply(stdout: bytes) -> tuple[str, str | None]:
+    """The child's one JSON line as ``(status, value)``. Anything else raises."""
+    if len(stdout) > _MAX_REPLY_BYTES:
+        raise HelloError("the Hello child wrote too much")
     try:
-        import ctypes
+        line = stdout.decode("ascii").removesuffix("\n").removesuffix("\r")
+        if not line or "\n" in line or "\r" in line:
+            raise ValueError("not exactly one line")
+        reply = json.loads(line)
+    except ValueError as exc:  # also UnicodeDecodeError and JSONDecodeError
+        raise HelloError("the Hello child did not answer with one JSON line") from exc
+    if isinstance(reply, dict) and set(reply) == {"error"}:
+        if reply["error"] == "language_mode":
+            raise HelloLanguageModeError(
+                "PowerShell runs in Constrained Language Mode here, so Windows Hello cannot run"
+            )
+        if reply["error"] == "timeout":
+            raise TimeoutError("Windows Hello timed out")
+        raise HelloError("the Hello child reported a failure")
+    if (
+        not isinstance(reply, dict)
+        or set(reply) != {"status", "value"}
+        or not isinstance(reply["status"], str)
+        or not (reply["value"] is None or isinstance(reply["value"], str))
+    ):
+        raise HelloError("the Hello child's answer has the wrong shape")
+    return reply["status"], reply["value"]
 
-        user32 = ctypes.WinDLL("user32")
-        user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
-        user32.FindWindowW.restype = ctypes.c_void_p
-        user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
-        while not stop.wait(0.25):
-            hwnd = user32.FindWindowW(_HELLO_DIALOG_CLASS, None)
-            if hwnd:
-                user32.SetForegroundWindow(hwnd)
-    except Exception:  # noqa: BLE001, S110 - cosmetic; the prompt works without it
-        pass
+
+def _child_env(exe: str) -> dict[str, str]:
+    """A minimal environment for the child, its Windows paths derived from ``exe``.
+
+    Nothing else passes through: ``COR_PROFILER*``, ``COMPlus_*`` or a user ``PSModulePath``
+    could load someone else's code into the child, whose consent answer is trusted outside
+    Hello-required mode.
+    """
+    ps_home = os.path.dirname(exe)
+    system = os.path.dirname(os.path.dirname(ps_home))
+    windows = os.path.dirname(system)
+    env = {k: os.environ[k] for k in _PASS_ENV if k in os.environ}
+    env.update(
+        SystemRoot=windows,
+        windir=windows,
+        SystemDrive=os.path.splitdrive(windows)[0],
+        PATH=os.pathsep.join((system, windows)),
+        PSModulePath=os.path.join(ps_home, "Modules"),
+    )
+    return env
 
 
-class WinRTHelloBackend:
-    """The real backend over PyWinRT. Every method is safe to call off-Windows."""
+def _call(op: str, *, timeout_s: float, **fields: str) -> tuple[str, str | None]:
+    """Run one operation in a fresh ``powershell.exe`` child; see :data:`HELLO_SCRIPT`."""
+    exe = system_powershell()
+    request = {"op": op, "key": KEY_NAME, "timeout_ms": int(timeout_s * 1000), **fields}
+    env = _child_env(exe)
+    try:
+        done = subprocess.run(  # noqa: S603 - fixed argv: System32 PowerShell and our script
+            [exe, *_PS_ARGS, _ENCODED_SCRIPT],
+            input=json.dumps(request).encode("ascii"),
+            capture_output=True,
+            timeout=timeout_s + _CHILD_START_S,
+            creationflags=_CREATE_NO_WINDOW,
+            cwd=os.path.dirname(exe),
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HelloError(f"Windows PowerShell did not run ({type(exc).__name__})") from exc
+    if done.returncode != 0:
+        raise HelloError(f"Windows PowerShell exited with {done.returncode}")
+    return _parse_reply(done.stdout)
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def _decoded(value: str | None) -> bytes:
+    try:
+        raw = base64.b64decode(value or "", validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HelloError("the Hello child's value is not base64") from exc
+    if not raw:
+        raise HelloError("the Hello child returned nothing")
+    return raw
+
+
+class PowerShellHelloBackend:
+    """The real backend: each operation is one ``powershell.exe`` child (see module docs)."""
 
     def available(self) -> bool:
-        mods = _load_winrt()
-        if mods is None:
-            return False
-        ui, _ = mods
-
-        async def _check():
-            return await ui.UserConsentVerifier.check_availability_async()
-
-        return _name(asyncio.run(_check())) == "available"
+        status, _ = _call("available", timeout_s=_QUICK_TIMEOUT_S)
+        return _name(status) == "available"
 
     def verify(self, prompt: str, *, timeout_s: float) -> HelloVerdict:
-        mods = _load_winrt()
-        if mods is None:
-            return HelloVerdict.unavailable
-        ui, _ = mods
-
-        async def _verify():
-            return await ui.UserConsentVerifier.request_verification_async(prompt)
-
-        result = asyncio.run(asyncio.wait_for(_verify(), timeout=timeout_s))
-        return HelloVerdict.verified if _name(result) == "verified" else HelloVerdict.cancelled
-
-    def _open_key(self):
-        mods = _load_winrt()
-        if mods is None:
-            raise HelloError("Windows Hello (winrt) is not available")
-        _, cred = mods
-
-        async def _open():
-            return await cred.KeyCredentialManager.open_async(KEY_NAME)
-
-        res = asyncio.run(_open())
-        if _name(res.status) != "success":
-            raise HelloError(f"Hello key {KEY_NAME!r} not usable: {_name(res.status)}")
-        return res.credential
+        status, _ = _call("verify", timeout_s=timeout_s, prompt=_b64(prompt.encode("utf-8")))
+        return HelloVerdict.verified if _name(status) == "verified" else HelloVerdict.cancelled
 
     def ensure_key(self) -> None:
-        mods = _load_winrt()
-        if mods is None:
-            raise HelloError("Windows Hello (winrt) is not available")
-        _, cred = mods
-
-        async def _open_or_create():
-            res = await cred.KeyCredentialManager.open_async(KEY_NAME)
-            if _name(res.status) == "notfound":
-                # FAIL_IF_EXISTS: never silently replace a key someone already pinned.
-                res = await cred.KeyCredentialManager.request_create_async(
-                    KEY_NAME, cred.KeyCredentialCreationOption.FAIL_IF_EXISTS
-                )
-            return res
-
-        res = asyncio.run(_open_or_create())
-        if _name(res.status) != "success":
-            raise HelloError(f"Hello key {KEY_NAME!r} could not be created: {_name(res.status)}")
+        status, _ = _call("open", timeout_s=_QUICK_TIMEOUT_S)
+        if _name(status) == "notfound":
+            # FailIfExists: never silently replace a key someone already pinned.
+            status, _ = _call("create", timeout_s=DEFAULT_APPROVAL_TIMEOUT_S)
+        if _name(status) != "success":
+            raise HelloError(f"Hello key {KEY_NAME!r} is not usable: {_name(status)}")
 
     def sign(self, data: bytes, *, timeout_s: float | None = None) -> bytes:
-        """One gesture, one signature. Runs inside the signing child process.
-
-        The prompt is bound to the foreground window where Windows offers
-        ``RequestSignForWindowAsync``, and the dialog is pulled to the front while it is
-        open: started from a console-less process it otherwise opens behind other windows.
-        """
-        key = self._open_key()
-        hwnd = _foreground_window()
-
-        async def _sign():
-            window_bound = getattr(key, "request_sign_for_window_async", None)
-            if hwnd and window_bound is not None:
-                return await window_bound((hwnd,), data)
-            return await key.request_sign_async(data)
-
-        stop = threading.Event()
-        threading.Thread(target=_raise_hello_dialog, args=(stop,), daemon=True).start()
-        try:
-            res = asyncio.run(asyncio.wait_for(_sign(), timeout=timeout_s))
-        finally:
-            stop.set()
-        if _name(res.status) != "success":
-            raise HelloError(f"Hello signing refused: {_name(res.status)}")
-        return bytes(res.result)
+        """One gesture, one signature, bound to the foreground window where Windows can."""
+        limit = DEFAULT_APPROVAL_TIMEOUT_S if timeout_s is None else timeout_s
+        status, value = _call("sign", timeout_s=limit, data=_b64(data))
+        if _name(status) != "success":
+            raise HelloError(f"Hello signing refused: {_name(status)}")
+        return _decoded(value)
 
     def public_key(self) -> bytes:
         # X.509 SubjectPublicKeyInfo DER (the WinRT default blob type).
-        return bytes(self._open_key().retrieve_public_key())
+        status, value = _call("public_key", timeout_s=_QUICK_TIMEOUT_S)
+        if _name(status) != "success":
+            raise HelloError(f"Hello key {KEY_NAME!r} not usable: {_name(status)}")
+        return _decoded(value)
 
     def tpm_backed(self) -> bool | None:
         try:
-            key = self._open_key()
-        except Exception:  # noqa: BLE001 — no key / no winrt: unknown, never yes
+            status, value = _call("attest", timeout_s=_ATTEST_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 - no key / no PowerShell: unknown, never yes
             return None
+        return tpm_backed_from_attestation(value) if _name(status) == "success" else None
 
-        async def _attest():
-            return await key.get_attestation_async()
-
-        try:
-            return tpm_backed_from_attestation(asyncio.run(_attest()).status)
-        except Exception:  # noqa: BLE001
-            return None
-
-
-class SignerProcessBackend(WinRTHelloBackend):
-    """Hello-required mode's backend: :meth:`sign` runs in a short-lived child process,
-    ``python -P -m doberman.auth.hello_signer``.
-
-    Signing shows a prompt from the hook process. In the child, a native crash, a hang or bad
-    output becomes a :class:`HelloError` (a denial); in the hook process it would end the
-    process, which the host treats as no objection. The child is not trusted: the caller
-    checks the signature against the pinned key. ``-P`` keeps the working directory (the
-    agent's repository) off the child's import path.
-    """
-
-    def sign(self, data: bytes, *, timeout_s: float | None = None) -> bytes:
-        limit = DEFAULT_APPROVAL_TIMEOUT_S if timeout_s is None else timeout_s
-        request = json.dumps({"data": base64.b64encode(data).decode("ascii"), "timeout_s": limit})
-        try:
-            done = subprocess.run(  # noqa: S603 - fixed argv: this interpreter and our module
-                [sys.executable, "-P", "-m", SIGNER_MODULE],
-                input=request.encode("ascii"),
-                capture_output=True,
-                timeout=limit + _CHILD_START_S,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                check=False,
-            )
-            if done.returncode != 0:
-                raise HelloError(f"the Hello signer exited with {done.returncode}")
-            return base64.b64decode(json.loads(done.stdout)["signature"], validate=True)
-        except HelloError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - timeout, no interpreter, bad output: deny
-            raise HelloError(f"the Hello signer failed ({type(exc).__name__})") from exc
+    def check_powershell(self) -> None:
+        """Doctor: raise unless PowerShell resolves and runs the script in FullLanguage."""
+        status, _ = _call("ping", timeout_s=_QUICK_TIMEOUT_S)
+        if status != "ok":
+            raise HelloError("Windows PowerShell gave an unexpected answer")
 
 
 class WindowsHelloMethod:
@@ -295,7 +426,7 @@ class WindowsHelloMethod:
     name = "windows_hello"
 
     def __init__(self, backend: HelloBackend | None = None) -> None:
-        self._backend: HelloBackend = backend if backend is not None else WinRTHelloBackend()
+        self._backend: HelloBackend = backend if backend is not None else PowerShellHelloBackend()
 
     def is_available(self) -> bool:
         """True only when the backend says Hello is available. Conservative and never
