@@ -6,6 +6,22 @@ gets its own [notes on GitHub](https://github.com/DobermanCore/Doberman-Core/rel
 
 Not yet released: [`changelog.d/`](changelog.d/), compiled into the next version.
 
+## v0.21.0 — 2026-11-15
+Opt-in Windows Hello-required mode: 2FA approvals become Hello signatures, no secret on disk
+
+### Added
+- Windows: opt-in Hello-required mode (`doberman 2fa hello enroll`) makes 2FA prompts a Windows Hello gesture and deletes the TOTP secret, so none exists to steal (#802)
+- Hello-required mode: approvals are Hello-key signatures checked against the key pinned at enrollment; tool-call signatures are kept for later checking (#833)
+- Hello-required mode: loosening commands take a Hello gesture, and `doberman doctor` passes the Windows agent-sandbox check once no 2FA secret remains (#834)
+
+### Changed
+- Windows Hello approval no longer uses `winsdk`, which had no wheels past CPython 3.12 (#800)
+- Cursor hooks now wait 660 seconds, like Claude Code, so a slow Hello approval is not cut off; re-run `doberman install-hooks --host cursor` (#834)
+- Windows Hello now runs through the built-in Windows PowerShell 5.1, so Smart App Control does not block it; the `winhello` extra is deprecated and empty (#837)
+
+### Fixed
+- Windows Hello verify and key-creation prompts are now bound to the window in front, like signing, so they should not open behind other windows (#838)
+
 ## v0.20.0 — 2026-11-13
 Safer dashboard approvals, single-use 2FA codes, and a shadow judge that works
 
