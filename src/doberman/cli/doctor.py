@@ -620,6 +620,34 @@ def _check_hello_mode() -> CheckResult:
     return CheckResult(name, status, detail)
 
 
+def _check_hello_powershell() -> CheckResult:
+    """Windows Hello runs in Windows PowerShell 5.1, which must resolve from System32 and run
+    in FullLanguage mode. Critical only in Hello-required mode, where no fallback exists."""
+    from doberman.auth import hello_mode
+    from doberman.auth.methods.windows_hello import (
+        HelloLanguageModeError,
+        PowerShellHelloBackend,
+    )
+
+    name = "Hello PowerShell"
+    mode_on = hello_mode.is_on()
+    try:
+        PowerShellHelloBackend().check_powershell()
+    except Exception as exc:  # noqa: BLE001 - any failure means Hello cannot run here
+        if isinstance(exc, HelloLanguageModeError):
+            why = "PowerShell runs in Constrained Language Mode (an App Control policy)"
+        else:
+            why = f"Windows PowerShell 5.1 did not run the Hello check ({type(exc).__name__})"
+        if mode_on:
+            detail = f"{why}, so Windows Hello cannot run and proof tier is refused"
+            return CheckResult(name, CheckStatus.FAIL, detail, critical=True)
+        detail = f"{why}, so Windows Hello cannot run; approvals use TOTP"
+        return CheckResult(name, CheckStatus.WARN, detail)
+    return CheckResult(
+        name, CheckStatus.OK, "Windows PowerShell 5.1 runs in FullLanguage mode", critical=mode_on
+    )
+
+
 def _check_phone_approvals() -> CheckResult:
     from doberman.auth import approval_config, ntfy
 
@@ -812,6 +840,11 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("Phone approvals", False, _check_phone_approvals),
         _safe_check("Password", False, _check_password),
         _safe_check("Hello mode", False, _check_hello_mode),
+        *(
+            [_safe_check("Hello PowerShell", False, _check_hello_powershell)]
+            if sys.platform == "win32"
+            else []
+        ),
         _safe_check("Agent sandbox", False, lambda: _check_agent_sandbox(path)),
         _safe_check("Fingerprint key", False, _check_fingerprint_key),
         _safe_check("Codex CLI", False, _check_codex_version),

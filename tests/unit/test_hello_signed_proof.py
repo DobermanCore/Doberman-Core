@@ -3,24 +3,19 @@
 A proof-tier approval in the mode is an RSA PKCS#1 v1.5 SHA-256 signature by the Hello key
 over a canonical message naming the action, checked against the public key pinned in the
 machine marker. Runs on Linux CI: a software RSA key (``tests/unit/_hello_rsa.py``) stands in
-for the Hello key, and the signing child process is faked.
+for the Hello key, and the PowerShell child is faked (test_hello_powershell.py).
 """
 
 import asyncio
 import base64
 import dataclasses
-import io
 import json
-import os
-import subprocess
-import sys
 
 import pytest
 
-from doberman.auth import hello_mode, hello_proof, hello_signer
+from doberman.auth import hello_mode, hello_proof
 from doberman.auth.challenge import AuthTier, run_auth_challenge
-from doberman.auth.methods import windows_hello
-from doberman.auth.methods.windows_hello import HelloError, SignerProcessBackend
+from doberman.auth.methods.windows_hello import HelloError
 from doberman.auth.provider import LOCAL_PROVIDER, LocalAuthProvider
 from doberman.policy import drift
 from doberman.storage import hello_proofs
@@ -377,7 +372,7 @@ def test_prove_refuses_with_a_corrupt_marker(marker, signer):
 
 def test_prove_refuses_a_backend_that_cannot_be_built(marker, monkeypatch):
     def _boom():
-        raise ImportError("no winrt")
+        raise ImportError("no PowerShell")
 
     monkeypatch.setattr(hello_mode, "backend", _boom)
     assert hello_mode.prove(action_id="act-1", action_hash=_HASH)[0] is False
@@ -520,147 +515,6 @@ def test_weaken_gate_needs_a_verifying_signature(marker, signer):
     assert drift._run_weaken_gate({"a": 1}, {"a": 0}, "r", Prompter())[0] is False
 
 
-# --- the signing child process -------------------------------------------------------------
-
-
-class _Done:
-    def __init__(self, returncode=0, stdout=b""):
-        self.returncode, self.stdout, self.stderr = returncode, stdout, b""
-
-
-def test_signer_backend_runs_the_child_and_returns_its_signature(monkeypatch):
-    seen = {}
-
-    def _run(cmd, **kwargs):
-        seen["cmd"], seen["kwargs"] = cmd, kwargs
-        request = json.loads(kwargs["input"])
-        assert base64.b64decode(request["data"]) == b"msg"
-        return _Done(stdout=json.dumps({"signature": base64.b64encode(b"sig").decode()}).encode())
-
-    monkeypatch.setattr(windows_hello.subprocess, "run", _run)
-    assert SignerProcessBackend().sign(b"msg", timeout_s=7) == b"sig"
-    assert seen["cmd"] == [sys.executable, "-P", "-m", "doberman.auth.hello_signer"]
-    assert seen["kwargs"]["timeout"] > 7
-    assert seen["kwargs"]["capture_output"] is True
-
-
-@pytest.mark.parametrize(
-    "outcome",
-    [
-        _Done(returncode=1),
-        _Done(returncode=-1073741819),  # an access violation in the child
-        _Done(stdout=b"not json"),
-        _Done(stdout=b'{"signature": "!!!"}'),
-        _Done(stdout=b"{}"),
-        subprocess.TimeoutExpired("python", 1),
-        OSError("cannot start"),
-    ],
-)
-def test_signer_backend_any_child_failure_is_a_hello_error(monkeypatch, outcome):
-    def _run(cmd, **kwargs):
-        if isinstance(outcome, BaseException):
-            raise outcome
-        return outcome
-
-    monkeypatch.setattr(windows_hello.subprocess, "run", _run)
-    with pytest.raises(HelloError):
-        SignerProcessBackend().sign(b"msg", timeout_s=1)
-
-
-def test_the_mode_uses_the_child_process_signer():
-    assert isinstance(hello_mode.backend(), SignerProcessBackend)
-
-
-def _child(stdin_obj, monkeypatch, sign):
-    monkeypatch.setattr(windows_hello.WinRTHelloBackend, "sign", sign)
-    out = io.StringIO()
-    code = hello_signer.main(io.BytesIO(json.dumps(stdin_obj).encode()), out)
-    return code, out.getvalue()
-
-
-def test_child_signs_and_prints_only_the_signature(monkeypatch):
-    def _sign(self, data, *, timeout_s=None):
-        assert (data, timeout_s) == (b"msg", 5.0)
-        return b"sig"
-
-    code, out = _child(
-        {"data": base64.b64encode(b"msg").decode(), "timeout_s": 5}, monkeypatch, _sign
-    )
-    assert code == 0
-    assert json.loads(out) == {"signature": base64.b64encode(b"sig").decode()}
-
-
-@pytest.mark.parametrize("request_obj", [{}, {"data": "!!!", "timeout_s": 5}, {"data": "AA=="}])
-def test_child_bad_request_fails_without_output(monkeypatch, request_obj):
-    def _sign(self, data, *, timeout_s=None):  # pragma: no cover - never reached
-        return b"sig"
-
-    code, out = _child(request_obj, monkeypatch, _sign)
-    assert code == 1 and out == ""
-
-
-def test_child_signing_failure_fails_without_output(monkeypatch):
-    def _sign(self, data, *, timeout_s=None):
-        raise HelloError("user cancelled")
-
-    code, out = _child({"data": "AA==", "timeout_s": 5}, monkeypatch, _sign)
-    assert code == 1 and out == ""
-
-
-# --- WinRT sign: bound to the foreground window when Windows offers it ------------------------
-
-
-class _Enum:
-    def __init__(self, name):
-        self.name = name
-
-
-class _Res:
-    def __init__(self, status, **kw):
-        self.status = _Enum(status)
-        self.__dict__.update(kw)
-
-
-def _stub_key(monkeypatch, *, for_window=True, hwnd=4242):
-    calls = []
-
-    class Key:
-        async def request_sign_async(self, data):
-            calls.append(("plain", bytes(data)))
-            return _Res("SUCCESS", result=b"sig")
-
-        if for_window:
-
-            async def request_sign_for_window_async(self, window, data):
-                calls.append(("window", window, bytes(data)))
-                return _Res("SUCCESS", result=b"sig")
-
-    class KeyCredentialManager:
-        @staticmethod
-        async def open_async(name):
-            return _Res("SUCCESS", credential=Key())
-
-    cred = type("cred", (), {"KeyCredentialManager": KeyCredentialManager})
-    monkeypatch.setattr(windows_hello, "_load_winrt", lambda: (None, cred))
-    monkeypatch.setattr(windows_hello, "_foreground_window", lambda: hwnd)
-    monkeypatch.setattr(windows_hello, "_raise_hello_dialog", lambda stop: None)
-    return calls
-
-
-def test_winrt_sign_binds_the_prompt_to_the_foreground_window(monkeypatch):
-    calls = _stub_key(monkeypatch)
-    assert windows_hello.WinRTHelloBackend().sign(b"msg", timeout_s=5) == b"sig"
-    assert calls == [("window", (4242,), b"msg")]
-
-
-def test_winrt_sign_without_a_window_api_or_window_uses_the_plain_call(monkeypatch):
-    calls = _stub_key(monkeypatch, for_window=False)
-    windows_hello.WinRTHelloBackend().sign(b"msg", timeout_s=5)
-    calls2 = _stub_key(monkeypatch, hwnd=0)
-    windows_hello.WinRTHelloBackend().sign(b"msg", timeout_s=5)
-    assert calls == calls2 == [("plain", b"msg")]
-
-
 def test_a_version_18_database_gains_the_proof_table_and_keeps_its_rows(tmp_path):
     import aiosqlite
 
@@ -786,24 +640,3 @@ def test_a_proof_storage_failure_logs_what_was_lost(marker, signer, tmp_path, mo
     text = caplog.text
     assert "Hello proof" in text and "not stored" in text
     assert "approval-memory" not in text
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="on Windows the child could show a real prompt")
-def test_the_real_signer_child_fails_closed_off_windows():
-    from pathlib import Path
-
-    import doberman
-
-    request = json.dumps({"data": base64.b64encode(b"x").decode(), "timeout_s": 1})
-    env = {**os.environ, "PYTHONPATH": str(Path(doberman.__file__).parents[1])}
-    done = subprocess.run(  # noqa: S603 - this interpreter and our own module
-        [sys.executable, "-P", "-m", windows_hello.SIGNER_MODULE],
-        input=request.encode(),
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
-    assert done.returncode != 0
-    assert done.stdout == b""
-    assert b"hello signer:" in done.stderr  # the module imported and ran, then refused

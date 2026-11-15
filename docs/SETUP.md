@@ -443,8 +443,11 @@ would ask for a 2FA code shows you the action, then asks for a Windows Hello ges
 face or PIN) instead, and TOTP codes are refused everywhere, including the phone and the dashboard.
 The gesture makes a Hello key sign that one action; Doberman accepts it only if the signature
 checks out against the key pinned at enrollment. For tool calls it keeps the signature in the
-database in `.doberman/`, so it can be checked again later. It needs the
-`winhello` extra, Windows Hello set up, a TPM, and an administrator terminal for one step.
+database in `.doberman/`, so it can be checked again later. It needs Windows Hello set up, a
+TPM, and an administrator terminal for one step. Doberman talks to Hello through the built-in
+Windows PowerShell 5.1, so there is nothing extra to install (the old `winhello` extra is now
+empty) and Smart App Control does not block it; `doberman doctor` shows whether PowerShell runs
+in FullLanguage mode, which Hello needs.
 From a terminal opened with "Run as administrator", signed in as your usual account:
 
 ```bash

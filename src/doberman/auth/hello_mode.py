@@ -42,7 +42,7 @@ from doberman.auth import hello_proof
 from doberman.auth.approval import DEFAULT_APPROVAL_TIMEOUT_S
 from doberman.auth.methods.windows_hello import (
     HelloBackend,
-    SignerProcessBackend,
+    PowerShellHelloBackend,
     WindowsHelloMethod,
 )
 
@@ -229,8 +229,8 @@ def is_on() -> bool:
 
 
 def backend() -> HelloBackend:
-    """The Hello backend this mode uses (signing runs in a child process). Tests replace it."""
-    return SignerProcessBackend()
+    """The Hello backend this mode uses (each operation is a PowerShell child). Tests replace it."""
+    return PowerShellHelloBackend()
 
 
 def available() -> bool:
@@ -238,15 +238,15 @@ def available() -> bool:
 
     A pre-check for commands that need a gesture, so they refuse with a clear message before
     asking anything. It never approves: :func:`prove` still has to verify a signature.
-    Runs on its own thread because the WinRT check calls ``asyncio.run``, and the policy
-    weaken gate calls this from inside a running event loop.
+    Runs on its own thread, so a slow PowerShell child cannot hold the caller (the policy
+    weaken gate calls this from inside a running event loop) past the bound.
     """
     answer: list[object] = []
 
     def _check() -> None:
         try:
             answer.append(backend().available())
-        except Exception:  # noqa: BLE001, S110 - no winrt, a blocked DLL, no sensor
+        except Exception:  # noqa: BLE001, S110 - no PowerShell, Constrained Language, no sensor
             pass
 
     worker = threading.Thread(target=_check, name="doberman-hello-available", daemon=True)
