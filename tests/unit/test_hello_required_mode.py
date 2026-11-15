@@ -1178,3 +1178,22 @@ def test_doctor_hello_row_fails_when_two_markers_pin_different_keys(
     check = _hello_check()
     assert check.status is doctor.CheckStatus.FAIL
     assert "different" in check.detail
+
+
+def test_hello_availability_works_from_inside_an_event_loop(mode_on, monkeypatch):
+    """The weaken pre-check runs inside asyncio.run; the WinRT check calls asyncio.run too."""
+
+    class _LoopBackend(FakeBackend):
+        def available(self):
+            async def _check():
+                return True
+
+            return asyncio.run(_check())
+
+    monkeypatch.setattr(hello_mode, "backend", lambda: _LoopBackend())
+
+    async def _on_loop():
+        return hello_mode.available()
+
+    assert hello_mode.available() is True
+    assert asyncio.run(_on_loop()) is True
