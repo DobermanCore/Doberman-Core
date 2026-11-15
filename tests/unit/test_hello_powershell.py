@@ -265,7 +265,7 @@ def test_the_script_checks_its_language_mode_before_doing_anything():
 
 def test_the_script_binds_the_window_and_raises_the_dialog():
     assert "RequestSignForWindowAsync" in HELLO_SCRIPT
-    assert "RequestSignAsync(" in HELLO_SCRIPT  # the fallback
+    assert "'RequestSignAsync'" in HELLO_SCRIPT  # the fallback
     assert "GetForegroundWindow" in HELLO_SCRIPT
     assert "FailIfExists" in HELLO_SCRIPT  # create never replaces a pinned key
 
@@ -751,3 +751,34 @@ def test_doctor_lists_the_row_only_on_windows(tmp_path):
 
     names = [r.name for r in run_checks(str(tmp_path))]
     assert ("Hello PowerShell" in names) is (sys.platform == "win32")
+
+
+def test_every_ibuffer_goes_through_reflection():
+    """PowerShell 5.1 holds an IBuffer as __ComObject and refuses it for a typed parameter, so a
+    direct call fails on real hardware (seen 2026-11-15 reading the pinned key)."""
+    assert "$buffers::EncodeToBase64String(" not in HELLO_SCRIPT
+    assert "$credential.RequestSign" not in HELLO_SCRIPT
+    assert HELLO_SCRIPT.count("Invoke-Typed $buffers 'EncodeToBase64String'") == 3
+    assert "Invoke-Typed $keyCredential 'RequestSignForWindowAsync'" in HELLO_SCRIPT
+    assert "Invoke-Typed $keyCredential 'RequestSignAsync'" in HELLO_SCRIPT
+
+
+def test_doctor_fails_in_the_mode_when_buffers_cannot_cross(mode_on, monkeypatch, tmp_path):
+    from doberman.auth import approval_config
+    from doberman.cli.doctor import CheckStatus
+
+    monkeypatch.setenv(approval_config.APPROVAL_FILE_ENV, str(tmp_path / "approval.json"))
+    row = _doctor_row(monkeypatch, None, binding="buffers")
+    assert (row.status, row.critical) == (CheckStatus.FAIL, True)
+    assert "cannot sign" in row.detail
+
+
+def test_doctor_warns_off_the_mode_when_buffers_cannot_cross(monkeypatch, tmp_path):
+    from doberman.auth import approval_config
+    from doberman.cli.doctor import CheckStatus
+
+    monkeypatch.setenv(approval_config.APPROVAL_FILE_ENV, str(tmp_path / "approval.json"))
+    approval_config.enable("windows_hello")
+    row = _doctor_row(monkeypatch, None, binding="buffers")
+    assert (row.status, row.critical) == (CheckStatus.WARN, False)
+    assert "cannot sign" in row.detail
