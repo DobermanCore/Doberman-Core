@@ -572,5 +572,20 @@ database. That narrows the gap; it doesn't close it. A script running as you can
 UAC at its default level can be bypassed on an administrator account, so the marker that turns
 the mode on is only as strong as your elevation boundary.
 
+The mode has other limits:
+
+- It needs a TPM-backed Hello key; enrollment refuses a software-only key.
+- It is Windows only. macOS waits for a signed helper that can hold a biometry-gated key, so
+  macOS and Linux keep the TOTP file and the sandbox.
+- The phone and the dashboard can deny a proof-tier action or point you to the prompt, but
+  can't approve one.
+- If Hello can't prompt (a remote session, no sensor, a broken PIN), proof-tier actions and
+  loosening commands are refused until you fix Hello or an administrator leaves the mode.
+- If the database write fails, the approval still stands without a stored signature, and
+  Doberman logs a warning.
+- Some hardware behaviors haven't been checked on a real machine: the synthetic-input and face
+  sign-in questions above, and whether deleting the Hello key needs a gesture.
+  [HELLO-HARDWARE-CHECKS](HELLO-HARDWARE-CHECKS.md) lists them and what has been seen so far.
+
 If a task needs a human in the loop that the agent cannot reach at all, run the agent as a
 different OS user or in a container that can't see your profile or Doberman's database.

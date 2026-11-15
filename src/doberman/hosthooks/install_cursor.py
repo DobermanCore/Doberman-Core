@@ -13,7 +13,7 @@ Doberman registers ONE command, ``doberman hook cursor``, for every gating event
 see :mod:`doberman.hosthooks.cursor`). Every gating entry carries
 ``"failClosed": true``: Cursor's own default is fail-OPEN on a hook crash or
 timeout, and this flag is what turns that into a deny. The gate timeout is set
-comfortably above Doberman's own approval dialog (:data:`GATE_TIMEOUT_S`) so an
+above Doberman's whole challenge ceiling (:data:`GATE_TIMEOUT_S`, the Claude Code pin) so an
 unanswered AUTH is denied by the human, not by Cursor's clock.
 
 This mirrors :mod:`doberman.hosthooks.install_codex` in shape (pure merge/remove
@@ -31,8 +31,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
-from doberman.auth.approval import DEFAULT_APPROVAL_TIMEOUT_S
-from doberman.hosthooks.install import load_settings
+from doberman.hosthooks.install import HOOK_TIMEOUT_S, load_settings
 
 # Event names and the marker filename are LITERALS, not imports from
 # doberman.hosthooks.cursor: that module pulls the whole adapter stack (config,
@@ -52,9 +51,11 @@ HOOK_COMMAND = "doberman hook cursor"
 #: The four gating events, in registration order (matches the adapter README).
 GATE_EVENTS: tuple[str, ...] = (EVENT_PRE_TOOL, EVENT_SHELL, EVENT_MCP, EVENT_READ)
 
-#: Cursor's per-hook timeout (seconds) must outlast Doberman's in-hook approval dialog, or an
-#: unanswered AUTH is denied by the timeout instead of the human.
-GATE_TIMEOUT_S = int(DEFAULT_APPROVAL_TIMEOUT_S) + 30  # 330
+#: Cursor's per-hook timeout (seconds) must outlast Doberman's whole challenge ceiling, the same
+#: pin as Claude Code's (``install.HOOK_TIMEOUT_S``). With ``failClosed`` a Cursor timeout is a
+#: deny, and in Hello-required mode one proof tier is the confirm (120 s) plus the signing child
+#: (up to 315 s), past the old 330 s pin: a slow human would have been denied mid-approval.
+GATE_TIMEOUT_S = HOOK_TIMEOUT_S  # 660
 
 #: sessionStart is a cosmetic heartbeat, not a gate — a short timeout is fine, and
 #: `failClosed: false` (see session_start_entry) means it can never abort a session.
@@ -232,12 +233,12 @@ def registration_issues(settings: dict[str, Any]) -> list[tuple[str, bool]]:
             )
         timeout = entry.get("timeout")
         is_number = isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
-        if not is_number or timeout < DEFAULT_APPROVAL_TIMEOUT_S:
+        if not is_number or timeout < GATE_TIMEOUT_S:
             issues.append(
                 (
                     f"{event}: timeout {f'{timeout}s' if is_number else 'missing'} is below the "
-                    f"{int(DEFAULT_APPROVAL_TIMEOUT_S)}s approval window "
-                    "(an unanswered approval is denied early)",
+                    f"{GATE_TIMEOUT_S}s pin (an approval still in progress is denied early; "
+                    "re-run `doberman install-hooks --host cursor`)",
                     False,
                 )
             )

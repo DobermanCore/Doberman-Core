@@ -572,7 +572,7 @@ def _check_2fa() -> CheckResult:
 def _check_hello_mode() -> CheckResult:
     """ADR 0119: report Hello-required mode; flag a corrupt marker, a reappeared
     ``totp.secret``, an unsafe marker folder and the test-only marker override."""
-    from doberman.auth import hello_mode, totp
+    from doberman.auth import hello_mode, hello_proof, totp
 
     name = "Hello mode"
     mode = hello_mode.mode()
@@ -592,12 +592,23 @@ def _check_hello_mode() -> CheckResult:
         )
         status = CheckStatus.FAIL
     else:
-        detail = (
-            "on: proof tier needs a Windows Hello gesture; TOTP is refused. Any marker "
-            "file turns this on, even one never enrolled here; turning it off needs an "
-            "administrator (`doberman 2fa hello leave`)"
-        )
-        status = CheckStatus.OK
+        try:
+            key = hello_proof.key_id(hello_mode.pinned_public_key())[:23]
+        except ValueError:  # two valid markers pinning different keys: nothing can verify
+            key = None
+        if key is None:
+            detail = (
+                "on, but the markers pin different Hello keys, so every proof-tier action is "
+                "refused; as administrator, delete the proof.json you did not enroll"
+            )
+            status = CheckStatus.FAIL
+        else:
+            detail = (
+                f"on: key {key}; proof tier needs a Windows Hello gesture; TOTP is refused. "
+                "Any marker file turns this on, even one never enrolled here; turning it off "
+                "needs an administrator (`doberman 2fa hello leave`)"
+            )
+            status = CheckStatus.OK
     problems = hello_mode.marker_dir_problems()
     if problems:
         detail += "; unsafe marker folder: " + "; ".join(problems)
@@ -645,6 +656,20 @@ def _under(target: str, prefix: str) -> bool:
     return target == prefix or target.startswith(prefix.rstrip("\\/") + os.sep)
 
 
+def _hello_mode_removed_the_secret() -> bool:
+    """ADR 0119: on Windows, Hello-required mode does the sandbox's job for the 2FA secret,
+    but only with a valid machine marker in a safe folder (not the user-writable test
+    override) and no ``totp.secret`` file present."""
+    from doberman.auth import hello_mode, totp
+
+    return (
+        not hello_mode.override_set()
+        and hello_mode.mode() is hello_mode.Mode.on
+        and not hello_mode.marker_dir_problems()
+        and not totp.resolve_path().exists()
+    )
+
+
 def _check_agent_sandbox(
     path: str,
     *,
@@ -660,11 +685,19 @@ def _check_agent_sandbox(
     name = "Agent sandbox"
     tail = "a script the agent writes can read Doberman's 2FA secret and answer its own prompts"
     if (platform or sys.platform) == "win32":
+        if _hello_mode_removed_the_secret():
+            return CheckResult(
+                name,
+                CheckStatus.OK,
+                "Hello-required mode is on and no 2FA secret file exists, so a script the agent "
+                "writes has no secret to read; it narrows, not closes, the gap (docs/LIMITATIONS.md)",
+            )
         return CheckResult(
             name,
             CheckStatus.WARN,
-            f"Claude Code runs commands unsandboxed on native Windows, so {tail}. For a hard "
-            "boundary run the agent in WSL2, a container, or as another OS user (docs/SETUP.md section 4)",
+            f"Claude Code runs commands unsandboxed on native Windows, so {tail}. Turn on "
+            "Hello-required mode to remove the secret; for a hard boundary run the agent in "
+            "WSL2, a container, or as another OS user (docs/SETUP.md section 4)",
         )
     if secret_dir is None:
         from doberman.auth import totp

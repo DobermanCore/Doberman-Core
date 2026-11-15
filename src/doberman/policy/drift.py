@@ -212,6 +212,35 @@ def _render_diff(before: dict, after: dict, reason: str) -> str:
     return "\n".join(lines)
 
 
+#: Why a weakening was refused in Hello-required mode before anything was asked.
+HELLO_UNAVAILABLE_METHOD = "hello_unavailable"
+
+
+def weaken_refusal(action: str) -> tuple[str, str] | None:
+    """Why no gate for ``action`` (e.g. "clearing taint") can pass here, as ``(method,
+    message)``; ``None`` when one could. The one pre-check every weakening command shares.
+
+    Off the mode: TOTP or the password must be enrolled. In Hello-required mode (ADR 0119)
+    TOTP is gone by design and the password is refused, so the factor is Windows Hello, and
+    it must be able to prompt here. ``None`` never approves anything: the gate still needs a
+    verified factor (in the mode, a signature by the pinned key).
+    """
+    if hello_mode.is_on():
+        if hello_mode.available():
+            return None
+        return HELLO_UNAVAILABLE_METHOD, (
+            f"{action} needs a Windows Hello gesture (Hello-required mode is on), but Windows "
+            "Hello is not available here - run it from an interactive desktop session on "
+            "this machine; TOTP codes and the password are refused in this mode"
+        )
+    if totp.is_enrolled() or password.is_enrolled():
+        return None
+    return "no_factor_enrolled", (
+        f"{action} requires an enrolled possession factor - run `doberman 2fa setup` or "
+        "`doberman password set` first"
+    )
+
+
 def _verify_possession_factor(
     prompter: Prompter, *, action_label: str = "this policy weakening"
 ) -> tuple[bool, str]:
@@ -312,8 +341,9 @@ async def _run_gate_if_weaken(
     the setup wizard's own deferred mode/prefs gates) gets this for free.
     """
     if classification is Classification.weaken:
-        if not (hello_mode.is_on() or totp.is_enrolled() or password.is_enrolled()):
-            return False, "no_factor_enrolled"
+        refusal = weaken_refusal("this policy weakening")
+        if refusal is not None:
+            return False, refusal[0]
         from doberman.auth.provider import CliPrompter
 
         return _run_weaken_gate(before, after, reason, prompter or CliPrompter())

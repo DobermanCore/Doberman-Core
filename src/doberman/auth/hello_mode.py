@@ -32,6 +32,7 @@ import logging
 import os
 import stat
 import sys
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -50,6 +51,9 @@ logger = logging.getLogger("doberman.auth.hello_mode")
 #: Test-only override for the marker location (adds a location; never hides one).
 MARKER_ENV = "DOBERMAN_HELLO_MARKER"
 MARKER_VERSION = 1
+
+#: Longest wait for the Hello availability check before calling Hello unavailable.
+_AVAILABLE_TIMEOUT_S = 15.0
 
 #: The ``AuthResult.method`` of a proof-tier denial in this mode.
 HELLO_REQUIRED_METHOD = "hello_required"
@@ -227,6 +231,28 @@ def is_on() -> bool:
 def backend() -> HelloBackend:
     """The Hello backend this mode uses (signing runs in a child process). Tests replace it."""
     return SignerProcessBackend()
+
+
+def available() -> bool:
+    """True only when the Hello backend says it can prompt here. Never raises; doubt is False.
+
+    A pre-check for commands that need a gesture, so they refuse with a clear message before
+    asking anything. It never approves: :func:`prove` still has to verify a signature.
+    Runs on its own thread because the WinRT check calls ``asyncio.run``, and the policy
+    weaken gate calls this from inside a running event loop.
+    """
+    answer: list[object] = []
+
+    def _check() -> None:
+        try:
+            answer.append(backend().available())
+        except Exception:  # noqa: BLE001, S110 - no winrt, a blocked DLL, no sensor
+            pass
+
+    worker = threading.Thread(target=_check, name="doberman-hello-available", daemon=True)
+    worker.start()
+    worker.join(_AVAILABLE_TIMEOUT_S)
+    return not worker.is_alive() and answer == [True]
 
 
 def pinned_public_key() -> bytes:
