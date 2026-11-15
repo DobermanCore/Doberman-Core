@@ -156,6 +156,16 @@ function Find-Dialog {
     $found
 }
 
+# PowerShell 5.1 cannot pass a WinRT IBuffer (it holds it as __ComObject) to a typed parameter;
+# MethodInfo.Invoke lets the runtime marshal it. Every IBuffer argument goes through here.
+function Invoke-Typed([Type]$type, [string]$name, $target, [object[]]$arguments) {
+    $method = $type.GetMethods() | Where-Object {
+        $_.Name -eq $name -and $_.GetParameters().Count -eq $arguments.Count
+    } | Select-Object -First 1
+    if ($null -eq $method) { throw "no method $name" }
+    $method.Invoke($target, $arguments)
+}
+
 function Wait-Op($operation, [Type]$resultType, [int]$ms) {
     $task = $script:asTask.MakeGenericMethod($resultType).Invoke($null, @($operation))
     $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -192,6 +202,7 @@ function Invoke-HelloOp($request) {
     $verifier = [Windows.Security.Credentials.UI.UserConsentVerifier,Windows.Security.Credentials.UI,ContentType=WindowsRuntime]
     $buffers = [Windows.Security.Cryptography.CryptographicBuffer,Windows.Security.Cryptography,ContentType=WindowsRuntime]
     $retrieval = [Windows.Security.Credentials.KeyCredentialRetrievalResult]
+    $keyCredential = [Windows.Security.Credentials.KeyCredential,Windows.Security.Credentials,ContentType=WindowsRuntime]
 
     if ($op -eq 'available') {
         $availability = Wait-Op ($verifier::CheckAvailabilityAsync()) ([Windows.Security.Credentials.UI.UserConsentVerifierAvailability]) $ms
@@ -199,6 +210,11 @@ function Invoke-HelloOp($request) {
     }
     if ($op -eq 'selftest') {
         # what binding a prompt needs, resolved without calling anything that prompts
+        try {
+            $probe = $buffers::CreateFromByteArray([byte[]](1, 2, 3))
+            $crossed = (Invoke-Typed $buffers 'EncodeToBase64String' $null @($probe)) -eq 'AQID'
+        } catch { $crossed = $false }
+        if (-not $crossed) { return @{ status = 'buffers'; value = $null } }
         Enable-Raise
         if (-not $script:canRaise) { return @{ status = 'helper'; value = $null } }
         $factory = [Runtime.InteropServices.WindowsRuntime.WindowsRuntimeMarshal]::GetActivationFactory($verifier)
@@ -243,7 +259,7 @@ function Invoke-HelloOp($request) {
     if ($op -eq 'open' -or [string]$opened.Status -ne 'Success') { return @{ status = [string]$opened.Status; value = $null } }
     $credential = $opened.Credential
     if ($op -eq 'public_key') {
-        return @{ status = 'Success'; value = $buffers::EncodeToBase64String($credential.RetrievePublicKey()) }
+        return @{ status = 'Success'; value = (Invoke-Typed $buffers 'EncodeToBase64String' $null @($credential.RetrievePublicKey())) }
     }
     if ($op -eq 'attest') {
         $attestation = Wait-Op ($credential.GetAttestationAsync()) ([Windows.Security.Credentials.KeyCredentialAttestationResult]) $ms
@@ -256,12 +272,12 @@ function Invoke-HelloOp($request) {
     $pending = $null
     $window = Get-FrontWindowId
     if ($null -ne $window) {
-        try { $pending = $credential.RequestSignForWindowAsync($window, $data) } catch { $pending = $null }
+        try { $pending = Invoke-Typed $keyCredential 'RequestSignForWindowAsync' $credential @($window, $data) } catch { $pending = $null }
     }
-    if ($null -eq $pending) { $pending = $credential.RequestSignAsync($data) }
+    if ($null -eq $pending) { $pending = Invoke-Typed $keyCredential 'RequestSignAsync' $credential @($data) }
     $signed = Wait-Op $pending ([Windows.Security.Credentials.KeyCredentialOperationResult]) $ms
     if ([string]$signed.Status -ne 'Success') { return @{ status = [string]$signed.Status; value = $null } }
-    return @{ status = 'Success'; value = $buffers::EncodeToBase64String($signed.Result) }
+    return @{ status = 'Success'; value = (Invoke-Typed $buffers 'EncodeToBase64String' $null @($signed.Result)) }
 }
 
 try {
@@ -509,7 +525,7 @@ class PowerShellHelloBackend:
 
     def window_binding(self) -> str:
         """Doctor: ``"ok"`` when prompts can be bound to the window in front, else what is
-        missing (``helper``, ``interop`` or ``window_calls``). Never prompts."""
+        missing (``buffers``, ``helper``, ``interop`` or ``window_calls``). Never prompts."""
         status, _ = _call("selftest", timeout_s=_QUICK_TIMEOUT_S)
         return status
 

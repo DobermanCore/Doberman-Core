@@ -591,8 +591,11 @@ The mode has other limits:
   answer; in the mode a fake answer still needs a signature from your Hello key.
 - If the database write fails, the approval still stands without a stored signature, and
   Doberman logs a warning.
-- Some hardware behaviors haven't been checked on a real machine: the synthetic-input and face
-  sign-in questions above, and whether deleting the Hello key needs a gesture.
+- A program running as you can delete the Hello key without a gesture (seen on Windows 11). That
+  can't approve anything, since the marker pins the old key, but every proof-tier action is then
+  refused until an administrator enrolls again.
+- Some hardware behaviors haven't been checked on a real machine yet, such as whether another
+  program can type into the prompt.
   [HELLO-HARDWARE-CHECKS](HELLO-HARDWARE-CHECKS.md) lists them and what has been seen so far.
 
 If a task needs a human in the loop that the agent cannot reach at all, run the agent as a

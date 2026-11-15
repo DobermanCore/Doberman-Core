@@ -652,6 +652,14 @@ def _check_hello_powershell() -> CheckResult:
             binding = PowerShellHelloBackend().window_binding()
         except Exception as exc:  # noqa: BLE001 - unknown binding: say so, Hello still runs
             binding = type(exc).__name__
+        if binding == "buffers":
+            detail = (
+                "Windows PowerShell 5.1 cannot pass Hello data to Windows, so Hello cannot read "
+                "its key or sign"
+            )
+            if mode_on:
+                return CheckResult(name, CheckStatus.FAIL, detail, critical=True)
+            return CheckResult(name, CheckStatus.WARN, detail)
         if binding != "ok":
             detail = (
                 "Windows PowerShell 5.1 runs in FullLanguage mode, but Hello prompts may open "
