@@ -229,6 +229,18 @@ def backend() -> HelloBackend:
     return SignerProcessBackend()
 
 
+def available() -> bool:
+    """True only when the Hello backend says it can prompt here. Never raises; doubt is False.
+
+    A pre-check for commands that need a gesture, so they refuse with a clear message before
+    asking anything. It never approves: :func:`prove` still has to verify a signature.
+    """
+    try:
+        return backend().available() is True
+    except Exception:  # noqa: BLE001 - no winrt, a blocked DLL, no sensor: not available
+        return False
+
+
 def pinned_public_key() -> bytes:
     """The one public key the markers pin. Raises if none is pinned, any marker is
     unreadable or corrupt, or two markers pin different keys."""

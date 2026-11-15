@@ -199,6 +199,36 @@ async def _record_proof(repo_root: str, proof: Proof) -> None:
     await record(proof, repo_root=repo_root)
 
 
+def _store_proof(repo_root: str, proof: Proof) -> None:
+    """ADR 0119 slice 3: keep a verified signed proof as evidence. Never raises.
+
+    Runs on its own short-lived thread, so it stores the proof whether or not the caller is
+    on an event loop (``_run_memory_io`` skips the write there). A failure or timeout is
+    logged and never changes the answer (logging must not alter a decision).
+    """
+    errors: list[BaseException] = []
+
+    def _write() -> None:
+        try:
+            asyncio.run(
+                asyncio.wait_for(_record_proof(repo_root, proof), timeout=_MEMORY_IO_TIMEOUT_S)
+            )
+        except Exception as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    worker = threading.Thread(target=_write, name="doberman-proof-store", daemon=True)
+    worker.start()
+    worker.join(_MEMORY_IO_TIMEOUT_S + 1.0)
+    if worker.is_alive() or errors:
+        why = type(errors[0]).__name__ if errors else "timeout"
+        logger.warning(
+            "Hello proof for action %s was not stored (%s); the approval stands, but there is "
+            "no signature on record to check later",
+            proof.action_id,
+            why,
+        )
+
+
 async def _remember_approval(
     repo_root: str,
     action: SecurityObject,
@@ -306,7 +336,8 @@ class AuthResult(BaseModel):
     produced a grant.
     """
 
-    model_config = ConfigDict(frozen=True)
+    # base64 in JSON: a proof's signature is raw bytes, which are not valid UTF-8
+    model_config = ConfigDict(frozen=True, ser_json_bytes="base64", val_json_bytes="base64")
 
     approved: bool
     tier: AuthTier
@@ -583,10 +614,10 @@ def run_auth_challenge(
             ),
             label=action.id,
         )
-        if result.proof is not None and repo_root is not None:
-            # ADR 0119 slice 3: keep the signed proof as evidence. A storage failure is
-            # logged and never changes the answer (logging must not alter a decision).
-            _run_memory_io(lambda: _record_proof(repo_root, result.proof))
+        # getattr: a plugin provider may return a look-alike result with no proof field
+        proof = getattr(result, "proof", None)
+        if proof is not None and repo_root is not None:
+            _store_proof(repo_root, proof)
         if memory_hit is not None and result.approved and result.action_id == action.id:
             return result.model_copy(
                 update={"tier": AuthTier.soft_confirm, "method": MEMORY_METHOD}

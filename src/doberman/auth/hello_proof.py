@@ -52,8 +52,11 @@ _NONCE = re.compile(r"[0-9a-f]{32}")
 _RSA_ALGORITHM = bytes.fromhex("06092a864886f70d010101") + b"\x05\x00"  # rsaEncryption, NULL
 _SHA256_DIGESTINFO = bytes.fromhex("3031300d060960864801650304020105000420")
 
-#: Nonces and signatures this process has accepted. Each challenge has a fresh nonce, so a
-#: replay cannot match a new message anyway; this refuses one outright.
+#: Nonces and signatures THIS process has accepted (in memory only). A hook is one short
+#: process per tool call, so this does not stop replay across processes. What does: every
+#: challenge gets a fresh nonce from the verifying process, so an old signature never matches
+#: a new message, and the timestamp window bounds its age. The stored evidence rows also
+#: refuse a repeated nonce or signature (UNIQUE columns), but that is a record, not this check.
 _seen: set[object] = set()
 
 
@@ -196,8 +199,9 @@ def accept(
     """True only for a fresh, unreplayed proof of THIS action signed by ``public_key``.
 
     Wrong action id or hash, a timestamp older than :data:`MAX_AGE_S` or more than
-    :data:`MAX_SKEW_S` ahead, a nonce or signature already accepted here, a signature that
-    does not verify, or any error: False. An accepted proof's nonce and signature are spent.
+    :data:`MAX_SKEW_S` ahead, a nonce or signature already accepted by this process, a
+    signature that does not verify, or any error: False. An accepted proof's nonce and
+    signature are spent in this process (see :data:`_seen` for replay across processes).
     """
     try:
         current = time.time() if now is None else now

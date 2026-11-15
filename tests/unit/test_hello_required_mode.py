@@ -961,3 +961,220 @@ def test_admin_path_refuses_without_the_shell_known_folder(real_locations, monke
     monkeypatch.delenv(hello_mode.MARKER_ENV, raising=False)
     with pytest.raises(hello_mode.HelloModeError, match="ProgramData"):
         hello_mode.admin_marker_path()
+
+
+# --- slice 4: weakening CLI commands in the mode -------------------------------------------
+
+
+def test_weaken_refusal_off_the_mode_needs_an_enrolled_factor(marker):
+    method, message = drift.weaken_refusal("clearing taint")
+    assert method == "no_factor_enrolled"
+    assert message == (
+        "clearing taint requires an enrolled possession factor - run `doberman 2fa setup` "
+        "or `doberman password set` first"
+    )
+    password.enroll("correct horse battery staple")
+    assert drift.weaken_refusal("clearing taint") is None
+
+
+def test_weaken_refusal_in_the_mode_needs_hello_not_a_factor_file(mode_on, backend):
+    assert drift.weaken_refusal("clearing taint") is None
+    backend(available=False)
+    method, message = drift.weaken_refusal("clearing taint")
+    assert method == "hello_unavailable"
+    assert "Windows Hello" in message and "2fa setup" not in message
+    backend(available=RuntimeError("winrt blocked"))
+    assert drift.weaken_refusal("clearing taint")[0] == "hello_unavailable"
+
+
+def test_weaken_precheck_refuses_before_the_diff_when_hello_is_unavailable(mode_on, backend):
+    from doberman.policy.drift import Classification
+
+    backend(available=False)
+    prompter = CodePrompter()
+    result = asyncio.run(
+        drift._run_gate_if_weaken({"a": 1}, {"a": 0}, "r", Classification.weaken, prompter)
+    )
+    assert result == (False, "hello_unavailable")
+    assert prompter.asked == [] and backend.current().prompts == []
+
+
+@pytest.fixture
+def code_prompter(monkeypatch):
+    from doberman.auth import provider
+    from doberman.cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "CliPrompter", CodePrompter)
+    monkeypatch.setattr(provider, "CliPrompter", CodePrompter)
+
+
+def _pending_policy_drop(root):
+    """Pin two blocked globs, then drop one: `policy-file --accept` is a weakening."""
+    from doberman.policy.sources import load_file_policy
+
+    path = root / "doberman.policy.yaml"
+    path.write_text("version: 1\nblocked:\n- a/**\n- b/**\n", encoding="utf-8")
+    load_file_policy(str(root))
+    path.write_text("version: 1\nblocked:\n- a/**\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["taint", "clear"],
+        ["tools", "approve", "some-tool"],
+        ["memory", "reset"],
+        ["uninstall", "--yes"],
+        ["uninstall", "--global", "--yes"],
+        ["policy-file", "--accept"],
+    ],
+    ids=" ".join,
+)
+def test_weakening_commands_refuse_cleanly_when_hello_is_unavailable(
+    mode_on, backend, code_prompter, tmp_path, args
+):
+    if args == ["uninstall", "--yes"]:  # something to remove, so the gate is reached
+        assert _cli(["install-hooks", "--path", str(tmp_path)])[0].exit_code == 0
+    if args[0] == "policy-file":
+        _pending_policy_drop(tmp_path)
+    backend(available=False)
+    result, out = _cli([*args, "--path", str(tmp_path)])
+    assert result.exit_code == 1, out
+    assert "Windows Hello" in out
+    assert "2fa setup" not in out
+    assert backend.current().prompts == []
+
+
+def _seed_taint(root):
+    from doberman.storage.taint import TAINT_SECRET_ACCESS, read_taint, record_taints
+
+    asyncio.run(record_taints(str(root), ["sess-1"], [TAINT_SECRET_ACCESS]))
+    return lambda: asyncio.run(read_taint(str(root), "sess-1"))
+
+
+def test_taint_clear_works_in_the_mode_with_only_a_hello_gesture(
+    mode_on, backend, code_prompter, tmp_path
+):
+    taint = _seed_taint(tmp_path)
+    assert not totp.is_enrolled() and not password.is_enrolled()
+    result, out = _cli(["taint", "clear", "--path", str(tmp_path)])
+    assert result.exit_code == 0, out
+    assert taint() == {}
+    assert backend.current().prompts[0].startswith(b"doberman-proof-v1\naction_id=policy-weaken\n")
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"verdict": HelloVerdict.cancelled}, {"raises": TimeoutError()}]
+)
+def test_taint_clear_in_the_mode_without_a_verified_signature_changes_nothing(
+    mode_on, backend, code_prompter, tmp_path, enrolled_totp, kwargs
+):
+    taint = _seed_taint(tmp_path)
+    backend(**kwargs)
+    result, out = _cli(["taint", "clear", "--path", str(tmp_path)])
+    assert result.exit_code == 1, out
+    assert taint() != {}
+
+
+def test_policy_file_accept_works_in_the_mode_with_a_hello_gesture(
+    mode_on, backend, code_prompter, tmp_path
+):
+    _pending_policy_drop(tmp_path)
+    result, out = _cli(["policy-file", "--accept", "--path", str(tmp_path)])
+    assert result.exit_code == 0, out
+    assert "accepted" in out
+
+
+def test_mode_lowering_in_the_mode_names_hello_when_it_fails(
+    mode_on, backend, code_prompter, tmp_path
+):
+    assert _cli(["mode", "strict", "--path", str(tmp_path)])[0].exit_code == 0
+    backend(verdict=HelloVerdict.cancelled)
+    result, out = _cli(["mode", "light", "--path", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "Windows Hello" in out and "password set" not in out
+    backend(available=False)
+    result, out = _cli(["mode", "light", "--path", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "not available" in out
+    backend()
+    result, out = _cli(["mode", "light", "--path", str(tmp_path)])
+    assert result.exit_code == 0, out
+
+
+# --- slice 4: doctor -----------------------------------------------------------------------
+
+
+@pytest.fixture
+def machine_marker(tmp_path, monkeypatch):
+    """A valid admin-owned machine marker and no test override."""
+    path = tmp_path / "pd" / "doberman" / "proof.json"
+    path.parent.mkdir(parents=True)
+    _write_marker(path)
+    monkeypatch.setattr(hello_mode, "_machine_marker_paths", lambda: [path])
+    monkeypatch.setattr(hello_mode, "_owner_sid", lambda d: hello_mode.ADMINS_SID)
+    monkeypatch.delenv(hello_mode.MARKER_ENV, raising=False)
+    return path
+
+
+def _sandbox(tmp_path, platform="win32"):
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    return doctor._check_agent_sandbox(str(repo), home=tmp_path / "home", platform=platform)
+
+
+def test_doctor_sandbox_passes_on_windows_with_the_mode_on_and_no_secret(machine_marker, tmp_path):
+    check = _sandbox(tmp_path)
+    assert check.status is doctor.CheckStatus.OK
+    assert "Hello-required mode" in check.detail and check.detail.isascii()
+
+
+def test_doctor_sandbox_warns_on_windows_when_a_secret_file_exists(machine_marker, tmp_path):
+    totp.resolve_path().parent.mkdir(parents=True, exist_ok=True)
+    totp.resolve_path().write_text("JBSWY3DPEHPK3PXP", encoding="utf-8")
+    assert _sandbox(tmp_path).status is doctor.CheckStatus.WARN
+
+
+def test_doctor_sandbox_warns_on_windows_with_a_corrupt_marker(machine_marker, tmp_path):
+    machine_marker.write_text("garbage", encoding="utf-8")
+    assert _sandbox(tmp_path).status is doctor.CheckStatus.WARN
+
+
+def test_doctor_sandbox_warns_on_windows_with_an_unsafe_marker_folder(
+    machine_marker, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(hello_mode, "_owner_sid", lambda d: "S-1-5-21-1-2-3-1001")
+    assert _sandbox(tmp_path).status is doctor.CheckStatus.WARN
+
+
+def test_doctor_sandbox_warns_on_windows_when_only_the_test_override_is_on(mode_on, tmp_path):
+    check = _sandbox(tmp_path)
+    assert check.status is doctor.CheckStatus.WARN
+    assert "native Windows" in check.detail
+
+
+def test_doctor_sandbox_ignores_the_mode_off_windows(machine_marker, tmp_path):
+    # non-Windows keeps the Claude Code sandbox check unchanged: no settings, so a warning
+    check = _sandbox(tmp_path, platform="linux")
+    assert check.status is doctor.CheckStatus.WARN
+    assert "Hello" not in check.detail
+
+
+def test_doctor_hello_row_names_the_pinned_key(machine_marker):
+    from doberman.auth import hello_proof
+
+    check = _hello_check()
+    assert check.status is doctor.CheckStatus.OK
+    assert hello_proof.key_id(_PUBKEY)[:23] in check.detail
+
+
+def test_doctor_hello_row_fails_when_two_markers_pin_different_keys(
+    machine_marker, tmp_path, monkeypatch
+):
+    other = tmp_path / "other" / "proof.json"
+    other.parent.mkdir()
+    _write_marker(other, public_key=base64.b64encode(keypair("b").public_key).decode())
+    monkeypatch.setattr(hello_mode, "_machine_marker_paths", lambda: [machine_marker, other])
+    check = _hello_check()
+    assert check.status is doctor.CheckStatus.FAIL
+    assert "different" in check.detail

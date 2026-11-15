@@ -465,8 +465,22 @@ doberman 2fa hello leave
 
 That needs a Hello signature from the pinned key; afterwards run `doberman 2fa setup` to enroll a new TOTP secret. If
 Hello is broken and you can't leave, an administrator can delete the `proof.json` file.
-`doberman doctor` shows the mode under Auth. This narrows what a script can do; it doesn't close
-the gap (see LIMITATIONS).
+Enroll and leave use the Hello key of the account the administrator terminal runs as. If you
+elevate with a different administrator account, enroll pins that account's key and your own
+approvals never verify, and leave can't sign with the pinned key.
+
+While the mode is on, the commands that loosen Doberman (`doberman mode` lowering, `policy-file
+--accept`, `taint clear`, `memory reset`, `tools approve`, `uninstall`) ask for the same Hello
+gesture instead of a code or your password. If Hello can't prompt where you run them, they refuse
+before asking anything.
+
+`doberman doctor` shows the mode, and the pinned key's id, under Auth. On Windows its Agent
+sandbox check passes only while the mode is on with a valid marker and no `totp.secret` file;
+a `totp.secret` that reappears fails the Hello mode check, because something wrote it after
+enrollment. The mode needs a TPM and is Windows only; macOS and Linux keep the TOTP file and the
+sandbox above. Several hardware behaviors are still unverified; see
+[HELLO-HARDWARE-CHECKS](HELLO-HARDWARE-CHECKS.md). This narrows what a script can do; it doesn't
+close the gap (see LIMITATIONS).
 
 ## 5. Check its health
 

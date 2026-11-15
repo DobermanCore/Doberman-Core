@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from doberman.auth.approval import DEFAULT_APPROVAL_TIMEOUT_S
 from doberman.cli.main import app
 from doberman.hosthooks import integrity
 from doberman.hosthooks.cursor import (
@@ -30,7 +31,6 @@ from doberman.hosthooks.cursor import (
 )
 from doberman.hosthooks.install import load_settings, write_settings
 from doberman.hosthooks.install_cursor import (
-    DEFAULT_APPROVAL_TIMEOUT_S,
     GATE_EVENTS,
     cursor_doberman_groups,
     cursor_hook_install_states,
@@ -517,3 +517,20 @@ def test_installer_import_does_not_load_the_adapter_stack():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     ).stdout.strip()
     assert out == "False"
+
+
+def test_gate_timeout_outlasts_the_challenge_ceiling_like_claude_code():
+    from doberman.auth.challenge import DEFAULT_CHALLENGE_TIMEOUT_S
+    from doberman.hosthooks.install import HOOK_TIMEOUT_S
+    from doberman.hosthooks.install_cursor import GATE_TIMEOUT_S
+
+    # Hello-required mode: confirm (120 s) + signing child (315 s) runs past 330 s
+    assert GATE_TIMEOUT_S == HOOK_TIMEOUT_S
+    assert GATE_TIMEOUT_S > DEFAULT_CHALLENGE_TIMEOUT_S
+
+
+def test_an_old_330s_gate_timeout_is_flagged():
+    settings = _complete_settings()
+    settings["hooks"][EVENT_READ][0]["timeout"] = 330
+    issues = registration_issues(settings)
+    assert any(msg.startswith(f"{EVENT_READ}: timeout 330s is below") for msg, _ in issues)

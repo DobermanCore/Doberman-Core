@@ -11,6 +11,7 @@ import base64
 import dataclasses
 import io
 import json
+import os
 import subprocess
 import sys
 
@@ -691,3 +692,118 @@ def test_a_version_18_database_gains_the_proof_table_and_keeps_its_rows(tmp_path
     asyncio.run(hello_proofs.record(proof, repo_root=root))
     assert asyncio.run(_after()) == ([SCHEMA_VERSION], ["a1"])
     assert asyncio.run(hello_proofs.for_action("act-1", repo_root=root)) == [proof]
+
+
+# --- slice 4: binding-review notes from #833 ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "action_id",
+    [
+        "0f8fad5bd9cb469fa16570867728950e",  # uuid4().hex: the hook and proxy action id
+        "toolu_01A09q90qw90lq917835lq9",  # a Claude Code tool_use_id
+        "call_abc123XYZ",  # an OpenAI-style call id
+        "exec-1b4e28ba-2fa1-11d2-883f-0016d3cca427",  # a Codex tool_use_id
+        "policy-weaken",
+        "hello-leave",
+        "hello-enroll",
+        "turn-error",
+    ],
+)
+def test_real_action_id_sources_can_be_signed(action_id):
+    assert _signed(action_id=action_id).message().startswith(b"doberman-proof-v1\n")
+
+
+@pytest.mark.parametrize("action_id", ["a=b", "a\nb", "a b", "a\rb", "a\x00b", "é"])
+def test_an_action_id_with_framing_characters_cannot_be_signed(action_id):
+    with pytest.raises(ValueError):
+        hello_proof.Proof(action_id, _HASH, _NOW, "0f" * 16).message()
+
+
+def test_an_auth_result_with_a_proof_serializes_to_json():
+    from doberman.auth.challenge import AuthResult
+
+    proof = dataclasses.replace(_signed(), key_id=hello_proof.key_id(KEY.public_key))
+    assert any(b > 0x7F for b in proof.signature)  # not valid UTF-8 as raw bytes
+    result = AuthResult(
+        approved=True,
+        tier=AuthTier.two_factor,
+        method="windows_hello",
+        at="2026-11-14T00:00:00+00:00",
+        action_id="act-1",
+        proof=proof,
+    )
+    text = result.model_dump_json()
+    assert base64.urlsafe_b64encode(proof.signature).decode() in text
+    assert AuthResult.model_validate_json(text).proof == proof
+
+
+class _LookAlike:
+    """A plugin provider's result that quacks like AuthResult but has no ``proof``."""
+
+    def __init__(self, action_id):
+        self.approved, self.action_id, self.method = True, action_id, "plugin"
+
+
+def test_a_plugin_result_without_a_proof_attribute_is_returned_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setattr(hello_mode, "_machine_marker_paths", lambda: [])
+    monkeypatch.delenv(hello_mode.MARKER_ENV, raising=False)
+    action = _action()
+
+    class _Plugin:
+        def authenticate(self, *a, **k):
+            return _LookAlike(action.id)
+
+    monkeypatch.setattr("doberman.auth.provider.active_provider", lambda: _Plugin())
+    result = run_auth_challenge(_decision(), action, prompter=Prompter(), repo_root=str(tmp_path))
+    assert isinstance(result, _LookAlike) and result.approved is True
+
+
+def test_the_proof_is_stored_when_the_challenge_runs_on_an_event_loop(
+    marker, signer, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("doberman.auth.provider.active_provider", lambda: LOCAL_PROVIDER)
+    action = _action()
+    root = str(tmp_path / "repo")
+
+    async def _on_loop():
+        return run_auth_challenge(_decision(), action, prompter=Prompter(), repo_root=root)
+
+    result = asyncio.run(_on_loop())
+    assert result.approved is True
+    assert asyncio.run(hello_proofs.for_action(action.id, repo_root=root)) == [result.proof]
+
+
+def test_a_proof_storage_failure_logs_what_was_lost(marker, signer, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr("doberman.auth.provider.active_provider", lambda: LOCAL_PROVIDER)
+
+    async def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(hello_proofs, "record", _boom)
+    with caplog.at_level("WARNING", logger="doberman.auth.challenge"):
+        run_auth_challenge(_decision(), _action(), prompter=Prompter(), repo_root=str(tmp_path))
+    text = caplog.text
+    assert "Hello proof" in text and "not stored" in text
+    assert "approval-memory" not in text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="on Windows the child could show a real prompt")
+def test_the_real_signer_child_fails_closed_off_windows():
+    from pathlib import Path
+
+    import doberman
+
+    request = json.dumps({"data": base64.b64encode(b"x").decode(), "timeout_s": 1})
+    env = {**os.environ, "PYTHONPATH": str(Path(doberman.__file__).parents[1])}
+    done = subprocess.run(  # noqa: S603 - this interpreter and our own module
+        [sys.executable, "-P", "-m", windows_hello.SIGNER_MODULE],
+        input=request.encode(),
+        capture_output=True,
+        timeout=60,
+        env=env,
+        check=False,
+    )
+    assert done.returncode != 0
+    assert done.stdout == b""
+    assert b"hello signer:" in done.stderr  # the module imported and ran, then refused

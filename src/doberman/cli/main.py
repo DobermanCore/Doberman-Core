@@ -23,7 +23,7 @@ import typer
 
 import doberman
 from doberman import __version__
-from doberman.auth import password, totp
+from doberman.auth import hello_mode, password, totp
 from doberman.auth.challenge import TIMEOUT_METHOD
 from doberman.auth.ntfy import DEFAULT_SERVER as NTFY_DEFAULT_SERVER
 from doberman.auth.provider import CliPrompter
@@ -75,6 +75,7 @@ from doberman.policy.drift import (
     decide_preferences_change,
     read_policy_changes,
     record_change,
+    weaken_refusal,
 )
 from doberman.policy.friction import build_friction_report, generate_proposals
 from doberman.policy.modes import SecurityMode, resolve_mode
@@ -750,6 +751,15 @@ def _dim_label(name: str, value: float) -> str:
     return token
 
 
+def _refuse_without_a_factor(action: str, *, lead: str = "") -> None:
+    """Exit 1 before any prompt when no gate for ``action`` can pass here: nothing enrolled,
+    or Hello-required mode with Hello unable to prompt (see ``drift.weaken_refusal``)."""
+    refusal = weaken_refusal(action)
+    if refusal is not None:
+        typer.echo(f"{lead}error: {refusal[1]}", err=True)
+        raise typer.Exit(code=1)
+
+
 def _apply_mode_change(
     name: str, path: str, reason: str, *, establish_ok: bool = False
 ) -> str | None:
@@ -801,7 +811,19 @@ def mode(
         # Name the whole path in one line instead. With a factor already
         # enrolled, a retry genuinely is the whole fix (supply the code/
         # confirm this time), so that message stays as-is.
-        if totp.is_enrolled() or password.is_enrolled():
+        if hello_mode.is_on():  # ADR 0119: the password advice is wrong in this mode
+            refusal = weaken_refusal("lowering the mode")
+            typer.echo(
+                "error: "
+                + (
+                    refusal[1]
+                    if refusal
+                    else "lowering needs a Windows Hello gesture signed by the enrolled key - "
+                    "approve the Windows Hello prompt, then retry"
+                ),
+                err=True,
+            )
+        elif totp.is_enrolled() or password.is_enrolled():
             typer.echo(
                 "error: lowering needs a possession factor - run 'doberman password set' "
                 "first, then retry",
@@ -897,17 +919,14 @@ def policy_file(
         # weaken, and record it as one.
         classification = Classification.weaken
 
-    if not totp.is_enrolled() and not password.is_enrolled():
+    refusal = weaken_refusal("accepting doberman.policy.yaml")
+    if refusal is not None:
         # Same check `memory reset`/`taint clear` make before ever rendering a
-        # diff: with nothing enrolled the gate can never succeed regardless of
-        # how confirm() is answered, so deny right away instead of showing a
-        # WEAKENING diff for a decision the possession-factor step could never
-        # actually reach.
-        typer.echo(
-            "error: accepting doberman.policy.yaml requires an enrolled possession "
-            "factor - run `doberman 2fa setup` or `doberman password set` first",
-            err=True,
-        )
+        # diff: with nothing enrolled (or Hello unable to prompt in Hello-required
+        # mode) the gate can never succeed regardless of how confirm() is answered,
+        # so deny right away instead of showing a WEAKENING diff for a decision the
+        # possession-factor step could never actually reach.
+        typer.echo(f"error: {refusal[1]}", err=True)
         asyncio.run(
             record_change(
                 before,
@@ -916,7 +935,7 @@ def policy_file(
                 "accept doberman.policy.yaml",
                 repo_root=path,
                 approved=False,
-                method="no_factor_enrolled",
+                method=refusal[0],
             )
         )
         raise typer.Exit(code=1)
@@ -2305,13 +2324,7 @@ def taint_clear(
     set up, otherwise your Doberman password) and clears BOTH taint stores for
     this repo. There is no confirm-only path and no silent timer.
     """
-    if not totp.is_enrolled() and not password.is_enrolled():
-        typer.echo(
-            "error: clearing taint requires an enrolled possession factor - "
-            "run `doberman 2fa setup` or `doberman password set` first",
-            err=True,
-        )
-        raise typer.Exit(code=1)
+    _refuse_without_a_factor("clearing taint")
 
     prompter = CliPrompter()
     try:
@@ -2346,13 +2359,7 @@ def tools_approve(
     path: str = typer.Option(".", "--path", "-p", help="Repository root."),
 ) -> None:
     """Approve a changed MCP tool fingerprint after possession-factor verification."""
-    if not totp.is_enrolled() and not password.is_enrolled():
-        typer.echo(
-            "error: approving a tool pin requires an enrolled possession factor - "
-            "run `doberman 2fa setup` or `doberman password set` first",
-            err=True,
-        )
-        raise typer.Exit(code=1)
+    _refuse_without_a_factor("approving a tool pin")
 
     try:
         approved, method = _verify_possession_factor(
@@ -3011,13 +3018,7 @@ def memory_reset(
     class - never raw baseline content. A denied attempt leaves no ledger row,
     same as `doberman taint clear` (ADR 0067).
     """
-    if not totp.is_enrolled() and not password.is_enrolled():
-        typer.echo(
-            "error: resetting memory requires an enrolled possession factor - "
-            "run `doberman 2fa setup` or `doberman password set` first",
-            err=True,
-        )
-        raise typer.Exit(code=1)
+    _refuse_without_a_factor("resetting memory")
 
     prompter = CliPrompter()
     try:
@@ -3979,13 +3980,7 @@ def _uninstall_global(path: str, yes: bool, dry_run: bool, keep_package: bool) -
         typer.echo("[dry-run] nothing removed.")
         return
 
-    if not totp.is_enrolled() and not password.is_enrolled():
-        typer.echo(
-            "\nerror: uninstalling requires an enrolled possession factor - "
-            "run `doberman 2fa setup` or `doberman password set` first",
-            err=True,
-        )
-        raise typer.Exit(code=1)
+    _refuse_without_a_factor("uninstalling", lead="\n")
 
     prompter = CliPrompter()
     try:
@@ -4174,13 +4169,7 @@ def uninstall(
         typer.echo("[dry-run] nothing removed.")
         return
 
-    if not totp.is_enrolled() and not password.is_enrolled():
-        typer.echo(
-            "\nerror: uninstalling requires an enrolled possession factor - "
-            "run `doberman 2fa setup` or `doberman password set` first",
-            err=True,
-        )
-        raise typer.Exit(code=1)
+    _refuse_without_a_factor("uninstalling", lead="\n")
 
     prompter = CliPrompter()
     try:
@@ -4627,7 +4616,7 @@ def setup(
         # is a second hop that still fails closed - the gate denies before it
         # would even prompt (no factor to prompt for) - so name the real first
         # step instead.
-        if totp.is_enrolled() or password.is_enrolled():
+        if hello_mode.is_on() or totp.is_enrolled() or password.is_enrolled():
             _note(
                 f"note: --yes cannot lower the mode from {current_mode.value} to "
                 f"{chosen_mode.value}: a lowering needs a possession factor (a 2FA code if "
@@ -4670,7 +4659,7 @@ def setup(
                     method=method,
                 )
             )
-            if totp.is_enrolled() or password.is_enrolled():
+            if hello_mode.is_on() or totp.is_enrolled() or password.is_enrolled():
                 _note(
                     "note: mode not lowered (a lowering needs an enrolled possession factor - "
                     "a 2FA code if enrolled, otherwise your Doberman password); keeping the "
@@ -5141,7 +5130,7 @@ def setup(
         # closed again with no factor to satisfy the gate. Name the whole
         # path in that case; with a factor already enrolled, the retry
         # command alone is the whole fix.
-        if totp.is_enrolled() or password.is_enrolled():
+        if hello_mode.is_on() or totp.is_enrolled() or password.is_enrolled():
             plain_mode_line += (
                 f" (requested {chosen_mode.value}; not lowered - a possession factor (a "
                 f"2FA code if enrolled, otherwise your Doberman password) is required, "
