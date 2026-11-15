@@ -654,7 +654,8 @@ def _check_hello_powershell() -> CheckResult:
             binding = type(exc).__name__
         if binding == "buffers":
             detail = (
-                "Windows PowerShell 5.1 cannot pass Hello data to Windows, so Hello cannot sign"
+                "Windows PowerShell 5.1 cannot pass Hello data to Windows, so Hello cannot read "
+                "its key or sign"
             )
             if mode_on:
                 return CheckResult(name, CheckStatus.FAIL, detail, critical=True)

@@ -770,7 +770,7 @@ def test_doctor_fails_in_the_mode_when_buffers_cannot_cross(mode_on, monkeypatch
     monkeypatch.setenv(approval_config.APPROVAL_FILE_ENV, str(tmp_path / "approval.json"))
     row = _doctor_row(monkeypatch, None, binding="buffers")
     assert (row.status, row.critical) == (CheckStatus.FAIL, True)
-    assert "cannot sign" in row.detail
+    assert "cannot read its key or sign" in row.detail
 
 
 def test_doctor_warns_off_the_mode_when_buffers_cannot_cross(monkeypatch, tmp_path):
@@ -781,4 +781,12 @@ def test_doctor_warns_off_the_mode_when_buffers_cannot_cross(monkeypatch, tmp_pa
     approval_config.enable("windows_hello")
     row = _doctor_row(monkeypatch, None, binding="buffers")
     assert (row.status, row.critical) == (CheckStatus.WARN, False)
-    assert "cannot sign" in row.detail
+    assert "cannot read its key or sign" in row.detail
+
+
+def test_a_throwing_buffer_probe_still_reports_buffers():
+    """Invoke-Typed throws (not returns) when marshalling breaks, so the probe must catch it."""
+    start = HELLO_SCRIPT.index("$op -eq 'selftest'")
+    probe = HELLO_SCRIPT[start : HELLO_SCRIPT.index("Enable-Raise", start)]
+    assert "try {" in probe and "catch { $crossed = $false }" in probe
+    assert "status = 'buffers'" in probe

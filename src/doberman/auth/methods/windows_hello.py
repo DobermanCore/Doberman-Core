@@ -210,10 +210,11 @@ function Invoke-HelloOp($request) {
     }
     if ($op -eq 'selftest') {
         # what binding a prompt needs, resolved without calling anything that prompts
-        $probe = $buffers::CreateFromByteArray([byte[]](1, 2, 3))
-        if ((Invoke-Typed $buffers 'EncodeToBase64String' $null @($probe)) -ne 'AQID') {
-            return @{ status = 'buffers'; value = $null }
-        }
+        try {
+            $probe = $buffers::CreateFromByteArray([byte[]](1, 2, 3))
+            $crossed = (Invoke-Typed $buffers 'EncodeToBase64String' $null @($probe)) -eq 'AQID'
+        } catch { $crossed = $false }
+        if (-not $crossed) { return @{ status = 'buffers'; value = $null } }
         Enable-Raise
         if (-not $script:canRaise) { return @{ status = 'helper'; value = $null } }
         $factory = [Runtime.InteropServices.WindowsRuntime.WindowsRuntimeMarshal]::GetActivationFactory($verifier)
