@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 dependencies = [
-    "pydantic>=2",
+    "pydantic>=2.9",
     "mcp>=1.27,<2",
     "aiosqlite",
     "pyotp",
