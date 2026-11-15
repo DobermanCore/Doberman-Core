@@ -1197,3 +1197,15 @@ def test_hello_availability_works_from_inside_an_event_loop(mode_on, monkeypatch
 
     assert hello_mode.available() is True
     assert asyncio.run(_on_loop()) is True
+
+
+def test_availability_needs_a_real_true_not_a_truthy_value(mode_on, backend):
+    backend(available=1)
+    assert drift.weaken_refusal("clearing taint")[0] == "hello_unavailable"
+
+
+def test_lowering_advice_in_the_mode_names_hello_not_a_password(mode_on):
+    from doberman.cli import main as cli_main
+
+    assert "Windows Hello" in cli_main._lowering_factor()
+    assert "password" not in cli_main._lowering_factor()

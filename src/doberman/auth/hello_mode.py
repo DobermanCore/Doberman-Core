@@ -252,7 +252,7 @@ def available() -> bool:
     worker = threading.Thread(target=_check, name="doberman-hello-available", daemon=True)
     worker.start()
     worker.join(_AVAILABLE_TIMEOUT_S)
-    return not worker.is_alive() and answer == [True]
+    return not worker.is_alive() and len(answer) == 1 and answer[0] is True
 
 
 def pinned_public_key() -> bytes:

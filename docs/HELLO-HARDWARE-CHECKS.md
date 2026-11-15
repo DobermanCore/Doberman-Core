@@ -39,6 +39,9 @@ TPM 2.0, and the date.
    checks it with Doberman's own verifier (RSA PKCS#1 v1.5 with SHA-256 over the key's
    SubjectPublicKeyInfo) before pinning the key. Does enrollment pass that step? If it refuses with
    "did not verify", the key type or signature format differs from what Doberman expects.
+9. **Does the availability check work off the main thread?** In Hello-required mode, run
+   `doberman mode` to lower the mode. Doberman checks Hello on a worker thread first; if it says
+   Hello is unavailable while Windows Hello works, every loosening command is refused in the mode.
 
 ## Results
 

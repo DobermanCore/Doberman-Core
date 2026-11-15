@@ -4254,6 +4254,13 @@ def uninstall(
         )
 
 
+def _lowering_factor() -> str:
+    """What a mode lowering asks for, in the words the setup notes use."""
+    if hello_mode.is_on():
+        return "a Windows Hello gesture"
+    return "a possession factor (a 2FA code if enrolled, otherwise your Doberman password)"
+
+
 @app.command(rich_help_panel="Getting started")
 def setup(
     yes: bool = typer.Option(False, "--yes", "-y", help="Accept all defaults with no prompts."),
@@ -4619,8 +4626,7 @@ def setup(
         if hello_mode.is_on() or totp.is_enrolled() or password.is_enrolled():
             _note(
                 f"note: --yes cannot lower the mode from {current_mode.value} to "
-                f"{chosen_mode.value}: a lowering needs a possession factor (a 2FA code if "
-                f"enrolled, otherwise your Doberman password). Run `doberman mode "
+                f"{chosen_mode.value}: a lowering needs {_lowering_factor()}. Run `doberman mode "
                 f"{chosen_mode.value}` interactively."
             )
         else:
@@ -4661,8 +4667,7 @@ def setup(
             )
             if hello_mode.is_on() or totp.is_enrolled() or password.is_enrolled():
                 _note(
-                    "note: mode not lowered (a lowering needs an enrolled possession factor - "
-                    "a 2FA code if enrolled, otherwise your Doberman password); keeping the "
+                    f"note: mode not lowered (a lowering needs {_lowering_factor()}); keeping the "
                     "current mode"
                 )
             else:
@@ -5132,8 +5137,7 @@ def setup(
         # command alone is the whole fix.
         if hello_mode.is_on() or totp.is_enrolled() or password.is_enrolled():
             plain_mode_line += (
-                f" (requested {chosen_mode.value}; not lowered - a possession factor (a "
-                f"2FA code if enrolled, otherwise your Doberman password) is required, "
+                f" (requested {chosen_mode.value}; not lowered - {_lowering_factor()} is required, "
                 f"run 'doberman mode {chosen_mode.value}')"
             )
         else:
