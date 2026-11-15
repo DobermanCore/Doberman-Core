@@ -40,6 +40,7 @@ from typing import Any, Protocol
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from doberman.auth.hello_proof import Proof
 from doberman.models import (
     ActionType,
     Decision,
@@ -192,6 +193,12 @@ async def _live_memory_hit(
     return await lookup(fingerprint_value, repo_root=repo_root, session_id=session_id, now=now)
 
 
+async def _record_proof(repo_root: str, proof: Proof) -> None:
+    from doberman.storage.hello_proofs import record
+
+    await record(proof, repo_root=repo_root)
+
+
 async def _remember_approval(
     repo_root: str,
     action: SecurityObject,
@@ -307,6 +314,8 @@ class AuthResult(BaseModel):
     at: AwareDatetime
     action_id: str = Field(min_length=1)
     elevation_id: str | None = None
+    #: Hello-required mode only (ADR 0119): the verified signed proof, kept as audit evidence.
+    proof: Proof | None = None
 
 
 #: The (decision, action, tier) of the challenge currently running on this
@@ -574,6 +583,10 @@ def run_auth_challenge(
             ),
             label=action.id,
         )
+        if result.proof is not None and repo_root is not None:
+            # ADR 0119 slice 3: keep the signed proof as evidence. A storage failure is
+            # logged and never changes the answer (logging must not alter a decision).
+            _run_memory_io(lambda: _record_proof(repo_root, result.proof))
         if memory_hit is not None and result.approved and result.action_id == action.id:
             return result.model_copy(
                 update={"tier": AuthTier.soft_confirm, "method": MEMORY_METHOD}

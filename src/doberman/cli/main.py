@@ -2162,7 +2162,9 @@ def twofa_hello_enroll() -> None:
     Needs a current 2FA code, a Hello gesture, a TPM-backed Hello key and an administrator
     terminal. Writes the machine marker with the key's public key, then deletes totp.secret.
     """
-    from doberman.auth import hello_mode
+    from dataclasses import replace
+
+    from doberman.auth import hello_mode, hello_proof
 
     path = _hello_preflight("enroll")
     if hello_mode.is_on():
@@ -2177,12 +2179,6 @@ def twofa_hello_enroll() -> None:
     if not totp.verify(CliPrompter().read_code("Current 2FA code")):
         typer.echo("error: that 2FA code is not valid; nothing was changed", err=True)
         raise typer.Exit(code=1)
-    approved, _ = hello_mode.verify(
-        "Turn on Doberman Hello-required mode", action_id="hello-enroll"
-    )
-    if not approved:
-        typer.echo("error: Windows Hello did not verify you; nothing was changed", err=True)
-        raise typer.Exit(code=1)
     try:
         backend = hello_mode.backend()
         backend.ensure_key()
@@ -2195,6 +2191,24 @@ def twofa_hello_enroll() -> None:
         typer.echo(
             "error: the Hello key is not TPM-backed (or Windows could not attest it); "
             "Hello-required mode needs a TPM. Nothing was changed.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    # The gesture: the key signs a probe that must verify against the key about to be
+    # pinned, so a key or signature scheme the verifier cannot check is never enrolled.
+    probe = hello_proof.new_challenge("hello-enroll", hello_proof.label_hash("hello-enroll"))
+    try:
+        signature = backend.sign(probe.message())
+    except Exception as exc:  # noqa: BLE001 - cancelled, timed out, refused: nothing changes
+        typer.echo(
+            f"error: Windows Hello did not sign ({type(exc).__name__}); nothing was changed",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    if not hello_proof.check_stored(replace(probe, signature=bytes(signature)), public_key):
+        typer.echo(
+            "error: the Hello key's signature did not verify (unsupported key type?); "
+            "nothing was changed",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -2220,17 +2234,22 @@ def twofa_hello_enroll() -> None:
 @hello_app.command("leave")
 def twofa_hello_leave() -> None:
     """Turn off Hello-required mode (administrator terminal + a Hello gesture)."""
-    from doberman.auth import hello_mode
+    from doberman.auth import hello_mode, hello_proof
 
     _hello_preflight("leave")
     if not hello_mode.is_on():
         typer.echo("error: Hello-required mode is not on; nothing to leave", err=True)
         raise typer.Exit(code=1)
-    approved, _ = hello_mode.verify(
-        "Turn off Doberman Hello-required mode", action_id="hello-leave"
+    approved, _, _ = hello_mode.prove(
+        action_id="hello-leave", action_hash=hello_proof.label_hash("hello-leave")
     )
     if not approved:
-        typer.echo("error: Windows Hello did not verify you; the mode stays on", err=True)
+        typer.echo(
+            "error: Windows Hello did not sign with the pinned key; the mode stays on. If the "
+            "marker is corrupt or the key is lost, delete the marker from this administrator "
+            "terminal yourself.",
+            err=True,
+        )
         raise typer.Exit(code=1)
     try:
         hello_mode.remove_markers()

@@ -439,8 +439,11 @@ answer.
 ### Windows: approve with Windows Hello instead of a code (opt-in)
 
 On Windows you can remove the 2FA secret altogether. In Hello-required mode, every prompt that
-would ask for a 2FA code asks for a Windows Hello gesture (fingerprint, face or PIN) instead,
-and TOTP codes are refused everywhere, including the phone and the dashboard. It needs the
+would ask for a 2FA code shows you the action, then asks for a Windows Hello gesture (fingerprint,
+face or PIN) instead, and TOTP codes are refused everywhere, including the phone and the dashboard.
+The gesture makes a Hello key sign that one action; Doberman accepts it only if the signature
+checks out against the key pinned at enrollment. For tool calls it keeps the signature in the
+database in `.doberman/`, so it can be checked again later. It needs the
 `winhello` extra, Windows Hello set up, a TPM, and an administrator terminal for one step.
 From a terminal opened with "Run as administrator", signed in as your usual account:
 
@@ -448,19 +451,19 @@ From a terminal opened with "Run as administrator", signed in as your usual acco
 doberman 2fa hello enroll
 ```
 
-It asks for your current 2FA code and a Hello gesture, refuses a Hello key that isn't TPM-backed,
-writes `%ProgramData%\doberman\proof.json` (only administrators can change it), and then deletes
+It asks for your current 2FA code and a Hello gesture, refuses a Hello key that isn't TPM-backed
+or whose test signature doesn't verify, writes `%ProgramData%\doberman\proof.json` (only administrators can change it), and then deletes
 your `totp.secret`. It refuses if that folder already exists but isn't owned by Administrators,
 or is a link. Any `proof.json` there turns the mode on, even one you never enrolled; only an
 administrator can remove it. If Hello can't run (no sensor, a remote session, a broken PIN), proof-tier
-actions are denied, not sent back to TOTP. The Hello prompt can open behind other windows; look
-for it on the taskbar before it times out. To turn the mode off, again as administrator:
+actions are denied, not sent back to TOTP. Doberman tries to bring the Hello prompt to the front,
+but it can still open behind other windows; look for it on the taskbar before it times out. To turn the mode off, again as administrator:
 
 ```bash
 doberman 2fa hello leave
 ```
 
-That needs a Hello gesture; afterwards run `doberman 2fa setup` to enroll a new TOTP secret. If
+That needs a Hello signature from the pinned key; afterwards run `doberman 2fa setup` to enroll a new TOTP secret. If
 Hello is broken and you can't leave, an administrator can delete the `proof.json` file.
 `doberman doctor` shows the mode under Auth. This narrows what a script can do; it doesn't close
 the gap (see LIMITATIONS).

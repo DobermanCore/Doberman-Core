@@ -558,8 +558,10 @@ the repo, so confirmation-only prompts stay answerable by a script. It doesn't r
 Windows.
 
 On Windows there is an opt-in mode where no 2FA secret exists to steal: Hello-required mode
-(SETUP §4) deletes the secret and makes 2FA prompts ask for a Windows Hello gesture. That
-narrows the gap; it doesn't close it. A script running as you can still:
+(SETUP §4) deletes the secret and makes 2FA prompts ask for a Windows Hello gesture. Approvals
+in this mode are signed by a Hello key and can be checked later against the pinned key; the
+stored signatures are evidence, not a tamper-proof log, since your account can still edit the
+database. That narrows the gap; it doesn't close it. A script running as you can still:
 
 - answer confirmation-only prompts through `.doberman/`, as above;
 - change Doberman itself, since its install and hooks live in folders your account can write;
