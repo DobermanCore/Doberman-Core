@@ -18,6 +18,7 @@ cd Doberman-Core
 python -m venv .venv
 source .venv/bin/activate  # Unix/macOS
 # PowerShell: .venv\Scripts\Activate.ps1
+pre-commit install  # optional: run ruff + lint-imports before each commit
 # Command Prompt: .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
