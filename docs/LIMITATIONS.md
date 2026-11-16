@@ -594,6 +594,8 @@ The mode has other limits:
 - A program running as you can delete the Hello key without a gesture (seen on Windows 11). That
   can't approve anything, since the marker pins the old key, but every proof-tier action is then
   refused until an administrator enrolls again.
+- When a Hello prompt times out, Doberman denies the action but Windows leaves the prompt on screen;
+  close it yourself. Approving it then does nothing.
 - Some hardware behaviors haven't been checked on a real machine yet, such as whether another
   program can type into the prompt.
   [HELLO-HARDWARE-CHECKS](HELLO-HARDWARE-CHECKS.md) lists them and what has been seen so far.
