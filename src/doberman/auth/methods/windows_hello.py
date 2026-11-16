@@ -172,7 +172,7 @@ function Wait-Op($operation, [Type]$resultType, [int]$ms) {
     $raised = [IntPtr]::Zero
     while (-not $task.Wait(250)) {
         if ($clock.ElapsedMilliseconds -ge $ms) {
-            # close the prompt so it does not linger after the deny; the deny stands either way
+            # ask Windows to drop the request; it leaves the prompt open (seen on 26200), the deny stands
             try { $null = [Windows.Foundation.IAsyncInfo,Windows.Foundation,ContentType=WindowsRuntime].GetMethod('Cancel').Invoke($operation, $null) } catch { }
             throw [TimeoutException]::new('timeout')
         }
