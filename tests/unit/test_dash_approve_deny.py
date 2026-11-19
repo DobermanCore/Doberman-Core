@@ -894,6 +894,20 @@ def test_resolve_bad_decision_value_is_400(tmp_path):
     assert resp.status_code == 400
 
 
+@pytest.mark.parametrize("body", [[], "approved", 1])
+def test_resolve_non_object_body_is_400(tmp_path, body):
+    client = TestClient(create_app(_TOKEN, str(tmp_path)))
+    resp = client.post(
+        "/api/resolve/nonexistent-id",
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+        json=body,
+    )
+    assert (resp.status_code, resp.json()) == (
+        400,
+        {"error": "decision must be 'approved' or 'denied'"},
+    )
+
+
 def test_resolve_twice_is_200_then_409(tmp_path):
     root = str(tmp_path)
     # No now= override: the /api/resolve route calls resolve() with no override (real clock).

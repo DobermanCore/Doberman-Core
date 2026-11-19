@@ -3304,6 +3304,8 @@ def _make_resolve_route(token: str, repo_root: str) -> Route:
             body = await request.json()
         except (json.JSONDecodeError, ValueError):
             body = {}
+        if not isinstance(body, dict):
+            body = {}
         decision = body.get("decision")
         if decision not in ("approved", "denied"):
             return JSONResponse({"error": "decision must be 'approved' or 'denied'"}, 400)
@@ -3358,6 +3360,8 @@ def _make_mode_route(token: str, repo_root: str) -> Route:
         try:
             body = await request.json()
         except (json.JSONDecodeError, ValueError):
+            body = {}
+        if not isinstance(body, dict):
             body = {}
         name = body.get("mode")
         if not isinstance(name, str) or not name:
