@@ -19,6 +19,7 @@ Use this index to find the right Doberman documentation for your task.
 | [HELLO-HARDWARE-CHECKS.md](HELLO-HARDWARE-CHECKS.md) | Open this when testing the Windows Hello approval method on a real machine and recording what it does. |
 | [RELEASING.md](RELEASING.md) | Open this when preparing and publishing a Doberman-Core release and verifying the required checks and evidence. |
 | [ROADMAP.md](../ROADMAP.md) | Open this for a quick summary of what's planned or in progress, with a link to the full GitHub roadmap board. |
+| [COMPANION-CONTRACT.md](COMPANION-CONTRACT.md) | Open this when building a local tool that reads Doberman's decision log, audit webhook, or dashboard approvals, and you need to know what stays stable. |
 | [audit_otel.md](audit_otel.md) | Open this when sending Doberman's redacted decision records to an OpenTelemetry-compatible collector. |
 | [PLUGINS.md](PLUGINS.md) | Open this when writing a custom guardrail rule or forwarding Doberman's redacted audit log to your own pipeline. |
 | [EXTENDING.md](EXTENDING.md) | Open this when deciding which of Doberman's twelve entry-point seams (rules, detectors, policy sources, auth providers, audit sinks, and the rest) to plug a new integration into. |

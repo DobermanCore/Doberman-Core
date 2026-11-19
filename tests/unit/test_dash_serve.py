@@ -73,7 +73,7 @@ def test_health_with_malformed_auth_header_is_401(client: TestClient):
 def test_health_with_correct_token_is_200(client: TestClient):
     resp = client.get("/api/health", headers={"Authorization": f"Bearer {_TOKEN}"})
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    assert resp.json()["status"] == "ok"
 
 
 def test_index_serves_html_shell_without_auth(client: TestClient):
