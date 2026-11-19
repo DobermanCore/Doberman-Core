@@ -9,6 +9,7 @@ import re
 import sys
 from datetime import datetime, timezone
 
+import pytest
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -175,6 +176,17 @@ def test_resolve_status_codes_and_exact_strings(tmp_path):
 
     again = client.post(url, json={"decision": "approved"}, headers=_AUTH)
     assert (again.status_code, again.json()) == (409, {"error": "already resolved or expired"})
+
+
+@pytest.mark.parametrize("body", [[], "approved", 1])
+def test_resolve_non_dict_body_gets_documented_400(tmp_path, body):
+    approval_id = _queue(str(tmp_path))
+    client = TestClient(create_app(_TOKEN, str(tmp_path)))
+    resp = client.post(f"/api/resolve/{approval_id}", json=body, headers=_AUTH)
+    assert (resp.status_code, resp.json()) == (
+        400,
+        {"error": "decision must be 'approved' or 'denied'"},
+    )
 
 
 # --- S2: the decision history columns a reader may rely on ---------------------------
