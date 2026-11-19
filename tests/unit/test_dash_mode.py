@@ -15,6 +15,7 @@ matter which caller reaches the gate:
 import asyncio
 
 import pyotp
+import pytest
 from starlette.testclient import TestClient
 
 from doberman.auth import password, totp
@@ -207,6 +208,12 @@ def test_unknown_mode_name_is_400(tmp_path):
 def test_missing_mode_field_is_400(tmp_path):
     resp = _client(str(tmp_path)).post("/api/mode", headers=_headers(), json={})
     assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("body", [[], "approved", 1])
+def test_non_dict_mode_body_is_400(tmp_path, body):
+    resp = _client(str(tmp_path)).post("/api/mode", headers=_headers(), json=body)
+    assert (resp.status_code, resp.json()) == (400, {"error": "mode is required"})
 
 
 # --- redaction / structural guarantees -----------------------------------------
