@@ -98,6 +98,68 @@ def test_a_stale_lock_left_by_a_crashed_holder_is_taken_over():
     assert not lock.exists()
 
 
+def _make_stale(path) -> None:
+    path.write_text("", encoding="utf-8")
+    old = path.stat().st_mtime - totp._STEP_LOCK_STALE_SECONDS - 1
+    os.utime(path, (old, old))
+
+
+def test_a_lock_taken_over_since_it_was_seen_stale_is_left_alone(monkeypatch):
+    # #781: this process saw the crashed holder's lock as stale, but by the time
+    # it acts another process has already taken it over with a fresh, live lock.
+    # Removing that lock would let both processes in.
+    totp.enroll()
+    lock = totp._used_step_lock_path(totp._secret_path())
+    lock.write_text("", encoding="utf-8")  # the other process's live lock
+    real_stat = type(lock).stat
+    stale_mtime = lock.stat().st_mtime - totp._STEP_LOCK_STALE_SECONDS - 1
+    seen = []
+
+    def stat_seen_before_the_takeover(self, *args, **kwargs):
+        result = real_stat(self, *args, **kwargs)
+        if self == lock and not seen:
+            seen.append(True)
+            return os.stat_result((*result[:8], stale_mtime, *result[9:]))
+        return result
+
+    monkeypatch.setattr(type(lock), "stat", stat_seen_before_the_takeover)
+    monkeypatch.setattr(totp, "_STEP_LOCK_TIMEOUT_SECONDS", 0.05)
+
+    assert totp._acquire_step_lock(lock) is False
+    assert lock.exists()
+
+
+def test_a_takeover_guard_left_by_a_crashed_process_is_cleared():
+    totp.enroll()
+    lock = totp._used_step_lock_path(totp._secret_path())
+    _make_stale(lock)
+    _make_stale(lock.with_name(lock.name + ".takeover"))
+    assert totp.verify(_code(_T0), at=_T0) is True
+
+
+def test_two_threads_taking_over_a_stale_lock_never_both_accept_one_code():
+    totp.enroll()
+    code = _code(_T0)
+    lock = totp._used_step_lock_path(totp._secret_path())
+    for _ in range(20):
+        totp._clear_used_step(totp._secret_path())
+        totp.reset_attempts()
+        _make_stale(lock)
+        barrier = threading.Barrier(2)
+        results: list[bool] = []
+
+        def attempt(barrier: threading.Barrier, results: list[bool]) -> None:
+            barrier.wait()
+            results.append(totp.verify(code, at=_T0))
+
+        threads = [threading.Thread(target=attempt, args=(barrier, results)) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert sorted(results) == [False, True]
+
+
 def test_two_threads_never_both_accept_one_code():
     totp.enroll()
     code = _code(_T0)
