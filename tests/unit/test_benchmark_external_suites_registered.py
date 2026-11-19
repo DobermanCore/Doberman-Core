@@ -1,4 +1,4 @@
-"""The three external suites register through BUILTIN_ADAPTERS exactly like
+"""The operator-supplied external suites register through BUILTIN_ADAPTERS exactly like
 AgentDojo/AgentDyn — proves Task 4's __init__.py wiring, independent of any
 operator-supplied data (construction only, never .load())."""
 
@@ -9,6 +9,13 @@ from tests.benchmarks.suites import BUILTIN_ADAPTERS
 
 
 def test_external_suites_are_registered():
-    for name in ("redcode", "msb", "llmail_inject"):
+    for name in (
+        "redcode",
+        "msb",
+        "llmail_inject",
+        "llmail_inject_plain_host",
+        "bipia_email",
+        "bipia_table",
+    ):
         assert name in BUILTIN_ADAPTERS
         assert isinstance(BUILTIN_ADAPTERS[name](), SuiteAdapter)
