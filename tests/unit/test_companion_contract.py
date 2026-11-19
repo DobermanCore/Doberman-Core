@@ -69,6 +69,8 @@ RECORD_KEYS = {
 def test_health_reports_contract_1_version_and_features(tmp_path):
     body = TestClient(create_app(_TOKEN, str(tmp_path))).get("/api/health", headers=_AUTH).json()
 
+    # An added key is additive, but it should land on purpose: update this set and the doc.
+    assert set(body) == {"status", "contract", "doberman", "features"}
     assert body["status"] == "ok"
     assert body["contract"] == 1
     assert body["doberman"] == doberman.__version__
@@ -187,13 +189,13 @@ async def test_decisions_table_keeps_the_pinned_columns_and_schema_version(tmp_p
 
     assert DECISION_COLUMNS <= columns
     assert versions == [SCHEMA_VERSION]
-    assert isinstance(SCHEMA_VERSION, int)
+    assert type(versions[0]) is int  # the stored value a reader sees, not just the constant
 
 
 # --- S1: the audit webhook body ------------------------------------------------------
 
 
-def test_audit_record_always_carries_the_pinned_keys():
+def _record() -> dict:
     from doberman.models import (
         ActionType,
         Decision,
@@ -228,7 +230,36 @@ def test_audit_record_always_carries_the_pinned_keys():
         decided_at=now,
     )
 
-    record = build_record(decision, action, auth_result=None, elevation_id=None, now=now)
+    return build_record(decision, action, auth_result=None, elevation_id=None, now=now)
+
+
+def test_audit_record_always_carries_the_pinned_keys():
+    record = _record()
 
     assert RECORD_KEYS <= set(record)
     assert record["reason_codes"] == ["destructive_command"]
+
+
+def test_webhook_body_on_the_wire_carries_the_pinned_keys(monkeypatch):
+    import json
+    import urllib.request
+    from contextlib import nullcontext
+
+    from doberman.storage.sinks import WebhookAuditSink
+
+    sent: list[bytes] = []
+
+    def fake_urlopen(req, timeout):
+        sent.append(req.data)
+        return nullcontext()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    sink = WebhookAuditSink(None)  # inert: no worker thread; _post is driven directly
+    sink._url = "http://127.0.0.1:9/audit"
+
+    sink._post(_record())
+
+    assert len(sent) == 1
+    body = json.loads(sent[0])
+    assert RECORD_KEYS <= set(body)
+    assert body["reason_codes"] == ["destructive_command"]

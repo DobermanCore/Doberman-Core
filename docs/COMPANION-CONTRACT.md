@@ -74,8 +74,9 @@ printed.
 
 Every route takes `Authorization: Bearer <run token>`. A missing or wrong token is `401 {"error": "unauthorized"}`.
 
-`GET /api/pending` returns a list of rows with exactly these fields: `id`, `created_at`, `expires_at`, `tier`,
-`action_type`, `risk`, `reason_codes`, `explanation`, `target_path_class`, `needs_totp`, `session_id`.
+`GET /api/pending` returns a list of rows with these fields: `id`, `created_at`, `expires_at`, `tier`,
+`action_type`, `risk`, `reason_codes`, `explanation`, `target_path_class`, `needs_totp`, `session_id`. A later
+additive change may add fields; a consumer ignores fields it does not know.
 
 `POST /api/resolve/{id}` takes `{"decision": "approved" | "denied", "totp_code": "<digits>"}` (`totp_code` optional):
 
@@ -93,7 +94,8 @@ an approval that needs proof is never queued to the dashboard at all.
 ### 5. Hook approvals
 
 A host-hook approval (Claude Code, Codex, Cursor) reaches the dashboard only while the dashboard is running. It is a
-surface-4 row with a non-null `session_id`; there is no separate route.
+surface-4 row whose `session_id` is normally non-null (`null` when the host sent no session id); there is no separate
+route.
 
 ## When one side is missing or out of date
 
