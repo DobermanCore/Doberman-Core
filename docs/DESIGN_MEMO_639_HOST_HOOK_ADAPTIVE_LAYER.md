@@ -96,6 +96,10 @@ which may explain LIMITATIONS' two seconds. Run 1 shared the machine with other 
 lite arm is an estimate: the real lazy-import change has not been written, and the learning writes (below) were
 not timed.
 
+Three more caveats. The arms run a bare script, not `doberman hook pre`, so the absolute "today" figure is
+understated, though the deltas between arms hold. The lite arm never imports `martingale` and never times the
+budget read. The bench uses pickle `send` and `recv`, not the `send_bytes` the design proposes.
+
 ## Alternatives
 
 | | Option | Hook latency added | Down case | Verdict |
@@ -130,16 +134,23 @@ back if the bench shows they matter.
 **The per-repo SQLite database stays the only owner of durable adaptive state, in both stages.** That is
 already true. The proxy, the hooks (taint ledger, decision history), the dashboard and the monitor all share
 that database today. The subjective tables are already keyed by a fingerprinted entity id (role plus resolved
-repo root). Concurrent writers are already handled: each write is a single UPSERT statement, and the
-connection sets `busy_timeout`.
+repo root). Concurrent writers are tolerated, not serialized: the connection sets `busy_timeout`, but `observe()` is a
+read-modify-write sequence (numeric statistics, transitions, bounded keys) in one deferred transaction. Parallel
+hooks can lose an update or drop an `observe` on a busy database. The effect is under-counting, which makes
+scoring stricter, never looser.
 
 - **Stage 1.** The hook process reads the baseline to score and writes it to learn. It holds nothing between
   calls. Learning follows the proxy's rule: observe only on a **genuine PASS**, meaning the objective,
-  subjective, taint, echo and correlator results all came back `PASS`. A call softened to `PASS` by the
-  `monitor` or `off` dial never teaches the baseline, and neither does an approved `AUTH` in v1. Observing at
-  the `PreToolUse` decision, rather than after the tool runs, is a small deviation from the proxy: only Claude
-  Code has a post-tool hook wired, and a host-side rejection after Doberman's `PASS` would only over-count a
-  call Doberman already judged normal. `observe()` splits into a database part (counts, transitions, numeric
+  subjective, taint, echo and correlator results all came back `PASS`, **and the call was actually allowed and
+  ran**. A call softened to `PASS` by the `monitor` or `off` dial never teaches the baseline, and neither does
+  an approved `AUTH` in v1. `observe()` states that it must only be called for actions that were allowed and
+  forwarded, and the proxy also skips learning when the tool errored or the output scan or artifact gate
+  fired. Learning at `PreToolUse` would break that rule: a call the human then denies at the host's own prompt,
+  a call that fails, and a call whose output trips the secret scan would all teach "normal", and a class key
+  goes familiar after 3 allows (10 for high severity). So **learning runs at `PostToolUse`, where the host has
+  one** (Claude Code, after the output scan passes). A host without a post hook gets **no learning in v1**: it
+  scores from the seed and the peer prior only. Teaching from `PreToolUse` there would be a named deviation and
+  a maintainer call (Decision 3). `observe()` splits into a database part (counts, transitions, numeric
   statistics, Martingale beliefs) that the hook runs, and a memory part (Half-Space Trees learning, ADWIN)
   that only a long-lived process runs. The Martingale self-monitor (`run_monitor`, every 50 observations, needs
   `numpy` and `scipy`) moves out of the call path to a CLI or monitor step. It can only refresh, hold or flag
@@ -162,7 +173,9 @@ connection sets `busy_timeout`.
   - **Authentication.** The handshake is mutual HMAC, with the key derived from the existing `0600`
     fingerprint key, for example HMAC(key, "warm-ipc|" + repo fingerprint). This adds no new secret file. A
     process that squats on the pipe name first cannot complete the handshake, so it cannot pose as the
-    sidecar.
+    sidecar. The key sits in a `0600` file the same user can read, so the HMAC stops squatting, not the agent.
+    An agent that reads the key can impersonate the sidecar, and the worst case is still "down", which stage 1
+    covers. The derivation is domain-separated and collides with no existing `fingerprint()` input.
   - **Messages.** Versioned JSON through `send_bytes` and `recv_bytes`, never `send` and `recv`, which unpickle.
     One request and one reply per call. The request carries the normalized action and the raw arguments that
     the built-in detectors scan. They are held in memory only and never logged, like
@@ -182,15 +195,34 @@ command. "Down" therefore has to be treated as something an attacker can cause, 
 **Stage 1 has no down state.** The adaptive layer runs inside the hook process that is answering the host.
 Its failures already fail upward:
 
-- a failed surprise computation scores 1.0 (maximum caution);
+- a failed surprise computation scores 1.0 (maximum caution), but only if the failure reaches
+  `surprise_blended`'s own guard. `total_observations()` and the peer lookup swallow a locked or corrupt
+  database themselves: the count reads as 0 and the peer novelty as 0.5. The blend then weights the entity's own
+  score at 0 and returns the prior, so a database lock would loosen a mature entity's score (in Balanced, the
+  sensitivity times care needed to step up doubles, from 0.343 to 0.686). The hook path must not inherit that.
+  Slice 2 requires that any baseline read failure on the hook path, including the observation count and the
+  peer lookup, scores 1.0, tested with a locked and a corrupt database;
+- a missing `surprise` key in the metadata reads as 0.0 (`_read_surprise`), so the hook needs a wrapper that
+  fails to 1.0, like the proxy's `_surprise_or_caution`, which lives in `doberman.proxy` and cannot be
+  imported by the policy core;
 - a failed scoring step returns `AUTH` (`subjective_guardrail_error`);
 - a failing detector returns `AUTH` (`rule_error`);
-- a failed budget check lets the step-up through.
+- a failed budget check lets the step-up through;
+- an import failure is covered only if the adaptive imports sit inside `evaluate_action`, where the adapter's
+  fail-closed try catches them. `hook_pre` imports `claude_code` (and through it the spine) outside any try,
+  and a module-scope import error exits non-2, which the host treats as fail-open. Slice 1 requires the
+  adaptive imports inside `evaluate_action`.
+
+**Deadline.** A timed-out hook fails open, and the pinned timeout is 660 s against a 600 s challenge. A locked
+database costs up to 3 s (`busy_timeout`) per open, so surprise, count, peer and budget reads could spend about
+12 s before the challenge starts. The adaptive layer gets one total deadline, for example 2 s, after which
+surprise is 1.0.
 
 The only way to switch stage 1 off is to change Doberman's install or configuration, which the existing
 control-plane tamper rules cover. One gap: an agent could run `doberman hook pre` itself with a crafted
 payload to teach the baseline. Hosts start the hook directly, never through a gated tool, so the fix is to add
-`hook` to `_DOBERMAN_CONTROL_SUBCOMMANDS` in `engine/rules/commands.py`. That blocks only the agent.
+`hook` to `_DOBERMAN_CONTROL_SUBCOMMANDS` in `engine/rules/commands.py`. That is defence in depth, not a
+seal: the rule matches only a command whose first token is `doberman`, so a wrapped or renamed call gets past it.
 
 **Stage 2, the sidecar, can be down.** The options:
 
@@ -233,8 +265,13 @@ defense in depth that is not airtight, agent shell commands that target Doberman
     session scope token and records revealed-preference feedback. Both make later step-ups less likely. A
     message saying "the human approved X" would be a loosening channel the sidecar cannot verify, because the
     challenge ran in the hook process. So the hook path skips scope tokens and revealed-preference learning
-    in v1. A repeated unusual action prompts every time, within the step-up budget. That is noisier, never
-    looser.
+    in v1. A repeated unusual action prompts every time. That is noisier, never looser.
+  - **Step-up budget.** `budget_allows_step_up` counts the entity's last 20 `decisions` rows. The hook spine
+    writes no `entity_id` on its rows, and a genuine `PASS` is never recorded there. If `entity_id` were simply
+    added, the window would hold 20 non-`PASS` rows, so one approved step-up would suppress subjective step-ups
+    for far more than 20 actions, and each suppressed one would count as a genuine `PASS` and teach the
+    baseline. **v1 hooks pass `budget_ok=True`: no budget on the hook path.** A budget needs an entity-keyed
+    row per decided action, which is a later slice. In every case, a budget-suppressed step-up never teaches.
 - **The dial.** The adaptive layer is discretionary under the enforcement dial (ADR 0029, ADR 0095 rule 2).
   `monitor` and `off` soften its raises on the hook path exactly as they do on the proxy.
 
@@ -260,11 +297,13 @@ host-hook path has no uncertain band until #639 lands, and rule 9 puts activatio
 1. **Stage 1 as the implementation of #639**, with the warm sidecar deferred until a bench shows the Half-Space
    Trees, ADWIN or turn-context signals add lift on hook traffic. Recommended: yes.
 2. **Q3, when the sidecar is down:** option 2 (recommended) or option 3. If stage 1 is rejected: option 3.
-3. **The hook path starts teaching the baseline,** from genuine `PASS` decisions at `PreToolUse`. This is the
-   first time a host hook writes the learned baseline. It comes with `hook` joining the control-plane tamper
-   verbs. Recommended: yes.
-4. **No scope tokens and no revealed-preference learning on the hook path in v1.** More prompts on repeated
-   unusual actions, and no loosening channel. Recommended: yes.
+3. **The hook path starts teaching the baseline,** from genuine `PASS` decisions at `PostToolUse`, after the
+   tool ran and the output scan passed. This is the first time a host hook writes the learned baseline. It comes
+   with `hook` joining the control-plane tamper verbs (defence in depth). Hosts without a post hook do not learn
+   in v1. Teaching from `PreToolUse` on those hosts would break the allowed-only rule (ADR 0028, ADR 0073), so
+   it is a separate maintainer call. Recommended: post-hook learning only.
+4. **No scope tokens, no revealed-preference learning and no step-up budget on the hook path in v1.** More
+   prompts on repeated unusual actions, and no loosening channel. Recommended: yes.
 5. **Rollout.** Every hook user would start seeing subjective step-ups at once, from cold baselines.
    Recommended: one release in shadow (record what the layer would have raised, enforce nothing), with
    `doberman memory seed` (docs/BASELINE_SEEDING.md) offered to warm baselines. Then turn it on.
@@ -275,11 +314,15 @@ host-hook path has no uncertain band until #639 lands, and rule 9 puts activatio
    - Import `river` only inside the Half-Space Trees and ADWIN code paths, and `numpy` and `scipy` only inside
      the Martingale monitor.
    - Split `observe()` into its database part and its memory part.
+   - Import the adaptive modules inside `evaluate_action`, so an import error fails closed.
    - Test in a subprocess that `river`, `numpy` and `scipy` are not in `sys.modules` after a hook decision.
      import-linter cannot tell a lazy import from a module-level one, so a test has to hold this line.
 2. **Wire the layer into both hook call sites** (`spine.py:113`, `claude_code.py:587`) in shadow mode. Record
-   the score and threshold.
-3. **Learning on genuine `PASS`,** plus `hook` in the control-plane tamper set. Time the database writes on the
+   the score and threshold. Any baseline read failure on the hook path, including the observation count and
+   the peer lookup, scores 1.0, tested with a locked and a corrupt database. Set one total adaptive deadline
+   (for example 2 s, then surprise is 1.0). Wrap the metadata surprise read so a missing key fails to 1.0.
+   Pass `budget_ok=True`.
+3. **Learning on genuine `PASS` at `PostToolUse`,** plus `hook` in the control-plane tamper set. Time the database writes on the
    hook path.
 4. **Turn enforcement on** after the shadow release. Update `docs/LIMITATIONS.md` and `docs/PARITY.md`.
 5. **Stage 2 only on evidence:** a lift bench for the memory-only signals, then the sidecar (Q2 to Q4).
