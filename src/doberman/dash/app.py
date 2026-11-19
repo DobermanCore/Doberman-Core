@@ -76,6 +76,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from doberman import __version__
 from doberman.branding import DASH_MARK_PNG_B64
 from doberman.config import load_mode
 from doberman.dash.stats import build_stats, reason_codes
@@ -90,6 +91,11 @@ from doberman.storage.log import exportable_session_id, read_decisions, read_dec
 _TOTP_TIERS = frozenset({"two_factor", "role_elevation"})
 
 _BEARER_PREFIX = "Bearer "
+#: The local companion contract major (docs/COMPANION-CONTRACT.md); a rename, removal or
+#: meaning change on a pinned surface bumps it, an addition does not.
+COMPANION_CONTRACT = 1
+#: Additive capability names served on ``/api/health``, so a consumer feature-detects.
+COMPANION_FEATURES = ("pending", "resolve", "session_id", "needs_totp")
 #: Rows sent immediately on `/api/feed` connect, oldest-first, before live polling starts.
 _FEED_BACKFILL_LIMIT = 50
 #: Default poll interval for new rows; overridable per `create_app` call (tests use a
@@ -3124,7 +3130,14 @@ def _make_health_route(token: str) -> Route:
     async def health(request: Request) -> Response:
         if not _token_matches(request, token):
             return _unauthorized()
-        return JSONResponse({"status": "ok"})
+        return JSONResponse(
+            {
+                "status": "ok",
+                "contract": COMPANION_CONTRACT,
+                "doberman": __version__,
+                "features": list(COMPANION_FEATURES),
+            }
+        )
 
     return Route("/api/health", health)
 
