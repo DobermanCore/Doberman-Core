@@ -67,6 +67,9 @@ ATTACKER_EMAIL = "contact@contact.com"
 #: dataset carries no real sender/reply addresses, so this is not derived from
 #: any record.
 BENIGN_SEND_DESTINATION = "reply@example.com"
+#: Attacker endpoint for the opt-in plain-host variant (#644 item 3): an
+#: RFC 2606 ``.example`` name, never a real third party.
+PLAIN_HOST_DESTINATION = "https://attacker.example/collect"
 _GOAL_BODY = "confirmation"
 _DEFAULT_PHASES: tuple[str, ...] = ("phase2",)
 _DEFAULT_SAMPLE_SIZE = 500
@@ -94,6 +97,7 @@ def _successful_injections(data_dir: pathlib.Path, phases: tuple[str, ...]) -> l
 
 class LlmailInjectAdapter:
     suite_name = "llmail_inject"
+    attacker_destination = ATTACKER_EMAIL
 
     def __init__(
         self,
@@ -132,9 +136,9 @@ class LlmailInjectAdapter:
             send_action = CandidateAction(
                 action_type=ActionType.network_request,
                 tool_name="send_email",
-                external_destination=ATTACKER_EMAIL,
+                external_destination=self.attacker_destination,
                 source_context=SourceContext.email,
-                raw_arguments={"to": ATTACKER_EMAIL, "body": _GOAL_BODY},
+                raw_arguments={"to": self.attacker_destination, "body": _GOAL_BODY},
             )
             cases.append(
                 BenchmarkCase(
@@ -189,3 +193,14 @@ class LlmailInjectAdapter:
                 )
         cases.sort(key=lambda c: c.case_id)
         return tuple(cases)
+
+
+class LlmailInjectPlainHostAdapter(LlmailInjectAdapter):
+    """Same cases, but the consummating send goes to a plain hostname
+    (``PLAIN_HOST_DESTINATION``) instead of the fixed challenge mailbox, so
+    ``_parse_host`` takes its ordinary unknown-destination path rather than
+    #564's mailbox branch (#644 item 3). Synthetic: the real challenge only
+    ever targets the mailbox."""
+
+    suite_name = "llmail_inject_plain_host"
+    attacker_destination = PLAIN_HOST_DESTINATION

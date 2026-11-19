@@ -371,7 +371,9 @@ incompatible, **stop and report** rather than inventing a mapping.
   consummating `send_email` to the challenge's fixed attacker address, `attacker_goal_index=1`). Benign:
   `emails_for_fp_tests.json` as read-only cases, plus a second, synthetic benign SEND case per email (a
   fixed, clearly-synthetic recipient) so FPR is also measured on an ordinary legitimate send.
-- **Implemented** in `suites/llmail_inject.py` (`LlmailInjectAdapter`), registered as `llmail_inject`.
+- **Implemented** in `suites/llmail_inject.py` (`LlmailInjectAdapter`), registered as `llmail_inject`;
+  `llmail_inject_plain_host` (`LlmailInjectPlainHostAdapter`) is the same suite sending to a synthetic
+  plain hostname instead of the fixed mailbox (#644).
   Reads `DOBERMAN_BENCH_LLMAIL_DIR`; vendors no data. Deterministic seeded sample (`sample_size`, default
   500, configurable). Published in both stateless and `--replay-session` modes — identical top-line
   ASR/FPR (`engine/rules/destinations.py::_parse_host` AUTHs a bare `user@host` destination unconditionally

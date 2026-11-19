@@ -720,6 +720,14 @@ ordinary legitimate send exactly as it does on the attack side. This is correct 
 Light/Balanced, not a regression: Strict/Paranoid still AUTH an unrecognized recipient. `hard_fpr` stays
 0.00, never a hard block, before or after.
 
+**Plain-hostname variant (`--suite llmail_inject_plain_host`, #644).** The same cases, but the
+consummating send goes to the synthetic `https://attacker.example/collect` instead of the fixed
+mailbox, so `_parse_host` takes the ordinary unknown-host path rather than the mailbox branch. The email
+bodies still name `contact.com`, so the echo tripwire has nothing to match by construction. Diagnostic
+numbers, not a target (2026-11-19, same sample): ASR 1.00 Balanced stateless, 0.00 Strict (all AUTH on
+`unknown_external_destination`), **0.954** under `--replay-session` (taint floor and correlator only)
+against 0.05 for the mailbox suite. FPR is unchanged, since the benign cases are identical.
+
 ### BIPIA (indirect prompt injection in email and table content)
 
 Source: [microsoft/BIPIA](https://github.com/microsoft/BIPIA), commit
