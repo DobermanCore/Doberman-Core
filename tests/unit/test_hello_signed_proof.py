@@ -118,8 +118,9 @@ def test_a_signature_with_a_different_hash_or_padding_fails():
     [
         b"",
         b"\x30\x59fake-spki-public-key",
-        KEY.public_key[:-1],
-        KEY.public_key + b"\x00",
+        # Fixed ids: KEY is random per process, so a bytes id would differ between xdist workers.
+        pytest.param(KEY.public_key[:-1], id="key-minus-last-byte"),
+        pytest.param(KEY.public_key + b"\x00", id="key-plus-zero-byte"),
         # an EC P-256 SubjectPublicKeyInfo header: not RSA
         bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200") + b"\x04" + bytes(64),
     ],
