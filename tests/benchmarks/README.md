@@ -57,6 +57,7 @@ tests/benchmarks/
 │   ├── redcode.py     # RedCode-Exec adapter (on-demand; env DOBERMAN_BENCH_REDCODE_DIR)
 │   ├── msb_poisoning.py  # MSB tool-response-poisoning adapter (on-demand; env DOBERMAN_BENCH_MSB_DIR)
 │   ├── llmail_inject.py  # LLMail-Inject adapter (on-demand; env DOBERMAN_BENCH_LLMAIL_DIR)
+│   ├── bipia.py       # BIPIA email + table adapters (on-demand; env DOBERMAN_BENCH_BIPIA_DIR)
 │   └── <your_suite>.py
 └── README.md      # this file
 ```
