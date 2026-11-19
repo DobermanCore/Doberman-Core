@@ -44,7 +44,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-xdist", "pytest-timeout", "pytest-split", "ruff>=0.15,<0.16", "import-linter", "textual", "hypothesis", "starlette", "uvicorn", "httpx"]
+# shortcut: pytest 9.2 ignores the nodeid xdist 3.8 rewrites, so `--dist loadgroup`
+# silently stops grouping (pytest-xdist#1386, fixed by #1388, unreleased); lift the
+# cap once an xdist release carries #1388.
+dev = ["pytest<9.2", "pytest-asyncio", "pytest-cov", "pytest-xdist", "pytest-timeout", "pytest-split", "ruff>=0.15,<0.16", "import-linter", "textual", "hypothesis", "starlette", "uvicorn", "httpx"]
 explain = ["anthropic"]
 judge = ["anthropic"]
 tui = ["textual"]
