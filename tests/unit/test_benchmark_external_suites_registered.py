@@ -9,6 +9,13 @@ from tests.benchmarks.suites import BUILTIN_ADAPTERS
 
 
 def test_external_suites_are_registered():
-    for name in ("redcode", "msb", "llmail_inject", "bipia_email", "bipia_table"):
+    for name in (
+        "redcode",
+        "msb",
+        "llmail_inject",
+        "llmail_inject_plain_host",
+        "bipia_email",
+        "bipia_table",
+    ):
         assert name in BUILTIN_ADAPTERS
         assert isinstance(BUILTIN_ADAPTERS[name](), SuiteAdapter)

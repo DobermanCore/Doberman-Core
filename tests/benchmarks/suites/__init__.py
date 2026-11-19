@@ -12,7 +12,7 @@ from .agentdojo import AgentDojoAdapter, AgentDynAdapter
 from .bipia import BipiaEmailAdapter, BipiaTableAdapter
 from .corpus import CorpusAdapter
 from .devsession import DevSessionAdapter
-from .llmail_inject import LlmailInjectAdapter
+from .llmail_inject import LlmailInjectAdapter, LlmailInjectPlainHostAdapter
 from .msb_poisoning import MsbPoisoningAdapter
 from .redcode import RedCodeAdapter
 from .synthetic import SyntheticAdapter
@@ -31,6 +31,7 @@ BUILTIN_ADAPTERS = {
     "redcode": RedCodeAdapter,
     "msb": MsbPoisoningAdapter,
     "llmail_inject": LlmailInjectAdapter,
+    "llmail_inject_plain_host": LlmailInjectPlainHostAdapter,
     "bipia_email": BipiaEmailAdapter,
     "bipia_table": BipiaTableAdapter,
 }
@@ -44,6 +45,7 @@ __all__ = [
     "CorpusAdapter",
     "DevSessionAdapter",
     "LlmailInjectAdapter",
+    "LlmailInjectPlainHostAdapter",
     "MsbPoisoningAdapter",
     "RedCodeAdapter",
     "SyntheticAdapter",

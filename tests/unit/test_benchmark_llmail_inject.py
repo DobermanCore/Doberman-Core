@@ -10,13 +10,15 @@ benign email strings) and never touch the real, multi-hundred-MB files.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import pathlib
 import random
 
 import pytest
 
-from doberman.models import ActionType, SourceContext, Verdict
+from doberman.engine.rules.destinations import _parse_host
+from doberman.models import ActionType, ReasonCode, SourceContext, Verdict
 from tests.benchmarks.adapter import SuiteAdapter
 from tests.benchmarks.mapping import to_eval_context, to_security_object
 from tests.benchmarks.profiles import build_pipeline
@@ -24,7 +26,9 @@ from tests.benchmarks.suites.llmail_inject import (
     ATTACKER_EMAIL,
     BENIGN_SEND_DESTINATION,
     DATA_DIR_ENV,
+    PLAIN_HOST_DESTINATION,
     LlmailInjectAdapter,
+    LlmailInjectPlainHostAdapter,
 )
 
 PAYLOAD_MARKER = "LLMAIL_PAYLOAD_MARKER_DO_NOT_LEAK"
@@ -125,6 +129,28 @@ def test_benign_send_variant_passes_in_balanced_mode_since_mailbox_fix(tmp_path)
 
     assert decision.final_verdict is Verdict.PASS
     assert decision.final_verdict is not Verdict.BLOCK
+
+
+def test_plain_host_variant_takes_the_ordinary_unknown_destination_path(tmp_path):
+    """#644 item 3: the opt-in variant sends to a plain hostname, not the fixed
+    mailbox, so `_parse_host` returns a non-mailbox host and Strict AUTHs it on
+    `unknown_external_destination` -- the ordinary path, not #564's mailbox branch."""
+    root = _write_dataset(tmp_path)
+    adapter = LlmailInjectPlainHostAdapter(data_dir=root, sample_size=10)
+    assert adapter.suite_name == "llmail_inject_plain_host"
+    attack = next(c for c in adapter.load() if c.label == "attack")
+    send = attack.actions[attack.attacker_goal_index]
+
+    assert send.external_destination == PLAIN_HOST_DESTINATION
+    assert send.raw_arguments["to"] == PLAIN_HOST_DESTINATION
+    assert _parse_host(send.external_destination) == ("attacker.example", False, False)
+
+    strict = dataclasses.replace(send, mode="strict")
+    decision = build_pipeline(load_plugins=False).decide(
+        to_security_object("probe:llmail-plain-host", strict), to_eval_context(strict)
+    )
+    assert decision.final_verdict is Verdict.AUTH
+    assert ReasonCode.unknown_external_destination in decision.reason_codes
 
 
 def _write_dataset_with_n_qualifying_attacks(tmp_path: pathlib.Path, n: int) -> pathlib.Path:
