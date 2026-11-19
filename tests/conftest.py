@@ -475,6 +475,9 @@ def pytest_runtest_teardown(item: pytest.Item) -> None:
     _apply_hst_size(*_HST_PRODUCTION)
 
 
+# tryfirst: xdist turns the xdist_group mark into the "@tk" nodeid suffix in its
+# own pytest_collection_modifyitems, which otherwise runs before this one adds it.
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Auto-mark every test that uses the GUI prompter tests' ``real_root``
     fixture ``real_display`` (item 12 of the round-4 GUI dialog critique) and

@@ -404,8 +404,14 @@ def test_a_resolve_in_the_last_poll_gap_is_still_honoured(tmp_path, monkeypatch)
     clock = _frozen_prompter_clock(monkeypatch)
 
     def _resolve_then_overrun(seconds):  # noqa: ARG001
-        rows = asyncio.run(approvals.list_pending(repo_root=root))
-        asyncio.run(approvals.resolve(rows[0]["id"], decision="approved", repo_root=root))
+        # The click happens at the row's own creation time: on a slow runner the row's real
+        # 30 s wall-clock TTL can run out before this line, emptying the list (Windows CI).
+        created = asyncio.run(approvals.get_pending(_only_row_id(root), repo_root=root))
+        clicked_at = datetime.fromisoformat(created["created_at"])
+        rows = asyncio.run(approvals.list_pending(repo_root=root, now=clicked_at))
+        asyncio.run(
+            approvals.resolve(rows[0]["id"], decision="approved", repo_root=root, now=clicked_at)
+        )
         clock["now"] += 31
 
     monkeypatch.setattr(dashboard_prompter, "_sleep", _resolve_then_overrun)

@@ -2300,7 +2300,9 @@ async def test_no_horizontal_scrollbar_at_80x24_with_more_rows_than_fit(tmp_path
         await _wait_loaded(pilot, app)
         table = app.query_one("#decisions")
         assert table.row_count == 45
-        assert table.show_vertical_scrollbar is True  # precondition: more rows than fit
+        # The scrollbar follows the rows a layout pass later, which a loaded runner can delay.
+        shown = await _wait_for(pilot, lambda: table.show_vertical_scrollbar, bool)
+        assert shown is True  # precondition: more rows than fit
         assert table.virtual_size.width <= table.scrollable_content_region.width
         assert table.show_horizontal_scrollbar is False
 

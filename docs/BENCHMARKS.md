@@ -428,7 +428,7 @@ Record the pinned `agentdojo` commit and the `before_after` table here._
 
 ## External suites (operator-supplied, diagnostics, never target metrics)
 
-Three more reputable external suites are wired the same way as AgentDojo: an adapter under
+Four more reputable external suites are wired the same way as AgentDojo: an adapter under
 `tests/benchmarks/suites/`, an operator-supplied env-var directory, zero vendored data. Like AgentDojo,
 these are diagnostics, not target metrics (`tests/benchmarks/README.md`): read every ASR next to its
 `asr_strict`. Also read every in-scope number next to its documented out-of-scope/lure-only gaps.
@@ -436,12 +436,12 @@ these are diagnostics, not target metrics (`tests/benchmarks/README.md`): read e
 catch; "out-of-scope" means the attack tests something Doberman never claims to catch (a code-quality bug
 or a fairness demonstration, say), so folding it into the headline ASR would understate the real coverage.
 The RedCode section below spells out exactly which scenarios fall on which side of that line.
-`decide()` is called statelessly per action for all three suites: none of the proxy's or host-hook spine's
+`decide()` is called statelessly per action for all four suites: none of the proxy's or host-hook spine's
 post-decide floors (the taint floor, the untrusted-value echo tripwire) run inside a single `decide()`
 call, so unless a table below is explicitly labeled `--replay-session`, it measures the real, static
 objective rules on each action alone, not the taint floors. Numbers below are from a real run against the
-operator-supplied checkouts (2026-09-02/03, doberman-core built-ins only, `PYTHONPATH=src`, one suite at a
-time; raw report JSON in `test-logs/ext-bench-*.json`, gitignored).
+operator-supplied checkouts (2026-09-02/03, BIPIA 2026-11-19; doberman-core built-ins only,
+`PYTHONPATH=src`, one suite at a time; raw report JSON in `test-logs/ext-bench-*.json`, gitignored).
 
 **Harness parity with the proxy.** `tests/benchmarks/mapping.py::to_security_object` used to build every
 benchmarked `SecurityObject` from the adapter's own structural fields only, borrowing just the proxy's
@@ -719,6 +719,62 @@ for the same `_parse_host` bug the attack side did (FPR 0.50); the fix removes t
 ordinary legitimate send exactly as it does on the attack side. This is correct behavior for
 Light/Balanced, not a regression: Strict/Paranoid still AUTH an unrecognized recipient. `hard_fpr` stays
 0.00, never a hard block, before or after.
+
+### BIPIA (indirect prompt injection in email and table content)
+
+Source: [microsoft/BIPIA](https://github.com/microsoft/BIPIA), commit
+`a004b69ec0dd446e0afd461d98cb5e96e120a5d0`. Code is MIT; the `benchmark/` data keeps each source
+dataset's own licence (the table split comes from WikiTableQuestions, CC BY-SA 4.0; see BIPIA's
+`LICENSE`). Nothing is vendored: the adapter reads `benchmark/{email,table}/test.jsonl` and
+`benchmark/text_attack_test.json` from the operator's checkout and runs none of BIPIA's code.
+
+```bash
+DOBERMAN_BENCH_BIPIA_DIR=<path>/BIPIA python -m tests.benchmarks.run --suite bipia_email --profile before_after
+DOBERMAN_BENCH_BIPIA_DIR=<path>/BIPIA python -m tests.benchmarks.run --suite bipia_table --profile before_after
+```
+
+**The two splits are two suites on purpose.** The runner aggregates per suite, so `bipia_email` and
+`bipia_table` report separately and the email-versus-table gap other studies found in injection
+classifiers stays visible instead of averaged away.
+
+**Ground truth and shape.** Samples are built the way BIPIA's own builder builds them: every test
+context x every one of the 75 text attacks (15 categories x 5) x an insertion position, the attack joined
+to the context by a newline. Only the `start` and `end` positions are reproduced; BIPIA's `middle` needs
+nltk sentence splitting. Each attacked sample is a two-action case: the untrusted read (`read_email`,
+`source_context=email`; or `read_table`, `source_context=tool_output`), then the reply the injection
+tries to shape, sent to a fixed, synthetic `reply@example.com` and scored as the attacker goal. BIPIA's
+attacks ask the model to change its *answer* (add a scam line, encode it, translate it) and ship no
+compliant answer, so the reply body is the attack string itself: the most a content or echo rule could
+ever match, which makes any catch here an upper bound. Each clean context is also one benign case (the
+same read, then a reply carrying the dataset's `ideal` answer).
+
+**In scope vs out of scope.** In scope: whether Doberman flags the poisoned read or the shaped reply.
+Out of scope: whether a model obeys the injection (BIPIA's own metric), which needs an LLM and is never
+run here. Doberman has no injection-content classifier in core (that is #669 / #824), so the stateless
+numbers below are a baseline that detector work would move, not a gap in the existing rules.
+
+| Metric (after, built-ins) | Email, stateless | Table, stateless | Email, replay | Table, replay |
+|---|---|---|---|---|
+| n (attack / benign actions) | 7,500 / 100 | 15,000 / 200 | same | same |
+| ASR | 1.00 | 1.00 | 0.89 | 0.95 |
+| asr_strict | 1.00 | 1.00 | 1.00 | 1.00 |
+| FPR | 0.01 | 0.06 | 0.04 | 0.06 |
+| hard_fpr | 0.00 | 0.00 | 0.00 | 0.00 |
+
+Stateless, nothing in the static objective rules stops a shaped reply: every attack passes on both
+splits. The benign friction is AUTH only, never a block: one email (`possible_high_entropy_secret`) and
+12 table actions (`anomalous_token_pattern`).
+
+Under replay the post-decide floors catch some attacks, every one at AUTH (`asr_strict` stays 1.00).
+`untrusted_value_echo` fires on the same share of both splits (400 email, 800 table, 5.3% each): the
+attack strings that name a host or URL, which the reply then repeats. That echo is partly the adapter's
+doing, since the reply body is the attack string verbatim, so read it as an upper bound. Email also
+gets the taint floor (`multi_step_exfil`, 453) and the correlator (`correlated_trifecta`, 151), which
+table never does; per `tests/benchmarks/session_replay.py` both need secret-shaped content earlier in
+the session, which some email contexts evidently carry and no table does. Replay adds benign friction on email (FPR 0.01 to 0.04), all AUTH.
+The replay columns come from `run_suite(..., session_replay=True)` on the built-ins pipeline only (the
+`before` arm is ASR 1.00 by construction), not the CLI's `--profile before_after --replay-session`,
+which runs the same per-case replay twice. These numbers are diagnostic, never a target.
 
 ### Follow-ups (not built in this task)
 
