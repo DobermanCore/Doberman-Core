@@ -145,6 +145,20 @@ def test_benign_shell_is_explicitly_allowed(tmp_path):
     assert code == cursor.ALLOW_EXIT_CODE
 
 
+@pytest.mark.guarantee("gitignored-delete-gate", host="cursor")
+def test_unrecoverable_gitignored_delete_requires_auth(tmp_path):
+    """AN-1 on Cursor: deleting an unrecoverable gitignored database is gated."""
+    doc, code = _run(_shell(tmp_path, "rm data/app.db"))
+
+    assert doc["permission"] == "deny"
+    assert code == 2
+    reason = doc["user_message"]
+    assert "[AUTH]" in reason
+    assert "destructive_command" in reason
+    assert "data/app.db" not in reason
+    assert "app.db" not in reason
+
+
 @pytest.mark.guarantee("destructive-command-gate", host="cursor")
 def test_block_leaves_the_fake_tool_unrun(tmp_path):
     fake = _FakeCursor()
