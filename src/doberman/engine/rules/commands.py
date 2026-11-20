@@ -106,6 +106,9 @@ _COMMAND_ACTION_TYPES = frozenset(
 #: Branch names whose history is protected — a force-push here is catastrophic.
 DEFAULT_PROTECTED_BRANCHES: tuple[str, ...] = ("main", "master", "release", "develop")
 
+#: Git symbolic references to the issue (#762).
+_GIT_CURRENT_BRANCH_REFS = frozenset({"head", "@"})
+
 
 def _normalize_branch_name(name: str) -> str:
     """Normalize a protected-branch name to match how the actual pushed ref
@@ -1691,11 +1694,12 @@ class _GitPushInfo:
 
 
 def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
-    """Shared parser for ``git push`` arguments (#726).
+    """Shared parser for ``git push`` (#726) and ``git send-pack`` (#762) arguments.
 
     Returns a :class:`_GitPushInfo` with normalised flag/positional data, or
-    ``None`` when ``tokens`` is not a ``git push`` invocation. All three
-    issue-#726 parsing gaps are fixed here:
+    ``None`` when ``tokens`` is not a ``git push`` or ``git send-pack`` invocation.
+    All issue-#726 parsing gaps are handled here, and #762 extends support to
+    ``git send-pack`` so push security policies cover both verbs identically:
 
     1. **Combined short flags** (``-qd``, ``-fu``, ``-ud``, ...): iterated
        character-by-character so ``-d``, ``-f``, ``-o``, etc. inside a cluster
@@ -1711,16 +1715,17 @@ def _parse_git_push(tokens: list[str]) -> _GitPushInfo | None:
        never consumes the next token.
 
     Positional extraction follows git's own convention: the first positional
-    is the remote; everything after is a refspec. ``+``-prefixed refspecs
-    flag ``has_force`` for that ref (handled by the semantic callers).
+    is the remote (or destination URL for ``send-pack``); everything after is a
+    refspec. ``+``-prefixed refspecs flag ``has_force`` for that ref (handled by
+    the semantic callers).
 
     The ``assignments`` list holds the ``-c``/``--config-env`` values
     collected by :func:`_git_leading_globals`, forwarded through so
-    :func:`_git_push_risky_config_or_bulk` can inspect ``remote.*.push``
-    overrides without re-calling ``_git_leading_globals``.
+    :func:`_git_push_risky_config_or_bulk` can inspect ``remote.*.push`` and
+    ``remote.*.mirror`` overrides without re-calling ``_git_leading_globals``.
     """
     argv, assignments = _git_leading_globals(tokens)
-    if not argv or argv[0] != "push":
+    if not argv or argv[0] not in {"push", "send-pack"}:
         return None
 
     info = _GitPushInfo()
@@ -1908,6 +1913,11 @@ def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) ->
     BLOCK verdicts from the old parser are never lost.  The two checks run
     independently — a flag that only the new parser recognises never activates
     legacy ref candidates.
+
+    #762: resolves current-branch symbolic refs (``HEAD`` and ``@``) to fail
+    closed (BLOCK) on force-pushes since their remote destination could resolve
+    to a protected branch.  Also supports ``git send-pack`` via
+    :func:`_parse_git_push`.
     """
     # Convert to tuple so single-use iterables (e.g. generators) are not
     # exhausted by the normalized check before the legacy fallback runs.
@@ -1920,14 +1930,14 @@ def _git_force_push_to_protected(tokens: list[str], protected: Iterable[str]) ->
         for token in info.explicit_refs:
             ref = token.lstrip("+").split(":")[-1].lower()
             ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
-            if ref in protected_set:
+            if ref in protected_set or ref in _GIT_CURRENT_BRANCH_REFS:
                 return True
         # #742: when a value option consumed a token, the first positional may
         # be a branch that was displaced into the remote slot.  Check it too.
         if info.ambiguous_first is not None:
             ref = info.ambiguous_first.lstrip("+").split(":")[-1].lower()
             ref = re.sub(r"^(?:refs/(?:heads|tags)/|heads/)", "", ref)
-            if ref in protected_set:
+            if ref in protected_set or ref in _GIT_CURRENT_BRANCH_REFS:
                 return True
         # A bare ``git push --force`` (no explicit ref) defaults to the current
         # branch — unknown here, so treat it as protected (fail safe).
@@ -2000,15 +2010,18 @@ def _git_push_deletes_protected_branch(tokens: list[str], protected: Iterable[st
 
 
 def _git_push_risky_config_or_bulk(tokens: list[str]) -> GuardrailResult | None:
-    """AUTH for ``git push`` shapes whose affected refs cannot be determined
-    statically: ``--mirror`` (pushes every local ref, deleting remote-only
-    ones), ``--prune`` (deletes remote refs that have no local counterpart),
-    or a ``-c remote.*.push=...`` config override that rewrites the push
-    refspec silently.
+    """AUTH for ``git push`` / ``git send-pack`` shapes whose affected refs cannot
+    be determined statically: ``--mirror`` (pushes every local ref, deleting
+    remote-only ones), ``--prune`` (deletes remote refs that have no local
+    counterpart), glob refspecs (e.g. ``refs/heads/*:refs/heads/*``) (#762),
+    or config overrides (``-c remote.*.push=...`` / ``-c remote.*.mirror=...``)
+    (#762) that rewrite push behaviour silently.
 
     #726: these fail-open gaps were invisible before because neither
     ``_git_force_push_to_protected`` nor ``_git_push_deletes_protected_branch``
     had any code path for them.
+    #762: added detection for glob refspecs, remote.*.mirror config overrides,
+    and git send-pack.
     """
     info = _parse_git_push(tokens)
     if info is None:
@@ -2025,18 +2038,31 @@ def _git_push_risky_config_or_bulk(tokens: list[str]) -> GuardrailResult | None:
             "git push --prune can delete remote refs that aren't visible on the "
             "command line; authentication required.",
         )
+    ref_candidates = list(info.explicit_refs)
+    if info.ambiguous_first is not None:
+        ref_candidates.append(info.ambiguous_first)
+    if any("*" in token for token in ref_candidates):
+        return _auth(
+            ReasonCode.destructive_command,
+            "Glob refspecs can overwrite or delete remote refs that aren't "
+            "visible on the command line; authentication required.",
+        )
     for assignment in info.assignments:
-        key, sep, _value = assignment.partition("=")
-        if (
-            sep
-            and key.strip().lower().startswith("remote.")
-            and key.strip().lower().endswith(".push")
-        ):
+        key, sep, value = assignment.partition("=")
+        k = key.strip().lower()
+        if sep and k.startswith("remote.") and k.endswith(".push"):
             return _auth(
                 ReasonCode.destructive_command,
                 "git push with a -c remote.*.push override can affect refs that "
                 "aren't visible on the command line; authentication required.",
             )
+        if k.startswith("remote.") and k.endswith(".mirror"):
+            if not sep or value.strip().lower() not in _GIT_FALSY_CONFIG_VALUES:
+                return _auth(
+                    ReasonCode.destructive_command,
+                    "git push with a -c remote.*.mirror override can overwrite or delete remote refs that "
+                    "aren't visible on the command line; authentication required.",
+                )
     return None
 
 
@@ -3331,6 +3357,10 @@ class DestructiveCommandRule:
             if _is_environment_dump_segment(raw_segment):
                 worst = _max_result(worst, _environment_dump_auth())
                 continue
+            has_git_config_params = any(
+                _ENV_ASSIGNMENT.match(t) and t.startswith("GIT_CONFIG_PARAMETERS=")
+                for t in raw_segment
+            )
             consumed_value_opt: list[bool] = []
             tokens = argv_from_tokens(raw_segment, consumed_value_option=consumed_value_opt)
             if not tokens:
@@ -3406,6 +3436,24 @@ class DestructiveCommandRule:
                     )
                     pending.extend(literal_segments)
                     saw_unparseable = saw_unparseable or literal_ambiguous
+
+            # #762: GIT_CONFIG_PARAMETERS environment assignment can override git
+            # push/send-pack configuration (e.g. remote.*.push or remote.*.mirror).
+            # We raise to AUTH without short-circuiting so a BLOCK (such as
+            # force-pushing to a protected branch) still takes precedence.
+            if (
+                has_git_config_params
+                and _wrapper_name(tokens[0]) == "git"
+                and _parse_git_push([_wrapper_name(tokens[0]), *tokens[1:]]) is not None
+            ):
+                worst = _max_result(
+                    worst,
+                    _auth(
+                        ReasonCode.destructive_command,
+                        "GIT_CONFIG_PARAMETERS can override git push configuration in ways "
+                        "not visible on the command line; authentication required.",
+                    ),
+                )
 
             verdict = _segment_verdict(tokens, protected, bulk_threshold, root)
             if verdict is not None:
