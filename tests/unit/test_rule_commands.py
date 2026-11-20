@@ -2668,3 +2668,298 @@ def test_generator_protected_branches_not_exhausted_by_normalized_check():
     tokens_del = ["git", "push", "--delete", "origin", "--push-option", "main", "feature"]
     gen_del = (b for b in ["main"])
     assert commands_module._git_push_deletes_protected_branch(tokens_del, gen_del) is True
+
+
+# ===========================================================================
+# Issue #762: Close Remaining Protected-Branch Git Push Bypasses
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push -f origin HEAD",
+        "git push --force origin @",
+        "git push origin +HEAD",
+        "git push origin +@",
+        "git send-pack --force https://example.com/repo.git main",
+        "git send-pack https://example.com/repo.git +main",
+        "git send-pack https://example.com/repo.git :main",
+    ],
+)
+def test_git_push_bypass_762_blocks(command):
+    """Bypass spellings that must now BLOCK: current-branch symbolic refs
+    (HEAD, @) under force push, and git send-pack targeting protected branches."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push origin refs/heads/*:refs/heads/*",
+        "git -c remote.origin.mirror=true push origin",
+        "git --config-env=remote.origin.mirror=MIRROR push origin",
+        "GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror=true'\" git push origin",
+        "git send-pack --mirror https://example.com/repo.git",
+    ],
+)
+def test_git_push_indeterminate_refs_762_auths(command):
+    """Indeterminate-ref spellings that must now AUTH: glob refspecs,
+    remote.*.mirror config overrides, and GIT_CONFIG_PARAMETERS prefix."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_explanation"),
+    [
+        (
+            "git push origin refs/heads/*:refs/heads/*",
+            "Glob refspecs can overwrite or delete remote refs that aren't "
+            "visible on the command line; authentication required.",
+        ),
+        (
+            "git -c remote.origin.mirror=true push origin",
+            "git push with a -c remote.*.mirror override can overwrite or delete "
+            "remote refs that aren't visible on the command line; authentication required.",
+        ),
+        (
+            "git --config-env=remote.origin.mirror=MIRROR push origin",
+            "git push with a -c remote.*.mirror override can overwrite or delete "
+            "remote refs that aren't visible on the command line; authentication required.",
+        ),
+        (
+            "GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror=true'\" git push origin",
+            "GIT_CONFIG_PARAMETERS can override git push configuration in ways "
+            "not visible on the command line; authentication required.",
+        ),
+    ],
+)
+def test_indeterminate_push_shapes_762_explanations(command, expected_explanation):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+    assert result.explanation == expected_explanation
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror=true'\" git push -f origin main",
+        "git -c remote.origin.mirror=true push -f origin main",
+        "git push -f origin refs/heads/*:refs/heads/main",
+    ],
+)
+def test_git_push_precedence_and_raise_only_regression_762(command):
+    """Commands with risky config or glob refspecs that target a protected branch
+    with force must BLOCK, never downgrading to AUTH."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push origin feature",
+        "git push -u origin main",
+        "git push -f origin HEAD:feature",
+        "git send-pack https://example.com/repo.git feature",
+        "GIT_CONFIG_PARAMETERS=\"'color.ui=auto'\" git status",
+    ],
+)
+def test_git_push_benign_operations_762_passes(command):
+    """Benign operations that must still PASS without false positives."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+def test_git_push_helpers_762():
+    """Direct helper coverage for Issue #762 functions."""
+    tokens_head = ["git", "push", "-f", "origin", "HEAD"]
+    assert commands_module._git_force_push_to_protected(tokens_head, ["main"]) is True
+
+    tokens_at = ["git", "push", "-f", "origin", "@"]
+    assert commands_module._git_force_push_to_protected(tokens_at, ["main"]) is True
+
+    tokens_head_feature = ["git", "push", "-f", "origin", "HEAD:feature"]
+    assert commands_module._git_force_push_to_protected(tokens_head_feature, ["main"]) is False
+
+    tokens_send_pack_force = [
+        "git",
+        "send-pack",
+        "--force",
+        "https://example.com/repo.git",
+        "main",
+    ]
+    assert commands_module._git_force_push_to_protected(tokens_send_pack_force, ["main"]) is True
+
+    tokens_send_pack_del = [
+        "git",
+        "send-pack",
+        "https://example.com/repo.git",
+        ":main",
+    ]
+    assert (
+        commands_module._git_push_deletes_protected_branch(tokens_send_pack_del, ["main"]) is True
+    )
+
+    tokens_send_pack_pass = [
+        "git",
+        "send-pack",
+        "https://example.com/repo.git",
+        "feature",
+    ]
+    assert commands_module._git_force_push_to_protected(tokens_send_pack_pass, ["main"]) is False
+    assert (
+        commands_module._git_push_deletes_protected_branch(tokens_send_pack_pass, ["main"]) is False
+    )
+
+
+# ===========================================================================
+# Issue #762: Close Remaining Protected-Branch Git Push Bypasses
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push -f origin HEAD",
+        "git push --force origin @",
+        "git push origin +HEAD",
+        "git push origin +@",
+        "git send-pack --force https://example.com/repo.git main",
+        "git send-pack https://example.com/repo.git +main",
+        "git send-pack https://example.com/repo.git :main",
+    ],
+)
+def test_git_push_bypass_762_blocks(command):
+    """Bypass spellings that must now BLOCK: current-branch symbolic refs
+    (HEAD, @) under force push, and git send-pack targeting protected branches."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push origin refs/heads/*:refs/heads/*",
+        "git -c remote.origin.mirror=true push origin",
+        "git --config-env=remote.origin.mirror=MIRROR push origin",
+        "GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror=true'\" git push origin",
+        "git send-pack --mirror https://example.com/repo.git",
+    ],
+)
+def test_git_push_indeterminate_refs_762_auths(command):
+    """Indeterminate-ref spellings that must now AUTH: glob refspecs,
+    remote.*.mirror config overrides, and GIT_CONFIG_PARAMETERS prefix."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_explanation"),
+    [
+        (
+            "git push origin refs/heads/*:refs/heads/*",
+            "Glob refspecs can overwrite or delete remote refs that aren't "
+            "visible on the command line; authentication required.",
+        ),
+        (
+            "git -c remote.origin.mirror=true push origin",
+            "git push with a -c remote.*.mirror override can overwrite or delete "
+            "remote refs that aren't visible on the command line; authentication required.",
+        ),
+        (
+            "git --config-env=remote.origin.mirror=MIRROR push origin",
+            "git push with a -c remote.*.mirror override can overwrite or delete "
+            "remote refs that aren't visible on the command line; authentication required.",
+        ),
+        (
+            "GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror=true'\" git push origin",
+            "GIT_CONFIG_PARAMETERS can override git push configuration in ways "
+            "not visible on the command line; authentication required.",
+        ),
+    ],
+)
+def test_indeterminate_push_shapes_762_explanations(command, expected_explanation):
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.AUTH
+    assert result.reason_codes == [ReasonCode.destructive_command]
+    assert result.explanation == expected_explanation
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror=true'\" git push -f origin main",
+        "git -c remote.origin.mirror=true push -f origin main",
+        "git push -f origin refs/heads/*:refs/heads/main",
+    ],
+)
+def test_git_push_precedence_and_raise_only_regression_762(command):
+    """Commands with risky config or glob refspecs that target a protected branch
+    with force must BLOCK, never downgrading to AUTH."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.BLOCK
+    assert result.reason_codes == [ReasonCode.destructive_command]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push origin feature",
+        "git push -u origin main",
+        "git push -f origin HEAD:feature",
+        "git send-pack https://example.com/repo.git feature",
+        "GIT_CONFIG_PARAMETERS=\"'color.ui=auto'\" git status",
+    ],
+)
+def test_git_push_benign_operations_762_passes(command):
+    """Benign operations that must still PASS without false positives."""
+    result = _cmd(command, action_type=ActionType.git_op)
+    assert result.verdict is Verdict.PASS
+
+
+def test_git_push_helpers_762():
+    """Direct helper coverage for Issue #762 functions."""
+    tokens_head = ["git", "push", "-f", "origin", "HEAD"]
+    assert commands_module._git_force_push_to_protected(tokens_head, ["main"]) is True
+
+    tokens_at = ["git", "push", "-f", "origin", "@"]
+    assert commands_module._git_force_push_to_protected(tokens_at, ["main"]) is True
+
+    tokens_head_feature = ["git", "push", "-f", "origin", "HEAD:feature"]
+    assert commands_module._git_force_push_to_protected(tokens_head_feature, ["main"]) is False
+
+    tokens_send_pack_force = [
+        "git",
+        "send-pack",
+        "--force",
+        "https://example.com/repo.git",
+        "main",
+    ]
+    assert commands_module._git_force_push_to_protected(tokens_send_pack_force, ["main"]) is True
+
+    tokens_send_pack_del = [
+        "git",
+        "send-pack",
+        "https://example.com/repo.git",
+        ":main",
+    ]
+    assert commands_module._git_push_deletes_protected_branch(tokens_send_pack_del, ["main"]) is True
+
+    tokens_send_pack_pass = [
+        "git",
+        "send-pack",
+        "https://example.com/repo.git",
+        "feature",
+    ]
+    assert commands_module._git_force_push_to_protected(tokens_send_pack_pass, ["main"]) is False
+    assert commands_module._git_push_deletes_protected_branch(tokens_send_pack_pass, ["main"]) is False
+
