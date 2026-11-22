@@ -235,6 +235,32 @@ def load_policy(repo_root: str = ".") -> PolicyDoc | None:
         return None
 
 
+class PolicyFileUnreadableError(ValueError):
+    """``.doberman/policies.yaml`` exists but does not read as a policy (#759).
+
+    Raised by :func:`ensure_policy_saveable` (and so by :func:`save_policy`)
+    rather than overwriting the file. Callers build
+    the document they save from ``load_policy(...) or recommend_policy()``, so a
+    save over a corrupt file would replace its fail-closed reading (approval
+    memory off) with the looser defaults, with no gate and no ledger row.
+    """
+
+
+def ensure_policy_saveable(repo_root: str = ".") -> None:
+    """Raise :class:`PolicyFileUnreadableError` if a save would overwrite a corrupt file.
+
+    :func:`save_policy` calls this itself. Commands that gate their change also
+    call it up front, so they refuse before prompting for a possession factor or
+    writing a ledger row for a change that could never be saved.
+    """
+    path = _policy_file_path(repo_root)
+    if path.exists() and load_policy(repo_root) is None:
+        raise PolicyFileUnreadableError(
+            f"refusing to overwrite {path}: it could not be read as a Doberman policy; "
+            "fix the file by hand, then retry"
+        )
+
+
 def save_policy(doc: PolicyDoc, repo_root: str = ".", *, ledger_ts: str | None = None) -> None:
     """Persist ``doc`` to ``.doberman/policies.yaml`` (creating the dir).
 
@@ -243,7 +269,11 @@ def save_policy(doc: PolicyDoc, repo_root: str = ".", *, ledger_ts: str | None =
     catalogue (``.doberman/policies.db``) as the version now in force, linked to
     ``ledger_ts`` — the ``policy_changes`` row that authorised it — when the
     caller has one.
+
+    Raises :class:`PolicyFileUnreadableError` and leaves the file untouched when a
+    policy file exists but fails to parse (#759).
     """
+    ensure_policy_saveable(repo_root)
     path = _policy_file_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump(doc.to_mapping(), sort_keys=False)
