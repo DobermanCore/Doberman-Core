@@ -2023,7 +2023,13 @@ def _resolve_plugin_group(group: str | None) -> str | None:
 
 
 @plugins_app.command("list")
-def plugins_list() -> None:
+def plugins_list(
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit {enabled, installed: [{group, name, state}]} as one JSON document.",
+    ),
+) -> None:
     """List enabled plugins, and every installed entry point across all seams.
 
     Installed entry points are discovered WITHOUT loading them (names only) —
@@ -2033,21 +2039,32 @@ def plugins_list() -> None:
     from doberman.engine.registry import ALL_GROUPS, _iter_entry_points
 
     enabled = plugin_config.enabled_plugins()
-    typer.echo("Enabled (opt-in by name): " + (", ".join(enabled) if enabled else "(none)"))
-    for name in plugin_config.legacy_entries(enabled):
-        typer.echo(
-            f"  note: {name!r} has no group, so it is trusted under every group; "
-            f"`doberman plugins enable {name}` narrows it to the group it is installed under"
-        )
-    typer.echo("\nInstalled entry points (not loaded merely to list them):")
-    found = False
+    installed: list[dict[str, str]] = []
     for group in ALL_GROUPS:
         for entry_point in _iter_entry_points(group):
-            found = True
             name = getattr(entry_point, "name", "?")
-            state = "ENABLED" if plugin_config.is_allowed(group, name, enabled) else "disabled"
-            typer.echo(f"  {group:34s} {name:24s} {state}")
-    if not found:
+            state = "enabled" if plugin_config.is_allowed(group, name, enabled) else "disabled"
+            installed.append({"group": group, "name": name, "state": state})
+    notes = [
+        f"note: {name!r} has no group, so it is trusted under every group; "
+        f"`doberman plugins enable {name}` narrows it to the group it is installed under"
+        for name in plugin_config.legacy_entries(enabled)
+    ]
+    if as_json:
+        for note in notes:  # stdout stays pure JSON; the human aside goes to stderr
+            typer.echo(note, err=True)
+        document = {"enabled": enabled, "installed": installed}
+        typer.echo(json.dumps(document, sort_keys=True, separators=(",", ":")))
+        return
+
+    typer.echo("Enabled (opt-in by name): " + (", ".join(enabled) if enabled else "(none)"))
+    for note in notes:
+        typer.echo(f"  {note}")
+    typer.echo("\nInstalled entry points (not loaded merely to list them):")
+    for row in installed:
+        state = "ENABLED" if row["state"] == "enabled" else "disabled"
+        typer.echo(f"  {row['group']:34s} {row['name']:24s} {state}")
+    if not installed:
         typer.echo("  (none installed)")
 
 
