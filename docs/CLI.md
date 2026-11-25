@@ -36,7 +36,7 @@ Day-to-day posture, status, and review commands.
 | `doberman approvals status` | Show whether exact-action approval memory is enabled, its TTL, and the live-entry count. Never prints fingerprints. | `--path`/`-p` |
 | `doberman approvals clear` | Clear every approval-memory entry for this repo. This is an ungated strengthening. | `--path`/`-p` |
 | `doberman approvals ttl SECONDS` | Set approval-memory TTL in `0..900`; `0` disables it. Raising is possession-factor gated; lowering is ungated. | `--path`/`-p` |
-| `doberman plugins list` | Show the enabled plugins (`<group>:<name>`), then every installed entry point across all plugin seams with its enabled/disabled state. Flags an entry written without a group, which is trusted under every group. Lists names only and never loads a plugin to show it. | none |
+| `doberman plugins list` | Show the enabled plugins (`<group>:<name>`), then every installed entry point across all plugin seams with its enabled/disabled state. Flags an entry written without a group, which is trusted under every group. Lists names only and never loads a plugin to show it. | `--json` |
 | `doberman plugins enable NAME` | Opt a plugin in by entry-point name, for one entry-point group: the allowlist records `<group>:<name>`, so a same-named plugin in another group (a detector, an audit sink, ...) is not trusted with it. The group is taken from the installed entry point; pass `--group` when the name is installed under several groups or not installed yet. Being installed is never enough for a plugin to run in-process. | `--group` (e.g. `rules` or `doberman.rules`) |
 | `doberman plugins disable NAME` | Stop trusting a plugin by name; no seam imports it again. Disabling a name that was never enabled is a no-op. | `--group` (only that group) |
 | `doberman setup` | First-run wizard: pick which hosts to guard and a security posture, then wire each host and ask for telemetry consent (its default mirrors the current on-disk state, so a prior opt-out isn't silently reversed by a bare Enter). Every menu prompt (hosts, mode, weight tuning) and every yes/no confirm (telemetry, global scope, weight tuning, the closing demo offer) accepts `q`/`quit` to abort cleanly, except the closing demo offer, where `q` only declines the demo since setup has already succeeded by then. Exits non-zero (`!! Setup incomplete !!`) if the closing doctor pass finds a critical. A host-kind-free run (mcp/openclaw only) prints `!! Setup pending !!`, and a MIXED run (some hooks-kind host wired, some still manual) prints `!! Setup partly pending !!`; both exit `3`. A refused `--mode <lower>` request still exits `0`: the closing header names the refusal (e.g. `Setup complete (mode kept: balanced; light refused)`). Exit `0` means the run completed, not that the requested mode was applied. | `--yes`/`-y`, `--mode`/`-m`, `--global`/`-g`, `--host` (repeatable; also accepts `all`), `--path`/`-p`, `--dry-run`, `--no-telemetry` |
@@ -106,7 +106,7 @@ Human-readable diagnostics use one severity vocabulary: `error:` means the comma
 
 ## Machine-readable output
 
-Four flags cover every scriptable surface: `--json` (`status`, `scan`, `doctor`, `policy-history`, `tune`, `memory`) for one JSON document, `--jsonl` (`log`) for one redacted object per line, `--quiet`/`-q` (`scan`, `demo`) to suppress the human output while keeping the exit code (`demo` keeps its summary line/table, so a mismatch still fails loudly), and `--path`/`-p` (most commands) for the repository root, default `.`. When both `--json` and `--quiet` are passed to `scan`, `--json` wins.
+Four flags cover every scriptable surface: `--json` (`status`, `scan`, `doctor`, `policy-history`, `tune`, `memory`, `plugins list`) for one JSON document, `--jsonl` (`log`) for one redacted object per line, `--quiet`/`-q` (`scan`, `demo`) to suppress the human output while keeping the exit code (`demo` keeps its summary line/table, so a mismatch still fails loudly), and `--path`/`-p` (most commands) for the repository root, default `.`. When both `--json` and `--quiet` are passed to `scan`, `--json` wins.
 
 ### Flag naming
 
@@ -179,6 +179,10 @@ A JSON array of policy-change rows in newest-first order: each element carries t
 ### `doberman policy-versions --json` schema
 
 A JSON array, newest first, of `{version, first_seen, engine, schema, in_force_since, origin}`. Snapshot content is never in the listing; `--show <id>` prints `{version, snapshot}` for one version. `--verify --json` prints `{status, versions, mismatched, current, recorded}`.
+
+### `doberman plugins list --json` schema
+
+`{enabled, installed}`: `enabled` is the allowlist entries in file order (`<group>:<name>`, or a bare legacy name); `installed` is a list of `{group, name, state}` with `state` either `enabled` or `disabled`. Entry points are listed by name and never loaded. The no-group note goes to stderr.
 
 ### `doberman tune --json`
 
