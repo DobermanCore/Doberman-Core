@@ -1365,6 +1365,30 @@ def test_delete_class_operands_del_verb():
     assert delete_class_operands_and_dynamic("del /s /q build")[0] == ["build"]
 
 
+@pytest.mark.parametrize(
+    ("command", "operands", "recursive", "force"),
+    [
+        # PowerShell abbreviates parameters by prefix: -r/-Rec are -Recurse, -fo is -Force.
+        ("Remove-Item -r -fo build", ["build"], True, True),
+        ("Remove-Item -Rec build", ["build"], True, False),
+        # -Path and -Confirm are flags (not operands) and are neither Recurse nor Force.
+        ("Remove-Item -Path build -Recurse", ["build"], True, False),
+        ("Remove-Item -Confirm build", ["build"], False, False),
+        # cmd.exe: /s is recursive, /q and /f are force.
+        ("rd /s /q build", ["build"], True, True),
+        ("del /f a.txt", ["a.txt"], False, True),
+    ],
+)
+def test_windows_delete_flag_abbreviations(command, operands, recursive, force):
+    tokens = commands_module._argv(command)
+    assert commands_module._windows_delete_flags_and_operands(tokens) == (
+        recursive,
+        force,
+        operands,
+    )
+    assert delete_class_operands_and_dynamic(command)[0] == operands
+
+
 def test_delete_class_operands_non_delete_command_is_none():
     assert delete_class_operands_and_dynamic("ls -la")[0] is None
     assert delete_class_operands_and_dynamic("git status")[0] is None
