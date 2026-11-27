@@ -37,6 +37,11 @@ Host cells on the weakening row prove the hook side only: an agent cannot mutate
 `.doberman/` policy state, and a weakening edit to the repo-root `doberman.policy.yaml`
 is clamped at load until `doberman policy-file --accept`; the CLI gate itself is
 proven by `tests/integration/test_drift_gate.py`.
+
+Host-side liveness note (Codex, #335/#826): unit tests prove Doberman's adapter once
+Codex invokes it, but a crash inside Codex's own PreToolUse hook runner fails open
+before Doberman runs. Use `doberman doctor --live` to run an opt-in `codex exec`
+sentinel canary against a live Codex installation.
 """
 
 

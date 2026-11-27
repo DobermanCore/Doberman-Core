@@ -13,6 +13,11 @@ Host cells on the weakening row prove the hook side only: an agent cannot mutate
 is clamped at load until `doberman policy-file --accept`; the CLI gate itself is
 proven by `tests/integration/test_drift_gate.py`.
 
+Host-side liveness note (Codex, #335/#826): unit tests prove Doberman's adapter once
+Codex invokes it, but a crash inside Codex's own PreToolUse hook runner fails open
+before Doberman runs. Use `doberman doctor --live` to run an opt-in `codex exec`
+sentinel canary against a live Codex installation.
+
 | Guarantee | Claude Code | Codex | Cursor | Mcp Proxy | Openclaw |
 |---|---|---|---|---|---|
 | Destructive shell commands are blocked or AUTH-gated | [✅](https://github.com/DobermanCore/Doberman-Core/blob/main/tests/unit/test_hosthook_claude_pre.py) | [✅](https://github.com/DobermanCore/Doberman-Core/blob/main/tests/unit/test_hosthook_codex.py) | [✅](https://github.com/DobermanCore/Doberman-Core/blob/main/tests/unit/test_hosthook_cursor.py) | [✅](https://github.com/DobermanCore/Doberman-Core/blob/main/tests/integration/test_engine_blocks_reach_no_tool.py) | [✅](https://github.com/DobermanCore/Doberman-Core/blob/main/tests/unit/test_hosthook_openclaw.py) |

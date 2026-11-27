@@ -1560,6 +1560,11 @@ def doctor(
         "--json",
         help="Emit one JSON document on stdout; health exit codes are unchanged.",
     ),
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Run opt-in slow liveness probes (e.g. live Codex hook canary via `codex exec`).",
+    ),
 ) -> None:
     """Run a read-only health self-check and print a green/red checklist.
 
@@ -1568,9 +1573,11 @@ def doctor(
     fingerprint key. It only *diagnoses* - it never changes state, except that the
     Policy version check records the observed policy version into
     `.doberman/policies.db` (itself a diagnostic record; it never touches policy,
-    decisions, or enforcement). Exits non-zero if any critical check
-    (hooks / hook command on PATH / config / DB) is not healthy, so it is
-    script-friendly (`doberman doctor && ...`).
+    decisions, or enforcement). Pass `--live` to run opt-in slow liveness probes
+    such as the Codex hook canary (`codex exec` against a temporary sentinel file).
+    Exits non-zero if any critical check (hooks / hook command on PATH / config /
+    DB, or a failed live canary) is not healthy, so it is script-friendly
+    (`doberman doctor && ...`).
     """
     _require_existing_dir(path)
     from doberman.cli.doctor import CheckStatus, critical_failures, run_checks
@@ -1578,7 +1585,7 @@ def doctor(
     # ASCII marks only: CLI output must survive a cp1252 console (see setup wizard).
     marks = {CheckStatus.OK: "[ ok ]", CheckStatus.WARN: "[warn]", CheckStatus.FAIL: "[FAIL]"}
 
-    results = run_checks(path)
+    results = run_checks(path, live=live)
     failures = critical_failures(results)
     if as_json:
         payload = {
