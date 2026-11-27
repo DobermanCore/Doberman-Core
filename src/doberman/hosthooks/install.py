@@ -101,6 +101,37 @@ def doberman_groups(settings: dict[str, Any]) -> dict[str, list[dict[str, Any]]]
     return out
 
 
+def foreign_hook_commands(settings: dict[str, Any]) -> dict[str, list[str]]:
+    """Non-Doberman hook commands per event key (for the install ledger).
+
+    Extracts only raw command strings from matcher groups not owned by Doberman
+    so :mod:`doberman.hosthooks.integrity` can store their keyed HMAC
+    fingerprints without ever persisting raw commands.
+    """
+    hooks_section = settings.get("hooks") or {}
+    if not isinstance(hooks_section, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for event_key, groups in hooks_section.items():
+        if not isinstance(groups, list):
+            continue
+        commands: list[str] = []
+        for group in groups:
+            if not isinstance(group, dict) or _is_doberman_group(group):
+                continue
+            hooks = group.get("hooks")
+            if not isinstance(hooks, list):
+                continue
+            for hook in hooks:
+                if isinstance(hook, dict):
+                    cmd = hook.get("command")
+                    if isinstance(cmd, str) and cmd.strip():
+                        commands.append(cmd)
+        if commands:
+            out[event_key] = commands
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Pure merge / remove functions
 # ---------------------------------------------------------------------------

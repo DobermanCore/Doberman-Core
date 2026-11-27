@@ -66,6 +66,8 @@ class IntegrityStatus:
     divergence_seen: str | None = None
     #: True when an applicable Claude settings file disables all hooks.
     disabled: bool = False
+    #: Events whose non-Doberman hook commands are new or changed since install.
+    foreign_changed_events: tuple[str, ...] = ()
 
 
 def manifest_path() -> Path:
@@ -105,6 +107,34 @@ def _group_fps(groups_by_event: dict[str, list[dict[str, Any]]]) -> dict[str, st
     return out
 
 
+def _foreign_fps(foreign_commands_by_event: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Keyed HMAC fingerprints for every non-Doberman hook command, grouped by event.
+
+    Raw commands are never stored in the manifest; sorting makes comparison
+    insensitive to hook ordering within an event.
+    """
+    out: dict[str, list[str]] = {}
+    for event, commands in foreign_commands_by_event.items():
+        fps = sorted(_fp(cmd) for cmd in commands if isinstance(cmd, str) and cmd.strip())
+        if fps:
+            out[event] = fps
+    return out
+
+
+def _has_new_or_changed_foreign(live_fps: list[str], recorded_fps: Any) -> bool:
+    """Return True if *live_fps* contains any entry not accounted for in *recorded_fps*."""
+    remaining = [str(fp) for fp in recorded_fps] if isinstance(recorded_fps, list) else []
+    for live_fp in live_fps:
+        matched_idx = next(
+            (i for i, rec_fp in enumerate(remaining) if hmac.compare_digest(rec_fp, live_fp)),
+            None,
+        )
+        if matched_idx is None:
+            return True
+        remaining.pop(matched_idx)
+    return False
+
+
 def _load() -> dict[str, Any]:
     path = manifest_path()
     if not path.exists():
@@ -141,12 +171,15 @@ def record_install(
     scope: str,
     settings_path: Path,
     groups_by_event: dict[str, list[dict[str, Any]]],
+    foreign_commands_by_event: dict[str, list[str]] | None = None,
 ) -> None:
     """Record (or replace) the fingerprints for one installed registration.
 
     Replaces any previous entry for the same (host, scope, path) and clears a
     prior divergence record: a re-install is the human saying "this is the
-    intended state". Raises on I/O or key failure; the CLI reports it.
+    intended state". Also records the HMAC fingerprint ledger of any
+    non-Doberman hook commands present at install time (never raw commands or
+    paths). Raises on I/O or key failure; the CLI reports it.
     """
     data = _load()
     path_fp = _path_fp(settings_path)
@@ -155,6 +188,7 @@ def record_install(
         "scope": scope,
         "path_fp": path_fp,
         "groups": _group_fps(groups_by_event),
+        "foreign_ledger": _foreign_fps(foreign_commands_by_event or {}),
         "recorded_at": _now(),
     }
     data["entries"] = [e for e in data["entries"] if not _matches(e, host, scope, path_fp)]
@@ -184,13 +218,17 @@ def verify_install(
     scope: str,
     settings_path: Path,
     groups_by_event: dict[str, list[dict[str, Any]]],
+    foreign_commands_by_event: dict[str, list[str]] | None = None,
 ) -> IntegrityStatus:
     """Compare the live Doberman groups against the recorded entry. Never raises.
 
     ``absent`` when there is no entry or anything cannot be read/fingerprinted
     (no alarm: the guard must never crash or block a hook). ``diverged`` names
     every recorded event whose group is missing or changed; events recorded
-    with no Doberman group are not tracked, so additions never diverge.
+    with no Doberman group are not tracked, so additions never diverge. When
+    *foreign_commands_by_event* is supplied, new or changed foreign hook
+    commands are reported separately through ``foreign_changed_events`` without
+    altering ``state``.
     """
     try:
         data = _load()
@@ -203,6 +241,15 @@ def verify_install(
             current = live.get(event)
             if current is None or not hmac.compare_digest(str(recorded_fp), current):
                 diverged.append(event)
+        foreign_changed: list[str] = []
+        if foreign_commands_by_event is not None:
+            recorded_ledger = entry.get("foreign_ledger")
+            if not isinstance(recorded_ledger, dict):
+                recorded_ledger = {}
+            for event, live_fps in _foreign_fps(foreign_commands_by_event).items():
+                if _has_new_or_changed_foreign(live_fps, recorded_ledger.get(event)):
+                    foreign_changed.append(event)
+        foreign_tuple = tuple(sorted(foreign_changed))
         seen = None
         div = entry.get("diverged")
         if isinstance(div, dict) and isinstance(div.get("last_seen"), str):
@@ -215,8 +262,11 @@ def verify_install(
                 tuple(sorted(diverged)),
                 critical=any(e in CRITICAL_EVENTS for e in diverged),
                 divergence_seen=seen,
+                foreign_changed_events=foreign_tuple,
             )
-        return IntegrityStatus(host, scope, "intact", divergence_seen=seen)
+        return IntegrityStatus(
+            host, scope, "intact", divergence_seen=seen, foreign_changed_events=foreign_tuple
+        )
     except Exception:  # noqa: BLE001 - the guard degrades to "no alarm", never crashes a hook
         return IntegrityStatus(host, scope, "absent")
 
@@ -256,29 +306,49 @@ _SCOPES: tuple[tuple[str, str], ...] = (
 )
 
 
-def _live_groups(
+def _live_state(
     host: str, scope: str, project_root: str
-) -> tuple[Path, dict[str, list[dict[str, Any]]]]:
-    """Resolve a scope's settings file and its live Doberman groups. May raise."""
+) -> tuple[Path, dict[str, list[dict[str, Any]]], dict[str, list[str]]]:
+    """Resolve a scope's settings file, live Doberman groups, and foreign hook commands."""
     from doberman.hosthooks.install import load_settings
 
     if host == "claude":
-        from doberman.hosthooks.install import doberman_groups, resolve_settings_path
+        from doberman.hosthooks.install import (
+            doberman_groups,
+            foreign_hook_commands,
+            resolve_settings_path,
+        )
 
         path = resolve_settings_path(scope, project_root)
-        return path, doberman_groups(load_settings(path))
+        settings = load_settings(path)
+        return path, doberman_groups(settings), foreign_hook_commands(settings)
     if host == "cursor":
         from doberman.hosthooks.install_cursor import (
             cursor_doberman_groups,
+            cursor_foreign_hook_commands,
             resolve_cursor_hooks_path,
         )
 
         path = resolve_cursor_hooks_path(scope, project_root)
-        return path, cursor_doberman_groups(load_settings(path))
-    from doberman.hosthooks.install_codex import codex_doberman_groups, resolve_codex_hooks_path
+        settings = load_settings(path)
+        return path, cursor_doberman_groups(settings), cursor_foreign_hook_commands(settings)
+    from doberman.hosthooks.install_codex import (
+        codex_doberman_groups,
+        codex_foreign_hook_commands,
+        resolve_codex_hooks_path,
+    )
 
     path = resolve_codex_hooks_path(scope, project_root)
-    return path, codex_doberman_groups(load_settings(path))
+    settings = load_settings(path)
+    return path, codex_doberman_groups(settings), codex_foreign_hook_commands(settings)
+
+
+def _live_groups(
+    host: str, scope: str, project_root: str
+) -> tuple[Path, dict[str, list[dict[str, Any]]]]:
+    """Resolve a scope's settings file and its live Doberman groups. May raise."""
+    path, groups, _foreign = _live_state(host, scope, project_root)
+    return path, groups
 
 
 def _claude_hooks_disabled(settings_path: Path) -> bool:
@@ -302,15 +372,16 @@ def check_all(project_root: str) -> list[IntegrityStatus]:
     One status per ``(host, scope)`` in :data:`_SCOPES`; a scope whose settings
     file is unreadable yields ``absent`` rather than raising. A true Claude
     ``disableAllHooks`` setting is reported separately through ``disabled``
-    without changing the registration state.
+    without changing the registration state. New or changed foreign hook
+    commands are reported through ``foreign_changed_events``.
     """
     out: list[IntegrityStatus] = []
     active_claude_indexes: list[int] = []
     claude_hooks_disabled = False
     for host, scope in _SCOPES:
         try:
-            path, groups = _live_groups(host, scope, project_root)
-            out.append(verify_install(host, scope, path, groups))
+            path, groups, foreign_commands = _live_state(host, scope, project_root)
+            out.append(verify_install(host, scope, path, groups, foreign_commands))
             if host == "claude":
                 if groups:
                     active_claude_indexes.append(len(out) - 1)
@@ -326,7 +397,7 @@ def check_all(project_root: str) -> list[IntegrityStatus]:
 
 
 def hook_warning(project_root: str) -> str | None:
-    """The one-line warning a hook attaches when a recorded registration diverged.
+    """The one-line warning a hook attaches when a recorded registration or foreign ledger changed.
 
     Cheap when there is nothing to check (no manifest file: return without
     reading any settings file). Never raises; any failure is "no warning".
@@ -334,8 +405,10 @@ def hook_warning(project_root: str) -> str | None:
     try:
         if not manifest_path().exists():
             return None
-        diverged = [s for s in check_all(project_root) if s.state == "diverged"]
-        if not diverged:
+        statuses = check_all(project_root)
+        diverged = [s for s in statuses if s.state == "diverged"]
+        foreign_changed = [s for s in statuses if s.foreign_changed_events]
+        if not diverged and not foreign_changed:
             return None
         for s in diverged:
             try:
@@ -345,11 +418,25 @@ def hook_warning(project_root: str) -> str | None:
                 pass
         from doberman.branding import DOG
 
-        where = ", ".join(f"{s.host} {s.scope}: {'/'.join(s.diverged_events)}" for s in diverged)
-        return (
-            f"{DOG} Doberman: hook registration changed since install ({where}). "
-            "Doberman may not be gating every call here. Run `doberman doctor`, "
-            "then `doberman install-hooks` to restore."
-        )
+        parts: list[str] = []
+        if diverged:
+            where = ", ".join(
+                f"{s.host} {s.scope}: {'/'.join(s.diverged_events)}" for s in diverged
+            )
+            parts.append(
+                f"{DOG} Doberman: hook registration changed since install ({where}). "
+                "Doberman may not be gating every call here. Run `doberman doctor`, "
+                "then `doberman install-hooks` to restore."
+            )
+        if foreign_changed:
+            where_foreign = ", ".join(
+                f"{s.host} {s.scope}: {'/'.join(s.foreign_changed_events)}" for s in foreign_changed
+            )
+            parts.append(
+                f"{DOG} Doberman: new or changed foreign hook command detected since install "
+                f"({where_foreign}). Review your host settings and run `doberman doctor` or "
+                "`doberman install-hooks` to update the ledger."
+            )
+        return " ".join(parts)
     except Exception:  # noqa: BLE001 - warning-only; never reaches the hook's decision
         return None
