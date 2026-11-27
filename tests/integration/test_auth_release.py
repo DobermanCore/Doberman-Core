@@ -4,6 +4,8 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+import pytest
+
 from doberman.auth.challenge import AuthResult, AuthTier
 from doberman.engine.decision_engine import StaticGuardrail
 from doberman.models import GuardrailResult, ReasonCode, Risk, Verdict
@@ -97,6 +99,7 @@ async def test_denied_auth_forwards_nothing(monkeypatch):
         assert fake.calls == []
 
 
+@pytest.mark.guarantee("auth-action-bound", host="mcp-proxy")
 async def test_approval_must_be_bound_to_this_action_id(monkeypatch):
     monkeypatch.setattr(executor, "DEFAULT_OBJECTIVE", _AUTHING)
     monkeypatch.setattr(executor, "run_auth_challenge", _approve_for_wrong_action)
@@ -105,6 +108,48 @@ async def test_approval_must_be_bound_to_this_action_id(monkeypatch):
         # Approval for a different action id must not release THIS one.
         assert result.isError
         assert fake.calls == []
+
+
+@pytest.mark.guarantee("auth-action-bound", host="mcp-proxy")
+async def test_used_approval_cannot_be_replayed(monkeypatch, isolated_executor_repo_root):
+    """A spent single-use approval must neither cover nor authorize a replay call."""
+    _write_role(isolated_executor_repo_root)
+    captured: list[AuthResult] = []
+
+    def approve_once_then_replay(
+        decision,
+        action,
+        *,
+        prompter=None,
+        at=None,
+        message_tone=None,
+        repo_root=None,
+        session_id=None,
+    ):
+        if not captured:
+            result = AuthResult(
+                approved=True,
+                tier=AuthTier.role_elevation,
+                method="test",
+                at=datetime.now(timezone.utc),
+                action_id=action.id,
+            )
+            captured.append(result)
+            return result
+        # Replay the exact AuthResult already used by the first call.
+        return captured[0]
+
+    monkeypatch.setattr(executor, "run_auth_challenge", approve_once_then_replay)
+    async with proxied_session() as (fake, agent):
+        first = await agent.call_tool("fs_delete", {"path": "backend/api.ts"})
+        assert not first.isError
+        assert fake.calls == [("fs_delete", {"path": "backend/api.ts"})]
+
+        # Replaying the same call must not ride the spent single-use elevation
+        # and must reject the replayed AuthResult bound to the first action id.
+        second = await agent.call_tool("fs_delete", {"path": "backend/api.ts"})
+        assert second.isError
+        assert fake.calls == [("fs_delete", {"path": "backend/api.ts"})]
 
 
 async def test_toctou_redecision_to_block_is_honored(monkeypatch):
