@@ -842,14 +842,36 @@ def _check_fingerprint_key() -> CheckResult:
     return CheckResult("Fingerprint key", CheckStatus.OK, f"present with {oct(mode)} permissions")
 
 
+def _check_codex_live_canary(path: str) -> CheckResult:
+    """Opt-in slow check (#826, #335): ask a real ``codex exec`` to delete a
+    sentinel file and verify Doberman's PreToolUse hook blocked it.
+
+    A deleted sentinel is a critical FAIL (Codex ran the command unmediated).
+    An inconclusive run, timeout, or missing ``codex`` is WARN, never OK.
+    """
+    from doberman.cli.codex_canary import CanaryStatus, run_codex_live_canary
+
+    name = "Codex live canary"
+    outcome = run_codex_live_canary(path, install_hooks=False)
+    if outcome.status is CanaryStatus.PROTECTED:
+        return CheckResult(name, CheckStatus.OK, outcome.detail)
+    if outcome.status is CanaryStatus.FAILED:
+        return CheckResult(name, CheckStatus.FAIL, outcome.detail, critical=True)
+    return CheckResult(name, CheckStatus.WARN, outcome.detail)
+
+
 # ---------------------------------------------------------------------------
 # Aggregate
 # ---------------------------------------------------------------------------
 
 
-def run_checks(path: str = ".") -> list[CheckResult]:
-    """Run every health check against *path* and return the results in display order."""
-    return [
+def run_checks(path: str = ".", *, live: bool = False) -> list[CheckResult]:
+    """Run every health check against *path* and return the results in display order.
+
+    When *live* is True, also runs opt-in slow liveness probes (such as the live
+    Codex hook canary) that invoke external host CLIs.
+    """
+    results = [
         _safe_check("Host hooks", True, lambda: _check_hooks(path)),
         _safe_check("Hook command", True, lambda: _check_hook_command(path)),
         _safe_check("Hook integrity", True, lambda: _check_hook_integrity(path)),
@@ -875,6 +897,11 @@ def run_checks(path: str = ".") -> list[CheckResult]:
         _safe_check("TUI extra", False, _check_tui_extra),
         _safe_check("Plugins", False, _check_plugins),
     ]
+    if live:
+        results.append(
+            _safe_check("Codex live canary", False, lambda: _check_codex_live_canary(path))
+        )
+    return results
 
 
 def critical_failures(results: list[CheckResult]) -> list[CheckResult]:
