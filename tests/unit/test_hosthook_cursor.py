@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from doberman.auth.challenge import AuthResult, AuthTier
+from doberman.auth.challenge import TIMEOUT_METHOD, AuthResult, AuthTier
 from doberman.engine.rules.paths import CONTROL_PLANE_GLOBS, names_control_plane
 from doberman.hosthooks import cursor, singleflight
 from doberman.hosthooks import spine as spine_module
@@ -471,6 +471,75 @@ def test_approval_for_this_action_allows(tmp_path, monkeypatch):
     monkeypatch.setattr(cursor, "AUTH_PROMPTER", _Approve())
     monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _right_action)
     assert _run(_auth_payload(tmp_path)) == ({"permission": "allow"}, 0)
+
+
+@pytest.mark.guarantee("auth-deadline", host="cursor")
+def test_timed_out_auth_denies_at_the_deadline(tmp_path, monkeypatch):
+    def _timed_out(decision, action, *, prompter=None, at=None, message_tone=None, **_scope):
+        return AuthResult(
+            approved=False,
+            tier=AuthTier.local_auth,
+            method=TIMEOUT_METHOD,
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    monkeypatch.setattr(cursor, "AUTH_PROMPTER", _Approve())
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _timed_out)
+    doc, code = _run(_auth_payload(tmp_path))
+
+    assert doc["permission"] == "deny" and code == 2
+    assert "expired with no response" in doc["user_message"].lower()
+    assert "expired with no response" in doc["agent_message"].lower()
+
+
+@pytest.mark.guarantee("timeout-vs-deny-logging", host="cursor")
+def test_timeout_reason_differs_from_plain_denial(tmp_path, monkeypatch):
+    import asyncio
+
+    from doberman.storage.log import read_decisions
+
+    def _timed_out(decision, action, *, prompter=None, at=None, message_tone=None, **_scope):
+        return AuthResult(
+            approved=False,
+            tier=AuthTier.local_auth,
+            method=TIMEOUT_METHOD,
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    def _declined(decision, action, *, prompter=None, at=None, message_tone=None, **_scope):
+        return AuthResult(
+            approved=False,
+            tier=AuthTier.local_auth,
+            method="local_auth",
+            at=datetime.now(timezone.utc),
+            action_id=action.id,
+        )
+
+    monkeypatch.setattr(cursor, "AUTH_PROMPTER", _Approve())
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _timed_out)
+    timed_out_doc, timed_out_code = _run(_auth_payload(tmp_path))
+    assert timed_out_doc["permission"] == "deny" and timed_out_code == 2
+
+    monkeypatch.setattr("doberman.auth.challenge.run_auth_challenge", _declined)
+    declined_doc, declined_code = _run(_auth_payload(tmp_path))
+    assert declined_doc["permission"] == "deny" and declined_code == 2
+
+    timeout_reason = timed_out_doc["user_message"]
+    declined_reason = declined_doc["user_message"]
+    assert timeout_reason != declined_reason
+    assert timed_out_doc["agent_message"] != declined_doc["agent_message"]
+    assert "expired with no response" in timeout_reason.lower()
+    assert "authentication was not completed" not in timeout_reason.lower()
+    assert "authentication was not completed" in declined_reason.lower()
+    assert "expired with no response" not in declined_reason.lower()
+
+    # Decision log must also distinguish a deadline expiry from a human refusal.
+    rows = asyncio.run(read_decisions(str(tmp_path), limit=10))
+    methods = {row["auth_result"] for row in rows}
+    assert TIMEOUT_METHOD in methods
+    assert "local_auth" in methods
 
 
 # --- MCP tools: beforeMCPExecution + preToolUse MCP:<tool> ---------------------
