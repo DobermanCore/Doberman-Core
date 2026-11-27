@@ -189,6 +189,16 @@ def _check_hook_integrity(path: str) -> CheckResult:
         seen = [s.divergence_seen for s in intact if s.divergence_seen]
         if seen:
             detail += f" - a divergence was seen at {max(seen)}; re-run install-hooks to clear"
+        foreign_changed = [s for s in intact if s.foreign_changed_events]
+        if foreign_changed:
+            where_foreign = ", ".join(
+                f"{s.host} {s.scope}: {'/'.join(s.foreign_changed_events)}" for s in foreign_changed
+            )
+            detail += (
+                f"; new or changed foreign hook command(s) detected ({where_foreign}) - "
+                "review host settings and re-run `doberman install-hooks` to update the ledger"
+            )
+            return CheckResult(name, CheckStatus.WARN, detail)
         return CheckResult(name, CheckStatus.OK, detail)
     installed = (
         any(ok for _s, _p, ok in hook_install_states(path))

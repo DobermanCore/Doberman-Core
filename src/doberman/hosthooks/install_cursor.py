@@ -157,6 +157,28 @@ def cursor_doberman_groups(settings: dict[str, Any]) -> dict[str, list[dict[str,
     return out
 
 
+def cursor_foreign_hook_commands(settings: dict[str, Any]) -> dict[str, list[str]]:
+    """Non-Doberman hook commands per event key in Cursor ``hooks.json``."""
+    hooks_section = settings.get("hooks") or {}
+    if not isinstance(hooks_section, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for event, entries in hooks_section.items():
+        if not isinstance(entries, list):
+            continue
+        commands = [
+            cmd
+            for e in entries
+            if isinstance(e, dict)
+            and not _is_doberman_entry(e)
+            and isinstance(cmd := e.get("command"), str)
+            and cmd.strip()
+        ]
+        if commands:
+            out[event] = commands
+    return out
+
+
 def resolve_cursor_hooks_path(scope: str, project_root: str) -> Path:
     """Resolve the target ``hooks.json`` path for *scope*.
 

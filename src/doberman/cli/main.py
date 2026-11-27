@@ -3369,12 +3369,18 @@ def decision_log_prune(
         typer.echo(f"Decision log pruned: {deleted} row(s).")
 
 
-def _record_manifest(host: str, scope: str, settings_path: Path, groups: dict) -> None:
+def _record_manifest(
+    host: str,
+    scope: str,
+    settings_path: Path,
+    groups: dict,
+    foreign_commands: dict[str, list[str]] | None = None,
+) -> None:
     """Record the install manifest entry; a failure is reported, never fatal."""
     from doberman.hosthooks.integrity import record_install
 
     try:
-        record_install(host, scope, settings_path, groups)
+        record_install(host, scope, settings_path, groups, foreign_commands)
     except Exception as exc:  # noqa: BLE001 - tracking must never break an install
         typer.echo(
             f"warning: could not record the hook install manifest ({type(exc).__name__}); "
@@ -3447,6 +3453,7 @@ def install_hooks(
 
     from doberman.hosthooks.install import (
         doberman_groups,
+        foreign_hook_commands,
         load_settings,
         merge_doberman_hooks,
         resolve_settings_path,
@@ -3477,7 +3484,13 @@ def install_hooks(
     else:
         write_settings(settings_path, merged)
         typer.echo(f"wrote {settings_path}")
-    _record_manifest("claude", scope, settings_path, doberman_groups(merged))
+    _record_manifest(
+        "claude",
+        scope,
+        settings_path,
+        doberman_groups(merged),
+        foreign_hook_commands(merged),
+    )
     typer.echo("Doberman will now gate every tool call in this project.")
     typer.echo("The session dashboard will print at the start of every session.")
     if remove_exclusion(path):
@@ -3502,6 +3515,7 @@ def _write_codex_hook(scope: str, path: str, *, show_verify: bool = True) -> tup
     from doberman.hosthooks.install import load_settings, write_settings
     from doberman.hosthooks.install_codex import (
         codex_doberman_groups,
+        codex_foreign_hook_commands,
         merge_codex_hooks,
         resolve_codex_hooks_path,
     )
@@ -3521,7 +3535,13 @@ def _write_codex_hook(scope: str, path: str, *, show_verify: bool = True) -> tup
     else:
         write_settings(hooks_path, merged)
         typer.echo(style_text(f"wrote {hooks_path}", bold=True))
-    _record_manifest("codex", scope, hooks_path, codex_doberman_groups(merged))
+    _record_manifest(
+        "codex",
+        scope,
+        hooks_path,
+        codex_doberman_groups(merged),
+        codex_foreign_hook_commands(merged),
+    )
     if remove_exclusion(path):
         typer.echo("This project is no longer excluded from global hooks.")
     typer.echo("")
@@ -3619,6 +3639,7 @@ def _write_cursor_hook(scope: str, path: str, *, show_verify: bool = True) -> tu
     from doberman.hosthooks.install import load_settings, write_settings
     from doberman.hosthooks.install_cursor import (
         cursor_doberman_groups,
+        cursor_foreign_hook_commands,
         merge_cursor_hooks,
         resolve_cursor_hooks_path,
     )
@@ -3638,7 +3659,13 @@ def _write_cursor_hook(scope: str, path: str, *, show_verify: bool = True) -> tu
     else:
         write_settings(hooks_path, merged)
         typer.echo(style_text(f"wrote {hooks_path}", bold=True))
-    _record_manifest("cursor", scope, hooks_path, cursor_doberman_groups(merged))
+    _record_manifest(
+        "cursor",
+        scope,
+        hooks_path,
+        cursor_doberman_groups(merged),
+        cursor_foreign_hook_commands(merged),
+    )
     if remove_exclusion(path):
         typer.echo("This project is no longer excluded from global hooks.")
     typer.echo("")
@@ -4313,6 +4340,7 @@ def setup(
     from doberman.hosthooks import setup as hosthooks_setup
     from doberman.hosthooks.install import (
         doberman_groups,
+        foreign_hook_commands,
         load_settings,
         merge_doberman_hooks,
         resolve_settings_path,
@@ -4882,7 +4910,13 @@ def setup(
                 raise typer.Exit(1) from exc
             typer.echo(style_text(f"wrote {settings_path}", bold=True))
             wired_state["claude"] = "wrote"
-        _record_manifest("claude", claude_scope, settings_path, doberman_groups(merged))
+        _record_manifest(
+            "claude",
+            claude_scope,
+            settings_path,
+            doberman_groups(merged),
+            foreign_hook_commands(merged),
+        )
         wired.append(("claude", str(settings_path)))
         _mark_content()  # item 11: no header under --yes/flags, but real content just printed
 

@@ -27,7 +27,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from doberman.hosthooks.install import _is_doberman_group, doberman_groups, load_settings
+from doberman.hosthooks.install import (
+    _is_doberman_group,
+    doberman_groups,
+    foreign_hook_commands,
+    load_settings,
+)
 
 #: Codex PreToolUse group Doberman registers — matches every tool. The
 #: ``doberman hook `` marker (shared with the Claude Code installer) identifies it
@@ -98,6 +103,11 @@ def codex_doberman_groups(settings: dict[str, Any]) -> dict[str, list[dict[str, 
     under this name for the Codex-specific import sites.
     """
     return doberman_groups(settings)
+
+
+def codex_foreign_hook_commands(settings: dict[str, Any]) -> dict[str, list[str]]:
+    """Non-Doberman hook commands per event key in Codex ``hooks.json``."""
+    return foreign_hook_commands(settings)
 
 
 def resolve_codex_hooks_path(scope: str, project_root: str) -> Path:
