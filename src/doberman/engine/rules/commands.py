@@ -790,20 +790,63 @@ def walk_command(command: str) -> tuple[list[list[str]], bool, bool]:
 def _normalize_windows_backslashes(command: str) -> str:
     """``\\`` is a Windows path separator, but shlex (POSIX mode, used below) treats
     it as an escape character — it silently eats ``foo\\.env`` -> ``foo.env`` or
-    raises ``ValueError`` on a trailing ``C:\\``. A line naming a Windows verb/shell
-    (see ``_WINDOWS_PATH_TRIGGER_RE``) gets every backslash flipped to ``/`` before
-    tokenization so a Windows path survives intact.
-
-    shortcut: a whole-line, word-triggered flip rather than per-segment/per-operand
-    surgery — simplest fix that passes the live-tested Windows commands, and a no-op
-    (verified against the existing POSIX test suite) unless both a trigger word and a
-    literal backslash are present. Known ceiling: a POSIX ``rm`` operand that
-    legitimately backslash-escapes a space or glob character (rare) would have that
-    escape flattened too; upgrade to a per-segment flip if that ever bites.
+    raises ``ValueError`` on a trailing ``C:\\``. Any segment naming a Windows
+    verb/shell (see ``_WINDOWS_PATH_TRIGGER_RE``) gets its backslashes flipped to
+    ``/`` before tokenization so a Windows path survives intact, while sibling
+    segments without a trigger word keep their backslashes untouched (so POSIX
+    escapes like ``echo my\\ file.txt`` survive).
     """
-    if _WINDOWS_PATH_TRIGGER_RE.search(command):
-        return command.replace("\\", "/")
-    return command
+    if "\\" not in command or not _WINDOWS_PATH_TRIGGER_RE.search(command):
+        return command
+
+    parts: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            current.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            current.append(char)
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+
+        operator_width = 2 if command[index : index + 2] in {"&&", "||"} else 0
+        if operator_width or char in {"|", ";", "&", "\n", "(", ")"}:
+            segment = "".join(current)
+            if _WINDOWS_PATH_TRIGGER_RE.search(segment):
+                segment = segment.replace("\\", "/")
+            parts.append(segment)
+            sep_len = operator_width or 1
+            parts.append(command[index : index + sep_len])
+            current = []
+            index += sep_len
+            continue
+        current.append(char)
+        index += 1
+
+    segment = "".join(current)
+    if _WINDOWS_PATH_TRIGGER_RE.search(segment):
+        segment = segment.replace("\\", "/")
+    parts.append(segment)
+    return "".join(parts)
 
 
 #: Windows executable suffixes stripped by :func:`_wrapper_name` — resolved

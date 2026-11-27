@@ -2668,3 +2668,31 @@ def test_generator_protected_branches_not_exhausted_by_normalized_check():
     tokens_del = ["git", "push", "--delete", "origin", "--push-option", "main", "feature"]
     gen_del = (b for b in ["main"])
     assert commands_module._git_push_deletes_protected_branch(tokens_del, gen_del) is True
+
+
+# --- #628: per-segment Windows backslash normalization -----------------------
+
+
+def test_normalize_windows_backslashes_is_per_segment():
+    command = r"del C:\temp\foo.txt && echo my\ file.txt"
+    normalized = commands_module._normalize_windows_backslashes(command)
+    assert normalized == r"del C:/temp/foo.txt && echo my\ file.txt"
+
+    segments, ambiguous, _ = commands_module.walk_command(normalized)
+    assert ambiguous is False
+    # walk_command pops segments from a stack, so verify by content regardless of order
+    assert ["del", "C:/temp/foo.txt"] in segments
+    assert ["echo", "my file.txt"] in segments
+
+
+def test_normalize_windows_backslashes_respects_quotes_and_escaped_separators():
+    # Semicolon inside single quotes must not split the del segment;
+    # escaped semicolon outside quotes must not split the POSIX segment.
+    command = r"del 'C:\a;b\c' && echo foo\;bar\ baz"
+    normalized = commands_module._normalize_windows_backslashes(command)
+    assert normalized == r"del 'C:/a;b/c' && echo foo\;bar\ baz"
+
+    segments, ambiguous, _ = commands_module.walk_command(normalized)
+    assert ambiguous is False
+    assert ["del", "C:/a;b/c"] in segments
+    assert ["echo", "foo;bar baz"] in segments
